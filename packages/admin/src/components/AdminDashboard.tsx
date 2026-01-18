@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Device, getServerUrl } from '@wonremote/shared';
+import { Device, getIceServers, getServerUrl } from '@wonremote/shared';
 import { Button } from './Button';
 import { WindowFrame } from './WindowFrame';
 import CustomerTable from './CustomerTable';
@@ -131,9 +131,7 @@ export const AdminDashboard: React.FC<{onLogout: () => void}> = ({onLogout}) => 
             pcRef.current = null;
         }
 
-        const pc = new RTCPeerConnection({
-            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-        });
+        const pc = new RTCPeerConnection({ iceServers: getIceServers() });
         pcRef.current = pc;
 
         pc.ontrack = (event) => {

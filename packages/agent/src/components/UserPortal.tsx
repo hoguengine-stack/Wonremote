@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Button } from './Button';
 import { WindowFrame } from './WindowFrame';
 import { io, Socket } from 'socket.io-client';
-import { getServerUrl, setServerUrl as saveServerUrl } from '@wonremote/shared';
+import { getIceServers, getServerUrl, setServerUrl as saveServerUrl } from '@wonremote/shared';
 
 interface UserPortalProps {
   onMinimize: () => void;
@@ -44,11 +44,7 @@ const LS_AUTH = 'wr_auth_info';
 
 // WebRTC 설정
 const rtcConfig = {
-    iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' }
-    ]
+  iceServers: getIceServers()
 };
 
 export const UserPortal: React.FC<UserPortalProps> = ({ onMinimize, isMinimized, onRestore, frameless = false }) => {
