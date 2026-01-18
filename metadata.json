@@ -1,0 +1,5 @@
+{
+  "name": "WonRemote Admin",
+  "description": "Remote administration dashboard enabling business-ID based device lookup and simulated unattended access workflows.",
+  "requestFramePermissions": []
+}

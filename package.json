@@ -1,0 +1,19 @@
+{
+  "name": "wonremote-monorepo",
+  "private": true,
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "dev:agent": "npm run build:shared && npm -w @wonremote/agent run electron:dev",
+    "dev:admin": "npm run build:shared && npm -w @wonremote/admin run electron:dev",
+
+    "build:shared": "npm -w @wonremote/shared run build",
+    "build:agent": "npm -w @wonremote/agent run build",
+    "build:admin": "npm -w @wonremote/admin run build",
+
+    "dist:agent": "npm run build:shared && npm -w @wonremote/agent run dist",
+    "dist:admin": "npm run build:shared && npm -w @wonremote/admin run dist",
+
+    "verify:agent": "npm -w @wonremote/agent run verify:no-admin",
+    "verify:admin": "npm -w @wonremote/admin run verify:no-agent"
+  }
+}

@@ -1,0 +1,79 @@
+{
+  "name": "@wonremote/agent",
+  "private": true,
+  "version": "0.0.0",
+  "main": "electron/main.cjs",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host --port 3001 --strictPort",
+    "build": "vite build",
+
+    "electron": "electron electron/main.cjs",
+    "electron:dev": "concurrently \"npm run dev\" \"wait-on http://127.0.0.1:3001 && electron electron/main.cjs\"",
+
+    "build:control": "python -m PyInstaller --noconsole --onefile control.py --name control --distpath resources --workpath build/control --hidden-import pyautogui --collect-all pyautogui",
+    "dist": "cross-env CSC_IDENTITY_AUTO_DISCOVERY=false npm run build:control && vite build && electron-builder",
+
+    "verify:no-admin": "node scripts/verify-no-admin.mjs"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.0"
+  },
+  "devDependencies": {
+    "@wonremote/shared": "0.0.0",
+    "@types/node": "^22.14.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "concurrently": "^9.2.1",
+    "cross-env": "^7.0.3",
+    "electron": "39.2.7",
+    "electron-builder": "^26.4.0",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "socket.io-client": "^4.8.3",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.0",
+    "wait-on": "^9.0.3"
+  },
+  "build": {
+    "appId": "com.wonremote.agent",
+    "productName": "WonRemote Agent",
+    "compression": "maximum",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "electron/**",
+      "package.json",
+      { "from": "../../node_modules/electron-updater", "to": "node_modules/electron-updater", "filter": ["**/*"] },
+      { "from": "../../node_modules/builder-util-runtime", "to": "node_modules/builder-util-runtime", "filter": ["**/*"] },
+      { "from": "../../node_modules/fs-extra", "to": "node_modules/fs-extra", "filter": ["**/*"] },
+      { "from": "../../node_modules/js-yaml", "to": "node_modules/js-yaml", "filter": ["**/*"] },
+      { "from": "../../node_modules/lazy-val", "to": "node_modules/lazy-val", "filter": ["**/*"] },
+      { "from": "../../node_modules/semver", "to": "node_modules/semver", "filter": ["**/*"] }
+    ],
+    "extraResources": [
+      { "from": "resources/control.exe", "to": "control.exe" }
+    ],
+    "win": {
+      "target": ["nsis"],
+      "icon": "public/icon.ico",
+      "requestedExecutionLevel": "requireAdministrator"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": true,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "public/icon.ico",
+      "uninstallerIcon": "public/icon.ico",
+      "include": "build/installer.nsh"
+    },
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "http://34.158.217.115/updates/agent"
+      }
+    ]
+  }
+}
