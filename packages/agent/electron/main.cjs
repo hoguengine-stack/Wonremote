@@ -176,10 +176,10 @@ function setInputLock(enabled) {
 ipcMain.on('set-input-lock', (_e, enabled) => setInputLock(!!enabled));
 
 function getControlCommand() {
-  // 배포: extraResources로 resourcesPath/control.exe 에 들어옵니다.
+  // 배포: extraResources로 resourcesPath/control/control.exe 에 들어옵니다.
   const exeCandidates = [
-    path.join(process.resourcesPath || '', 'control.exe'),
-    path.join(__dirname, '..', 'resources', 'control.exe')
+    path.join(process.resourcesPath || '', 'control', 'control.exe'),
+    path.join(__dirname, '..', 'resources', 'control', 'control.exe')
   ];
 
   for (const exe of exeCandidates) {

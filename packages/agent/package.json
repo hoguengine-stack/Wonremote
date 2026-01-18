@@ -11,7 +11,7 @@
     "electron": "electron electron/main.cjs",
     "electron:dev": "concurrently \"npm run dev\" \"wait-on http://127.0.0.1:3001 && electron electron/main.cjs\"",
 
-    "build:control": "python -m PyInstaller --noconsole --onefile control.py --name control --distpath resources --workpath build/control --hidden-import pyautogui --collect-all pyautogui",
+    "build:control": "python -m PyInstaller --noconsole --onedir control.py --name control --distpath resources --workpath build/control --clean --strip --hidden-import pyautogui --collect-all pyautogui",
     "dist": "cross-env CSC_IDENTITY_AUTO_DISCOVERY=false npm run build:control && vite build && electron-builder",
 
     "verify:no-admin": "node scripts/verify-no-admin.mjs"
@@ -46,15 +46,39 @@
       "dist/**",
       "electron/**",
       "package.json",
-      { "from": "../../node_modules/electron-updater", "to": "node_modules/electron-updater", "filter": ["**/*"] },
-      { "from": "../../node_modules/builder-util-runtime", "to": "node_modules/builder-util-runtime", "filter": ["**/*"] },
-      { "from": "../../node_modules/fs-extra", "to": "node_modules/fs-extra", "filter": ["**/*"] },
-      { "from": "../../node_modules/js-yaml", "to": "node_modules/js-yaml", "filter": ["**/*"] },
-      { "from": "../../node_modules/lazy-val", "to": "node_modules/lazy-val", "filter": ["**/*"] },
-      { "from": "../../node_modules/semver", "to": "node_modules/semver", "filter": ["**/*"] }
+      {
+        "from": "../../node_modules/electron-updater",
+        "to": "node_modules/electron-updater",
+        "filter": ["**/*", "!**/{test,tests,docs,doc,example,examples,coverage}/**", "!**/*.md"]
+      },
+      {
+        "from": "../../node_modules/builder-util-runtime",
+        "to": "node_modules/builder-util-runtime",
+        "filter": ["**/*", "!**/{test,tests,docs,doc,example,examples,coverage}/**", "!**/*.md"]
+      },
+      {
+        "from": "../../node_modules/fs-extra",
+        "to": "node_modules/fs-extra",
+        "filter": ["**/*", "!**/{test,tests,docs,doc,example,examples,coverage}/**", "!**/*.md"]
+      },
+      {
+        "from": "../../node_modules/js-yaml",
+        "to": "node_modules/js-yaml",
+        "filter": ["**/*", "!**/{test,tests,docs,doc,example,examples,coverage}/**", "!**/*.md"]
+      },
+      {
+        "from": "../../node_modules/lazy-val",
+        "to": "node_modules/lazy-val",
+        "filter": ["**/*", "!**/{test,tests,docs,doc,example,examples,coverage}/**", "!**/*.md"]
+      },
+      {
+        "from": "../../node_modules/semver",
+        "to": "node_modules/semver",
+        "filter": ["**/*", "!**/{test,tests,docs,doc,example,examples,coverage}/**", "!**/*.md"]
+      }
     ],
     "extraResources": [
-      { "from": "resources/control.exe", "to": "control.exe" }
+      { "from": "resources/control", "to": "control" }
     ],
     "win": {
       "target": ["nsis"],
