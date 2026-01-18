@@ -25,6 +25,9 @@ dist-ssr
 packages/**/release/
 packages/**/build/
 build/control/
+build/logs/
+packages/agent/resources/control/
+packages/agent/control.spec
 server/service_account.json
 wonremote_deploy_ed25519
 wonremote_deploy_ed25519.pub

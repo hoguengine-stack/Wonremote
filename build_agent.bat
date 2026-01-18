@@ -1,22 +1,27 @@
 @echo off
-REM Build WonRemote agent installer (client route)
 setlocal
 
-REM Move to script directory
 cd /d "%~dp0"
 
-node scripts\bump-version.mjs agent
+set LOGDIR=build\logs
+if not exist "%LOGDIR%" mkdir "%LOGDIR%"
+for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd-HHmmss"') do set TS=%%i
+set LOGFILE=%LOGDIR%\agent_build_%TS%.log
+echo Logging to %LOGFILE%
 
-echo [1/1] Building agent installer (npm run dist:agent)...
-npm run dist:agent
-set ERR=%ERRORLEVEL%
+node scripts\bump-version.mjs agent >> "%LOGFILE%" 2>&1
+if errorlevel 1 goto fail
 
-if %ERR% neq 0 (
-  echo.
-  echo Build failed with exit code %ERR%.
-  exit /b %ERR%
-)
+echo [1/1] Building agent installer (npm run dist:agent)... >> "%LOGFILE%"
+npm run dist:agent >> "%LOGFILE%" 2>&1
+if errorlevel 1 goto fail
 
-echo.
-echo Build completed. Check the release folder for the installer.
+echo Build completed. >> "%LOGFILE%"
+echo Build completed. See log: %LOGFILE%
 exit /b 0
+
+:fail
+set EXITCODE=%ERRORLEVEL%
+echo Build failed with code %EXITCODE% >> "%LOGFILE%"
+echo Build failed with code %EXITCODE%. See log: %LOGFILE%
+exit /b %EXITCODE%
