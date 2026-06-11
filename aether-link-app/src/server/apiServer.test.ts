@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -518,7 +518,7 @@ describe("aether link local API server", () => {
     );
   });
 
-  it("serves live update check version and dummy zip binary update packages", async () => {
+  it("serves live update check metadata and packaged update artifacts", async () => {
     // Check update API
     const checkRes = await fetch(`${baseUrl}/api/update/check`);
     expect(checkRes.status).toBe(200);
@@ -536,6 +536,19 @@ describe("aether link local API server", () => {
     expect(downloadRes.headers.get("content-type")).toBe("application/octet-stream");
     const buffer = await downloadRes.arrayBuffer();
     expect(buffer.byteLength).toBeGreaterThan(0);
+  });
+
+  it("serves update packages without depending on artifacts in the app root", async () => {
+    const rootGoodZip = path.join(process.cwd(), "aether-link-update-good.zip");
+    const rootBadZip = path.join(process.cwd(), "aether-link-update-bad.zip");
+    await rm(rootGoodZip, { force: true });
+    await rm(rootBadZip, { force: true });
+
+    const downloadRes = await fetch(`${baseUrl}/api/update/download`);
+
+    expect(downloadRes.status).toBe(200);
+    expect(await fileExists(rootGoodZip)).toBe(false);
+    expect(await fileExists(rootBadZip)).toBe(false);
   });
 
   function postJson(path: string, body: unknown) {
@@ -558,5 +571,14 @@ describe("aether link local API server", () => {
     });
     const address = server.address() as AddressInfo;
     baseUrl = `http://127.0.0.1:${address.port}`;
+  }
+
+  async function fileExists(filePath: string): Promise<boolean> {
+    try {
+      await access(filePath);
+      return true;
+    } catch {
+      return false;
+    }
   }
 });

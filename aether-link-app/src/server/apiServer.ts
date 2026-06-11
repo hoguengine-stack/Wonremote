@@ -1,6 +1,6 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
-import { execSync, spawn } from "node:child_process";
-import { writeFileSync, mkdirSync, readFileSync, existsSync, cpSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { writeFileSync, mkdirSync, readFileSync, existsSync, cpSync, rmSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
@@ -32,53 +32,77 @@ import type { HistoryStore } from "./historyStore";
 
 let goodChecksum = "";
 let badBinaryChecksum = "";
+let goodUpdatePath = "";
+let badUpdatePath = "";
 let testUpdateMode: "none" | "good" | "bad_checksum" | "bad_binary" = "none";
 
 function prepareUpdateFiles() {
+  const artifactDir = resolveUpdateArtifactDir();
+  const stagingRoot = path.join(artifactDir, "staging");
+  const goodStageDir = path.join(stagingRoot, "good");
+  const badStageDir = path.join(stagingRoot, "bad");
+  const sourceDir = resolveUpdateSourceDir();
+  goodUpdatePath = path.join(artifactDir, "aether-link-update-good.zip");
+  badUpdatePath = path.join(artifactDir, "aether-link-update-bad.zip");
+
   try {
-    try {
-      execSync("rmdir /s /q temp_update_good 2>nul || exit 0", { shell: true } as any);
-      execSync("rmdir /s /q temp_update_bad 2>nul || exit 0", { shell: true } as any);
-    } catch (e) {}
+    rmSync(stagingRoot, { recursive: true, force: true });
+    rmSync(goodUpdatePath, { force: true });
+    rmSync(badUpdatePath, { force: true });
+    mkdirSync(goodStageDir, { recursive: true });
+    mkdirSync(badStageDir, { recursive: true });
 
     // 1. Good Update Package
-    mkdirSync("./temp_update_good", { recursive: true });
-    cpSync("./src", "./temp_update_good/src", { recursive: true });
-    if (existsSync("./package-lock.json")) {
-      cpSync("./package-lock.json", "./temp_update_good/package-lock.json");
+    cpSync(path.join(sourceDir, "src"), path.join(goodStageDir, "src"), { recursive: true });
+    if (existsSync(path.join(sourceDir, "package-lock.json"))) {
+      cpSync(path.join(sourceDir, "package-lock.json"), path.join(goodStageDir, "package-lock.json"));
     }
 
-    const pkg = JSON.parse(readFileSync("./package.json", "utf8"));
+    const pkg = JSON.parse(readFileSync(path.join(sourceDir, "package.json"), "utf8"));
     pkg.version = "0.1.2";
-    writeFileSync("./temp_update_good/package.json", JSON.stringify(pkg, null, 2), "utf8");
-    writeFileSync("./temp_update_good/update_marker.txt", "GOOD_UPDATE_SUCCESS", "utf8");
+    writeFileSync(path.join(goodStageDir, "package.json"), JSON.stringify(pkg, null, 2), "utf8");
+    writeFileSync(path.join(goodStageDir, "update_marker.txt"), "GOOD_UPDATE_SUCCESS", "utf8");
     
-    execSync("tar -a -cf aether-link-update-good.zip -C temp_update_good .");
-    const goodZip = readFileSync("aether-link-update-good.zip");
+    execFileSync("tar", ["-a", "-cf", goodUpdatePath, "-C", goodStageDir, "."]);
+    const goodZip = readFileSync(goodUpdatePath);
     goodChecksum = createHash("sha256").update(goodZip).digest("hex");
 
     // 2. Bad Update Package (designed to trigger boot crash)
-    mkdirSync("./temp_update_bad", { recursive: true });
-    cpSync("./src", "./temp_update_bad/src", { recursive: true });
-    if (existsSync("./package-lock.json")) {
-      cpSync("./package-lock.json", "./temp_update_bad/package-lock.json");
+    cpSync(path.join(sourceDir, "src"), path.join(badStageDir, "src"), { recursive: true });
+    if (existsSync(path.join(sourceDir, "package-lock.json"))) {
+      cpSync(path.join(sourceDir, "package-lock.json"), path.join(badStageDir, "package-lock.json"));
     }
-    writeFileSync("./temp_update_bad/package.json", JSON.stringify(pkg, null, 2), "utf8");
-    writeFileSync("./temp_update_bad/crash.txt", "TRIGGER_CRASH", "utf8");
+    writeFileSync(path.join(badStageDir, "package.json"), JSON.stringify(pkg, null, 2), "utf8");
+    writeFileSync(path.join(badStageDir, "crash.txt"), "TRIGGER_CRASH", "utf8");
     
-    execSync("tar -a -cf aether-link-update-bad.zip -C temp_update_bad .");
-    const badZip = readFileSync("aether-link-update-bad.zip");
+    execFileSync("tar", ["-a", "-cf", badUpdatePath, "-C", badStageDir, "."]);
+    const badZip = readFileSync(badUpdatePath);
     badBinaryChecksum = createHash("sha256").update(badZip).digest("hex");
-
-    try {
-      execSync("rmdir /s /q temp_update_good 2>nul || exit 0", { shell: true } as any);
-      execSync("rmdir /s /q temp_update_bad 2>nul || exit 0", { shell: true } as any);
-    } catch (e) {}
 
     console.log(`[API Server] Generated update zips. Good Checksum: ${goodChecksum}, Bad Checksum: ${badBinaryChecksum}`);
   } catch (e) {
     console.error("[API Server] Failed to prepare update zip files:", e);
+  } finally {
+    rmSync(stagingRoot, { recursive: true, force: true });
   }
+}
+
+function resolveUpdateArtifactDir(): string {
+  const configuredDir = process.env.AETHER_LINK_UPDATE_ARTIFACT_DIR?.trim();
+  const artifactDir = configuredDir
+    ? path.resolve(configuredDir)
+    : path.join(
+        os.tmpdir(),
+        "AetherLink",
+        "update-artifacts",
+        createHash("sha256").update(process.cwd()).digest("hex").slice(0, 12),
+      );
+  mkdirSync(artifactDir, { recursive: true });
+  return artifactDir;
+}
+
+function resolveUpdateSourceDir(): string {
+  return path.resolve(process.env.AETHER_LINK_APP_DIR?.trim() || process.cwd());
 }
 
 prepareUpdateFiles();
@@ -413,7 +437,7 @@ async function routeRequest(
         } catch (err) {
           console.error("[API Server] Failed to fetch latest version from GitHub package.json:", err);
           try {
-            const localPkg = JSON.parse(readFileSync("./package.json", "utf8"));
+            const localPkg = JSON.parse(readFileSync(path.join(resolveUpdateSourceDir(), "package.json"), "utf8"));
             latestVersion = localPkg.version || "0.1.0";
           } catch (e) {}
         }
@@ -449,10 +473,11 @@ async function routeRequest(
   // GET /api/update/download
   if (request.method === "GET" && url.pathname === "/api/update/download") {
     const isBad = url.searchParams.get("type") === "bad";
-    const filename = isBad ? "aether-link-update-bad.zip" : "aether-link-update-good.zip";
+    const filePath = isBad ? badUpdatePath : goodUpdatePath;
+    const filename = path.basename(filePath);
     
     try {
-      const data = readFileSync(filename);
+      const data = readFileSync(filePath);
       response.writeHead(200, {
         "content-type": "application/octet-stream",
         "content-disposition": `attachment; filename=${filename}`

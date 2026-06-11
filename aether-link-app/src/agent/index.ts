@@ -6,6 +6,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { bootstrapAgent } from "./agentBootstrap";
 import { pollAgentCommands, sendAgentHeartbeat } from "./agentClient";
+import { resolveAgentAppDir, resolveAgentPocPath } from "./agentPaths";
 import { resolveAgentCredentials } from "./agentRuntime";
 import { computeSha256 } from "./checksum";
 import type {
@@ -25,6 +26,9 @@ const execFileAsync = promisify(execFile);
 const execAsync = promisify(exec);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const DEFAULT_APP_DIR = path.resolve(__dirname, "..", "..");
+const AGENT_APP_DIR = resolveAgentAppDir(process.env, DEFAULT_APP_DIR);
+const POC_PATH = resolveAgentPocPath(process.env, AGENT_APP_DIR);
 
 const API_BASE_URL = process.env.AETHER_LINK_API_URL ?? "http://127.0.0.1:8787";
 const HEARTBEAT_INTERVAL_MS = Number(process.env.AETHER_LINK_AGENT_HEARTBEAT_MS ?? 10_000);
@@ -46,16 +50,7 @@ function startStreaming(deviceId: string, outputIndex = 0, loopSleepMs = 33) {
   // Start Phase 3 data polling
   startSessionPolling(deviceId);
 
-  const pocPath = path.join(
-    __dirname,
-    "..",
-    "..",
-    "..",
-    "aether-link-poc",
-    "target",
-    "release",
-    "aether-link-poc.exe"
-  );
+  const pocPath = POC_PATH;
   
   console.log(`Starting DXGI capture stream from: ${pocPath} (monitor: ${outputIndex}, sleep: ${loopSleepMs}ms)`);
   streamProcess = spawn(pocPath, ["--mode", "stream", "--loop-sleep-ms", String(loopSleepMs), "--output-index", String(outputIndex)]);
@@ -384,11 +379,12 @@ async function checkUpdate(config: AgentLocalConfig) {
       await rm(backupDir, { recursive: true, force: true });
       await mkdir(backupDir, { recursive: true });
 
-      const appDir = "C:\\Users\\qpalz\\Documents\\remote\\aether-link-app";
+      const appDir = AGENT_APP_DIR;
       const configPath = getAgentConfigPath();
       try {
         await cp(path.join(appDir, "src"), path.join(backupDir, "src"), { recursive: true });
         await cp(path.join(appDir, "package.json"), path.join(backupDir, "package.json"));
+        await cp(path.join(appDir, "package-lock.json"), path.join(backupDir, "package-lock.json")).catch(() => {});
         await cp(configPath, path.join(backupDir, "agent-config.json"));
       } catch (e) {
         console.error("백업 오류:", e);
@@ -407,10 +403,12 @@ async function checkUpdate(config: AgentLocalConfig) {
       const heartbeatMs = process.env.AETHER_LINK_AGENT_HEARTBEAT_MS ?? "1000";
 
       const installerContent = `@echo off
-set AETHER_LINK_API_URL=${API_BASE_URL}
-set AETHER_LINK_AGENT_ID=${agentId}
-set AETHER_LINK_AGENT_PASSWORD=${agentPassword}
-set AETHER_LINK_AGENT_HEARTBEAT_MS=${heartbeatMs}
+set "AETHER_LINK_API_URL=${API_BASE_URL}"
+set "AETHER_LINK_AGENT_ID=${agentId}"
+set "AETHER_LINK_AGENT_PASSWORD=${agentPassword}"
+set "AETHER_LINK_AGENT_HEARTBEAT_MS=${heartbeatMs}"
+set "AETHER_LINK_APP_DIR=${appDir}"
+set "AETHER_LINK_POC_PATH=${POC_PATH}"
 
 echo [Installer] Starting installation log... > "${logFilePath}"
 echo [Installer] Waiting for Agent CLI to terminate... >> "${logFilePath}"
@@ -533,16 +531,7 @@ async function pollCommands(config: AgentLocalConfig): Promise<void> {
     installId: config.installId,
   });
   
-  const pocPath = path.join(
-    __dirname,
-    "..",
-    "..",
-    "..",
-    "aether-link-poc",
-    "target",
-    "release",
-    "aether-link-poc.exe"
-  );
+  const pocPath = POC_PATH;
 
   for (const command of result.commands) {
     console.log(`Command received: ${command.action}`);

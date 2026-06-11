@@ -6,11 +6,16 @@ import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const appDir = path.resolve(__dirname, "..", "..");
+const sourceAppDir = path.resolve(__dirname, "..", "..");
+const repoRoot = path.resolve(sourceAppDir, "..");
+const e2eRoot = path.join(os.tmpdir(), `aether-link-e2e-${process.pid}`);
+const appDir = path.join(e2eRoot, "aether-link-app");
+const appData = path.join(e2eRoot, "AppData", "Roaming");
+const updateArtifactDir = path.join(e2eRoot, "update-artifacts");
+const pocPath = path.join(repoRoot, "aether-link-poc", "target", "release", "aether-link-poc.exe");
 
 async function readAgentPid(): Promise<number | null> {
-  const baseDir = process.env.APPDATA ?? path.join(os.homedir(), "AppData", "Roaming");
-  const pidPath = path.join(baseDir, "AetherLink", "agent.pid");
+  const pidPath = path.join(appData, "AetherLink", "agent.pid");
   try {
     const content = await fs.readFile(pidPath, "utf8");
     const pid = parseInt(content.trim(), 10);
@@ -38,6 +43,18 @@ function killTree(pid: number) {
   }
 }
 
+async function prepareFixtureApp() {
+  await fs.rm(e2eRoot, { recursive: true, force: true });
+  await fs.mkdir(appDir, { recursive: true });
+
+  await fs.cp(path.join(sourceAppDir, "src"), path.join(appDir, "src"), { recursive: true });
+  for (const filename of ["package.json", "package-lock.json", "tsconfig.json", "vite.config.ts", "index.html"]) {
+    await fs.copyFile(path.join(sourceAppDir, filename), path.join(appDir, filename));
+  }
+
+  await fs.symlink(path.join(sourceAppDir, "node_modules"), path.join(appDir, "node_modules"), "junction");
+}
+
 async function main() {
   console.log("=== Starting Multi-Phase E2E Flow & Auto-Update/Rollback Verification ===");
 
@@ -50,7 +67,7 @@ async function main() {
       const tokens = line.trim().split(/\s+/);
       if (tokens.length >= 5) {
         const pid = tokens[tokens.length - 1];
-        if (pid && /^\d+$/.test(pid)) {
+        if (pid && pid !== "0" && /^\d+$/.test(pid)) {
           killTree(parseInt(pid, 10));
           console.log(`Killed port 8787 process (PID: ${pid})`);
         }
@@ -63,8 +80,10 @@ async function main() {
     console.log("Killed aether-link-poc.exe processes");
   } catch (e) {}
 
+  await prepareFixtureApp();
+  console.log(`Prepared isolated fixture app: ${appDir}`);
+
   // 2. Remove configuration and history files for clean environment
-  const appData = process.env.APPDATA ?? path.join(os.homedir(), "AppData", "Roaming");
   const configPath = path.join(appData, "AetherLink", "agent-config.json");
   const historyPath = path.join(appData, "AetherLink", "connection_history.json");
   const devicesPath = path.join(appData, "AetherLink", "devices.json");
@@ -94,9 +113,12 @@ async function main() {
     shell: true,
     env: {
       ...process.env,
+      APPDATA: appData,
       PORT: "8787",
       NODE_ENV: "test",
-      AETHER_LINK_AGENT_OFFLINE_MS: "2000"
+      AETHER_LINK_AGENT_OFFLINE_MS: "2000",
+      AETHER_LINK_APP_DIR: appDir,
+      AETHER_LINK_UPDATE_ARTIFACT_DIR: updateArtifactDir,
     }
   });
 
@@ -148,6 +170,9 @@ async function main() {
         AETHER_LINK_AGENT_ID: "1234567890",
         AETHER_LINK_AGENT_PASSWORD: "1234",
         AETHER_LINK_AGENT_HEARTBEAT_MS: "1000",
+        AETHER_LINK_APP_DIR: appDir,
+        AETHER_LINK_POC_PATH: pocPath,
+        APPDATA: appData,
         NODE_ENV: "test"
       }
     });
@@ -376,6 +401,7 @@ async function main() {
     execSync("taskkill /F /IM aether-link-poc.exe 2>nul || exit 0", { shell: true });
   } catch (e) {}
 
+  await fs.rm(e2eRoot, { recursive: true, force: true });
   process.exit(0);
 }
 
@@ -390,7 +416,7 @@ main().catch(async (err) => {
       const tokens = line.trim().split(/\s+/);
       if (tokens.length >= 5) {
         const pid = tokens[tokens.length - 1];
-        if (pid && /^\d+$/.test(pid)) {
+          if (pid && pid !== "0" && /^\d+$/.test(pid)) {
           killTree(parseInt(pid, 10));
         }
       }
