@@ -1,0 +1,16 @@
+{
+  "devices": [
+    {
+      "id": "123-45-67890:AGENT-118531F9",
+      "businessNumber": "123-45-67890",
+      "storeName": "사업자 123-45-67890",
+      "deviceNumber": "AGENT-118531F9",
+      "deviceName": "Agent AGENT-118531F9",
+      "desktopName": "DESKTOP-67890-AGENT-118531F9",
+      "status": "online",
+      "lastSeenAt": "2026-06-11T09:08:54.434Z",
+      "connectionCode": "191 909",
+      "version": "0.1.1"
+    }
+  ]
+}
