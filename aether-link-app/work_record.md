@@ -115,3 +115,36 @@ Remaining manual validation items:
 
 - Full Windows reboot was still not performed by CodeX.
 - Hidden tray icon visual presence and tray menu mouse interaction are still manual physical validation items.
+
+## 2026-06-12 Full Code Audit And Stabilization
+
+Baseline before edits:
+
+```text
+HEAD/origin main: d4b493c
+Working tree: clean
+```
+
+Fixed items:
+
+- Removed app-version drift by introducing `src/domain/appVersion.ts` and aligning Viewer, Agent bootstrap, Agent update checks, Tauri fallback, and E2E update packages with the current package version.
+- Added safety around packaged updates: Viewer does not auto-reload unless the API explicitly allows it, and Agent source-tree updates are blocked when running from packaged Tauri resources.
+- Hardened transferred-file saving so Agent writes only sanitized basenames inside `%APPDATA%/AetherLink/Downloads`.
+- Changed Tauri embedded Agent startup to require a valid `registeredDeviceId`, not just any config file.
+- Stabilized E2E logging and version expectations so the full update/rollback flow can run without log pipe failures.
+
+Verification:
+
+```text
+npm test: 14 files / 66 tests passed
+cargo test (aether-link-app/src-tauri): 5 tests passed
+cargo test (aether-link-poc): 8 tests passed
+npm run build: passed
+npx tsx tests/e2e/test_e2e_flow.ts: passed all phases
+npm run desktop:build: passed
+NSIS installer: aether-link-app/src-tauri/target/release/bundle/nsis/AetherLink Viewer_0.1.1_x64-setup.exe
+```
+
+Remaining implementation priority:
+
+- Build the real production updater using signed GitHub Release assets or a dedicated installer manifest. The current source-tree updater remains for E2E/dev rollback testing only and is intentionally blocked for packaged Tauri resource directories.

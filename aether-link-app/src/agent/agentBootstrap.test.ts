@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { bootstrapAgent } from "./agentBootstrap";
 import type { AgentBootstrapDeps, AgentLocalConfig } from "./agentBootstrap";
+import { AETHER_LINK_APP_VERSION } from "../domain/appVersion";
 import type { ManagedDevice } from "../domain/types";
 
 const registeredDevice: ManagedDevice = {
@@ -42,14 +43,14 @@ describe("agent bootstrap", () => {
       businessNumber: "1234567890",
       password: "1234",
       installId: "agent-cli-001",
-      version: "0.1.0",
+      version: AETHER_LINK_APP_VERSION,
     });
     expect(deps.writeConfig).toHaveBeenCalledWith({
       businessNumber: "123-45-67890",
       installId: "agent-cli-001",
       registeredAt: "2026-06-11T01:00:00.000Z",
       registeredDeviceId: "123-45-67890:AGENT-CLI-001",
-      version: "0.1.0",
+      version: AETHER_LINK_APP_VERSION,
     });
     expect(result).toMatchObject({
       status: "registered",
@@ -63,7 +64,7 @@ describe("agent bootstrap", () => {
       installId: "agent-cli-001",
       registeredAt: "2026-06-11T01:00:00.000Z",
       registeredDeviceId: "123-45-67890:AGENT-CLI-001",
-      version: "0.1.0",
+      version: AETHER_LINK_APP_VERSION,
     };
     const deps = createDeps(existingConfig);
 
@@ -74,6 +75,33 @@ describe("agent bootstrap", () => {
     expect(deps.writeConfig).not.toHaveBeenCalled();
     expect(result).toEqual({
       config: existingConfig,
+      status: "already_registered",
+    });
+  });
+
+  it("normalizes stale config versions to the running app version", async () => {
+    const existingConfig: AgentLocalConfig = {
+      businessNumber: "123-45-67890",
+      installId: "agent-cli-001",
+      registeredAt: "2026-06-11T01:00:00.000Z",
+      registeredDeviceId: "123-45-67890:AGENT-CLI-001",
+      version: "0.1.0",
+    };
+    const deps = createDeps(existingConfig);
+
+    const result = await bootstrapAgent(deps);
+
+    expect(deps.promptCredentials).not.toHaveBeenCalled();
+    expect(deps.registerFirstRun).not.toHaveBeenCalled();
+    expect(deps.writeConfig).toHaveBeenCalledWith({
+      ...existingConfig,
+      version: AETHER_LINK_APP_VERSION,
+    });
+    expect(result).toEqual({
+      config: {
+        ...existingConfig,
+        version: AETHER_LINK_APP_VERSION,
+      },
       status: "already_registered",
     });
   });

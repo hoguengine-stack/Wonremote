@@ -65,6 +65,14 @@ describe("desktop packaging scaffold", () => {
     const tauriLib = readFileSync(path.join(projectRoot, "src-tauri", "src", "lib.rs"), "utf8");
 
     expect(tauriLib).toContain("should_start_embedded_agent");
+    expect(tauriLib).toContain("is_agent_registered()");
     expect(tauriLib).toContain('agent_cmd.arg("--watch")');
+  });
+
+  it("uses the Rust package version as the Tauri config fallback", () => {
+    const tauriLib = readFileSync(path.join(projectRoot, "src-tauri", "src", "lib.rs"), "utf8");
+
+    expect(tauriLib).toContain('env!("CARGO_PKG_VERSION")');
+    expect(tauriLib).not.toContain('unwrap_or("0.1.0")');
   });
 });

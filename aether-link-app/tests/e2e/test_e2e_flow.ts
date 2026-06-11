@@ -13,6 +13,10 @@ const appDir = path.join(e2eRoot, "aether-link-app");
 const appData = path.join(e2eRoot, "AppData", "Roaming");
 const updateArtifactDir = path.join(e2eRoot, "update-artifacts");
 const pocPath = path.join(repoRoot, "aether-link-poc", "target", "release", "aether-link-poc.exe");
+const sourcePackageJson = JSON.parse(await fs.readFile(path.join(sourceAppDir, "package.json"), "utf8")) as {
+  version: string;
+};
+const currentAppVersion = sourcePackageJson.version;
 
 async function readAgentPid(): Promise<number | null> {
   const pidPath = path.join(appData, "AetherLink", "agent.pid");
@@ -158,6 +162,17 @@ async function main() {
   let resolveChecksumError: (() => void) | null = null;
   let resolveUpdateStart: (() => void) | null = null;
 
+  function shouldPrintAgentLog(str: string): boolean {
+    const trimmed = str.trim();
+    if (!trimmed) return false;
+    if (trimmed.includes("Heartbeat accepted")) return false;
+    if (trimmed === "[Status] Online") return false;
+    if (trimmed.includes("[Tile Merge Stats]")) return false;
+    if (trimmed.includes("JPEG Encodes:")) return false;
+    if (/^\d+\s*->/.test(trimmed)) return false;
+    return true;
+  }
+
   function spawnAgent() {
     console.log("[Test Runner] Spawning Agent CLI...");
     agentStdoutCollector = "";
@@ -184,7 +199,9 @@ async function main() {
     agentProcess.stdout.on("data", (data: any) => {
       const str = data.toString();
       agentStdoutCollector += str;
-      console.log(`[Agent] ${str.trim()}`);
+      if (shouldPrintAgentLog(str)) {
+        console.log(`[Agent] ${str.trim()}`);
+      }
 
       if (str.includes("승인하시겠습니까? (Y/N)") && resolveApprovalPrompt) {
         resolveApprovalPrompt();
@@ -199,7 +216,9 @@ async function main() {
 
     agentProcess.stderr.on("data", (data: any) => {
       const str = data.toString();
-      console.error(`[Agent ERR] ${str.trim()}`);
+      if (shouldPrintAgentLog(str)) {
+        console.error(`[Agent ERR] ${str.trim()}`);
+      }
       if (str.includes("체크섬 오류") && resolveChecksumError) {
         resolveChecksumError();
       }
@@ -245,7 +264,7 @@ async function main() {
   spawnAgent();
 
   console.log("Waiting for Agent heartbeat to register...");
-  const initialDevice = await waitAgentOnline("0.1.0");
+  const initialDevice = await waitAgentOnline(currentAppVersion);
   const initialAgentPid = await readAgentPid();
   if (initialAgentPid) {
     pidsToCleanup.add(initialAgentPid);
@@ -350,7 +369,7 @@ async function main() {
     body: JSON.stringify({ mode: "none" })
   });
 
-  const rolledBackDevice = await waitAgentOnline("0.1.0", initialAgentPid || undefined);
+  const rolledBackDevice = await waitAgentOnline(currentAppVersion, initialAgentPid || undefined);
   console.log(`Agent rolled back and is online! Version: ${rolledBackDevice.version}`);
 
   // Capture rolled back agent PID from agent.pid

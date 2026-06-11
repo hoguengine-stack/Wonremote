@@ -1,9 +1,11 @@
+import { AETHER_LINK_APP_VERSION } from "./appVersion";
+
 type VersionEnv = {
   readonly VITE_AETHER_LINK_APP_VERSION?: string;
 };
 
 export function getViewerVersion(env: VersionEnv): string {
-  return env.VITE_AETHER_LINK_APP_VERSION?.trim() || "0.0.0";
+  return env.VITE_AETHER_LINK_APP_VERSION?.trim() || AETHER_LINK_APP_VERSION;
 }
 
 export function isHigherVersion(latestVersion: string, currentVersion: string): boolean {

@@ -29,12 +29,20 @@ import { createMemoryDeviceStore } from "./deviceStore";
 import type { DeviceStore } from "./deviceStore";
 import { createMemoryHistoryStore } from "./historyStore";
 import type { HistoryStore } from "./historyStore";
+import { AETHER_LINK_APP_VERSION } from "../domain/appVersion";
 
 let goodChecksum = "";
 let badBinaryChecksum = "";
 let goodUpdatePath = "";
 let badUpdatePath = "";
 let testUpdateMode: "none" | "good" | "bad_checksum" | "bad_binary" = "none";
+
+function writeStagedAppVersion(stageDir: string, version: string) {
+  const appVersionPath = path.join(stageDir, "src", "domain", "appVersion.ts");
+  if (existsSync(appVersionPath)) {
+    writeFileSync(appVersionPath, `export const AETHER_LINK_APP_VERSION = "${version}";\n`, "utf8");
+  }
+}
 
 function prepareUpdateFiles() {
   const artifactDir = resolveUpdateArtifactDir();
@@ -60,6 +68,7 @@ function prepareUpdateFiles() {
 
     const pkg = JSON.parse(readFileSync(path.join(sourceDir, "package.json"), "utf8"));
     pkg.version = "0.1.2";
+    writeStagedAppVersion(goodStageDir, pkg.version);
     writeFileSync(path.join(goodStageDir, "package.json"), JSON.stringify(pkg, null, 2), "utf8");
     writeFileSync(path.join(goodStageDir, "update_marker.txt"), "GOOD_UPDATE_SUCCESS", "utf8");
     
@@ -73,6 +82,7 @@ function prepareUpdateFiles() {
       cpSync(path.join(sourceDir, "package-lock.json"), path.join(badStageDir, "package-lock.json"));
     }
     writeFileSync(path.join(badStageDir, "package.json"), JSON.stringify(pkg, null, 2), "utf8");
+    writeStagedAppVersion(badStageDir, pkg.version);
     writeFileSync(path.join(badStageDir, "crash.txt"), "TRIGGER_CRASH", "utf8");
     
     execFileSync("tar", ["-a", "-cf", badUpdatePath, "-C", badStageDir, "."]);
@@ -422,7 +432,7 @@ async function routeRequest(
   // 2. GET /api/update/check
   if (request.method === "GET" && url.pathname === "/api/update/check") {
     const isNone = testUpdateMode === "none";
-    let latestVersion = "0.1.0";
+    let latestVersion = AETHER_LINK_APP_VERSION;
     
     if (isNone) {
       if (process.env.NODE_ENV !== "test") {
@@ -438,11 +448,11 @@ async function routeRequest(
           console.error("[API Server] Failed to fetch latest version from GitHub package.json:", err);
           try {
             const localPkg = JSON.parse(readFileSync(path.join(resolveUpdateSourceDir(), "package.json"), "utf8"));
-            latestVersion = localPkg.version || "0.1.0";
+            latestVersion = localPkg.version || AETHER_LINK_APP_VERSION;
           } catch (e) {}
         }
       } else {
-        latestVersion = "0.1.0";
+        latestVersion = AETHER_LINK_APP_VERSION;
       }
     } else {
       latestVersion = "0.1.2";

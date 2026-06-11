@@ -38,7 +38,8 @@ import { groupDevicesByStore } from "./domain/agentRegistry";
 import {
   scheduleVisualPingPresentedMeasurement,
 } from "./domain/visualPing";
-import { getViewerVersion, isHigherVersion } from "./domain/versioning";
+import { getViewerVersion } from "./domain/versioning";
+import { shouldNotifyUpdate, shouldReloadViewerForUpdate } from "./domain/updatePolicy";
 import type {
   AgentConnectionInput,
   ManagedDevice,
@@ -127,11 +128,13 @@ function ViewerApp() {
         if (!response.ok) return;
         const data = await response.json();
 
-        if (active && isHigherVersion(data.latestVersion, currentViewerVersion)) {
+        if (active && shouldNotifyUpdate(data, currentViewerVersion)) {
           setUpdateAlert(data.latestVersion);
-          setTimeout(() => {
-            window.location.reload();
-          }, 1500);
+          if (shouldReloadViewerForUpdate(data, currentViewerVersion)) {
+            setTimeout(() => {
+              window.location.reload();
+            }, 1500);
+          }
         }
       } catch (e) {
         // ignore
@@ -523,7 +526,7 @@ function AgentFirstRunApp() {
         businessNumber: result.device.businessNumber,
         installId,
         registeredDeviceId: result.device.id,
-        version: "0.1.0",
+        version: getViewerVersion(import.meta.env),
         apiUrl,
       };
 

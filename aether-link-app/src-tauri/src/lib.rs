@@ -102,19 +102,26 @@ impl AgentState {
 }
 
 fn is_agent_registered() -> bool {
-    if let Some(config_path) = default_agent_config_path() {
-        if config_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(config_path) {
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if let Some(device_id) = json.get("registeredDeviceId").and_then(|v| v.as_str())
-                    {
-                        return !device_id.trim().is_empty();
-                    }
-                }
-            }
-        }
+    default_agent_config_path()
+        .as_ref()
+        .is_some_and(|config_path| config_has_registered_device_id(config_path))
+}
+
+fn config_has_registered_device_id(config_path: &Path) -> bool {
+    if !config_path.exists() {
+        return false;
     }
-    false
+
+    let Ok(content) = std::fs::read_to_string(config_path) else {
+        return false;
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return false;
+    };
+
+    json.get("registeredDeviceId")
+        .and_then(|v| v.as_str())
+        .is_some_and(|device_id| !device_id.trim().is_empty())
 }
 
 fn spawn_agent_only_process(
@@ -343,7 +350,7 @@ fn get_agent_config() -> Option<GetConfigOutput> {
         version: json
             .get("version")
             .and_then(|v| v.as_str())
-            .unwrap_or("0.1.0")
+            .unwrap_or(env!("CARGO_PKG_VERSION"))
             .to_string(),
         api_url: json
             .get("apiUrl")
@@ -393,9 +400,7 @@ fn should_start_embedded_agent() -> bool {
         .unwrap_or(false);
     let has_env_credentials = env::var_os("AETHER_LINK_AGENT_ID").is_some()
         && env::var_os("AETHER_LINK_AGENT_PASSWORD").is_some();
-    let has_existing_config = default_agent_config_path()
-        .as_ref()
-        .is_some_and(|config_path| config_path.exists());
+    let has_existing_config = is_agent_registered();
 
     forced || has_env_credentials || has_existing_config
 }
@@ -832,5 +837,36 @@ mod registry_tests {
             format_startup_command(&exe_path, true),
             r#""C:\Program Files\AetherLink\aether-link-viewer.exe" --agent"#,
         );
+    }
+
+    #[test]
+    fn test_config_registration_requires_registered_device_id() {
+        let config_path = std::env::temp_dir().join(format!(
+            "aether-link-empty-config-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(&config_path, r#"{"installId":"agent-test"}"#)
+            .expect("failed to write temp config");
+
+        assert!(!config_has_registered_device_id(&config_path));
+
+        let _ = std::fs::remove_file(config_path);
+    }
+
+    #[test]
+    fn test_config_registration_accepts_valid_registered_device_id() {
+        let config_path = std::env::temp_dir().join(format!(
+            "aether-link-valid-config-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(
+            &config_path,
+            r#"{"installId":"agent-test","registeredDeviceId":"123-45-67890:AGENT-TEST"}"#,
+        )
+        .expect("failed to write temp config");
+
+        assert!(config_has_registered_device_id(&config_path));
+
+        let _ = std::fs::remove_file(config_path);
     }
 }

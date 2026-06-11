@@ -1,4 +1,5 @@
-import { access, mkdtemp, rm } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -556,6 +557,30 @@ describe("aether link local API server", () => {
     expect(downloadRes.status).toBe(200);
     expect(await fileExists(rootGoodZip)).toBe(false);
     expect(await fileExists(rootBadZip)).toBe(false);
+  });
+
+  it("keeps package.json and runtime app version aligned inside update packages", async () => {
+    const downloadRes = await fetch(`${baseUrl}/api/update/download`);
+    expect(downloadRes.status).toBe(200);
+
+    const tempDir = await mkdtemp(path.join(tmpdir(), "aether-link-update-pkg-"));
+    const zipPath = path.join(tempDir, "update.zip");
+    const extractDir = path.join(tempDir, "extracted");
+    await mkdir(extractDir, { recursive: true });
+    await writeFile(zipPath, Buffer.from(await downloadRes.arrayBuffer()));
+
+    try {
+      execFileSync("tar", ["-xf", zipPath, "-C", extractDir]);
+      const packageJson = JSON.parse(await readFile(path.join(extractDir, "package.json"), "utf8")) as {
+        version: string;
+      };
+      const appVersionSource = await readFile(path.join(extractDir, "src", "domain", "appVersion.ts"), "utf8");
+
+      expect(packageJson.version).toBe("0.1.2");
+      expect(appVersionSource).toContain(`AETHER_LINK_APP_VERSION = "${packageJson.version}"`);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
   });
 
   function postJson(path: string, body: unknown) {

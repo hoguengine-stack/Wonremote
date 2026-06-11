@@ -10,6 +10,9 @@ import { waitForApiHealth } from "./agentHealth";
 import { resolveAgentAppDir, resolveAgentPocPath } from "./agentPaths";
 import { resolveAgentCredentials } from "./agentRuntime";
 import { computeSha256 } from "./checksum";
+import { AETHER_LINK_APP_VERSION } from "../domain/appVersion";
+import { resolveSafeDownloadPath } from "./fileSafety";
+import { isSourceTreeUpdateTarget } from "./updateSafety";
 import type {
   AgentBootstrapDeps,
   AgentCredentials,
@@ -156,7 +159,7 @@ async function pollSessionData(deviceId: string) {
           console.log(`[파일 전송 수신] 파일명: ${file.filename} (크기: ${Math.round(file.fileData.length * 0.75)} bytes)`);
           const downloadsDir = path.join(process.env.APPDATA ?? process.cwd(), "AetherLink", "Downloads");
           await mkdir(downloadsDir, { recursive: true });
-          const targetPath = path.join(downloadsDir, file.filename);
+          const targetPath = resolveSafeDownloadPath(downloadsDir, String(file.filename ?? ""));
           const buffer = Buffer.from(file.fileData, "base64");
           await writeFile(targetPath, buffer);
           console.log(`[파일 저장 완료] 경로: ${targetPath}`);
@@ -357,7 +360,7 @@ let isUpdating = false;
 async function checkUpdate(config: AgentLocalConfig) {
   if (isUpdating) return;
   isUpdating = true;
-  const currentVersion = config.version ?? "0.1.0";
+  const currentVersion = config.version ?? AETHER_LINK_APP_VERSION;
   try {
     const res = await fetch(`${API_BASE_URL}/api/update/check`);
     if (!res.ok) {
@@ -366,6 +369,15 @@ async function checkUpdate(config: AgentLocalConfig) {
     }
     const data: any = await res.json();
     if (data.latestVersion && isHigherVersion(data.latestVersion, currentVersion)) {
+      const appDir = AGENT_APP_DIR;
+      if (!isSourceTreeUpdateTarget(appDir)) {
+        console.log(
+          `[AetherLink Agent] Update ${data.latestVersion} detected, but source-tree updater is disabled for packaged resources: ${appDir}`,
+        );
+        isUpdating = false;
+        return;
+      }
+
       console.log(`\n[AetherLink Agent] 새로운 업데이트가 발견되었습니다! (최신: ${data.latestVersion} / 현재: ${currentVersion})`);
       console.log(`다운로드 경로: ${data.downloadUrl}`);
 
@@ -419,7 +431,6 @@ async function checkUpdate(config: AgentLocalConfig) {
       await rm(backupDir, { recursive: true, force: true });
       await mkdir(backupDir, { recursive: true });
 
-      const appDir = AGENT_APP_DIR;
       const configPath = getAgentConfigPath();
       try {
         await cp(path.join(appDir, "src"), path.join(backupDir, "src"), { recursive: true });
