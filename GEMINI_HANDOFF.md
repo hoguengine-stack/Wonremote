@@ -91,4 +91,4 @@ Do not report:
 - `npm test: 53 passed` unless the latest test output prints 53
 - old bundle byte counts copied from a previous report
 
-As of 2026-06-12, the current pushed baseline is `f1686e6`, and the working tree should be clean before the next physical Windows install/reboot validation.
+The pushed baseline changes after every commit. Never copy a hard-coded commit hash from this document; report only the command output. The working tree should be clean before the next physical Windows install/reboot validation.

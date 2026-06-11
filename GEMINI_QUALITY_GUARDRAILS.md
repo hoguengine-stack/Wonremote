@@ -268,7 +268,7 @@ Rules:
 
 - Do not reuse an older baseline from memory, notes, previous reports, or screenshots.
 - Do not report `e68e256` as the baseline unless `git rev-parse --short HEAD` actually prints `e68e256`.
-- As of 2026-06-12, the known pushed baseline is `f1686e6`; if the command output differs, report the command output, not this sentence.
+- The pushed baseline changes after every commit. Never copy a hard-coded commit hash from this document; report only the command output.
 - Do not report `aether-link-app/scripts/check-registry-status.bat` as untracked unless `git status --short --untracked-files=all` prints it.
 - Do not report `npm test: 53 passed` unless the latest `npm test` output says 53. The current suite has 55 tests after the Agent 404 recovery tests.
 - Bundle file sizes must be measured fresh with `Get-Item ... | Select-Object FullName,Length`. Do not copy old byte counts.
