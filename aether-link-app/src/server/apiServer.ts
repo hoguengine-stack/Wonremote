@@ -414,8 +414,7 @@ async function routeRequest(
     const match = url.pathname.match(/^\/api\/sessions\/(.+)\/chat$/);
     if (match) {
       const sessionId = decodeURIComponent(match[1]);
-      if (!state.sessions.has(sessionId)) {
-        writeJson(response, 404, { error: "세션을 찾을 수 없습니다." });
+      if (!requireConnectedSession(state, response, sessionId)) {
         return;
       }
       const body = await readJson<{ message?: string; sender?: "viewer" | "agent" }>(request);
@@ -450,8 +449,7 @@ async function routeRequest(
     const match = url.pathname.match(/^\/api\/sessions\/(.+)\/chat$/);
     if (match) {
       const sessionId = decodeURIComponent(match[1]);
-      if (!state.sessions.has(sessionId)) {
-        writeJson(response, 404, { error: "세션을 찾을 수 없습니다." });
+      if (!requireConnectedSession(state, response, sessionId)) {
         return;
       }
       const messages = state.sessionChats.get(sessionId) ?? [];
@@ -466,8 +464,7 @@ async function routeRequest(
     const match = url.pathname.match(/^\/api\/sessions\/(.+)\/clipboard$/);
     if (match) {
       const sessionId = decodeURIComponent(match[1]);
-      if (!state.sessions.has(sessionId)) {
-        writeJson(response, 404, { error: "세션을 찾을 수 없습니다." });
+      if (!requireConnectedSession(state, response, sessionId)) {
         return;
       }
       const body = await readJson<{ text?: string; sender?: "viewer" | "agent" }>(request);
@@ -485,8 +482,7 @@ async function routeRequest(
     const match = url.pathname.match(/^\/api\/sessions\/(.+)\/clipboard$/);
     if (match) {
       const sessionId = decodeURIComponent(match[1]);
-      if (!state.sessions.has(sessionId)) {
-        writeJson(response, 404, { error: "세션을 찾을 수 없습니다." });
+      if (!requireConnectedSession(state, response, sessionId)) {
         return;
       }
       const clipboards = state.sessionClipboards.get(sessionId) ?? [];
@@ -501,8 +497,7 @@ async function routeRequest(
     const match = url.pathname.match(/^\/api\/sessions\/(.+)\/files$/);
     if (match) {
       const sessionId = decodeURIComponent(match[1]);
-      if (!state.sessions.has(sessionId)) {
-        writeJson(response, 404, { error: "세션을 찾을 수 없습니다." });
+      if (!requireConnectedSession(state, response, sessionId)) {
         return;
       }
       const body = await readJson<{ filename?: string; fileData?: string }>(request);
@@ -535,8 +530,7 @@ async function routeRequest(
     const match = url.pathname.match(/^\/api\/sessions\/(.+)\/files$/);
     if (match) {
       const sessionId = decodeURIComponent(match[1]);
-      if (!state.sessions.has(sessionId)) {
-        writeJson(response, 404, { error: "세션을 찾을 수 없습니다." });
+      if (!requireConnectedSession(state, response, sessionId)) {
         return;
       }
       const files = state.sessionFiles.get(sessionId) ?? [];
@@ -551,8 +545,7 @@ async function routeRequest(
     const match = url.pathname.match(/^\/api\/sessions\/(.+)\/tiles$/);
     if (match) {
       const sessionId = decodeURIComponent(match[1]);
-      if (!state.sessions.has(sessionId)) {
-        writeJson(response, 404, { error: "세션을 찾을 수 없습니다." });
+      if (!requireConnectedSession(state, response, sessionId)) {
         return;
       }
       const body = await readJson<{ tiles?: any[]; width?: number; height?: number }>(request);
@@ -570,8 +563,7 @@ async function routeRequest(
     const match = url.pathname.match(/^\/api\/sessions\/(.+)\/tiles$/);
     if (match) {
       const sessionId = decodeURIComponent(match[1]);
-      if (!state.sessions.has(sessionId)) {
-        writeJson(response, 404, { error: "세션을 찾을 수 없습니다." });
+      if (!requireConnectedSession(state, response, sessionId)) {
         return;
       }
       const data = state.sessionTiles.get(sessionId) ?? { tiles: [], width: 0, height: 0 };
@@ -613,6 +605,23 @@ function enqueueAgentCommand(state: ApiState, deviceId: string, action: string):
       },
     ].slice(-50),
   );
+}
+
+function requireConnectedSession(
+  state: ApiState,
+  response: ServerResponse,
+  sessionId: string,
+): RemoteSession | null {
+  const session = state.sessions.get(sessionId);
+  if (!session) {
+    writeJson(response, 404, { error: "세션을 찾을 수 없습니다." });
+    return null;
+  }
+  if (session.state !== "connected") {
+    writeJson(response, 409, { error: "접속 승인 전에는 세션 데이터를 전송할 수 없습니다." });
+    return null;
+  }
+  return session;
 }
 
 function nowIso(state: ApiState): string {

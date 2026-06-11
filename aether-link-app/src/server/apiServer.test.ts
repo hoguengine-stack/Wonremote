@@ -205,6 +205,46 @@ describe("aether link local API server", () => {
     expect(await emptyPoll.json()).toEqual({ commands: [] });
   });
 
+  it("blocks session data channels until the agent approves the session", async () => {
+    const registered = await postJson("/api/agent/first-run", {
+      businessNumber: "5556677777",
+      password: "1234",
+      installId: "agent-pending-gate",
+    });
+    const registeredBody = await registered.json();
+
+    const session = await postJson("/api/sessions", {
+      deviceId: registeredBody.device.id,
+    });
+    const sessionBody = await session.json();
+    const encodedSessionId = encodeURIComponent(sessionBody.session.id);
+
+    const chat = await postJson(`/api/sessions/${encodedSessionId}/chat`, {
+      message: "blocked",
+      sender: "viewer",
+    });
+    expect(chat.status).toBe(409);
+
+    const clipboard = await postJson(`/api/sessions/${encodedSessionId}/clipboard`, {
+      text: "blocked",
+      sender: "viewer",
+    });
+    expect(clipboard.status).toBe(409);
+
+    const file = await postJson(`/api/sessions/${encodedSessionId}/files`, {
+      filename: "blocked.txt",
+      fileData: Buffer.from("blocked").toString("base64"),
+    });
+    expect(file.status).toBe(409);
+
+    const tiles = await postJson(`/api/sessions/${encodedSessionId}/tiles`, {
+      width: 32,
+      height: 32,
+      tiles: [],
+    });
+    expect(tiles.status).toBe(409);
+  });
+
   it("opens a new session for an already registered device", async () => {
     const connected = await postJson("/api/agent/connect", {
       businessNumber: "1234567890",
@@ -328,6 +368,11 @@ describe("aether link local API server", () => {
     });
     const connectedBody = await connected.json();
     const sessionId = connectedBody.session.id;
+
+    const approval = await postJson(`/api/sessions/${sessionId}/approve`, {
+      approved: true,
+    });
+    expect(approval.status).toBe(200);
 
     const postTiles = await postJson(`/api/sessions/${sessionId}/tiles`, {
       tiles: [{ x: 0, y: 0, w: 32, h: 32, data: "base64tiledata" }],
