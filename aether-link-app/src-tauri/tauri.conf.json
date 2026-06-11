@@ -29,6 +29,12 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "resources": {
+      "../dist-server/index.mjs": "server/index.mjs",
+      "../dist-agent/index.mjs": "agent/index.mjs",
+      "../dist-runtime/node.exe": "runtime/node.exe",
+      "../../aether-link-poc/target/release/aether-link-poc.exe": "bin/aether-link-poc.exe"
+    },
     "windows": {
       "webviewInstallMode": {
         "type": "downloadBootstrapper"

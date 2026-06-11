@@ -12,7 +12,7 @@
     "dev": "vite --host 127.0.0.1",
     "desktop:build": "tauri build",
     "desktop:dev": "tauri dev",
-    "build": "tsc && vite build",
+    "build": "tsc && vite build && node scripts/build-backend.js",
     "test": "vitest run"
   },
   "dependencies": {
@@ -26,6 +26,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^6.0.2",
+    "esbuild": "^0.28.0",
     "playwright": "^1.60.0",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",
