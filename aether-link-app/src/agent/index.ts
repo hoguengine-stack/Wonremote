@@ -694,6 +694,13 @@ function isNotFoundError(error: unknown): boolean {
 }
 
 async function handleRegistryInstall() {
+  if (process.env.AETHER_LINK_ALLOW_HEADLESS_REGISTRY !== "1") {
+    console.error(
+      "agent:install is disabled. Use the installed Tauri app in --agent mode so the Agent runs with the tray icon and registers HKCU Run\\AetherLinkAgent.",
+    );
+    process.exit(1);
+  }
+
   const agentPath = path.resolve(__filename);
   const commandToRun = `cmd /c node "${agentPath}" --watch`;
   const psCommand = `New-ItemProperty -Path "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" -Name "AetherLinkAgent" -PropertyType String -Value '${commandToRun}' -Force`;
@@ -709,6 +716,13 @@ async function handleRegistryInstall() {
 }
 
 async function handleRegistryUninstall() {
+  if (process.env.AETHER_LINK_ALLOW_HEADLESS_REGISTRY !== "1") {
+    console.error(
+      "agent:uninstall is disabled. Use the Tauri Agent tray menu Run at Startup toggle to remove HKCU Run\\AetherLinkAgent.",
+    );
+    process.exit(1);
+  }
+
   const psCommand = `Remove-ItemProperty -Path "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" -Name "AetherLinkAgent" -ErrorAction SilentlyContinue`;
   
   try {

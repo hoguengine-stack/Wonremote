@@ -7,6 +7,8 @@ target/
 aether-link-app/dist/
 aether-link-app/dist-agent/
 aether-link-app/dist-agent-pkg/
+dist-agent-pkg/
+**/dist-agent-pkg/
 aether-link-app/dist-runtime/
 aether-link-app/dist-server/
 aether-link-app/src-tauri/gen/schemas/
@@ -17,6 +19,8 @@ aether-link-poc/target/
 *.err.log
 .local-*
 *.local.json
+**/agent_development_log.md
+aether-link-poc/benchmark_*.json
 
 # Environment files
 .env
