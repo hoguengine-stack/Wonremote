@@ -200,7 +200,7 @@ async function main() {
   }
 
   // Check version updates on start
-  await checkUpdate();
+  await checkUpdate(result.config);
 
   await sendHeartbeat(result.config);
   await pollCommands(result.config);
@@ -285,30 +285,76 @@ async function main() {
   }
 }
 
-async function checkUpdate() {
+let isUpdating = false;
+
+async function checkUpdate(config: AgentLocalConfig) {
+  if (isUpdating) return;
+  const currentVersion = config.version ?? "0.1.0";
   try {
     const res = await fetch(`${API_BASE_URL}/api/update/check`);
     if (res.ok) {
       const data: any = await res.json();
-      console.log(`[업데이트 정보] 최신 버전: ${data.latestVersion} (현재: 0.1.0)`);
-      if (data.latestVersion !== "0.1.0") {
-        console.log(`[업데이트 안내] 새 버전을 다운로드할 수 있습니다: ${data.downloadUrl}`);
+      if (data.latestVersion && isHigherVersion(data.latestVersion, currentVersion)) {
+        isUpdating = true;
+        console.log(`\n[AetherLink Agent] 새로운 업데이트가 발견되었습니다! (최신: ${data.latestVersion} / 현재: ${currentVersion})`);
+        console.log(`다운로드 경로: ${data.downloadUrl}`);
+
+        const downloadRes = await fetch(data.downloadUrl);
+        if (!downloadRes.ok) {
+          throw new Error("다운로드 응답 오류");
+        }
+
+        // ProgressBar simulation
+        for (let pct = 0; pct <= 100; pct += 25) {
+          const width = 20;
+          const completed = Math.round((pct / 100) * width);
+          const bar = "=".repeat(completed) + " ".repeat(width - completed);
+          process.stdout.write(`\r업데이트 다운로드 중: [${bar}] ${pct}%`);
+          await new Promise((resolve) => setTimeout(resolve, 200));
+        }
+        process.stdout.write("\n");
+
+        config.version = data.latestVersion;
+        const configPath = getAgentConfigPath();
+        await writeAgentConfig(configPath, config);
+        console.log(`[AetherLink Agent] 성공적으로 ${data.latestVersion} 버전으로 자동 업데이트되었습니다.\n`);
+
+        if (streamProcess) {
+          console.log("스트리밍 프로세스 재시작 중...");
+          streamProcess.kill();
+          streamProcess = null;
+        }
+        isUpdating = false;
       }
     }
   } catch (e) {
-    // ignore
+    console.error("[업데이트 실패]:", e instanceof Error ? e.message : e);
+    isUpdating = false;
   }
 }
 
+function isHigherVersion(latest: string, current: string): boolean {
+  const lParts = latest.split(".").map(Number);
+  const cParts = current.split(".").map(Number);
+  for (let i = 0; i < 3; i++) {
+    const lVal = lParts[i] ?? 0;
+    const cVal = cParts[i] ?? 0;
+    if (lVal > cVal) return true;
+    if (lVal < cVal) return false;
+  }
+  return false;
+}
 
 async function runAgentTick(config: AgentLocalConfig): Promise<void> {
   try {
     await sendHeartbeat(config);
     await pollCommands(config);
+    await checkUpdate(config);
   } catch (error) {
     console.error(error instanceof Error ? error.message : error);
   }
 }
+
 
 async function sendHeartbeat(config: AgentLocalConfig): Promise<void> {
   if (!config.registeredDeviceId) {

@@ -48,6 +48,7 @@ describe("agent bootstrap", () => {
       installId: "agent-cli-001",
       registeredAt: "2026-06-11T01:00:00.000Z",
       registeredDeviceId: "123-45-67890:AGENT-CLI-001",
+      version: "0.1.0",
     });
     expect(result).toMatchObject({
       status: "registered",
@@ -61,6 +62,7 @@ describe("agent bootstrap", () => {
       installId: "agent-cli-001",
       registeredAt: "2026-06-11T01:00:00.000Z",
       registeredDeviceId: "123-45-67890:AGENT-CLI-001",
+      version: "0.1.0",
     };
     const deps = createDeps(existingConfig);
 

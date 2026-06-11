@@ -154,6 +154,14 @@ describe("aether link local API server", () => {
       ],
     });
 
+    const blockedInput = await postJson(`/api/sessions/${sessionBody.session.id}/input`, {
+      action: "blocked-before-approval",
+    });
+    expect(blockedInput.status).toBe(409);
+    expect(await blockedInput.json()).toEqual({
+      error: "접속 승인 전에는 입력 이벤트를 전송할 수 없습니다.",
+    });
+
     // Approve session explicitly to proceed
     const approveRes = await postJson(`/api/sessions/${sessionBody.session.id}/approve`, {
       approved: true,
@@ -458,6 +466,24 @@ describe("aether link local API server", () => {
     );
   });
 
+  it("serves live update check version and dummy zip binary update packages", async () => {
+    // Check update API
+    const checkRes = await fetch(`${baseUrl}/api/update/check`);
+    expect(checkRes.status).toBe(200);
+    const checkBody = await checkRes.json();
+    expect(checkBody).toMatchObject({
+      latestVersion: expect.any(String),
+      forceUpdate: false,
+      downloadUrl: expect.stringContaining("/api/update/download"),
+    });
+
+    // Download update API
+    const downloadRes = await fetch(`${baseUrl}/api/update/download`);
+    expect(downloadRes.status).toBe(200);
+    expect(downloadRes.headers.get("content-type")).toBe("application/octet-stream");
+    const buffer = await downloadRes.arrayBuffer();
+    expect(buffer.byteLength).toBe(100 * 1024); // 100KB dummy size
+  });
 
   function postJson(path: string, body: unknown) {
     return fetch(`${baseUrl}${path}`, {

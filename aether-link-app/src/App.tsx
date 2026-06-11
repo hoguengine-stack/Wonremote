@@ -91,6 +91,51 @@ function ViewerApp() {
   const [query, setQuery] = useState("");
   const [selectedStore, setSelectedStore] = useState("전체");
   const [inputLog, setInputLog] = useState<string[]>([]);
+  const [updateAlert, setUpdateAlert] = useState<string | null>(null);
+
+  // Viewer auto update check loop
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const currentViewerVersion = "0.1.0";
+    let active = true;
+
+    const checkViewerUpdate = async () => {
+      try {
+        const response = await fetch("http://127.0.0.1:8787/api/update/check");
+        if (!response.ok) return;
+        const data = await response.json();
+        
+        const lParts = data.latestVersion.split(".").map(Number);
+        const cParts = currentViewerVersion.split(".").map(Number);
+        let hasNewVersion = false;
+        for (let i = 0; i < 3; i++) {
+          if ((lParts[i] ?? 0) > (cParts[i] ?? 0)) {
+            hasNewVersion = true;
+            break;
+          } else if ((lParts[i] ?? 0) < (cParts[i] ?? 0)) {
+            break;
+          }
+        }
+
+        if (active && hasNewVersion) {
+          setUpdateAlert(data.latestVersion);
+          setTimeout(() => {
+            window.location.reload();
+          }, 1500);
+        }
+      } catch (e) {
+        // ignore
+      }
+    };
+
+    void checkViewerUpdate();
+    const interval = setInterval(() => void checkViewerUpdate(), 4000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [isAuthenticated]);
+
 
   const groups = useMemo(() => groupDevicesByStore(devices), [devices]);
   const filteredDevices = useMemo(() => {
@@ -253,6 +298,24 @@ function ViewerApp() {
 
   return (
     <div className="app-shell">
+      {updateAlert && (
+        <div style={{
+          position: "fixed",
+          top: "16px",
+          left: "50%",
+          transform: "translateX(-50%)",
+          background: "#4f46e5",
+          color: "#fff",
+          padding: "12px 24px",
+          borderRadius: "8px",
+          boxShadow: "0 10px 15px -3px rgba(0, 0, 0, 0.3)",
+          zIndex: 9999,
+          fontWeight: "bold",
+          fontSize: "14px"
+        }}>
+          새로운 뷰어 업데이트가 존재합니다. {updateAlert} 버전으로 갱신하는 중...
+        </div>
+      )}
       <aside className="sidebar">
         <div className="brand-row">
           <div className="brand-mark">A</div>

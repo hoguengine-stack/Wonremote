@@ -10,6 +10,7 @@ export interface AgentLocalConfig {
   installId: string;
   registeredAt?: string;
   registeredDeviceId?: string;
+  version?: string;
 }
 
 export interface AgentBootstrapDeps {
@@ -35,6 +36,10 @@ export type AgentBootstrapResult =
 export async function bootstrapAgent(deps: AgentBootstrapDeps): Promise<AgentBootstrapResult> {
   const existingConfig = await deps.readConfig();
   if (existingConfig?.registeredDeviceId) {
+    if (!existingConfig.version) {
+      existingConfig.version = "0.1.0";
+      await deps.writeConfig(existingConfig);
+    }
     return {
       config: existingConfig,
       status: "already_registered",
@@ -53,6 +58,7 @@ export async function bootstrapAgent(deps: AgentBootstrapDeps): Promise<AgentBoo
     installId,
     registeredAt: deps.nowIso(),
     registeredDeviceId: result.device.id,
+    version: existingConfig?.version ?? "0.1.0",
   };
   await deps.writeConfig(config);
 

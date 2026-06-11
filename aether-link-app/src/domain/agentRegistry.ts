@@ -62,7 +62,7 @@ export function registerAgentConnection(
     session: {
       id: `session-${id}`,
       deviceId: id,
-      state: "connected",
+      state: "pending",
       startedAt: nowIso,
     },
   };

@@ -19,7 +19,7 @@ describe("agent registry domain", () => {
     expect(authenticateAdmin("admin", "1234")).toBe(false);
   });
 
-  it("registers a connected agent once and opens a session", () => {
+  it("registers an agent once and opens a pending approval session", () => {
     const result = registerAgentConnection([], {
       businessNumber: "1234567890",
       password: "1234",

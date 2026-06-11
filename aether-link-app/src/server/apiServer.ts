@@ -263,6 +263,12 @@ async function routeRequest(
         return;
       }
 
+      const session = state.sessions.get(sessionId);
+      if (session?.state !== "connected") {
+        writeJson(response, 409, { error: "접속 승인 전에는 입력 이벤트를 전송할 수 없습니다." });
+        return;
+      }
+
       const body = await readJson<{ action?: string }>(request);
       const action = String(body.action ?? "").trim();
       if (!action) {
@@ -275,10 +281,7 @@ async function routeRequest(
         ...(state.inputLogs.get(sessionId) ?? []),
       ].slice(0, 6);
       state.inputLogs.set(sessionId, nextLog);
-      const session = state.sessions.get(sessionId);
-      if (session) {
-        enqueueAgentCommand(state, session.deviceId, action);
-      }
+      enqueueAgentCommand(state, session.deviceId, action);
       writeJson(response, 200, { inputLog: nextLog });
       return;
     }
@@ -319,13 +322,38 @@ async function routeRequest(
 
   // 2. GET /api/update/check
   if (request.method === "GET" && url.pathname === "/api/update/check") {
+    let latestVersion = "0.1.1";
+    try {
+      const res = await fetch(`https://raw.githubusercontent.com/hoguengine-stack/Wonremote/main/aether-link-app/package.json?nocache=${Date.now()}`);
+      if (res.ok) {
+        const data: any = await res.json();
+        if (data && data.version) {
+          latestVersion = data.version;
+        }
+      }
+    } catch (e) {
+      latestVersion = "0.1.1";
+    }
+
     writeJson(response, 200, {
-      latestVersion: "1.1.0",
+      latestVersion,
       forceUpdate: false,
       downloadUrl: "http://127.0.0.1:8787/api/update/download"
     });
     return;
   }
+
+  // GET /api/update/download
+  if (request.method === "GET" && url.pathname === "/api/update/download") {
+    response.writeHead(200, {
+      "content-type": "application/octet-stream",
+      "content-disposition": "attachment; filename=aether-link-update.zip"
+    });
+    const dummyData = Buffer.alloc(100 * 1024, "X");
+    response.end(dummyData);
+    return;
+  }
+
 
   // 3. POST /api/sessions/:id/approve
   if (request.method === "POST" && url.pathname.startsWith("/api/sessions/")) {
