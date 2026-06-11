@@ -703,7 +703,9 @@ async function handleRegistryInstall() {
 
   const agentPath = path.resolve(__filename);
   const commandToRun = `cmd /c node "${agentPath}" --watch`;
-  const psCommand = `New-ItemProperty -Path "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" -Name "AetherLinkAgent" -PropertyType String -Value '${commandToRun}' -Force`;
+  // Production startup is owned by the Tauri --agent tray path. This opt-in CLI
+  // key is only for local headless diagnostics and must not overwrite it.
+  const psCommand = `New-ItemProperty -Path "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" -Name "AetherLinkAgentCLI" -PropertyType String -Value '${commandToRun}' -Force`;
   
   try {
     await execAsync(`powershell -NoProfile -Command "${psCommand}"`);
@@ -723,7 +725,7 @@ async function handleRegistryUninstall() {
     process.exit(1);
   }
 
-  const psCommand = `Remove-ItemProperty -Path "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" -Name "AetherLinkAgent" -ErrorAction SilentlyContinue`;
+  const psCommand = `Remove-ItemProperty -Path "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" -Name "AetherLinkAgentCLI" -ErrorAction SilentlyContinue`;
   
   try {
     await execAsync(`powershell -NoProfile -Command "${psCommand}"`);
