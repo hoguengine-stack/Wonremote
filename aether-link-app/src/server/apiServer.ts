@@ -183,8 +183,9 @@ async function routeRequest(
       await state.deviceStore.writeDevices(state.devices);
       state.sessions.set(result.session.id, result.session);
       state.inputLogs.set(result.session.id, [
-        `${new Date().toLocaleTimeString()} 세션 연결`,
+        `${new Date().toLocaleTimeString()} 접속 승인 대기 중`,
       ]);
+      enqueueAgentCommand(state, result.session.deviceId, "request-approval");
       writeJson(response, 200, {
         devices: state.devices,
         session: result.session,
