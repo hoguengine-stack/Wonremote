@@ -37,6 +37,7 @@ import { groupDevicesByStore } from "./domain/agentRegistry";
 import {
   scheduleVisualPingPresentedMeasurement,
 } from "./domain/visualPing";
+import { getViewerVersion, isHigherVersion } from "./domain/versioning";
 import type {
   AgentConnectionInput,
   ManagedDevice,
@@ -96,7 +97,7 @@ function ViewerApp() {
   // Viewer auto update check loop
   useEffect(() => {
     if (!isAuthenticated) return;
-    const currentViewerVersion = "0.1.0";
+    const currentViewerVersion = getViewerVersion(import.meta.env);
     let active = true;
 
     const checkViewerUpdate = async () => {
@@ -104,20 +105,8 @@ function ViewerApp() {
         const response = await fetch("http://127.0.0.1:8787/api/update/check");
         if (!response.ok) return;
         const data = await response.json();
-        
-        const lParts = data.latestVersion.split(".").map(Number);
-        const cParts = currentViewerVersion.split(".").map(Number);
-        let hasNewVersion = false;
-        for (let i = 0; i < 3; i++) {
-          if ((lParts[i] ?? 0) > (cParts[i] ?? 0)) {
-            hasNewVersion = true;
-            break;
-          } else if ((lParts[i] ?? 0) < (cParts[i] ?? 0)) {
-            break;
-          }
-        }
 
-        if (active && hasNewVersion) {
+        if (active && isHigherVersion(data.latestVersion, currentViewerVersion)) {
           setUpdateAlert(data.latestVersion);
           setTimeout(() => {
             window.location.reload();
