@@ -118,6 +118,7 @@ fn is_agent_registered() -> bool {
 }
 
 fn spawn_agent_only_process(
+    app_handle: tauri::AppHandle,
     agent_state: &AgentState,
     job: &Job,
     resource_dir: &Path,
@@ -182,11 +183,16 @@ fn spawn_agent_only_process(
 
     let status_clone = agent_state.status.clone();
     let status_menu_item_clone = agent_state.status_menu_item.clone();
+    let app_handle_clone = app_handle.clone();
     std::thread::spawn(move || {
         let reader = BufReader::new(stdout);
+        let mut unregistered_detected = false;
         for line in reader.lines() {
             if let Ok(line_str) = line {
                 println!("[Agent Output] {}", line_str);
+                if line_str.contains("[Error] Agent unregistered") {
+                    unregistered_detected = true;
+                }
                 let new_status = if line_str.contains("[Status] Connecting") {
                     Some("Connecting")
                 } else if line_str.contains("[Status] Online") {
@@ -203,6 +209,12 @@ fn spawn_agent_only_process(
                         let _ = menu_item.set_text(format!("Status: {status_str}"));
                     }
                 }
+            }
+        }
+        if unregistered_detected {
+            if let Some(window) = app_handle_clone.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
             }
         }
     });
@@ -268,7 +280,7 @@ fn save_agent_config(
     set_startup_registry(true, true).map_err(|e| e.to_string())?;
 
     let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
-    spawn_agent_only_process(&agent_state, &job, &resource_dir, Some(&config.api_url))
+    spawn_agent_only_process(app.clone(), &agent_state, &job, &resource_dir, Some(&config.api_url))
         .map_err(|e| e.to_string())?;
 
     if let Some(window) = app.get_webview_window("main") {
@@ -299,7 +311,7 @@ fn restart_agent_process(
         }
     }
 
-    spawn_agent_only_process(&agent_state, &job, &resource_dir, api_url.as_deref())
+    spawn_agent_only_process(app.clone(), &agent_state, &job, &resource_dir, api_url.as_deref())
         .map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -562,6 +574,7 @@ pub fn run() {
                         }
                     }
                     spawn_agent_only_process(
+                        app.handle().clone(),
                         &agent_state,
                         &job,
                         &resource_dir,
@@ -638,6 +651,7 @@ pub fn run() {
                                     }
                                 }
                                 let _ = spawn_agent_only_process(
+                                    app.clone(),
                                     &agent_state,
                                     &job,
                                     &resource_dir,

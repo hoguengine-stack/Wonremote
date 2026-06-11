@@ -81,4 +81,46 @@ describe("agent client", () => {
       }),
     ]);
   });
+
+  it("preserves heartbeat HTTP status on API errors", async () => {
+    const fetchImpl = vi.fn(async () => {
+      return new Response(JSON.stringify({ error: "device not found" }), {
+        headers: { "content-type": "application/json" },
+        status: 404,
+      });
+    });
+
+    await expect(
+      sendAgentHeartbeat({
+        apiBaseUrl: "http://127.0.0.1:8787",
+        deviceId: "missing-device",
+        fetchImpl,
+        installId: "agent-missing",
+      }),
+    ).rejects.toMatchObject({
+      message: "device not found",
+      status: 404,
+    });
+  });
+
+  it("preserves command poll HTTP status on API errors", async () => {
+    const fetchImpl = vi.fn(async () => {
+      return new Response(JSON.stringify({ error: "device not found" }), {
+        headers: { "content-type": "application/json" },
+        status: 404,
+      });
+    });
+
+    await expect(
+      pollAgentCommands({
+        apiBaseUrl: "http://127.0.0.1:8787",
+        deviceId: "missing-device",
+        fetchImpl,
+        installId: "agent-missing",
+      }),
+    ).rejects.toMatchObject({
+      message: "device not found",
+      status: 404,
+    });
+  });
 });

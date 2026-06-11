@@ -244,7 +244,15 @@ async function main() {
   // Check version updates on start
   await checkUpdate(result.config);
 
-  await sendHeartbeat(result.config);
+  try {
+    await sendHeartbeat(result.config);
+  } catch (error: any) {
+    if (error.status === 404) {
+      await handleUnregisteredDevice();
+    }
+    console.log("[Status] Connecting");
+    console.error(error instanceof Error ? error.message : error);
+  }
 
   const baseDir = process.env.APPDATA ?? process.cwd();
   const aetherLinkDir = path.join(baseDir, "AetherLink");
@@ -253,7 +261,15 @@ async function main() {
     await writeFile(successMarker, "SUCCESS");
   } catch (e) {}
 
-  await pollCommands(result.config);
+  try {
+    await pollCommands(result.config);
+  } catch (error: any) {
+    if (error.status === 404) {
+      await handleUnregisteredDevice();
+    }
+    console.log("[Status] Connecting");
+    console.error(error instanceof Error ? error.message : error);
+  }
 
 
   // Setup CLI interactive input for chatting, clipboard sharing, and audio beep signals
@@ -519,13 +535,30 @@ function isHigherVersion(latest: string, current: string): boolean {
   return false;
 }
 
+async function handleUnregisteredDevice() {
+  console.log("[Status] Offline");
+  console.log("[Error] Agent unregistered: Device not found on server.");
+  const configPath = getAgentConfigPath();
+  try {
+    const fs = await import("node:fs/promises");
+    await fs.rm(configPath, { force: true });
+    console.log("Locally stored agent-config.json has been removed.");
+  } catch (e) {
+    console.error("Failed to delete agent-config.json:", e);
+  }
+  process.exit(1);
+}
+
 async function runAgentTick(config: AgentLocalConfig): Promise<void> {
   try {
     await sendHeartbeat(config);
     await pollCommands(config);
     await checkUpdate(config);
     console.log("[Status] Online");
-  } catch (error) {
+  } catch (error: any) {
+    if (error.status === 404) {
+      await handleUnregisteredDevice();
+    }
     console.log("[Status] Connecting");
     console.error(error instanceof Error ? error.message : error);
   }

@@ -39,7 +39,9 @@ export async function sendAgentHeartbeat({
 
   const payload = (await response.json()) as AgentHeartbeatResult & { error?: string };
   if (!response.ok) {
-    throw new Error(payload.error ?? "Agent heartbeat 실패");
+    const err = new Error(payload.error ?? "Agent heartbeat 실패");
+    (err as any).status = response.status;
+    throw err;
   }
   return payload;
 }
@@ -66,7 +68,9 @@ export async function pollAgentCommands({
 
   const payload = (await response.json()) as AgentCommandPollResult & { error?: string };
   if (!response.ok) {
-    throw new Error(payload.error ?? "Agent command polling 실패");
+    const err = new Error(payload.error ?? "Agent command polling 실패");
+    (err as any).status = response.status;
+    throw err;
   }
   return payload;
 }
