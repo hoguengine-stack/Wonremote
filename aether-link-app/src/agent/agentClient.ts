@@ -1,0 +1,69 @@
+import type { AgentCommandPollResult, AgentHeartbeatResult } from "../domain/types";
+
+interface SendAgentHeartbeatOptions {
+  apiBaseUrl: string;
+  deviceId: string;
+  fetchImpl?: typeof fetch;
+  installId: string;
+}
+
+interface PollAgentCommandsOptions {
+  apiBaseUrl: string;
+  deviceId: string;
+  fetchImpl?: typeof fetch;
+  installId: string;
+}
+
+export async function sendAgentHeartbeat({
+  apiBaseUrl,
+  deviceId,
+  fetchImpl = fetch,
+  installId,
+}: SendAgentHeartbeatOptions): Promise<AgentHeartbeatResult> {
+  let response: Response;
+  try {
+    response = await fetchImpl(`${apiBaseUrl}/api/agent/heartbeat`, {
+      body: JSON.stringify({
+        deviceId,
+        installId,
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+  } catch {
+    throw new Error("AetherLink API 서버에 heartbeat를 전송할 수 없습니다.");
+  }
+
+  const payload = (await response.json()) as AgentHeartbeatResult & { error?: string };
+  if (!response.ok) {
+    throw new Error(payload.error ?? "Agent heartbeat 실패");
+  }
+  return payload;
+}
+
+export async function pollAgentCommands({
+  apiBaseUrl,
+  deviceId,
+  fetchImpl = fetch,
+  installId,
+}: PollAgentCommandsOptions): Promise<AgentCommandPollResult> {
+  let response: Response;
+  try {
+    response = await fetchImpl(`${apiBaseUrl}/api/agent/commands`, {
+      body: JSON.stringify({
+        deviceId,
+        installId,
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+  } catch {
+    throw new Error("AetherLink API 서버에서 명령을 가져올 수 없습니다.");
+  }
+
+  const payload = (await response.json()) as AgentCommandPollResult & { error?: string };
+  if (!response.ok) {
+    throw new Error(payload.error ?? "Agent command polling 실패");
+  }
+  return payload;
+}

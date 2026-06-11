@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+target/
+aether-link-app/dist/
+aether-link-poc/target/
+
+# Local runtime data and logs
+*.log
+*.err.log
+.local-*
+*.local.json
+
+# Environment files
+.env
+.env.*
+
+# Editor and OS noise
+.idea/
+.vscode/
+*.swp
+Thumbs.db
+Desktop.ini
+
+# Temporary verification artifacts
+playwright-report/
+test-results/
+coverage/

@@ -1,0 +1,32 @@
+{
+  "name": "aether-link-app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "agent": "tsx src/agent/index.ts",
+    "agent:watch": "tsx src/agent/index.ts --watch",
+    "agent:install": "tsx src/agent/index.ts --install",
+    "agent:uninstall": "tsx src/agent/index.ts --uninstall",
+    "api": "tsx src/server/index.ts",
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc && vite build",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "lucide-react": "^0.468.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.2",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^6.0.2",
+    "playwright": "^1.60.0",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.16",
+    "vitest": "^4.1.8"
+  }
+}

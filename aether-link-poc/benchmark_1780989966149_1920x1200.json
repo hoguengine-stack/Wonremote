@@ -1,0 +1,114 @@
+{
+  "schema_version": 2,
+  "generated_at_unix_ms": 1780989966149,
+  "source": "aether-link-poc-week2",
+  "duration_seconds": 2.0379744,
+  "config": {
+    "requested_duration_seconds": 2,
+    "output_path": "benchmark_1780989966149_1920x1200.json",
+    "latest_alias_path": "benchmark_results.json",
+    "snapshot_path": "screenshot_poc_tiles_quick.png",
+    "loop_sleep_ms": 1,
+    "capture_timeout_ms": 16
+  },
+  "system": {
+    "cpu_name": "11th Gen Intel(R) Core(TM) i5-11400 @ 2.60GHz",
+    "total_ram_bytes": 16980238336,
+    "os_caption": "Microsoft Windows 11 Pro",
+    "os_architecture": "64-bit",
+    "os_version": "10.0.26100",
+    "os_build": "26100",
+    "video_controllers": [
+      {
+        "name": "Mirage Driver",
+        "driver_version": "2.0.105.0"
+      },
+      {
+        "name": "Intel(R) UHD Graphics 730",
+        "driver_version": "32.0.101.7082"
+      }
+    ]
+  },
+  "dxgi": {
+    "adapter_name": "Intel(R) UHD Graphics 730",
+    "output_name": "\\\\.\\DISPLAY1",
+    "width": 1920,
+    "height": 1200
+  },
+  "process": {
+    "cpu_percent_over_run": 4.408482756211265,
+    "start_cpu_seconds": 0.078125,
+    "end_cpu_seconds": 1.15625,
+    "working_set_bytes": 58552320,
+    "private_memory_bytes": 64970752,
+    "thread_count": 18,
+    "handle_count": 236,
+    "logical_processor_count": 12
+  },
+  "capture_loop": {
+    "capture_attempts": 67,
+    "captured_frames": 67,
+    "acquire_timeout_count": 0,
+    "access_lost_count": 0,
+    "capture_error_count": 0,
+    "dirty_frame_count": 35,
+    "clean_frame_count": 32,
+    "dirty_frame_ratio_percent": 52.23880597014925,
+    "simulation_sample_count": 6,
+    "loop_sleep_ms": 1,
+    "capture_timeout_ms": 16
+  },
+  "metrics": {
+    "frame_count": 67,
+    "avg_fps": 32.87578097153723,
+    "total_tiles": 2280,
+    "avg_dirty_tiles": 40.47761194029851,
+    "dirty_ratio_percent": 1.7753338570306365,
+    "avg_actual_jpeg_kb": 29.519283465485074,
+    "avg_actual_bandwidth_kb_s": 970.4694976480079,
+    "bgra_frame_mb": 8.7890625,
+    "rgb565_frame_mb": 4.39453125,
+    "raw_rgb565_bandwidth_mb_s": 144.47364684757574,
+    "capture": {
+      "avg_ms": 7.952074626865671,
+      "p50_ms": 6.764,
+      "p95_ms": 13.524,
+      "p99_ms": 41.489,
+      "max_ms": 41.489
+    },
+    "rgb565_convert": {
+      "avg_ms": 3.325791044776119,
+      "p50_ms": 3.184,
+      "p95_ms": 5.963,
+      "p99_ms": 7.061,
+      "max_ms": 7.061
+    },
+    "tile_diff": {
+      "avg_ms": 1.7267164179104477,
+      "p50_ms": 1.407,
+      "p95_ms": 4.566,
+      "p99_ms": 5.262,
+      "max_ms": 5.262
+    },
+    "actual_dirty_tile_jpeg": {
+      "avg_ms": 1.1454925373134328,
+      "p50_ms": 0.04,
+      "p95_ms": 0.972,
+      "p99_ms": 62.951,
+      "max_ms": 62.951
+    },
+    "actual_internal_pipeline": {
+      "avg_ms": 14.15007462686567,
+      "p50_ms": 11.634,
+      "p95_ms": 22.052,
+      "p99_ms": 84.301,
+      "max_ms": 84.301
+    },
+    "sim_b_10_percent_dirty_jpeg_ms": 6.352,
+    "sim_b_10_percent_dirty_internal_ms": 19.356582089552237,
+    "sim_b_10_percent_dirty_kb": 163.69189453125,
+    "sim_c_100_percent_dirty_jpeg_ms": 54.529833333333336,
+    "sim_c_100_percent_dirty_internal_ms": 67.53441542288557,
+    "sim_c_100_percent_dirty_kb": 1616.994140625
+  }
+}
