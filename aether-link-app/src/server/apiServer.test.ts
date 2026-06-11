@@ -1,4 +1,4 @@
-﻿import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -526,6 +526,7 @@ describe("aether link local API server", () => {
     expect(checkBody).toMatchObject({
       latestVersion: expect.any(String),
       forceUpdate: false,
+      checksum: expect.any(String),
       downloadUrl: expect.stringContaining("/api/update/download"),
     });
 
@@ -534,7 +535,7 @@ describe("aether link local API server", () => {
     expect(downloadRes.status).toBe(200);
     expect(downloadRes.headers.get("content-type")).toBe("application/octet-stream");
     const buffer = await downloadRes.arrayBuffer();
-    expect(buffer.byteLength).toBe(100 * 1024); // 100KB dummy size
+    expect(buffer.byteLength).toBeGreaterThan(0);
   });
 
   function postJson(path: string, body: unknown) {

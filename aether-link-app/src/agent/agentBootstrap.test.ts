@@ -42,6 +42,7 @@ describe("agent bootstrap", () => {
       businessNumber: "1234567890",
       password: "1234",
       installId: "agent-cli-001",
+      version: "0.1.0",
     });
     expect(deps.writeConfig).toHaveBeenCalledWith({
       businessNumber: "123-45-67890",

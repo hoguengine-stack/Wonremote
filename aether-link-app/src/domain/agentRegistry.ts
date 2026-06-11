@@ -49,6 +49,7 @@ export function registerAgentConnection(
     status: "online",
     lastSeenAt: nowIso,
     connectionCode: generateConnectionCode(),
+    version: input.version,
   };
 
   const index = devices.findIndex((item) => item.id === id);
@@ -84,6 +85,7 @@ export function registerAgentFirstRun(
     storeName: `사업자 ${businessNumber}`,
     deviceNumber,
     deviceName: `Agent ${deviceNumber}`,
+    version: input.version,
   };
   const result = registerAgentConnection(devices, derivedInput, nowIso);
   const device = result.devices.find((item) => item.id === result.session.deviceId);
@@ -127,6 +129,7 @@ export function applyAgentHeartbeat(
     lastSeenAt: nowIso,
     status: "online",
     connectionCode: currentDevice.connectionCode ?? generateConnectionCode(),
+    version: input.version ?? currentDevice.version,
   };
   const nextDevices = devices.map((item, itemIndex) => (itemIndex === index ? device : item));
 

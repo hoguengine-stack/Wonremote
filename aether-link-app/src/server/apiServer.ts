@@ -1,4 +1,7 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
+import { execSync, spawn } from "node:child_process";
+import { writeFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 import {
   applyAgentHeartbeat,
   authenticateAdmin,
@@ -24,6 +27,41 @@ import { createMemoryDeviceStore } from "./deviceStore";
 import type { DeviceStore } from "./deviceStore";
 import { createMemoryHistoryStore } from "./historyStore";
 import type { HistoryStore } from "./historyStore";
+
+let goodChecksum = "";
+let badBinaryChecksum = "";
+let testUpdateMode: "none" | "good" | "bad_checksum" | "bad_binary" = "none";
+
+function prepareUpdateFiles() {
+  try {
+    // 1. Good Update Package
+    mkdirSync("./temp_update_good", { recursive: true });
+    writeFileSync("./temp_update_good/version.txt", "0.1.2");
+    // This script will represent our updated agent loader code
+    writeFileSync("./temp_update_good/update_marker.txt", "GOOD_UPDATE_SUCCESS");
+    
+    // Create zip archive using tar (native to Windows 10+ and Unix)
+    execSync("tar -a -cf aether-link-update-good.zip -C temp_update_good version.txt update_marker.txt");
+    const goodZip = readFileSync("aether-link-update-good.zip");
+    goodChecksum = createHash("sha256").update(goodZip).digest("hex");
+
+    // 2. Bad Update Package (designed to trigger boot crash)
+    mkdirSync("./temp_update_bad", { recursive: true });
+    writeFileSync("./temp_update_bad/version.txt", "0.1.2");
+    // Writing crash.txt so the agent knows to crash itself immediately upon start
+    writeFileSync("./temp_update_bad/crash.txt", "TRIGGER_CRASH");
+    
+    execSync("tar -a -cf aether-link-update-bad.zip -C temp_update_bad version.txt crash.txt");
+    const badZip = readFileSync("aether-link-update-bad.zip");
+    badBinaryChecksum = createHash("sha256").update(badZip).digest("hex");
+    console.log(`[API Server] Generated update zips. Good Checksum: ${goodChecksum}, Bad Checksum: ${badBinaryChecksum}`);
+  } catch (e) {
+    console.error("[API Server] Failed to prepare update zip files:", e);
+  }
+}
+
+prepareUpdateFiles();
+
 
 interface ApiState {
   devices: ManagedDevice[];
@@ -321,40 +359,86 @@ async function routeRequest(
     return;
   }
 
+  // Backdoor route to set update mode for E2E testing
+  if (request.method === "POST" && url.pathname === "/api/test/set-update-mode") {
+    const body = await readJson<{ mode?: "none" | "good" | "bad_checksum" | "bad_binary" }>(request);
+    if (body.mode) {
+      testUpdateMode = body.mode;
+      console.log(`[API Server] Test update mode updated to: ${testUpdateMode}`);
+    }
+    writeJson(response, 200, { ok: true, currentMode: testUpdateMode });
+    return;
+  }
+
   // 2. GET /api/update/check
   if (request.method === "GET" && url.pathname === "/api/update/check") {
-    let latestVersion = "0.1.1";
-    try {
-      const res = await fetch(`https://raw.githubusercontent.com/hoguengine-stack/Wonremote/main/aether-link-app/package.json?nocache=${Date.now()}`);
-      if (res.ok) {
-        const data: any = await res.json();
-        if (data && data.version) {
-          latestVersion = data.version;
-        }
-      }
-    } catch (e) {
-      latestVersion = "0.1.1";
+    const isNone = testUpdateMode === "none";
+    let latestVersion = isNone ? "0.1.0" : "0.1.2";
+    
+    const badChecksum = testUpdateMode === "bad_checksum";
+    const badBinary = testUpdateMode === "bad_binary";
+
+    let checksum = goodChecksum;
+    let downloadUrl = "http://127.0.0.1:8787/api/update/download";
+
+    if (badChecksum) {
+      checksum = "invalid_checksum_for_rollback_test";
+    } else if (badBinary) {
+      checksum = badBinaryChecksum;
+      downloadUrl = "http://127.0.0.1:8787/api/update/download?type=bad";
     }
 
     writeJson(response, 200, {
       latestVersion,
       forceUpdate: false,
-      downloadUrl: "http://127.0.0.1:8787/api/update/download"
+      checksum,
+      downloadUrl
     });
     return;
   }
 
   // GET /api/update/download
   if (request.method === "GET" && url.pathname === "/api/update/download") {
-    response.writeHead(200, {
-      "content-type": "application/octet-stream",
-      "content-disposition": "attachment; filename=aether-link-update.zip"
-    });
-    const dummyData = Buffer.alloc(100 * 1024, "X");
-    response.end(dummyData);
+    const isBad = url.searchParams.get("type") === "bad";
+    const filename = isBad ? "aether-link-update-bad.zip" : "aether-link-update-good.zip";
+    
+    try {
+      const data = readFileSync(filename);
+      response.writeHead(200, {
+        "content-type": "application/octet-stream",
+        "content-disposition": `attachment; filename=${filename}`
+      });
+      response.end(data);
+    } catch (e) {
+      writeJson(response, 404, { error: "Update file not found" });
+    }
     return;
   }
 
+
+
+  // POST /api/update/execute
+  if (request.method === "POST" && url.pathname === "/api/update/execute") {
+    const body = await readJson<{ installerPath?: string }>(request);
+    const installerPath = String(body.installerPath ?? "").trim();
+    if (!installerPath) {
+      writeJson(response, 400, { error: "Installer path is required" });
+      return;
+    }
+
+    try {
+      console.log(`[API Server] Spawning installer from API Server: ${installerPath}`);
+      const instProcess = spawn("cmd.exe", ["/c", installerPath], {
+        detached: true,
+        stdio: "ignore",
+      });
+      instProcess.unref();
+      writeJson(response, 200, { ok: true });
+    } catch (e) {
+      writeJson(response, 500, { error: (e as Error).message });
+    }
+    return;
+  }
 
   // 3. POST /api/sessions/:id/approve
   if (request.method === "POST" && url.pathname.startsWith("/api/sessions/")) {

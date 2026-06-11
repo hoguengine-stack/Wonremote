@@ -5,6 +5,7 @@ interface SendAgentHeartbeatOptions {
   deviceId: string;
   fetchImpl?: typeof fetch;
   installId: string;
+  version?: string;
 }
 
 interface PollAgentCommandsOptions {
@@ -19,6 +20,7 @@ export async function sendAgentHeartbeat({
   deviceId,
   fetchImpl = fetch,
   installId,
+  version,
 }: SendAgentHeartbeatOptions): Promise<AgentHeartbeatResult> {
   let response: Response;
   try {
@@ -26,6 +28,7 @@ export async function sendAgentHeartbeat({
       body: JSON.stringify({
         deviceId,
         installId,
+        version,
       }),
       headers: { "content-type": "application/json" },
       method: "POST",

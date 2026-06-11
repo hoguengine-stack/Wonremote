@@ -10,6 +10,7 @@ export interface ManagedDevice {
   status: DeviceStatus;
   lastSeenAt: string;
   connectionCode?: string;
+  version?: string;
 }
 
 export interface AgentConnectionInput {
@@ -18,17 +19,20 @@ export interface AgentConnectionInput {
   storeName: string;
   deviceNumber: string;
   deviceName: string;
+  version?: string;
 }
 
 export interface AgentFirstRunInput {
   businessNumber: string;
   password: string;
   installId: string;
+  version?: string;
 }
 
 export interface AgentHeartbeatInput {
   deviceId: string;
   installId: string;
+  version?: string;
 }
 
 export interface AgentCommand {

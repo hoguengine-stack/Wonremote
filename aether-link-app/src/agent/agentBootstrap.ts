@@ -52,6 +52,7 @@ export async function bootstrapAgent(deps: AgentBootstrapDeps): Promise<AgentBoo
     businessNumber: credentials.businessNumber,
     password: credentials.password,
     installId,
+    version: existingConfig?.version ?? "0.1.0",
   });
   const config: AgentLocalConfig = {
     businessNumber: result.device.businessNumber,

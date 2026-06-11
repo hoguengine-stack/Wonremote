@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rm, cp, access } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline/promises";
@@ -7,6 +7,7 @@ import { stdin as input, stdout as output } from "node:process";
 import { bootstrapAgent } from "./agentBootstrap";
 import { pollAgentCommands, sendAgentHeartbeat } from "./agentClient";
 import { resolveAgentCredentials } from "./agentRuntime";
+import { computeSha256 } from "./checksum";
 import type {
   AgentBootstrapDeps,
   AgentCredentials,
@@ -17,6 +18,8 @@ import { spawn, execFile, exec } from "node:child_process";
 import { promisify } from "node:util";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
+
+
 
 const execFileAsync = promisify(execFile);
 const execAsync = promisify(exec);
@@ -171,6 +174,16 @@ async function pollSessionData(deviceId: string) {
 
 
 async function main() {
+  const crashFile = path.join(process.cwd(), "crash.txt");
+  try {
+    await access(crashFile);
+    console.error("[CRITICAL] Simulated boot crash detected via crash.txt!");
+    await rm(crashFile, { force: true });
+    process.exit(1);
+  } catch (e) {
+    // proceed
+  }
+
   if (process.argv.includes("--install")) {
     await handleRegistryInstall();
     return;
@@ -181,6 +194,7 @@ async function main() {
   }
 
   const configPath = getAgentConfigPath();
+
   const result = await bootstrapAgent({
     createInstallId: () => `agent-${randomUUID().slice(0, 8)}`,
     nowIso: () => new Date().toISOString(),
@@ -203,7 +217,16 @@ async function main() {
   await checkUpdate(result.config);
 
   await sendHeartbeat(result.config);
+
+  const baseDir = process.env.APPDATA ?? process.cwd();
+  const aetherLinkDir = path.join(baseDir, "AetherLink");
+  const successMarker = path.join(aetherLinkDir, ".update_success");
+  try {
+    await writeFile(successMarker, "SUCCESS");
+  } catch (e) {}
+
   await pollCommands(result.config);
+
 
   // Setup CLI interactive input for chatting, clipboard sharing, and audio beep signals
   const rl = readline.createInterface({
@@ -289,49 +312,169 @@ let isUpdating = false;
 
 async function checkUpdate(config: AgentLocalConfig) {
   if (isUpdating) return;
+  isUpdating = true;
   const currentVersion = config.version ?? "0.1.0";
   try {
     const res = await fetch(`${API_BASE_URL}/api/update/check`);
-    if (res.ok) {
-      const data: any = await res.json();
-      if (data.latestVersion && isHigherVersion(data.latestVersion, currentVersion)) {
-        isUpdating = true;
-        console.log(`\n[AetherLink Agent] 새로운 업데이트가 발견되었습니다! (최신: ${data.latestVersion} / 현재: ${currentVersion})`);
-        console.log(`다운로드 경로: ${data.downloadUrl}`);
+    if (!res.ok) {
+      isUpdating = false;
+      return;
+    }
+    const data: any = await res.json();
+    if (data.latestVersion && isHigherVersion(data.latestVersion, currentVersion)) {
+      console.log(`\n[AetherLink Agent] 새로운 업데이트가 발견되었습니다! (최신: ${data.latestVersion} / 현재: ${currentVersion})`);
+      console.log(`다운로드 경로: ${data.downloadUrl}`);
 
-        const downloadRes = await fetch(data.downloadUrl);
-        if (!downloadRes.ok) {
-          throw new Error("다운로드 응답 오류");
-        }
-
-        // ProgressBar simulation
-        for (let pct = 0; pct <= 100; pct += 25) {
-          const width = 20;
-          const completed = Math.round((pct / 100) * width);
-          const bar = "=".repeat(completed) + " ".repeat(width - completed);
-          process.stdout.write(`\r업데이트 다운로드 중: [${bar}] ${pct}%`);
-          await new Promise((resolve) => setTimeout(resolve, 200));
-        }
-        process.stdout.write("\n");
-
-        config.version = data.latestVersion;
-        const configPath = getAgentConfigPath();
-        await writeAgentConfig(configPath, config);
-        console.log(`[AetherLink Agent] 성공적으로 ${data.latestVersion} 버전으로 자동 업데이트되었습니다.\n`);
-
-        if (streamProcess) {
-          console.log("스트리밍 프로세스 재시작 중...");
-          streamProcess.kill();
-          streamProcess = null;
-        }
-        isUpdating = false;
+      const downloadRes = await fetch(data.downloadUrl);
+      if (!downloadRes.ok) {
+        throw new Error("다운로드 응답 오류");
       }
+
+      const arrayBuf = await downloadRes.arrayBuffer();
+      const zipBuffer = Buffer.from(arrayBuf);
+
+      // Compute checksum
+      const computedHash = computeSha256(zipBuffer);
+      if (data.checksum && computedHash !== data.checksum) {
+        console.error(`\n[체크섬 오류] 다운로드된 파일의 해시가 일치하지 않습니다. (기대: ${data.checksum} / 계산: ${computedHash})`);
+        isUpdating = false;
+        return;
+      }
+      console.log("\n[체크섬 검증 완료] 다운로드된 파일의 무결성이 확인되었습니다.");
+
+      // ProgressBar simulation
+      for (let pct = 0; pct <= 100; pct += 25) {
+        const width = 20;
+        const completed = Math.round((pct / 100) * width);
+        const bar = "=".repeat(completed) + " ".repeat(width - completed);
+        process.stdout.write(`\r업데이트 다운로드 중: [${bar}] ${pct}%`);
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+      process.stdout.write("\n");
+
+      // Save zip to temp path
+      const baseDir = process.env.APPDATA ?? process.cwd();
+      const tempUpdateDir = path.join(baseDir, "AetherLink", "temp_update");
+      await rm(tempUpdateDir, { recursive: true, force: true });
+      await mkdir(tempUpdateDir, { recursive: true });
+      
+      const zipPath = path.join(tempUpdateDir, "update.zip");
+      await writeFile(zipPath, zipBuffer);
+
+      // Extract zip using PowerShell Expand-Archive (native)
+      const extractDest = path.join(tempUpdateDir, "extracted");
+      await mkdir(extractDest, { recursive: true });
+
+      console.log("업데이트 압축 파일 해제 중...");
+      const extractPsCmd = `powershell -NoProfile -Command "Expand-Archive -Path '${zipPath}' -DestinationPath '${extractDest}' -Force"`;
+      await execAsync(extractPsCmd);
+
+      // Backup current files
+      console.log("기존 실행 파일 백업 중...");
+      const backupDir = path.join(baseDir, "AetherLink", "backup");
+      await rm(backupDir, { recursive: true, force: true });
+      await mkdir(backupDir, { recursive: true });
+
+      const appDir = "C:\\Users\\qpalz\\Documents\\remote\\aether-link-app";
+      const configPath = getAgentConfigPath();
+      try {
+        await cp(path.join(appDir, "src"), path.join(backupDir, "src"), { recursive: true });
+        await cp(path.join(appDir, "package.json"), path.join(backupDir, "package.json"));
+        await cp(configPath, path.join(backupDir, "agent-config.json"));
+      } catch (e) {
+        console.error("백업 오류:", e);
+      }
+
+      // Update configuration version locally
+      config.version = data.latestVersion;
+      await writeAgentConfig(configPath, config);
+
+      // Create update_install.bat installer
+      const installerPath = path.join(baseDir, "AetherLink", "update_install.bat");
+      const logFilePath = path.join(baseDir, "AetherLink", "installer.log");
+
+      const agentId = process.env.AETHER_LINK_AGENT_ID ?? "1234567890";
+      const agentPassword = process.env.AETHER_LINK_AGENT_PASSWORD ?? "1234";
+      const heartbeatMs = process.env.AETHER_LINK_AGENT_HEARTBEAT_MS ?? "1000";
+
+      const installerContent = `@echo off
+set AETHER_LINK_API_URL=${API_BASE_URL}
+set AETHER_LINK_AGENT_ID=${agentId}
+set AETHER_LINK_AGENT_PASSWORD=${agentPassword}
+set AETHER_LINK_AGENT_HEARTBEAT_MS=${heartbeatMs}
+
+echo [Installer] Starting installation log... > "${logFilePath}"
+echo [Installer] Waiting for Agent CLI to terminate... >> "${logFilePath}"
+ping -n 3 127.0.0.1 > nul
+
+echo [Installer] Copying update files to ${appDir}... >> "${logFilePath}"
+xcopy /y /e /s "${path.join(tempUpdateDir, "extracted")}\\*" "${appDir}" >> "${logFilePath}" 2>&1
+
+echo [Installer] Deleting success marker... >> "${logFilePath}"
+del "${path.join(baseDir, "AetherLink", ".update_success")}" /f /q >> "${logFilePath}" 2>&1
+
+echo [Installer] Starting new Agent version... >> "${logFilePath}"
+cd /d "${appDir}"
+start cmd /c "npm run agent:watch"
+
+echo [Installer] Waiting 10 seconds to verify boot... >> "${logFilePath}"
+ping -n 11 127.0.0.1 > nul
+
+if exist "${path.join(baseDir, "AetherLink", ".update_success")}" (
+    echo [Installer] Update verification successful! >> "${logFilePath}"
+    rd /s /q "${tempUpdateDir}" >> "${logFilePath}" 2>&1
+    rd /s /q "${backupDir}" >> "${logFilePath}" 2>&1
+    exit /b 0
+) else (
+    echo [Installer] Boot verification FAILED! Rolling back... >> "${logFilePath}"
+    xcopy /y /e /s "${backupDir}\\*" "${appDir}" >> "${logFilePath}" 2>&1
+    copy /y "${path.join(backupDir, "agent-config.json")}" "${configPath}" >> "${logFilePath}" 2>&1
+    echo [Installer] Restarting backup version... >> "${logFilePath}"
+    start cmd /c "npm run agent:watch"
+    rd /s /q "${tempUpdateDir}" >> "${logFilePath}" 2>&1
+    exit /b 1
+)
+`;
+      await writeFile(installerPath, installerContent, "utf8");
+
+      console.log("업데이트 인스톨러 기동 중...");
+      try {
+        const execRes = await fetch(`${API_BASE_URL}/api/update/execute`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ installerPath }),
+        });
+        if (!execRes.ok) {
+          throw new Error("인스톨러 원격 실행 요청 실패");
+        }
+      } catch (err) {
+        console.error("[인스톨러 기동 오류]:", err);
+        const instProcess = spawn("cmd.exe", ["/c", installerPath], {
+          detached: true,
+          stdio: "ignore",
+          creationFlags: 0x00000010
+        } as any) as any;
+        instProcess.unref();
+      }
+
+      // Stop current processes and exit
+      if (streamProcess) {
+        streamProcess.kill();
+        streamProcess = null;
+      }
+      
+      console.log("[AetherLink Agent] 인스톨러로 전환하며 에이전트를 종료합니다.");
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      process.exit(0);
+    } else {
+      isUpdating = false;
     }
   } catch (e) {
     console.error("[업데이트 실패]:", e instanceof Error ? e.message : e);
     isUpdating = false;
   }
 }
+
 
 function isHigherVersion(latest: string, current: string): boolean {
   const lParts = latest.split(".").map(Number);
@@ -365,6 +508,7 @@ async function sendHeartbeat(config: AgentLocalConfig): Promise<void> {
     apiBaseUrl: API_BASE_URL,
     deviceId: config.registeredDeviceId,
     installId: config.installId,
+    version: config.version,
   });
   console.log(`Heartbeat accepted: ${result.device.id}`);
 }
