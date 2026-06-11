@@ -301,6 +301,39 @@ mod tests {
         assert_eq!(metrics.working_set_bytes, 150);
         assert_eq!(metrics.thread_count, 4);
     }
+
+    #[test]
+    fn merge_dirty_tiles_handles_contiguous_and_non_contiguous_runs() {
+        let ts = 32;
+        let max_merge_width = 128;
+        let cols = 10;
+        let w = 320;
+        let h = 64;
+
+        let dirty = vec![0, 1, 2, 4, 10, 11, 12, 13, 14];
+        let merged = merge_dirty_tiles(&dirty, cols, w, h, ts, max_merge_width);
+
+        assert_eq!(merged.len(), 4);
+        assert_eq!(merged[0], MergedTile { tx: 0, ty: 0, x_start: 0, y_start: 0, tile_w: 96, tile_h: 32 });
+        assert_eq!(merged[1], MergedTile { tx: 4, ty: 0, x_start: 128, y_start: 0, tile_w: 32, tile_h: 32 });
+        assert_eq!(merged[2], MergedTile { tx: 0, ty: 1, x_start: 0, y_start: 32, tile_w: 128, tile_h: 32 });
+        assert_eq!(merged[3], MergedTile { tx: 4, ty: 1, x_start: 128, y_start: 32, tile_w: 32, tile_h: 32 });
+    }
+
+    #[test]
+    fn merge_dirty_tiles_handles_boundaries_with_non_multiples_of_ts() {
+        let ts = 32;
+        let max_merge_width = 256;
+        let cols = 3;
+        let w = 70;
+        let h = 32;
+
+        let dirty = vec![0, 1, 2];
+        let merged = merge_dirty_tiles(&dirty, cols, w, h, ts, max_merge_width);
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0], MergedTile { tx: 0, ty: 0, x_start: 0, y_start: 0, tile_w: 70, tile_h: 32 });
+    }
 }
 
 fn percentile_ms(samples_us: &[u128], percentile: f64) -> f64 {
@@ -718,6 +751,97 @@ impl TileDiff {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct MergedTile {
+    pub tx: usize,
+    pub ty: usize,
+    pub x_start: usize,
+    pub y_start: usize,
+    pub tile_w: usize,
+    pub tile_h: usize,
+}
+
+pub fn merge_dirty_tiles(
+    dirty_tiles: &[usize],
+    cols: usize,
+    w: usize,
+    h: usize,
+    ts: usize,
+    max_merge_width: usize,
+) -> Vec<MergedTile> {
+    if dirty_tiles.is_empty() {
+        return Vec::new();
+    }
+
+    let mut sorted_tiles = dirty_tiles.to_vec();
+    sorted_tiles.sort_unstable();
+
+    let mut merged = Vec::new();
+    let mut current_run: Option<Vec<usize>> = None;
+
+    for &tile_idx in &sorted_tiles {
+        let tx = tile_idx % cols;
+        let ty = tile_idx / cols;
+
+        if let Some(run) = &mut current_run {
+            let last_idx = *run.last().unwrap();
+            let last_tx = last_idx % cols;
+            let last_ty = last_idx / cols;
+
+            let is_contiguous = ty == last_ty && tx == last_tx + 1;
+
+            let mut within_limit = false;
+            if is_contiguous {
+                let run_start_tx = run[0] % cols;
+                let run_start_x = run_start_tx * ts;
+                let current_tile_x_end = tx * ts + ts.min(w.saturating_sub(tx * ts));
+                let merged_width = current_tile_x_end.saturating_sub(run_start_x);
+                within_limit = merged_width <= max_merge_width;
+            }
+
+            if is_contiguous && within_limit {
+                run.push(tile_idx);
+            } else {
+                merged.push(create_merged_tile(run, cols, w, h, ts));
+                current_run = Some(vec![tile_idx]);
+            }
+        } else {
+            current_run = Some(vec![tile_idx]);
+        }
+    }
+
+    if let Some(run) = current_run {
+        merged.push(create_merged_tile(&run, cols, w, h, ts));
+    }
+
+    merged
+}
+
+fn create_merged_tile(run: &[usize], cols: usize, w: usize, h: usize, ts: usize) -> MergedTile {
+    let first_idx = run[0];
+    let last_idx = *run.last().unwrap();
+
+    let tx_start = first_idx % cols;
+    let tx_end = last_idx % cols;
+    let ty = first_idx / cols;
+
+    let x_start = tx_start * ts;
+    let y_start = ty * ts;
+    
+    let x_end = tx_end * ts + ts.min(w.saturating_sub(tx_end * ts));
+    let tile_w = x_end.saturating_sub(x_start);
+    let tile_h = ts.min(h.saturating_sub(y_start));
+
+    MergedTile {
+        tx: tx_start,
+        ty,
+        x_start,
+        y_start,
+        tile_w,
+        tile_h,
+    }
+}
+
 /// Helper to convert a 32x32 RGB565 tile to RGB24 format
 #[inline(always)]
 fn convert_tile_rgb565_to_rgb24(
@@ -946,7 +1070,7 @@ async fn run_streaming_loop(config: BenchmarkConfig) {
     let _ = compressor.set_quality(85);
     let _ = compressor.set_subsamp(Subsamp::Sub2x2);
 
-    let mut tile_rgb24 = vec![0u8; (tile_size * tile_size * 3) as usize];
+    let mut tile_rgb24 = vec![0u8; (width * tile_size * 3) as usize];
 
     use tokio::io::{AsyncBufReadExt, BufReader};
     let inject_ping_marker = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -988,6 +1112,12 @@ async fn run_streaming_loop(config: BenchmarkConfig) {
                     let h = height as usize;
                     let ts = tile_size as usize;
 
+                    let merged_tiles = merge_dirty_tiles(&dirty_tiles, cols, w, h, ts, 256);
+
+                    let before_tile_count = dirty_tiles.len();
+                    let mut before_jpeg_bytes = 0;
+                    let before_start = Instant::now();
+
                     for &tile_idx in &dirty_tiles {
                         let tx = tile_idx % cols;
                         let ty = tile_idx / cols;
@@ -1015,16 +1145,59 @@ async fn run_streaming_loop(config: BenchmarkConfig) {
                         };
 
                         if let Ok(compressed) = compressor.compress_to_vec(image) {
+                            before_jpeg_bytes += compressed.len();
+                        }
+                    }
+                    let before_latency_us = before_start.elapsed().as_micros();
+
+                    let after_tile_count = merged_tiles.len();
+                    let mut after_jpeg_bytes = 0;
+                    let after_start = Instant::now();
+
+                    for tile in &merged_tiles {
+                        convert_tile_rgb565_to_rgb24(
+                            &rgb565,
+                            w,
+                            tile.x_start,
+                            tile.y_start,
+                            tile.tile_w,
+                            tile.tile_h,
+                            &mut tile_rgb24,
+                        );
+
+                        let image = Image {
+                            pixels: &tile_rgb24[0..(tile.tile_w * tile.tile_h * 3)],
+                            width: tile.tile_w,
+                            pitch: tile.tile_w * 3,
+                            height: tile.tile_h,
+                            format: PixelFormat::RGB,
+                        };
+
+                        if let Ok(compressed) = compressor.compress_to_vec(image) {
+                            after_jpeg_bytes += compressed.len();
                             let encoded = base64_encode(&compressed);
                             base64_tiles.push(serde_json::json!({
-                                "x": tx,
-                                "y": ty,
-                                "w": tile_w,
-                                "h": tile_h,
+                                "x": tile.tx,
+                                "y": tile.ty,
+                                "w": tile.tile_w,
+                                "h": tile.tile_h,
                                 "data": encoded
                             }));
                         }
                     }
+                    let after_latency_us = after_start.elapsed().as_micros();
+
+                    eprintln!(
+                        "[Tile Merge Stats] Before -> After | Tiles: {} -> {} | JPEG Encodes: {} -> {} | Payload Bytes: {} -> {} | Encode Latency: {:.3}ms -> {:.3}ms",
+                        before_tile_count,
+                        after_tile_count,
+                        before_tile_count,
+                        after_tile_count,
+                        before_jpeg_bytes,
+                        after_jpeg_bytes,
+                        before_latency_us as f64 / 1000.0,
+                        after_latency_us as f64 / 1000.0
+                    );
 
                     if !base64_tiles.is_empty() {
                         let msg = serde_json::json!({
@@ -1132,9 +1305,19 @@ async fn main() {
     let mut decompressor = Decompressor::new().unwrap();
 
     // Reusable buffers
-    let mut tile_rgb24 = vec![0u8; (tile_size * tile_size * 3) as usize];
-    let mut decomp_rgb24 = vec![0u8; (tile_size * tile_size * 3) as usize];
+    let mut tile_rgb24 = vec![0u8; (width * tile_size * 3) as usize];
+    let mut decomp_rgb24 = vec![0u8; (width * tile_size * 3) as usize];
     let mut canvas_rgba = vec![0u8; (width * height * 4) as usize];
+
+    // Merge comparison tracking variables
+    let mut accum_before_tiles = 0usize;
+    let mut accum_after_tiles = 0usize;
+    let mut accum_before_bytes = 0usize;
+    let mut accum_after_bytes = 0usize;
+    let mut accum_before_latency_us = 0u128;
+    let mut accum_after_latency_us = 0u128;
+    let mut accum_before_encodes = 0usize;
+    let mut accum_after_encodes = 0usize;
 
     let process_start_sample = collect_process_sample();
     let start_test = Instant::now();
@@ -1202,28 +1385,26 @@ async fn main() {
                 min_diff_us = min_diff_us.min(diff_time_us);
                 max_diff_us = max_diff_us.max(diff_time_us);
 
-                total_dirty_tiles += dirty_tiles.len();
-
-                // Compress actual dirty tiles
-                let mut frame_compress_time_us = 0;
-                let mut actual_jpeg_bytes = 0;
-
                 let cols = tile_diff.cols as usize;
                 let w = width as usize;
                 let h = height as usize;
                 let ts = tile_size as usize;
 
+                let merged_tiles = merge_dirty_tiles(&dirty_tiles, cols, w, h, ts, 256);
+                total_dirty_tiles += merged_tiles.len();
+
+                // 1. Measure Before (individual tiles)
+                let before_tile_count = dirty_tiles.len();
+                let mut before_jpeg_bytes = 0;
+                let before_start = Instant::now();
                 for &tile_idx in &dirty_tiles {
                     let tx = tile_idx % cols;
                     let ty = tile_idx / cols;
-
                     let x_start = ts * tx;
                     let y_start = ts * ty;
                     let tile_w = ts.min(w - x_start);
                     let tile_h = ts.min(h - y_start);
 
-                    // Time only conversion and compression (Agent work)
-                    let op_start = Instant::now();
                     convert_tile_rgb565_to_rgb24(
                         &rgb565,
                         w,
@@ -1243,25 +1424,56 @@ async fn main() {
                     };
 
                     if let Ok(compressed) = compressor.compress_to_vec(image) {
-                        frame_compress_time_us += op_start.elapsed().as_micros();
-                        actual_jpeg_bytes += compressed.len();
+                        before_jpeg_bytes += compressed.len();
+                    }
+                }
+                let before_latency_us = before_start.elapsed().as_micros();
 
-                        // Run decompression and canvas update (not timed as agent work)
+                // 2. Measure After (merged tiles) and Decompress to canvas
+                let after_tile_count = merged_tiles.len();
+                let mut after_jpeg_bytes = 0;
+                let mut frame_compress_time_us = 0;
+
+                for tile in &merged_tiles {
+                    let op_start = Instant::now();
+                    convert_tile_rgb565_to_rgb24(
+                        &rgb565,
+                        w,
+                        tile.x_start,
+                        tile.y_start,
+                        tile.tile_w,
+                        tile.tile_h,
+                        &mut tile_rgb24,
+                    );
+
+                    let image = Image {
+                        pixels: &tile_rgb24[0..(tile.tile_w * tile.tile_h * 3)],
+                        width: tile.tile_w,
+                        pitch: tile.tile_w * 3,
+                        height: tile.tile_h,
+                        format: PixelFormat::RGB,
+                    };
+
+                    if let Ok(compressed) = compressor.compress_to_vec(image) {
+                        frame_compress_time_us += op_start.elapsed().as_micros();
+                        after_jpeg_bytes += compressed.len();
+
+                        // Decompress and draw to canvas (not timed as compress time)
                         let decomp_image = Image {
-                            pixels: &mut decomp_rgb24[0..(tile_w * tile_h * 3)],
-                            width: tile_w,
-                            pitch: tile_w * 3,
-                            height: tile_h,
+                            pixels: &mut decomp_rgb24[0..(tile.tile_w * tile.tile_h * 3)],
+                            width: tile.tile_w,
+                            pitch: tile.tile_w * 3,
+                            height: tile.tile_h,
                             format: PixelFormat::RGB,
                         };
                         if decompressor.decompress(&compressed, decomp_image).is_ok() {
-                            for ty_local in 0..tile_h {
-                                let canvas_y = y_start + ty_local;
+                            for ty_local in 0..tile.tile_h {
+                                let canvas_y = tile.y_start + ty_local;
                                 let canvas_row_start = canvas_y * w * 4;
-                                let tile_row_start = ty_local * tile_w * 3;
+                                let tile_row_start = ty_local * tile.tile_w * 3;
 
-                                for tx_local in 0..tile_w {
-                                    let canvas_idx = canvas_row_start + (x_start + tx_local) * 4;
+                                for tx_local in 0..tile.tile_w {
+                                    let canvas_idx = canvas_row_start + (tile.x_start + tx_local) * 4;
                                     let tile_idx_24 = tile_row_start + tx_local * 3;
 
                                     canvas_rgba[canvas_idx] = decomp_rgb24[tile_idx_24]; // R
@@ -1273,6 +1485,28 @@ async fn main() {
                         }
                     }
                 }
+
+                accum_before_tiles += before_tile_count;
+                accum_after_tiles += after_tile_count;
+                accum_before_encodes += before_tile_count;
+                accum_after_encodes += after_tile_count;
+                accum_before_bytes += before_jpeg_bytes;
+                accum_after_bytes += after_jpeg_bytes;
+                accum_before_latency_us += before_latency_us;
+                accum_after_latency_us += frame_compress_time_us;
+
+                println!(
+                    "[Benchmark Frame Merge] Frame {}: Before (tiles: {}, bytes: {}, latency: {:.3}ms) | After (tiles: {}, bytes: {}, latency: {:.3}ms)",
+                    frame_count,
+                    before_tile_count,
+                    before_jpeg_bytes,
+                    before_latency_us as f64 / 1000.0,
+                    after_tile_count,
+                    after_jpeg_bytes,
+                    frame_compress_time_us as f64 / 1000.0
+                );
+
+                let actual_jpeg_bytes = after_jpeg_bytes;
 
                 total_actual_compress_us += frame_compress_time_us;
                 total_actual_jpeg_bytes += actual_jpeg_bytes;
@@ -1392,6 +1626,30 @@ async fn main() {
     println!("============================================================");
     println!("총 테스트 시간: {:.2?}", total_elapsed);
     println!("캡처된 총 프레임: {} 프레임", frame_count);
+
+    println!("------------------------------------------------------------");
+    println!("=== 가로축 타일 병합 최적화 요약 (Before vs After) ===");
+    println!("   - 총 타일 개수:        {} -> {}", accum_before_tiles, accum_after_tiles);
+    println!("   - 총 JPEG 인코딩 횟수:  {} -> {}", accum_before_encodes, accum_after_encodes);
+    println!("   - 총 전송 페이로드 크기: {:.2} KB -> {:.2} KB ({:.1}% 절감)",
+        accum_before_bytes as f64 / 1024.0,
+        accum_after_bytes as f64 / 1024.0,
+        if accum_before_bytes > 0 {
+            (1.0 - accum_after_bytes as f64 / accum_before_bytes as f64) * 100.0
+        } else {
+            0.0
+        }
+    );
+    println!("   - 총 인코딩 지연 시간:  {:.3} ms -> {:.3} ms ({:.1}% 단축)",
+        accum_before_latency_us as f64 / 1000.0,
+        accum_after_latency_us as f64 / 1000.0,
+        if accum_before_latency_us > 0 {
+            (1.0 - accum_after_latency_us as f64 / accum_before_latency_us as f64) * 100.0
+        } else {
+            0.0
+        }
+    );
+    println!("------------------------------------------------------------");
 
     if frame_count > 0 {
         let avg_fps = frame_count as f64 / total_elapsed.as_secs_f64();
