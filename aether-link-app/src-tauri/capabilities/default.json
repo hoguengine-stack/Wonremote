@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "Default permissions for the AetherLink Viewer window.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

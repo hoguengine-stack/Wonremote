@@ -10,6 +10,8 @@
     "agent:uninstall": "tsx src/agent/index.ts --uninstall",
     "api": "tsx src/server/index.ts",
     "dev": "vite --host 127.0.0.1",
+    "desktop:build": "tauri build",
+    "desktop:dev": "tauri dev",
     "build": "tsc && vite build",
     "test": "vitest run"
   },
@@ -19,6 +21,7 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.11.2",
     "@types/node": "^25.9.2",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",

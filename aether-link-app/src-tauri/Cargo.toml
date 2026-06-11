@@ -1,0 +1,19 @@
+[package]
+name = "aether-link-viewer"
+version = "0.1.1"
+description = "AetherLink Viewer desktop shell"
+authors = ["AetherLink"]
+edition = "2021"
+
+[lib]
+name = "aether_link_viewer_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]

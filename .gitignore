@@ -5,6 +5,7 @@ node_modules/
 dist/
 target/
 aether-link-app/dist/
+aether-link-app/src-tauri/gen/schemas/
 aether-link-poc/target/
 
 # Local runtime data and logs
