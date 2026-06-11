@@ -1,5 +1,5 @@
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { resolveAgentAppDir, resolveAgentPocPath } from "./agentPaths";
 
 describe("agent runtime paths", () => {
@@ -27,5 +27,32 @@ describe("agent runtime paths", () => {
         "C:/tmp/aether-link-fixture-app",
       ),
     ).toBe(pocPath);
+  });
+
+  it("falls back to local bin folder in packaged agent layout", () => {
+    const fs = require("node:fs");
+    const spy = vi.spyOn(fs, "existsSync").mockImplementation((p: any) => p.includes("bin"));
+
+    try {
+      const resolved = resolveAgentPocPath({}, "C:/tmp/packaged-agent");
+      expect(resolved).toBe(path.resolve("C:/tmp/packaged-agent/bin/aether-link-poc.exe"));
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("falls back to parent bin folder in Tauri resource dir layout", () => {
+    const fs = require("node:fs");
+    const spy = vi.spyOn(fs, "existsSync").mockImplementation((p: any) => {
+      const normalized = p.replace(/\\/g, "/");
+      return normalized.includes("tmp/resources/bin");
+    });
+
+    try {
+      const resolved = resolveAgentPocPath({}, "C:/tmp/resources/app");
+      expect(resolved).toBe(path.resolve("C:/tmp/resources/bin/aether-link-poc.exe"));
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

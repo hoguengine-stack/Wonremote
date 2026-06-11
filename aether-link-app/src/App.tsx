@@ -15,6 +15,7 @@ import {
   Volume2,
 } from "lucide-react";
 import React, { FormEvent, useEffect, useMemo, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import {
   closeSession,
   connectAgent,
@@ -77,8 +78,28 @@ const emptyAgentForm: AgentConnectionInput = {
 };
 
 export function App() {
-  const mode = new URLSearchParams(window.location.search).get("mode");
-  return mode === "agent" ? <AgentFirstRunApp /> : <ViewerApp />;
+  const [appMode, setAppMode] = useState<"viewer" | "agent" | null>(null);
+
+  useEffect(() => {
+    if ((window as any).__TAURI_INTERNALS__) {
+      invoke<string>("get_app_mode")
+        .then((mode: string) => {
+          setAppMode(mode as "viewer" | "agent");
+        })
+        .catch(() => {
+          setAppMode("viewer");
+        });
+    } else {
+      const modeParam = new URLSearchParams(window.location.search).get("mode");
+      setAppMode(modeParam === "agent" ? "agent" : "viewer");
+    }
+  }, []);
+
+  if (appMode === null) {
+    return <div style={{ background: "#0f0f1a", minHeight: "100vh" }}></div>;
+  }
+
+  return appMode === "agent" ? <AgentFirstRunApp /> : <ViewerApp />;
 }
 
 function ViewerApp() {
@@ -464,10 +485,22 @@ function ConnectionHistorySection() {
 function AgentFirstRunApp() {
   const [businessNumber, setBusinessNumber] = useState("");
   const [password, setPassword] = useState("");
+  const [apiUrl, setApiUrl] = useState("http://127.0.0.1:8787");
   const [installId] = useState(getOrCreateAgentInstallId);
   const [registeredDevice, setRegisteredDevice] = useState<ManagedDevice | null>(null);
+  const [registeredConfig, setRegisteredConfig] = useState<any | null>(null);
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    if ((window as any).__TAURI_INTERNALS__) {
+      invoke<any>("get_agent_config").then((config: any) => {
+        if (config && config.registeredDeviceId) {
+          setRegisteredConfig(config);
+        }
+      });
+    }
+  }, []);
 
   async function handleFirstRun(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -481,14 +514,81 @@ function AgentFirstRunApp() {
         businessNumber,
         password,
         installId,
+        apiUrl,
       });
       setRegisteredDevice(result.device);
       setError("");
+
+      const configData = {
+        businessNumber: result.device.businessNumber,
+        installId,
+        registeredDeviceId: result.device.id,
+        version: "0.1.0",
+        apiUrl,
+      };
+
+      if ((window as any).__TAURI_INTERNALS__) {
+        await invoke("save_agent_config", {
+          config: configData
+        });
+      } else {
+        setRegisteredConfig(configData);
+      }
     } catch (submissionError) {
       setError(submissionError instanceof Error ? submissionError.message : "Agent 등록 실패");
     } finally {
       setIsSubmitting(false);
     }
+  }
+
+  if (registeredConfig) {
+    return (
+      <main className="login-screen agent-screen">
+        <div className="login-panel agent-panel" style={{ maxWidth: "450px" }}>
+          <div className="login-badge" style={{ background: "rgba(16, 185, 129, 0.2)", color: "#10b981" }}>
+            <Monitor size={20} />
+            <span>Active Agent</span>
+          </div>
+          <h1>Agent 가동 중</h1>
+          <div className="agent-result" style={{ background: "rgba(16, 185, 129, 0.1)", border: "1px solid rgba(16, 185, 129, 0.2)", padding: "16px", borderRadius: "8px", display: "flex", flexDirection: "column", gap: "8px", width: "100%", boxSizing: "border-box" }}>
+            <div>
+              <span style={{ color: "#94a3b8", fontSize: "12px" }}>서버 주소:</span>
+              <strong style={{ display: "block", color: "#fff" }}>{registeredConfig.apiUrl}</strong>
+            </div>
+            <div>
+              <span style={{ color: "#94a3b8", fontSize: "12px" }}>등록 장비 ID:</span>
+              <strong style={{ display: "block", color: "#fff" }}>{registeredConfig.registeredDeviceId}</strong>
+            </div>
+            <div>
+              <span style={{ color: "#94a3b8", fontSize: "12px" }}>사업자번호:</span>
+              <strong style={{ display: "block", color: "#fff" }}>{registeredConfig.businessNumber}</strong>
+            </div>
+            <div>
+              <span style={{ color: "#94a3b8", fontSize: "12px" }}>설치 식별자:</span>
+              <code style={{ display: "block", color: "#818cf8", fontSize: "11px" }}>{registeredConfig.installId}</code>
+            </div>
+          </div>
+          <p style={{ color: "#94a3b8", fontSize: "13px", textAlign: "center", margin: "16px 0" }}>
+            본 프로그램은 백그라운드에서 원격 제어 대기 상태를 유지합니다. 트레이 아이콘을 통해 관리할 수 있습니다.
+          </p>
+          <button
+            className="primary-button"
+            onClick={() => {
+              if ((window as any).__TAURI_INTERNALS__) {
+                invoke("restart_agent_process").then(() => {
+                  alert("에이전트 프로세스가 재시작되었습니다.");
+                });
+              } else {
+                alert("브라우저 환경 - 재시작 시뮬레이션 완료");
+              }
+            }}
+            style={{ background: "#10b981" }}
+          >
+            <span>에이전트 재시작</span>
+          </button>
+        </div>
+      </main>
+    );
   }
 
   return (
@@ -499,6 +599,14 @@ function AgentFirstRunApp() {
           <span>Agent</span>
         </div>
         <h1>Agent 최초 실행</h1>
+        <label>
+          서버 주소
+          <input
+            onChange={(event) => setApiUrl(event.target.value)}
+            placeholder="http://127.0.0.1:8787"
+            value={apiUrl}
+          />
+        </label>
         <label>
           아이디 <input
             autoComplete="username"

@@ -34,7 +34,31 @@ export async function connectAgent(input: AgentConnectionInput): Promise<
   });
 }
 
-export async function registerFirstRunAgent(input: AgentFirstRunInput): Promise<AgentFirstRunResult> {
+export async function registerFirstRunAgent(input: AgentFirstRunInput & { apiUrl?: string }): Promise<AgentFirstRunResult> {
+  const baseUrl = input.apiUrl ?? API_BASE_URL;
+  if (input.apiUrl) {
+    let response: Response;
+    try {
+      response = await fetch(`${baseUrl}/api/agent/first-run`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          businessNumber: input.businessNumber,
+          password: input.password,
+          installId: input.installId,
+        }),
+      });
+    } catch {
+      throw new Error("AetherLink API 서버에 연결할 수 없습니다.");
+    }
+
+    const payload = (await response.json()) as AgentFirstRunResult & { error?: string };
+    if (!response.ok) {
+      throw new Error(payload.error ?? "Agent 등록 실패");
+    }
+    return payload;
+  }
+
   return request("/api/agent/first-run", {
     method: "POST",
     body: input,

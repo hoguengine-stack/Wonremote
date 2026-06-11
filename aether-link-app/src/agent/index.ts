@@ -198,12 +198,28 @@ async function main() {
     return;
   }
 
-  const apiHealthy = await waitForApiHealth({ apiBaseUrl: API_BASE_URL });
+  console.log("[Status] Connecting");
+  let apiHealthy = await waitForApiHealth({ apiBaseUrl: API_BASE_URL });
 
   if (!apiHealthy) {
-    console.error("[Agent ERROR] API Server did not become healthy within 15 seconds. Exiting.");
-    process.exit(1);
+    if (process.argv.includes("--watch")) {
+      console.log("[Agent] Waiting for API Server to become healthy...");
+      while (!apiHealthy) {
+        console.log("[Status] Connecting");
+        apiHealthy = await waitForApiHealth({ apiBaseUrl: API_BASE_URL, attempts: 5, intervalMs: 1000 });
+        if (!apiHealthy) {
+          console.log("[Agent ERROR] API Server is still down. Retrying in 5 seconds...");
+          await new Promise((resolve) => setTimeout(resolve, 5000));
+        }
+      }
+    } else {
+      console.log("[Status] Offline");
+      console.error("[Agent ERROR] API Server did not become healthy within 15 seconds. Exiting.");
+      process.exit(1);
+    }
   }
+
+  console.log("[Status] Online");
 
   const configPath = getAgentConfigPath();
 
@@ -508,7 +524,9 @@ async function runAgentTick(config: AgentLocalConfig): Promise<void> {
     await sendHeartbeat(config);
     await pollCommands(config);
     await checkUpdate(config);
+    console.log("[Status] Online");
   } catch (error) {
+    console.log("[Status] Connecting");
     console.error(error instanceof Error ? error.message : error);
   }
 }

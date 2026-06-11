@@ -12,10 +12,12 @@
     "dev": "vite --host 127.0.0.1",
     "desktop:build": "tauri build",
     "desktop:dev": "tauri dev",
-    "build": "tsc && vite build && node scripts/build-backend.js",
+    "agent:package": "node scripts/package-agent.js",
+    "build": "tsc && vite build && node scripts/build-backend.js && node scripts/package-agent.js",
     "test": "vitest run"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.11.0",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

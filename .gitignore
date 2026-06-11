@@ -6,6 +6,7 @@ dist/
 target/
 aether-link-app/dist/
 aether-link-app/dist-agent/
+aether-link-app/dist-agent-pkg/
 aether-link-app/dist-runtime/
 aether-link-app/dist-server/
 aether-link-app/src-tauri/gen/schemas/
