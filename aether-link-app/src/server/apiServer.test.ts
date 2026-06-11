@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+﻿import { mkdtemp, rm } from "node:fs/promises";
 import { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -98,7 +98,7 @@ describe("aether link local API server", () => {
     expect(await devices.json()).toEqual({ devices: [] });
   });
 
-  it("registers an agent, opens a session, and records input events", async () => {
+  it("registers an agent, opens a pending session, and records input only after approval", async () => {
     const connected = await postJson("/api/agent/connect", {
       businessNumber: "1234567890",
       password: "1234",
@@ -112,19 +112,26 @@ describe("aether link local API server", () => {
     expect(connectedBody.devices).toHaveLength(1);
     expect(connectedBody.session).toMatchObject({
       deviceId: "123-45-67890:POS-01",
-      state: "connected",
+      state: "pending",
     });
 
+    const blockedInput = await postJson(`/api/sessions/${connectedBody.session.id}/input`, {
+      action: "mouse-click-before-approval",
+    });
+    expect(blockedInput.status).toBe(409);
+
+    const approval = await postJson(`/api/sessions/${connectedBody.session.id}/approve`, {
+      approved: true,
+    });
+    expect(approval.status).toBe(200);
+
     const input = await postJson(`/api/sessions/${connectedBody.session.id}/input`, {
-      action: "마우스 클릭",
+      action: "mouse-click",
     });
 
     expect(input.status).toBe(200);
     const inputBody = await input.json();
-    expect(inputBody.inputLog[0]).toContain("마우스 클릭");
-    expect(inputBody.inputLog).toEqual(
-      expect.arrayContaining([expect.stringContaining("세션 연결")]),
-    );
+    expect(inputBody.inputLog[0]).toContain("mouse-click");
   });
 
   it("queues viewer input events for the registered agent and clears them after polling", async () => {

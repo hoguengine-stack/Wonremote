@@ -41,7 +41,7 @@ describe("agent registry domain", () => {
     expect(result.session).toMatchObject({
       id: "session-123-45-67890:POS-01",
       deviceId: "123-45-67890:POS-01",
-      state: "connected",
+      state: "pending",
     });
   });
 
