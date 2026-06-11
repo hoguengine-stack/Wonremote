@@ -251,3 +251,25 @@ unused import, dead code, 미사용 변수는 가능한 한 바로 제거한다.
 - 남은 리스크를 명시
 
 완료 조건을 만족하지 못하면 "완료"라고 말하지 않는다.
+
+## Mandatory Current Baseline Protocol
+
+Before every report, run these commands from `C:\Users\qpalz\Documents\remote` and paste the actual values into the report:
+
+```powershell
+git fetch origin
+git rev-parse --short HEAD
+git rev-parse --short origin/main
+git status --short --untracked-files=all
+git log --oneline -5
+```
+
+Rules:
+
+- Do not reuse an older baseline from memory, notes, previous reports, or screenshots.
+- Do not report `e68e256` as the baseline unless `git rev-parse --short HEAD` actually prints `e68e256`.
+- As of 2026-06-12, the known pushed baseline is `f1686e6`; if the command output differs, report the command output, not this sentence.
+- Do not report `aether-link-app/scripts/check-registry-status.bat` as untracked unless `git status --short --untracked-files=all` prints it.
+- Do not report `npm test: 53 passed` unless the latest `npm test` output says 53. The current suite has 55 tests after the Agent 404 recovery tests.
+- Bundle file sizes must be measured fresh with `Get-Item ... | Select-Object FullName,Length`. Do not copy old byte counts.
+- If `HEAD` and `origin/main` differ, say exactly which side is ahead/behind before making any implementation claim.

@@ -69,3 +69,26 @@
 - `aether-link-app/src/domain/visualPing.test.ts`의 5개 테스트가 이 기준을 고정하므로, Visual Ping 관련 변경 시 이 테스트를 먼저 갱신하고 실패를 확인한 뒤 구현한다.
 - Viewer App은 Rust stream이 보낸 좌상단 32x32 마젠타 타일을 Canvas에 그린 뒤 `requestAnimationFrame` 콜백에서 `(5,5)` 픽셀을 읽어 측정한다.
 - 이 구현은 브라우저 Canvas 표시 시점 기반 PoC이며, 실제 모니터 물리 표시/GPU fence, ZOOK baseline, J1800/J1900 실장비 성능을 통과한 것으로 쓰면 안 된다.
+
+## Current Baseline Handoff Rule
+
+Before doing any work or writing any report, run this preflight from `C:\Users\qpalz\Documents\remote`:
+
+```powershell
+git fetch origin
+git rev-parse --short HEAD
+git rev-parse --short origin/main
+git status --short --untracked-files=all
+git log --oneline -5
+```
+
+Use the command output as the only source of truth.
+
+Do not report:
+
+- baseline `e68e256` unless `git rev-parse --short HEAD` prints `e68e256`
+- `check-registry-status.bat` as untracked unless `git status` prints it
+- `npm test: 53 passed` unless the latest test output prints 53
+- old bundle byte counts copied from a previous report
+
+As of 2026-06-12, the current pushed baseline is `f1686e6`, and the working tree should be clean before the next physical Windows install/reboot validation.
