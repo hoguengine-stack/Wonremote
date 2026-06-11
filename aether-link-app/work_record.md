@@ -67,3 +67,51 @@ cmd /c aether-link-app\scripts\check-registry-status.bat
 ## Current Interpretation
 
 The registry startup command and installed executable path are now materially verified on this Windows environment. Reboot persistence and visual tray interaction remain manual physical validation items unless a future run captures direct evidence after reboot.
+
+## 2026-06-12 Follow-up Verification
+
+Preflight verified by CodeX:
+
+```text
+HEAD: d068366
+origin/main: d068366
+git status --short --untracked-files=all: clean
+```
+
+Fresh verification results:
+
+```text
+npm test: 55 passed
+cargo test in aether-link-app/src-tauri: 3 passed
+cargo test in aether-link-poc: 8 passed
+```
+
+Fresh file sizes:
+
+```text
+C:\Users\qpalz\AppData\Local\AetherLink Viewer\aether-link-viewer.exe: 9,083,392 bytes
+aether-link-app\src-tauri\target\release\bundle\nsis\AetherLink Viewer_0.1.1_x64-setup.exe: 24,009,576 bytes
+aether-link-app\dist-server\index.mjs: 37,456 bytes
+aether-link-app\dist-agent\index.mjs: 32,526 bytes
+aether-link-app\dist-runtime\node.exe: 82,818,704 bytes
+aether-link-poc\target\release\aether-link-poc.exe: 3,154,944 bytes
+```
+
+Registry state verified by CodeX:
+
+```text
+AetherLinkAgent REG_SZ "C:\Users\qpalz\AppData\Local\AetherLink Viewer\aether-link-viewer.exe" --agent
+AetherLinkViewer: not present
+AetherLinkAgentCLI: not present
+```
+
+Self-healing state after the prior unregistered-agent scenario:
+
+```text
+%APPDATA%\AetherLink\agent-config.json: not present
+```
+
+Remaining manual validation items:
+
+- Full Windows reboot was still not performed by CodeX.
+- Hidden tray icon visual presence and tray menu mouse interaction are still manual physical validation items.
