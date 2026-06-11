@@ -174,6 +174,15 @@ async function pollSessionData(deviceId: string) {
 
 
 async function main() {
+  try {
+    const baseDir = process.env.APPDATA ?? process.cwd();
+    const aetherLinkDir = path.join(baseDir, "AetherLink");
+    await mkdir(aetherLinkDir, { recursive: true });
+    await writeFile(path.join(aetherLinkDir, "agent.pid"), String(process.pid), "utf8");
+  } catch (err) {
+    console.error("Failed to write agent.pid:", err);
+  }
+
   const crashFile = path.join(process.cwd(), "crash.txt");
   try {
     await access(crashFile);

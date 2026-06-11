@@ -1,7 +1,9 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { execSync, spawn } from "node:child_process";
-import { writeFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
+import { writeFileSync, mkdirSync, readFileSync, existsSync, cpSync } from "node:fs";
 import { createHash } from "node:crypto";
+import path from "node:path";
+import os from "node:os";
 import {
   applyAgentHeartbeat,
   authenticateAdmin,
@@ -34,26 +36,45 @@ let testUpdateMode: "none" | "good" | "bad_checksum" | "bad_binary" = "none";
 
 function prepareUpdateFiles() {
   try {
+    try {
+      execSync("rmdir /s /q temp_update_good 2>nul || exit 0", { shell: true } as any);
+      execSync("rmdir /s /q temp_update_bad 2>nul || exit 0", { shell: true } as any);
+    } catch (e) {}
+
     // 1. Good Update Package
     mkdirSync("./temp_update_good", { recursive: true });
-    writeFileSync("./temp_update_good/version.txt", "0.1.2");
-    // This script will represent our updated agent loader code
-    writeFileSync("./temp_update_good/update_marker.txt", "GOOD_UPDATE_SUCCESS");
+    cpSync("./src", "./temp_update_good/src", { recursive: true });
+    if (existsSync("./package-lock.json")) {
+      cpSync("./package-lock.json", "./temp_update_good/package-lock.json");
+    }
+
+    const pkg = JSON.parse(readFileSync("./package.json", "utf8"));
+    pkg.version = "0.1.2";
+    writeFileSync("./temp_update_good/package.json", JSON.stringify(pkg, null, 2), "utf8");
+    writeFileSync("./temp_update_good/update_marker.txt", "GOOD_UPDATE_SUCCESS", "utf8");
     
-    // Create zip archive using tar (native to Windows 10+ and Unix)
-    execSync("tar -a -cf aether-link-update-good.zip -C temp_update_good version.txt update_marker.txt");
+    execSync("tar -a -cf aether-link-update-good.zip -C temp_update_good .");
     const goodZip = readFileSync("aether-link-update-good.zip");
     goodChecksum = createHash("sha256").update(goodZip).digest("hex");
 
     // 2. Bad Update Package (designed to trigger boot crash)
     mkdirSync("./temp_update_bad", { recursive: true });
-    writeFileSync("./temp_update_bad/version.txt", "0.1.2");
-    // Writing crash.txt so the agent knows to crash itself immediately upon start
-    writeFileSync("./temp_update_bad/crash.txt", "TRIGGER_CRASH");
+    cpSync("./src", "./temp_update_bad/src", { recursive: true });
+    if (existsSync("./package-lock.json")) {
+      cpSync("./package-lock.json", "./temp_update_bad/package-lock.json");
+    }
+    writeFileSync("./temp_update_bad/package.json", JSON.stringify(pkg, null, 2), "utf8");
+    writeFileSync("./temp_update_bad/crash.txt", "TRIGGER_CRASH", "utf8");
     
-    execSync("tar -a -cf aether-link-update-bad.zip -C temp_update_bad version.txt crash.txt");
+    execSync("tar -a -cf aether-link-update-bad.zip -C temp_update_bad .");
     const badZip = readFileSync("aether-link-update-bad.zip");
     badBinaryChecksum = createHash("sha256").update(badZip).digest("hex");
+
+    try {
+      execSync("rmdir /s /q temp_update_good 2>nul || exit 0", { shell: true } as any);
+      execSync("rmdir /s /q temp_update_bad 2>nul || exit 0", { shell: true } as any);
+    } catch (e) {}
+
     console.log(`[API Server] Generated update zips. Good Checksum: ${goodChecksum}, Bad Checksum: ${badBinaryChecksum}`);
   } catch (e) {
     console.error("[API Server] Failed to prepare update zip files:", e);
@@ -361,6 +382,10 @@ async function routeRequest(
 
   // Backdoor route to set update mode for E2E testing
   if (request.method === "POST" && url.pathname === "/api/test/set-update-mode") {
+    if (process.env.NODE_ENV !== "test") {
+      writeJson(response, 403, { error: "Forbidden: Only allowed in test environment" });
+      return;
+    }
     const body = await readJson<{ mode?: "none" | "good" | "bad_checksum" | "bad_binary" }>(request);
     if (body.mode) {
       testUpdateMode = body.mode;
@@ -373,7 +398,31 @@ async function routeRequest(
   // 2. GET /api/update/check
   if (request.method === "GET" && url.pathname === "/api/update/check") {
     const isNone = testUpdateMode === "none";
-    let latestVersion = isNone ? "0.1.0" : "0.1.2";
+    let latestVersion = "0.1.0";
+    
+    if (isNone) {
+      if (process.env.NODE_ENV !== "test") {
+        try {
+          const ghRes = await fetch("https://raw.githubusercontent.com/hoguengine-stack/Wonremote/main/aether-link-app/package.json?nocache=" + Date.now());
+          if (ghRes.ok) {
+            const ghPkg = await ghRes.json() as { version?: string };
+            if (ghPkg && ghPkg.version) {
+              latestVersion = ghPkg.version;
+            }
+          }
+        } catch (err) {
+          console.error("[API Server] Failed to fetch latest version from GitHub package.json:", err);
+          try {
+            const localPkg = JSON.parse(readFileSync("./package.json", "utf8"));
+            latestVersion = localPkg.version || "0.1.0";
+          } catch (e) {}
+        }
+      } else {
+        latestVersion = "0.1.0";
+      }
+    } else {
+      latestVersion = "0.1.2";
+    }
     
     const badChecksum = testUpdateMode === "bad_checksum";
     const badBinary = testUpdateMode === "bad_binary";
@@ -419,6 +468,10 @@ async function routeRequest(
 
   // POST /api/update/execute
   if (request.method === "POST" && url.pathname === "/api/update/execute") {
+    if (process.env.NODE_ENV !== "test") {
+      writeJson(response, 403, { error: "Forbidden: Only allowed in test environment" });
+      return;
+    }
     const body = await readJson<{ installerPath?: string }>(request);
     const installerPath = String(body.installerPath ?? "").trim();
     if (!installerPath) {
@@ -426,9 +479,18 @@ async function routeRequest(
       return;
     }
 
+    const baseDir = process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming");
+    const expectedPath = path.resolve(baseDir, "AetherLink", "update_install.bat");
+    const resolvedPath = path.resolve(installerPath);
+
+    if (resolvedPath !== expectedPath) {
+      writeJson(response, 400, { error: "Forbidden installer path" });
+      return;
+    }
+
     try {
-      console.log(`[API Server] Spawning installer from API Server: ${installerPath}`);
-      const instProcess = spawn("cmd.exe", ["/c", installerPath], {
+      console.log(`[API Server] Spawning installer from API Server: ${resolvedPath}`);
+      const instProcess = spawn("cmd.exe", ["/c", resolvedPath], {
         detached: true,
         stdio: "ignore",
       });
