@@ -26,6 +26,13 @@ describe("aether link local API server", () => {
     });
   });
 
+  it("reports health before stateful routes are initialized", async () => {
+    const response = await fetch(`${baseUrl}/api/health`);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true });
+  });
+
   it("rejects invalid admin login and accepts the development admin", async () => {
     const rejected = await postJson("/api/admin/login", {
       username: "admin",

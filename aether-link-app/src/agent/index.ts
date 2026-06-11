@@ -6,6 +6,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { bootstrapAgent } from "./agentBootstrap";
 import { pollAgentCommands, sendAgentHeartbeat } from "./agentClient";
+import { waitForApiHealth } from "./agentHealth";
 import { resolveAgentAppDir, resolveAgentPocPath } from "./agentPaths";
 import { resolveAgentCredentials } from "./agentRuntime";
 import { computeSha256 } from "./checksum";
@@ -195,6 +196,13 @@ async function main() {
   if (process.argv.includes("--uninstall")) {
     await handleRegistryUninstall();
     return;
+  }
+
+  const apiHealthy = await waitForApiHealth({ apiBaseUrl: API_BASE_URL });
+
+  if (!apiHealthy) {
+    console.error("[Agent ERROR] API Server did not become healthy within 15 seconds. Exiting.");
+    process.exit(1);
   }
 
   const configPath = getAgentConfigPath();

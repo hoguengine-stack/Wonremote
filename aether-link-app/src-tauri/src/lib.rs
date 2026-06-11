@@ -23,6 +23,8 @@ use windows_sys::Win32::System::JobObjects::{
 };
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+const STARTUP_REGISTRY_PATH: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+const STARTUP_REGISTRY_VALUE: &str = "AetherLinkViewer";
 
 pub struct Job {
     handle: HANDLE,
@@ -148,31 +150,50 @@ fn ensure_resource_exists(path: &Path, label: &str) -> Result<(), io::Error> {
     }
 }
 
-fn set_startup_registry(enable: bool) -> Result<(), std::io::Error> {
+fn set_registry_value(
+    path: &str,
+    value_name: &str,
+    value: Option<&str>,
+) -> Result<(), std::io::Error> {
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let path = r"Software\Microsoft\Windows\CurrentVersion\Run";
 
-    if enable {
+    if let Some(value) = value {
         let (key, _) = hkcu.create_subkey(path)?;
-        let exe_path = std::env::current_exe()?;
-        let exe_str = format!("\"{}\"", exe_path.to_string_lossy());
-        key.set_value("AetherLinkViewer", &exe_str)?;
+        key.set_value(value_name, &value)?;
     } else {
         if let Ok(key) = hkcu.open_subkey_with_flags(path, KEY_WRITE) {
-            let _ = key.delete_value("AetherLinkViewer");
+            let _ = key.delete_value(value_name);
         }
     }
+
     Ok(())
 }
 
-fn is_startup_registered() -> bool {
+fn registry_value_exists(path: &str, value_name: &str) -> bool {
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let path = r"Software\Microsoft\Windows\CurrentVersion\Run";
     if let Ok(key) = hkcu.open_subkey_with_flags(path, KEY_READ) {
-        key.get_value::<String, _>("AetherLinkViewer").is_ok()
+        key.get_value::<String, _>(value_name).is_ok()
     } else {
         false
     }
+}
+
+fn set_startup_registry(enable: bool) -> Result<(), std::io::Error> {
+    if enable {
+        let exe_path = std::env::current_exe()?;
+        let exe_str = format!("\"{}\"", exe_path.to_string_lossy());
+        set_registry_value(
+            STARTUP_REGISTRY_PATH,
+            STARTUP_REGISTRY_VALUE,
+            Some(&exe_str),
+        )
+    } else {
+        set_registry_value(STARTUP_REGISTRY_PATH, STARTUP_REGISTRY_VALUE, None)
+    }
+}
+
+fn is_startup_registered() -> bool {
+    registry_value_exists(STARTUP_REGISTRY_PATH, STARTUP_REGISTRY_VALUE)
 }
 
 fn start_dev_processes(job: &Job) -> Result<(), io::Error> {
@@ -311,4 +332,30 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("failed to run AetherLink Viewer desktop shell");
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+
+    #[test]
+    fn test_registry_toggle_uses_isolated_test_key() {
+        let test_value_name = format!("AetherLinkViewerTest{}", std::process::id());
+        let test_path = r"Software\AetherLink\Tests\Run";
+
+        let _ = set_registry_value(test_path, &test_value_name, None);
+        assert!(!registry_value_exists(test_path, &test_value_name));
+
+        set_registry_value(
+            test_path,
+            &test_value_name,
+            Some(r#""C:\AetherLink\viewer.exe""#),
+        )
+        .expect("failed to set isolated registry value");
+        assert!(registry_value_exists(test_path, &test_value_name));
+
+        set_registry_value(test_path, &test_value_name, None)
+            .expect("failed to clear isolated registry value");
+        assert!(!registry_value_exists(test_path, &test_value_name));
+    }
 }
