@@ -19,7 +19,7 @@ describe("agent registry domain", () => {
     expect(authenticateAdmin("admin", "1234")).toBe(false);
   });
 
-  it("registers an agent once and opens a pending approval session", () => {
+  it("registers an agent once and opens a connected session", () => {
     const result = registerAgentConnection([], {
       businessNumber: "1234567890",
       password: "1234",
@@ -41,7 +41,7 @@ describe("agent registry domain", () => {
     expect(result.session).toMatchObject({
       id: "session-123-45-67890:POS-01",
       deviceId: "123-45-67890:POS-01",
-      state: "pending",
+      state: "connected",
     });
   });
 

@@ -121,7 +121,7 @@ describe("aether link local API server", () => {
     expect(await devices.json()).toEqual({ devices: [] });
   });
 
-  it("registers an agent, opens a pending session, and records input only after approval", async () => {
+  it("registers an agent, opens a connected session, and records input immediately", async () => {
     const connected = await postJson("/api/agent/connect", {
       businessNumber: "1234567890",
       password: "1234",
@@ -135,18 +135,8 @@ describe("aether link local API server", () => {
     expect(connectedBody.devices).toHaveLength(1);
     expect(connectedBody.session).toMatchObject({
       deviceId: "123-45-67890:POS-01",
-      state: "pending",
+      state: "connected",
     });
-
-    const blockedInput = await postJson(`/api/sessions/${connectedBody.session.id}/input`, {
-      action: "mouse-click-before-approval",
-    });
-    expect(blockedInput.status).toBe(409);
-
-    const approval = await postJson(`/api/sessions/${connectedBody.session.id}/approve`, {
-      approved: true,
-    });
-    expect(approval.status).toBe(200);
 
     const input = await postJson(`/api/sessions/${connectedBody.session.id}/input`, {
       action: "mouse-click",
@@ -178,25 +168,11 @@ describe("aether link local API server", () => {
     expect(await prePoll.json()).toMatchObject({
       commands: [
         {
-          action: "request-approval",
+          action: "start-stream",
           deviceId: "123-45-67890:AGENT-COMMAND-01",
         },
       ],
     });
-
-    const blockedInput = await postJson(`/api/sessions/${sessionBody.session.id}/input`, {
-      action: "blocked-before-approval",
-    });
-    expect(blockedInput.status).toBe(409);
-    expect(await blockedInput.json()).toEqual({
-      error: "접속 승인 전에는 입력 이벤트를 전송할 수 없습니다.",
-    });
-
-    // Approve session explicitly to proceed
-    const approveRes = await postJson(`/api/sessions/${sessionBody.session.id}/approve`, {
-      approved: true,
-    });
-    expect(approveRes.status).toBe(200);
 
     const input = await postJson(`/api/sessions/${sessionBody.session.id}/input`, {
       action: "마우스 클릭",
@@ -211,10 +187,6 @@ describe("aether link local API server", () => {
     expect(await polled.json()).toMatchObject({
       commands: [
         {
-          action: "start-stream", // approval success puts start-stream in queue
-          deviceId: "123-45-67890:AGENT-COMMAND-01",
-        },
-        {
           action: "마우스 클릭",
           deviceId: "123-45-67890:AGENT-COMMAND-01",
         },
@@ -228,7 +200,7 @@ describe("aether link local API server", () => {
     expect(await emptyPoll.json()).toEqual({ commands: [] });
   });
 
-  it("blocks session data channels until the agent approves the session", async () => {
+  it("allows session data channels immediately after opening an owned online agent", async () => {
     const registered = await postJson("/api/agent/first-run", {
       businessNumber: "5556677777",
       password: "1234",
@@ -243,29 +215,29 @@ describe("aether link local API server", () => {
     const encodedSessionId = encodeURIComponent(sessionBody.session.id);
 
     const chat = await postJson(`/api/sessions/${encodedSessionId}/chat`, {
-      message: "blocked",
+      message: "allowed",
       sender: "viewer",
     });
-    expect(chat.status).toBe(409);
+    expect(chat.status).toBe(200);
 
     const clipboard = await postJson(`/api/sessions/${encodedSessionId}/clipboard`, {
-      text: "blocked",
+      text: "allowed",
       sender: "viewer",
     });
-    expect(clipboard.status).toBe(409);
+    expect(clipboard.status).toBe(200);
 
     const file = await postJson(`/api/sessions/${encodedSessionId}/files`, {
-      filename: "blocked.txt",
-      fileData: Buffer.from("blocked").toString("base64"),
+      filename: "allowed.txt",
+      fileData: Buffer.from("allowed").toString("base64"),
     });
-    expect(file.status).toBe(409);
+    expect(file.status).toBe(200);
 
     const tiles = await postJson(`/api/sessions/${encodedSessionId}/tiles`, {
       width: 32,
       height: 32,
       tiles: [],
     });
-    expect(tiles.status).toBe(409);
+    expect(tiles.status).toBe(200);
   });
 
   it("opens a new session for an already registered device", async () => {
@@ -286,9 +258,9 @@ describe("aether link local API server", () => {
     expect(await reopened.json()).toMatchObject({
       session: {
         deviceId: "123-45-67890:POS-01",
-        state: "pending",
+        state: "connected",
       },
-      inputLog: [expect.stringContaining("접속 승인 대기 중")],
+      inputLog: [expect.stringContaining("세션 연결 완료")],
     });
   });
 
@@ -417,7 +389,7 @@ describe("aether link local API server", () => {
     expect(await onlineSession.json()).toMatchObject({
       session: {
         deviceId: "888-99-00000:AGENT-ONLINE-CONNECT",
-        state: "pending",
+        state: "connected",
       },
     });
   });
@@ -432,11 +404,6 @@ describe("aether link local API server", () => {
     });
     const connectedBody = await connected.json();
     const sessionId = connectedBody.session.id;
-
-    const approval = await postJson(`/api/sessions/${sessionId}/approve`, {
-      approved: true,
-    });
-    expect(approval.status).toBe(200);
 
     const postTiles = await postJson(`/api/sessions/${sessionId}/tiles`, {
       tiles: [{ x: 0, y: 0, w: 32, h: 32, data: "base64tiledata" }],
@@ -492,10 +459,6 @@ describe("aether link local API server", () => {
     });
     const connectedBody = await connected.json();
     const sessionId = connectedBody.session.id;
-
-    // Approve session to simulate full connection success
-    const approveRes = await postJson(`/api/sessions/${sessionId}/approve`, { approved: true });
-    expect(approveRes.status).toBe(200);
 
     // 2. Chatting test
     const chatPost = await postJson(`/api/sessions/${sessionId}/chat`, {

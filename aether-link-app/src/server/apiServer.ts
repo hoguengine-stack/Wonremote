@@ -274,15 +274,15 @@ async function routeRequest(
       const result = registerAgentConnection(state.devices, input, nowIso(state));
       state.devices = result.devices;
       await state.deviceStore.writeDevices(state.devices);
-      state.sessions.set(result.session.id, result.session);
-      state.inputLogs.set(result.session.id, [
-        `${new Date().toLocaleTimeString()} 접속 승인 대기 중`,
-      ]);
-      enqueueAgentCommand(state, result.session.deviceId, "request-approval");
+      const device = state.devices.find((item) => item.id === result.session.deviceId);
+      if (!device) {
+        throw new Error("Agent 장비 등록 결과를 확인할 수 없습니다.");
+      }
+      const opened = await openConnectedSession(state, device);
       writeJson(response, 200, {
         devices: state.devices,
-        session: result.session,
-        inputLog: state.inputLogs.get(result.session.id) ?? [],
+        session: opened.session,
+        inputLog: opened.inputLog,
       });
     } catch (error) {
       writeJson(response, 400, {
@@ -308,18 +308,10 @@ async function routeRequest(
       return;
     }
 
-    const session: RemoteSession = {
-      id: `session-${device.id}`,
-      deviceId: device.id,
-      state: "pending",
-      startedAt: nowIso(state),
-    };
-    state.sessions.set(session.id, session);
-    state.inputLogs.set(session.id, [`${new Date().toLocaleTimeString()} 접속 승인 대기 중`]);
-    enqueueAgentCommand(state, session.deviceId, "request-approval");
+    const opened = await openConnectedSession(state, device);
     writeJson(response, 200, {
-      session,
-      inputLog: state.inputLogs.get(session.id) ?? [],
+      session: opened.session,
+      inputLog: opened.inputLog,
     });
     return;
   }
@@ -345,18 +337,10 @@ async function routeRequest(
       return;
     }
 
-    const session: RemoteSession = {
-      id: `session-${device.id}`,
-      deviceId: device.id,
-      state: "pending",
-      startedAt: nowIso(state),
-    };
-    state.sessions.set(session.id, session);
-    state.inputLogs.set(session.id, [`${new Date().toLocaleTimeString()} 접속 승인 대기 중`]);
-    enqueueAgentCommand(state, session.deviceId, "request-approval");
+    const opened = await openConnectedSession(state, device);
     writeJson(response, 200, {
-      session,
-      inputLog: state.inputLogs.get(session.id) ?? [],
+      session: opened.session,
+      inputLog: opened.inputLog,
     });
     return;
   }
@@ -784,6 +768,34 @@ async function routeRequest(
   }
 
   writeJson(response, 404, { error: "Not found" });
+}
+
+async function openConnectedSession(
+  state: ApiState,
+  device: ManagedDevice,
+): Promise<{ session: RemoteSession; inputLog: string[] }> {
+  const session: RemoteSession = {
+    id: `session-${device.id}`,
+    deviceId: device.id,
+    state: "connected",
+    startedAt: nowIso(state),
+  };
+  const inputLog = [`${new Date().toLocaleTimeString()} 세션 연결 완료`];
+
+  state.sessions.set(session.id, session);
+  state.inputLogs.set(session.id, inputLog);
+  enqueueAgentCommand(state, session.deviceId, "start-stream");
+
+  await state.historyStore.addHistoryEntry({
+    id: `hist-${session.id}-${Date.now()}`,
+    deviceId: device.id,
+    storeName: device.storeName,
+    deviceName: device.deviceName,
+    startedAt: nowIso(state),
+    status: "success",
+  });
+
+  return { session, inputLog };
 }
 
 function enqueueAgentCommand(state: ApiState, deviceId: string, action: string): void {

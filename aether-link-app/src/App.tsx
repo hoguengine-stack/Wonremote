@@ -215,7 +215,7 @@ function ViewerApp() {
         if (!active) return;
         if (nextState === "connected") {
           setSession({ ...session, state: "connected" });
-          setInputLog((prev) => [`${new Date().toLocaleTimeString()} 접속 승인 완료`, ...prev]);
+          setInputLog((prev) => [`${new Date().toLocaleTimeString()} 세션 연결 완료`, ...prev]);
         }
       } catch (error) {
         if (active) {
@@ -1069,10 +1069,10 @@ function RemoteSessionPanel({
         </div>
         <div className="remote-screen" style={{ display: "flex", flexDirection: "column", gap: "24px", alignItems: "center", justifyContent: "center", background: "#0f0f1a", minHeight: "400px" }}>
           <div className="status-pill" style={{ background: "rgba(99, 102, 241, 0.2)", color: "#818cf8", padding: "12px 24px", fontSize: "16px", fontWeight: "bold" }}>
-            에이전트 접속 승인 대기 중...
+            에이전트 연결 준비 중...
           </div>
           <p style={{ color: "#94a3b8", fontSize: "14px", textAlign: "center", maxWidth: "300px" }}>
-            보안상 원격 접속 제어를 위해 에이전트 CLI 또는 웹 창에서 '승인(Y)'을 수락해야 연동이 개시됩니다.
+            Agent 상태를 확인하는 중입니다. 정상 등록된 온라인 장비는 별도 승인 없이 자동으로 연결됩니다.
           </p>
           <button
             onClick={onCloseSession}

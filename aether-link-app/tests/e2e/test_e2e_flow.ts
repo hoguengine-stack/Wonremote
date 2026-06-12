@@ -158,7 +158,6 @@ async function main() {
   // Helpers to spawn and handle Agent CLI
   let agentProcess: any = null;
   let agentStdoutCollector = "";
-  let resolveApprovalPrompt: (() => void) | null = null;
   let resolveChecksumError: (() => void) | null = null;
   let resolveUpdateStart: (() => void) | null = null;
 
@@ -203,9 +202,6 @@ async function main() {
         console.log(`[Agent] ${str.trim()}`);
       }
 
-      if (str.includes("승인하시겠습니까? (Y/N)") && resolveApprovalPrompt) {
-        resolveApprovalPrompt();
-      }
       if (str.includes("체크섬 오류") && resolveChecksumError) {
         resolveChecksumError();
       }
@@ -281,15 +277,9 @@ async function main() {
   });
   const connData = (await connRes.json()) as any;
   const sessionId = connData.session.id;
-
-  console.log("Waiting for approval prompt...");
-  const approvalPromptPromise = new Promise<void>((resolve) => {
-    resolveApprovalPrompt = resolve;
-  });
-  await approvalPromptPromise;
-
-  console.log("Sending 'Y' approval to Agent...");
-  agentProcess.stdin.write("Y\n");
+  if (connData.session.state !== "connected") {
+    throw new Error(`Expected immediate connected session, got ${connData.session.state}`);
+  }
 
   // Wait for session to connect
   await new Promise((resolve) => setTimeout(resolve, 2000));
