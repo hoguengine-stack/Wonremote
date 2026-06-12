@@ -349,7 +349,7 @@ function ViewerApp() {
       )}
       <aside className="sidebar">
         <div className="brand-row">
-          <div className="brand-mark">A</div>
+          <div className="brand-mark">W</div>
           <div>
             <strong>WonRemote</strong>
             <span>Viewer Console</span>
