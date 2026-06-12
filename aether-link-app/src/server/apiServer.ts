@@ -295,9 +295,16 @@ async function routeRequest(
   if (request.method === "POST" && url.pathname === "/api/sessions") {
     const body = await readJson<{ deviceId?: string }>(request);
     const deviceId = String(body.deviceId ?? "").trim();
-    const device = state.devices.find((item) => item.id === deviceId);
+    const device = resolveDeviceStatuses(state.devices, nowIso(state), state.offlineAfterMs).find(
+      (item) => item.id === deviceId,
+    );
     if (!device) {
       writeJson(response, 404, { error: "장비를 찾을 수 없습니다." });
+      return;
+    }
+
+    if (device.status !== "online") {
+      writeJson(response, 409, { error: "온라인 상태의 Agent만 접속할 수 있습니다." });
       return;
     }
 
@@ -325,9 +332,16 @@ async function routeRequest(
       return;
     }
 
-    const device = state.devices.find((item) => item.connectionCode === code);
+    const device = resolveDeviceStatuses(state.devices, nowIso(state), state.offlineAfterMs).find(
+      (item) => item.connectionCode === code,
+    );
     if (!device) {
       writeJson(response, 404, { error: "해당 접속 코드를 가진 장비를 찾을 수 없습니다." });
+      return;
+    }
+
+    if (device.status !== "online") {
+      writeJson(response, 409, { error: "온라인 상태의 Agent만 접속할 수 있습니다." });
       return;
     }
 

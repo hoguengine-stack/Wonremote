@@ -381,6 +381,47 @@ describe("aether link local API server", () => {
     });
   });
 
+  it("opens sessions only for agents currently reported online", async () => {
+    await closeServer();
+    let currentTime = new Date("2026-06-11T03:00:00.000Z");
+    server = createApiServer({
+      now: () => currentTime,
+      offlineAfterMs: 1000,
+    });
+    await listen();
+
+    const registered = await postJson("/api/agent/first-run", {
+      businessNumber: "8889900000",
+      password: "1234",
+      installId: "agent-online-connect",
+    });
+    expect(registered.status).toBe(200);
+    const registeredBody = await registered.json();
+
+    currentTime = new Date("2026-06-11T03:00:02.000Z");
+    const offlineSession = await postJson("/api/sessions", {
+      deviceId: registeredBody.device.id,
+    });
+    expect(offlineSession.status).toBe(409);
+
+    const heartbeat = await postJson("/api/agent/heartbeat", {
+      deviceId: registeredBody.device.id,
+      installId: "agent-online-connect",
+    });
+    expect(heartbeat.status).toBe(200);
+
+    const onlineSession = await postJson("/api/sessions", {
+      deviceId: registeredBody.device.id,
+    });
+    expect(onlineSession.status).toBe(200);
+    expect(await onlineSession.json()).toMatchObject({
+      session: {
+        deviceId: "888-99-00000:AGENT-ONLINE-CONNECT",
+        state: "pending",
+      },
+    });
+  });
+
   it("allows posting and getting tiles for a session and clears tiles queue after getting", async () => {
     const connected = await postJson("/api/agent/connect", {
       businessNumber: "1234567890",

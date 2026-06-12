@@ -18,8 +18,6 @@ import React, { FormEvent, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   closeSession,
-  connectAgent,
-  connectByCode,
   fetchDevices,
   loginAdmin,
   openSession,
@@ -42,7 +40,6 @@ import {
 import { getViewerVersion } from "./domain/versioning";
 import { shouldNotifyUpdate, shouldReloadViewerForUpdate } from "./domain/updatePolicy";
 import type {
-  AgentConnectionInput,
   ManagedDevice,
   RemoteSession,
   ChatMessage,
@@ -70,14 +67,6 @@ function playBeepSound() {
     console.error("오디오 재생 실패:", e);
   }
 }
-
-const emptyAgentForm: AgentConnectionInput = {
-  businessNumber: "",
-  password: "",
-  storeName: "",
-  deviceNumber: "",
-  deviceName: "",
-};
 
 export function App() {
   const [appMode, setAppMode] = useState<"viewer" | "agent" | null>(null);
@@ -109,8 +98,6 @@ function ViewerApp() {
   const [loginError, setLoginError] = useState("");
   const [devices, setDevices] = useState<ManagedDevice[]>([]);
   const [session, setSession] = useState<RemoteSession | null>(null);
-  const [agentForm, setAgentForm] = useState<AgentConnectionInput>(emptyAgentForm);
-  const [agentError, setAgentError] = useState("");
   const [apiError, setApiError] = useState("");
   const [query, setQuery] = useState("");
   const [selectedStore, setSelectedStore] = useState("전체");
@@ -266,37 +253,6 @@ function ViewerApp() {
     }
   }
 
-  async function handleAgentConnect(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (agentForm.password.trim() !== "1234") {
-      setAgentError("Agent 비밀번호가 올바르지 않습니다.");
-      return;
-    }
-
-    try {
-      const result = await connectAgent(agentForm);
-      setDevices(result.devices);
-      setSession(result.session);
-      setInputLog(result.inputLog);
-      setAgentError("");
-      setApiError("");
-    } catch (error) {
-      setAgentError(error instanceof Error ? error.message : "Agent 접속 실패");
-    }
-  }
-
-  async function handleConnectCodeConnect(code: string) {
-    try {
-      const result = await connectByCode(code);
-      setSession(result.session);
-      setInputLog(result.inputLog);
-      setAgentError("");
-      setApiError("");
-    } catch (error) {
-      setAgentError(error instanceof Error ? error.message : "접속 코드 연결 실패");
-    }
-  }
-
   async function markInput(action: string) {
     if (!session) {
       return;
@@ -406,17 +362,14 @@ function ViewerApp() {
 
         <section className="content-grid">
           <section className="control-panel">
-            <AgentConnectForm
-              error={agentError}
-              form={agentForm}
-              onChange={setAgentForm}
-              onSubmit={handleAgentConnect}
-              onConnectCodeSubmit={handleConnectCodeConnect}
-            />
             <DeviceTable
               devices={filteredDevices}
               activeDeviceId={session?.deviceId ?? ""}
               onConnect={async (device) => {
+                if (device.status !== "online") {
+                  setApiError("온라인 상태의 Agent만 접속할 수 있습니다.");
+                  return;
+                }
                 try {
                   const result = await openSession(device.id);
                   setSession(result.session);
@@ -714,142 +667,6 @@ function getOrCreateAgentInstallId(): string {
   return installId;
 }
 
-function AgentConnectForm({
-  error,
-  form,
-  onChange,
-  onSubmit,
-  onConnectCodeSubmit,
-}: {
-  error: string;
-  form: AgentConnectionInput;
-  onChange: (next: AgentConnectionInput) => void;
-  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
-  onConnectCodeSubmit: (code: string) => void;
-}) {
-  const [activeTab, setActiveTab] = useState<"form" | "code">("form");
-  const [connectCode, setConnectCode] = useState("");
-
-  function update<K extends keyof AgentConnectionInput>(key: K, value: AgentConnectionInput[K]) {
-    onChange({ ...form, [key]: value });
-  }
-
-  const handleCodeSubmit = (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    onConnectCodeSubmit(connectCode);
-  };
-
-  return (
-    <div className="agent-form-container" style={{ display: "flex", flexDirection: "column", gap: "12px", background: "var(--card-bg, #1e1e2e)", padding: "16px", borderRadius: "8px", border: "1px solid var(--border-color, #2d2d3f)", marginBottom: "16px" }}>
-      <div style={{ display: "flex", borderBottom: "1px solid #2d2d3f", paddingBottom: "8px", gap: "16px" }}>
-        <button
-          type="button"
-          onClick={() => setActiveTab("form")}
-          style={{
-            background: "none",
-            border: "none",
-            color: activeTab === "form" ? "#818cf8" : "#94a3b8",
-            fontWeight: "bold",
-            cursor: "pointer",
-            borderBottom: activeTab === "form" ? "2px solid #818cf8" : "none",
-            paddingBottom: "4px"
-          }}
-        >
-          계정 정보로 등록/접속
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveTab("code")}
-          style={{
-            background: "none",
-            border: "none",
-            color: activeTab === "code" ? "#818cf8" : "#94a3b8",
-            fontWeight: "bold",
-            cursor: "pointer",
-            borderBottom: activeTab === "code" ? "2px solid #818cf8" : "none",
-            paddingBottom: "4px"
-          }}
-        >
-          접속 코드로 즉시 연결
-        </button>
-      </div>
-
-      {activeTab === "form" ? (
-        <form className="agent-form" onSubmit={onSubmit} style={{ padding: 0, border: "none", background: "none" }}>
-          <div className="section-heading" style={{ margin: 0, paddingBottom: "12px" }}>
-            <h2>계정 정보 입력</h2>
-            <button className="primary-button compact" type="submit" title="접속">
-              <PlugZap size={17} />
-              <span>접속</span>
-            </button>
-          </div>
-          <div className="form-grid">
-            <label>
-              사업자번호 <input
-                value={form.businessNumber}
-                onChange={(event) => update("businessNumber", event.target.value)}
-                placeholder="000-00-00000"
-              />
-            </label>
-            <label>
-              Agent 비밀번호
-              <input
-                value={form.password}
-                onChange={(event) => update("password", event.target.value)}
-                type="password"
-              />
-            </label>
-            <label>
-              업장명 <input value={form.storeName} onChange={(event) => update("storeName", event.target.value)} />
-            </label>
-            <label>
-              장비 번호
-              <input
-                value={form.deviceNumber}
-                onChange={(event) => update("deviceNumber", event.target.value)}
-              />
-            </label>
-            <label className="wide-field">
-              장비명 <input value={form.deviceName} onChange={(event) => update("deviceName", event.target.value)} />
-            </label>
-          </div>
-          {error && <p className="error-text">{error}</p>}
-        </form>
-      ) : (
-        <form onSubmit={handleCodeSubmit} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-          <div className="section-heading" style={{ margin: 0, paddingBottom: "12px" }}>
-            <h2>접속 코드 입력</h2>
-            <button className="primary-button compact" type="submit" title="연결">
-              <PlugZap size={17} />
-              <span>연결</span>
-            </button>
-          </div>
-          <label style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-            6자리 접속 코드
-            <input
-              value={connectCode}
-              onChange={(event) => setConnectCode(event.target.value)}
-              placeholder="384 102"
-              style={{
-                fontSize: "18px",
-                textAlign: "center",
-                fontWeight: "bold",
-                letterSpacing: "2px",
-                padding: "10px",
-                borderRadius: "6px",
-                border: "1px solid #2d2d3f",
-                background: "#0f0f1a",
-                color: "#fff"
-              }}
-            />
-          </label>
-          {error && <p className="error-text">{error}</p>}
-        </form>
-      )}
-    </div>
-  );
-}
-
 function DeviceTable({
   activeDeviceId,
   devices,
@@ -873,25 +690,30 @@ function DeviceTable({
           <span>데스크탑</span>
           <span>접속</span>
         </div>
-        {devices.map((device) => (
-          <div className="table-row" key={device.id}>
-            <span className="status-pill">{device.status}</span>
-            <span>{device.storeName}</span>
-            <span>
-              <b>{device.deviceNumber}</b>
-              <small>{device.deviceName}</small>
-            </span>
-            <span>{device.desktopName}</span>
-            <button
-              className={activeDeviceId === device.id ? "icon-button active" : "icon-button"}
-              type="button"
-              title="접속"
-              onClick={() => onConnect(device)}
-            >
-              <PlugZap size={16} />
-            </button>
-          </div>
-        ))}
+        {devices.map((device) => {
+          const isOnline = device.status === "online";
+          return (
+            <div className="table-row" key={device.id}>
+              <span className="status-pill">{device.status}</span>
+              <span>{device.storeName}</span>
+              <span>
+                <b>{device.deviceNumber}</b>
+                <small>{device.deviceName}</small>
+              </span>
+              <span>{device.desktopName}</span>
+              <button
+                className={activeDeviceId === device.id ? "connect-button active" : "connect-button"}
+                disabled={!isOnline}
+                type="button"
+                title={isOnline ? "접속" : "오프라인"}
+                onClick={() => onConnect(device)}
+              >
+                <PlugZap size={16} />
+                <span>접속</span>
+              </button>
+            </div>
+          );
+        })}
         {devices.length === 0 && <div className="empty-row">등록된 장비가 없습니다.</div>}
       </div>
     </section>
