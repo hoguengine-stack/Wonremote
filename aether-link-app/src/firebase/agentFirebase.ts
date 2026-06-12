@@ -98,6 +98,8 @@ export async function sendAgentHeartbeatWithFirebase(
 
   const nowIso = new Date().toISOString();
   await updateDoc(deviceRef, {
+    activeDisplayIndex: input.activeDisplayIndex,
+    displays: input.displays ?? [],
     installId: input.installId,
     lastSeenAt: nowIso,
     status: "online",
@@ -111,6 +113,8 @@ export async function sendAgentHeartbeatWithFirebase(
     lastSeenAt: nowIso,
     status: "online",
     version: input.version,
+    activeDisplayIndex: input.activeDisplayIndex,
+    displays: input.displays ?? [],
   });
 
   return {

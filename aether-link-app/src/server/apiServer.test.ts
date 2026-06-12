@@ -240,6 +240,51 @@ describe("aether link local API server", () => {
     expect(tiles.status).toBe(200);
   });
 
+  it("preserves file chunk metadata until the agent fetches it", async () => {
+    const registered = await postJson("/api/agent/first-run", {
+      businessNumber: "4445566666",
+      password: "1234",
+      installId: "agent-file-chunks",
+    });
+    const registeredBody = await registered.json();
+    const session = await postJson("/api/sessions", {
+      deviceId: registeredBody.device.id,
+    });
+    const sessionBody = await session.json();
+    const encodedSessionId = encodeURIComponent(sessionBody.session.id);
+
+    const first = await postJson(`/api/sessions/${encodedSessionId}/files`, {
+      filename: "chunked.txt",
+      fileData: Buffer.from("hello ").toString("base64"),
+      transferId: "transfer-1",
+      chunkIndex: 0,
+      totalChunks: 2,
+      isLast: false,
+    });
+    const second = await postJson(`/api/sessions/${encodedSessionId}/files`, {
+      filename: "chunked.txt",
+      fileData: Buffer.from("world").toString("base64"),
+      transferId: "transfer-1",
+      chunkIndex: 1,
+      totalChunks: 2,
+      isLast: true,
+    });
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+
+    const fetched = await fetch(`${baseUrl}/api/sessions/${encodedSessionId}/files`);
+    expect(await fetched.json()).toMatchObject({
+      files: [
+        expect.objectContaining({ transferId: "transfer-1", chunkIndex: 0, totalChunks: 2, isLast: false }),
+        expect.objectContaining({ transferId: "transfer-1", chunkIndex: 1, totalChunks: 2, isLast: true }),
+      ],
+    });
+
+    const empty = await fetch(`${baseUrl}/api/sessions/${encodedSessionId}/files`);
+    expect(await empty.json()).toEqual({ files: [] });
+  });
+
   it("opens a new session for an already registered device", async () => {
     const connected = await postJson("/api/agent/connect", {
       businessNumber: "1234567890",
@@ -595,7 +640,7 @@ describe("aether link local API server", () => {
       };
       const appVersionSource = await readFile(path.join(extractDir, "src", "domain", "appVersion.ts"), "utf8");
 
-      expect(packageJson.version).toBe("0.1.3");
+      expect(packageJson.version).toBe("0.1.4");
       expect(appVersionSource).toContain(`WONREMOTE_APP_VERSION = "${packageJson.version}"`);
     } finally {
       await rm(tempDir, { recursive: true, force: true });

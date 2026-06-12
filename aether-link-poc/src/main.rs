@@ -8,6 +8,12 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 use turbojpeg::{Compressor, Decompressor, Image, PixelFormat, Subsamp};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYBD_EVENT_FLAGS,
+    KEYEVENTF_KEYUP, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+    MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
+    MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEINPUT, VIRTUAL_KEY,
+};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct BenchmarkReport {
@@ -27,7 +33,15 @@ pub struct BenchmarkReport {
 pub enum RunMode {
     Benchmark,
     InjectInput { action: String },
+    ListDisplays,
     Stream,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseButton {
+    Left,
+    Middle,
+    Right,
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +80,18 @@ pub struct SystemInfo {
 pub struct VideoControllerInfo {
     pub name: String,
     pub driver_version: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DxgiOutputInfo {
+    pub index: u32,
+    pub name: String,
+    pub adapter_name: String,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub primary: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -241,6 +267,13 @@ mod tests {
     }
 
     #[test]
+    fn parse_config_accepts_list_displays_mode() {
+        let config = parse_benchmark_config(["aether-link-poc", "--mode", "list-displays"]).unwrap();
+
+        assert!(matches!(config.run_mode, RunMode::ListDisplays));
+    }
+
+    #[test]
     fn benchmark_output_path_defaults_to_timestamp_and_resolution() {
         assert_eq!(
             benchmark_output_path(None, 1920, 1200, 1780988270010),
@@ -384,6 +417,31 @@ mod tests {
             }
         );
     }
+
+    #[test]
+    fn virtual_key_from_token_supports_remote_keyboard_names() {
+        assert_eq!(virtual_key_from_token("A").unwrap().0, 0x41);
+        assert_eq!(virtual_key_from_token("Ctrl").unwrap().0, 0x11);
+        assert_eq!(virtual_key_from_token("Esc").unwrap().0, 0x1B);
+        assert_eq!(virtual_key_from_token("Win").unwrap().0, 0x5B);
+        assert_eq!(virtual_key_from_token("F12").unwrap().0, 0x7B);
+        assert!(virtual_key_from_token("UnknownKeyName").is_err());
+    }
+
+    #[test]
+    fn mouse_button_from_token_rejects_unknown_buttons() {
+        assert_eq!(mouse_button_from_token("left").unwrap(), MouseButton::Left);
+        assert_eq!(mouse_button_from_token("middle").unwrap(), MouseButton::Middle);
+        assert_eq!(mouse_button_from_token("right").unwrap(), MouseButton::Right);
+        assert!(mouse_button_from_token("side").is_err());
+    }
+
+    #[test]
+    fn system_command_args_are_whitelisted() {
+        assert_eq!(system_command_args("taskmgr").unwrap(), vec!["/c", "start", "taskmgr"]);
+        assert_eq!(system_command_args("lock").unwrap(), vec!["/c", "rundll32.exe", "user32.dll,LockWorkStation"]);
+        assert!(system_command_args("calc && format").is_err());
+    }
 }
 
 fn percentile_ms(samples_us: &[u128], percentile: f64) -> f64 {
@@ -475,6 +533,51 @@ fn collect_system_info() -> SystemInfo {
     }
 }
 
+fn list_dxgi_outputs() -> std::result::Result<Vec<DxgiOutputInfo>, String> {
+    unsafe {
+        let factory: windows::Win32::Graphics::Dxgi::IDXGIFactory1 =
+            windows::Win32::Graphics::Dxgi::CreateDXGIFactory1()
+                .map_err(|error| format!("CreateDXGIFactory1 failed: {:?}", error))?;
+        let adapter: windows::Win32::Graphics::Dxgi::IDXGIAdapter1 = factory
+            .EnumAdapters1(0)
+            .map_err(|error| format!("EnumAdapters1(0) failed: {:?}", error))?;
+
+        let mut adapter_desc = windows::Win32::Graphics::Dxgi::DXGI_ADAPTER_DESC1::default();
+        adapter
+            .GetDesc1(&mut adapter_desc)
+            .map_err(|error| format!("GetDesc1 failed: {:?}", error))?;
+        let adapter_name = utf16_buffer_to_string(&adapter_desc.Description);
+
+        let mut outputs = Vec::new();
+        let mut output_index = 0;
+        while let Ok(output) = adapter.EnumOutputs(output_index) {
+            let mut output_desc = windows::Win32::Graphics::Dxgi::DXGI_OUTPUT_DESC::default();
+            output
+                .GetDesc(&mut output_desc)
+                .map_err(|error| format!("GetDesc failed: {:?}", error))?;
+            let rect = output_desc.DesktopCoordinates;
+            outputs.push(DxgiOutputInfo {
+                index: output_index,
+                name: utf16_buffer_to_string(&output_desc.DeviceName),
+                adapter_name: adapter_name.clone(),
+                x: rect.left,
+                y: rect.top,
+                width: (rect.right - rect.left).max(0) as u32,
+                height: (rect.bottom - rect.top).max(0) as u32,
+                primary: rect.left == 0 && rect.top == 0,
+            });
+            output_index += 1;
+        }
+
+        Ok(outputs)
+    }
+}
+
+fn utf16_buffer_to_string(buffer: &[u16]) -> String {
+    let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
+    String::from_utf16_lossy(&buffer[..len])
+}
+
 fn write_benchmark_report(path: &str, report: &BenchmarkReport) -> std::io::Result<()> {
     let mut file = File::create(path)?;
     let json = serde_json::to_string_pretty(report)
@@ -537,6 +640,9 @@ where
                             action: String::new(),
                         };
                     }
+                    "list-displays" => {
+                        config.run_mode = RunMode::ListDisplays;
+                    }
                     "stream" => {
                         config.run_mode = RunMode::Stream;
                     }
@@ -589,7 +695,7 @@ fn parse_positive_u64_arg(name: &str, value: Option<String>) -> Result<u64, Stri
 }
 
 fn benchmark_usage() -> String {
-    "usage: aether-link-poc [--duration seconds] [--output file.json] [--snapshot file.png] [--loop-sleep-ms ms] [--capture-timeout-ms ms] [--mode benchmark|inject-input|stream] [--action command] [--output-index index]".to_string()
+    "usage: aether-link-poc [--duration seconds] [--output file.json] [--snapshot file.png] [--loop-sleep-ms ms] [--capture-timeout-ms ms] [--mode benchmark|inject-input|list-displays|stream] [--action command] [--output-index index]".to_string()
 }
 
 fn benchmark_output_path(
@@ -936,8 +1042,7 @@ fn inject_input(action: &str) -> std::result::Result<(), String> {
         return Err("Empty action".to_string());
     }
 
-    unsafe {
-        match parts[0] {
+    match parts[0] {
             "click" | "move" => {
                 if parts.len() < 3 {
                     return Err("Usage: click/move <dx> <dy>".to_string());
@@ -948,179 +1053,224 @@ fn inject_input(action: &str) -> std::result::Result<(), String> {
                 let is_click = parts[0] == "click";
                 if is_click {
                     let inputs = [
-                        windows::Win32::UI::Input::KeyboardAndMouse::INPUT {
-                            r#type: windows::Win32::UI::Input::KeyboardAndMouse::INPUT_MOUSE,
-                            Anonymous: windows::Win32::UI::Input::KeyboardAndMouse::INPUT_0 {
-                                mi: windows::Win32::UI::Input::KeyboardAndMouse::MOUSEINPUT {
-                                    dx,
-                                    dy,
-                                    mouseData: 0,
-                                    dwFlags: windows::Win32::UI::Input::KeyboardAndMouse::MOUSEEVENTF_MOVE | windows::Win32::UI::Input::KeyboardAndMouse::MOUSEEVENTF_ABSOLUTE | windows::Win32::UI::Input::KeyboardAndMouse::MOUSEEVENTF_LEFTDOWN,
-                                    time: 0,
-                                    dwExtraInfo: 0,
-                                },
-                            },
-                        },
-                        windows::Win32::UI::Input::KeyboardAndMouse::INPUT {
-                            r#type: windows::Win32::UI::Input::KeyboardAndMouse::INPUT_MOUSE,
-                            Anonymous: windows::Win32::UI::Input::KeyboardAndMouse::INPUT_0 {
-                                mi: windows::Win32::UI::Input::KeyboardAndMouse::MOUSEINPUT {
-                                    dx,
-                                    dy,
-                                    mouseData: 0,
-                                    dwFlags: windows::Win32::UI::Input::KeyboardAndMouse::MOUSEEVENTF_LEFTUP,
-                                    time: 0,
-                                    dwExtraInfo: 0,
-                                },
-                            },
-                        },
+                        mouse_input(dx, dy, 0, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTDOWN),
+                        mouse_input(dx, dy, 0, MOUSEEVENTF_LEFTUP),
                     ];
-                    let sent = windows::Win32::UI::Input::KeyboardAndMouse::SendInput(
-                        &inputs,
-                        std::mem::size_of::<windows::Win32::UI::Input::KeyboardAndMouse::INPUT>()
-                            as i32,
-                    );
-                    if sent != inputs.len() as u32 {
-                        return Err(format!(
-                            "SendInput failed. Sent {} of {} events.",
-                            sent,
-                            inputs.len()
-                        ));
-                    }
+                    send_inputs(&inputs)?;
                 } else {
-                    let inputs = [
-                        windows::Win32::UI::Input::KeyboardAndMouse::INPUT {
-                            r#type: windows::Win32::UI::Input::KeyboardAndMouse::INPUT_MOUSE,
-                            Anonymous: windows::Win32::UI::Input::KeyboardAndMouse::INPUT_0 {
-                                mi: windows::Win32::UI::Input::KeyboardAndMouse::MOUSEINPUT {
-                                    dx,
-                                    dy,
-                                    mouseData: 0,
-                                    dwFlags: windows::Win32::UI::Input::KeyboardAndMouse::MOUSEEVENTF_MOVE | windows::Win32::UI::Input::KeyboardAndMouse::MOUSEEVENTF_ABSOLUTE,
-                                    time: 0,
-                                    dwExtraInfo: 0,
-                                },
-                            },
-                        },
-                    ];
-                    let sent = windows::Win32::UI::Input::KeyboardAndMouse::SendInput(
-                        &inputs,
-                        std::mem::size_of::<windows::Win32::UI::Input::KeyboardAndMouse::INPUT>()
-                            as i32,
-                    );
-                    if sent != inputs.len() as u32 {
-                        return Err(format!(
-                            "SendInput failed. Sent {} of {} events.",
-                            sent,
-                            inputs.len()
-                        ));
-                    }
+                    let inputs = [mouse_input(dx, dy, 0, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE)];
+                    send_inputs(&inputs)?;
                 }
+            }
+            "mouse-down" | "mouse-up" => {
+                if parts.len() < 4 {
+                    return Err("Usage: mouse-down/mouse-up <dx> <dy> <left|middle|right>".to_string());
+                }
+                let dx = parts[1].parse::<i32>().map_err(|_| "Invalid dx")?;
+                let dy = parts[2].parse::<i32>().map_err(|_| "Invalid dy")?;
+                let button = mouse_button_from_token(parts[3])?;
+                let flag = mouse_button_flag(button, parts[0] == "mouse-down");
+                let inputs = [mouse_input(dx, dy, 0, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | flag)];
+                send_inputs(&inputs)?;
+            }
+            "mouse-wheel" => {
+                if parts.len() < 4 {
+                    return Err("Usage: mouse-wheel <dx> <dy> <delta>".to_string());
+                }
+                let dx = parts[1].parse::<i32>().map_err(|_| "Invalid dx")?;
+                let dy = parts[2].parse::<i32>().map_err(|_| "Invalid dy")?;
+                let delta = parts[3].parse::<i32>().map_err(|_| "Invalid wheel delta")?;
+                let inputs = [
+                    mouse_input(dx, dy, 0, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE),
+                    mouse_input(0, 0, delta, MOUSEEVENTF_WHEEL),
+                ];
+                send_inputs(&inputs)?;
             }
             "keypress" => {
                 if parts.len() < 2 {
                     return Err("Usage: keypress <key_char_or_vk>".to_string());
                 }
-                let key_str = parts[1];
-                let vk = if key_str.len() == 1 {
-                    let c = key_str.chars().next().unwrap().to_ascii_uppercase();
-                    windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY(c as u16)
-                } else {
-                    let raw_code = key_str
-                        .parse::<u16>()
-                        .map_err(|_| "Invalid key character")?;
-                    windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY(raw_code)
-                };
-
-                let inputs = [
-                    windows::Win32::UI::Input::KeyboardAndMouse::INPUT {
-                        r#type: windows::Win32::UI::Input::KeyboardAndMouse::INPUT_KEYBOARD,
-                        Anonymous: windows::Win32::UI::Input::KeyboardAndMouse::INPUT_0 {
-                            ki: windows::Win32::UI::Input::KeyboardAndMouse::KEYBDINPUT {
-                                wVk: vk,
-                                wScan: 0,
-                                dwFlags:
-                                    windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS(
-                                        0,
-                                    ),
-                                time: 0,
-                                dwExtraInfo: 0,
-                            },
-                        },
-                    },
-                    windows::Win32::UI::Input::KeyboardAndMouse::INPUT {
-                        r#type: windows::Win32::UI::Input::KeyboardAndMouse::INPUT_KEYBOARD,
-                        Anonymous: windows::Win32::UI::Input::KeyboardAndMouse::INPUT_0 {
-                            ki: windows::Win32::UI::Input::KeyboardAndMouse::KEYBDINPUT {
-                                wVk: vk,
-                                wScan: 0,
-                                dwFlags:
-                                    windows::Win32::UI::Input::KeyboardAndMouse::KEYEVENTF_KEYUP,
-                                time: 0,
-                                dwExtraInfo: 0,
-                            },
-                        },
-                    },
-                ];
-                let sent = windows::Win32::UI::Input::KeyboardAndMouse::SendInput(
-                    &inputs,
-                    std::mem::size_of::<windows::Win32::UI::Input::KeyboardAndMouse::INPUT>()
-                        as i32,
-                );
-                if sent != inputs.len() as u32 {
-                    return Err(format!(
-                        "SendInput failed. Sent {} of {} events.",
-                        sent,
-                        inputs.len()
-                    ));
+                let vk = virtual_key_from_token(parts[1])?;
+                let inputs = [keyboard_input(vk, false), keyboard_input(vk, true)];
+                send_inputs(&inputs)?;
+            }
+            "key-down" | "key-up" => {
+                if parts.len() < 2 {
+                    return Err("Usage: key-down/key-up <key>".to_string());
                 }
+                let vk = virtual_key_from_token(parts[1])?;
+                let inputs = [keyboard_input(vk, parts[0] == "key-up")];
+                send_inputs(&inputs)?;
+            }
+            "paste" => {
+                let ctrl = virtual_key_from_token("Ctrl")?;
+                let v = virtual_key_from_token("V")?;
+                let inputs = [
+                    keyboard_input(ctrl, false),
+                    keyboard_input(v, false),
+                    keyboard_input(v, true),
+                    keyboard_input(ctrl, true),
+                ];
+                send_inputs(&inputs)?;
+            }
+            "key-release-all" | "key_release_all" => {
+                // The persistent Agent process expands this command using its pressed-key set.
+                // Keep direct CLI execution as a safe no-op for diagnostics.
+            }
+            "system" => {
+                if parts.len() < 2 {
+                    return Err("Usage: system <command>".to_string());
+                }
+                let args = system_command_args(parts[1])?;
+                Command::new("cmd")
+                    .args(args)
+                    .spawn()
+                    .map_err(|error| format!("system command failed: {}", error))?;
             }
             "ping-color-change" => {
                 let inputs = [
-                    windows::Win32::UI::Input::KeyboardAndMouse::INPUT {
-                        r#type: windows::Win32::UI::Input::KeyboardAndMouse::INPUT_KEYBOARD,
-                        Anonymous: windows::Win32::UI::Input::KeyboardAndMouse::INPUT_0 {
-                            ki: windows::Win32::UI::Input::KeyboardAndMouse::KEYBDINPUT {
-                                wVk: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY(0x10),
-                                wScan: 0,
-                                dwFlags:
-                                    windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS(
-                                        0,
-                                    ),
-                                time: 0,
-                                dwExtraInfo: 0,
-                            },
-                        },
-                    },
-                    windows::Win32::UI::Input::KeyboardAndMouse::INPUT {
-                        r#type: windows::Win32::UI::Input::KeyboardAndMouse::INPUT_KEYBOARD,
-                        Anonymous: windows::Win32::UI::Input::KeyboardAndMouse::INPUT_0 {
-                            ki: windows::Win32::UI::Input::KeyboardAndMouse::KEYBDINPUT {
-                                wVk: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY(0x10),
-                                wScan: 0,
-                                dwFlags:
-                                    windows::Win32::UI::Input::KeyboardAndMouse::KEYEVENTF_KEYUP,
-                                time: 0,
-                                dwExtraInfo: 0,
-                            },
-                        },
-                    },
+                    keyboard_input(VIRTUAL_KEY(0x10), false),
+                    keyboard_input(VIRTUAL_KEY(0x10), true),
                 ];
-                let sent = windows::Win32::UI::Input::KeyboardAndMouse::SendInput(
-                    &inputs,
-                    std::mem::size_of::<windows::Win32::UI::Input::KeyboardAndMouse::INPUT>()
-                        as i32,
-                );
-                if sent != inputs.len() as u32 {
-                    return Err(format!(
-                        "SendInput failed. Sent {} of {} events.",
-                        sent,
-                        inputs.len()
-                    ));
-                }
+                send_inputs(&inputs)?;
             }
             _ => return Err(format!("Unknown action: {}", parts[0])),
+    }
+    Ok(())
+}
+
+fn virtual_key_from_token(token: &str) -> std::result::Result<VIRTUAL_KEY, String> {
+    if token.len() == 1 {
+        let c = token.chars().next().unwrap().to_ascii_uppercase();
+        if c.is_ascii_alphanumeric() {
+            return Ok(VIRTUAL_KEY(c as u16));
         }
+    }
+
+    if let Ok(raw_code) = token.parse::<u16>() {
+        return Ok(VIRTUAL_KEY(raw_code));
+    }
+
+    let normalized = token.to_ascii_lowercase();
+    if let Some(rest) = normalized.strip_prefix('f') {
+        if let Ok(number) = rest.parse::<u16>() {
+            if (1..=12).contains(&number) {
+                return Ok(VIRTUAL_KEY(0x70 + number - 1));
+            }
+        }
+    }
+
+    let vk = match normalized.as_str() {
+        "alt" => 0x12,
+        "backspace" => 0x08,
+        "capslock" => 0x14,
+        "ctrl" | "control" => 0x11,
+        "delete" | "del" => 0x2E,
+        "down" => 0x28,
+        "end" => 0x23,
+        "enter" | "return" => 0x0D,
+        "esc" | "escape" => 0x1B,
+        "home" => 0x24,
+        "insert" | "ins" => 0x2D,
+        "left" => 0x25,
+        "numlock" => 0x90,
+        "pagedown" => 0x22,
+        "pageup" => 0x21,
+        "right" => 0x27,
+        "shift" => 0x10,
+        "space" => 0x20,
+        "tab" => 0x09,
+        "up" => 0x26,
+        "win" | "winleft" | "meta" | "lwin" => 0x5B,
+        _ => return Err(format!("Unknown key token: {}", token)),
+    };
+    Ok(VIRTUAL_KEY(vk))
+}
+
+fn mouse_button_from_token(token: &str) -> std::result::Result<MouseButton, String> {
+    match token.to_ascii_lowercase().as_str() {
+        "left" | "0" => Ok(MouseButton::Left),
+        "middle" | "1" => Ok(MouseButton::Middle),
+        "right" | "2" => Ok(MouseButton::Right),
+        _ => Err(format!("Unknown mouse button: {}", token)),
+    }
+}
+
+fn mouse_button_flag(button: MouseButton, down: bool) -> windows::Win32::UI::Input::KeyboardAndMouse::MOUSE_EVENT_FLAGS {
+    match (button, down) {
+        (MouseButton::Left, true) => MOUSEEVENTF_LEFTDOWN,
+        (MouseButton::Left, false) => MOUSEEVENTF_LEFTUP,
+        (MouseButton::Middle, true) => MOUSEEVENTF_MIDDLEDOWN,
+        (MouseButton::Middle, false) => MOUSEEVENTF_MIDDLEUP,
+        (MouseButton::Right, true) => MOUSEEVENTF_RIGHTDOWN,
+        (MouseButton::Right, false) => MOUSEEVENTF_RIGHTUP,
+    }
+}
+
+fn system_command_args(command: &str) -> std::result::Result<Vec<&'static str>, String> {
+    match command {
+        "services.msc" => Ok(vec!["/c", "start", "services.msc"]),
+        "taskmgr" => Ok(vec!["/c", "start", "taskmgr"]),
+        "cmd" => Ok(vec!["/c", "start", "cmd"]),
+        "explorer" => Ok(vec!["/c", "start", "explorer"]),
+        "devmgmt.msc" => Ok(vec!["/c", "start", "devmgmt.msc"]),
+        "lock" => Ok(vec!["/c", "rundll32.exe", "user32.dll,LockWorkStation"]),
+        "logoff" => Ok(vec!["/c", "shutdown", "/l"]),
+        "restart" => Ok(vec!["/c", "shutdown", "/r", "/t", "0"]),
+        "shutdown" => Ok(vec!["/c", "shutdown", "/s", "/t", "0"]),
+        _ => Err(format!("Unsupported system command: {}", command)),
+    }
+}
+
+fn keyboard_input(vk: VIRTUAL_KEY, key_up: bool) -> INPUT {
+    INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: vk,
+                wScan: 0,
+                dwFlags: if key_up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) },
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    }
+}
+
+fn mouse_input(
+    dx: i32,
+    dy: i32,
+    mouse_data: i32,
+    flags: windows::Win32::UI::Input::KeyboardAndMouse::MOUSE_EVENT_FLAGS,
+) -> INPUT {
+    INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: INPUT_0 {
+            mi: MOUSEINPUT {
+                dx,
+                dy,
+                mouseData: mouse_data as u32,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    }
+}
+
+fn send_inputs(inputs: &[INPUT]) -> std::result::Result<(), String> {
+    let sent = unsafe {
+        SendInput(
+            inputs,
+            std::mem::size_of::<INPUT>() as i32,
+        )
+    };
+    if sent != inputs.len() as u32 {
+        return Err(format!(
+            "SendInput failed. Sent {} of {} events.",
+            sent,
+            inputs.len()
+        ));
     }
     Ok(())
 }
@@ -1352,6 +1502,21 @@ async fn main() {
         }
         RunMode::Stream => {
             run_streaming_loop(config).await;
+            return;
+        }
+        RunMode::ListDisplays => {
+            match list_dxgi_outputs() {
+                Ok(outputs) => {
+                    println!(
+                        "{}",
+                        serde_json::to_string(&outputs).unwrap_or_else(|_| "[]".to_string())
+                    );
+                }
+                Err(error) => {
+                    eprintln!("display list failed: {}", error);
+                    std::process::exit(1);
+                }
+            }
             return;
         }
         RunMode::Benchmark => {}

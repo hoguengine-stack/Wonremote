@@ -1,4 +1,4 @@
-import type { AgentCommandPollResult, AgentHeartbeatResult } from "../domain/types";
+import type { AgentCommandPollResult, AgentHeartbeatResult, DeviceDisplayInfo } from "../domain/types";
 import {
   isAgentFirebaseEnabled,
   pollAgentCommandsWithFirebase,
@@ -8,8 +8,10 @@ import {
 interface SendAgentHeartbeatOptions {
   apiBaseUrl: string;
   deviceId: string;
+  displays?: DeviceDisplayInfo[];
   fetchImpl?: typeof fetch;
   installId: string;
+  activeDisplayIndex?: number;
   version?: string;
 }
 
@@ -23,14 +25,18 @@ interface PollAgentCommandsOptions {
 export async function sendAgentHeartbeat({
   apiBaseUrl,
   deviceId,
+  displays,
   fetchImpl = fetch,
   installId,
+  activeDisplayIndex,
   version,
 }: SendAgentHeartbeatOptions): Promise<AgentHeartbeatResult> {
   if (isAgentFirebaseEnabled(process.env)) {
     return sendAgentHeartbeatWithFirebase({
       deviceId,
+      displays,
       installId,
+      activeDisplayIndex,
       version,
     });
   }
@@ -42,6 +48,8 @@ export async function sendAgentHeartbeat({
         deviceId,
         installId,
         version,
+        displays,
+        activeDisplayIndex,
       }),
       headers: { "content-type": "application/json" },
       method: "POST",

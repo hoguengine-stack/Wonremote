@@ -1,4 +1,4 @@
-import type { DeviceStatus, ManagedDevice } from "../domain/types";
+import type { DeviceDisplayInfo, DeviceStatus, ManagedDevice } from "../domain/types";
 import {
   buildAgentDeviceNumber,
   buildDesktopName,
@@ -17,6 +17,8 @@ export interface FirestoreDeviceDocument {
   status: DeviceStatus;
   storeName: string;
   version?: string;
+  activeDisplayIndex?: number;
+  displays?: unknown;
 }
 
 interface BuildFirestoreDeviceInput {
@@ -57,7 +59,36 @@ export function mapFirestoreDevice(id: string, data: Partial<FirestoreDeviceDocu
     lastSeenAt: coerceTimestamp(data.lastSeenAt),
     connectionCode: data.connectionCode,
     version: data.version,
+    activeDisplayIndex: Number.isFinite(Number(data.activeDisplayIndex)) ? Number(data.activeDisplayIndex) : undefined,
+    displays: sanitizeDisplays(data.displays),
   };
+}
+
+function sanitizeDisplays(value: unknown): DeviceDisplayInfo[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const displays = value
+    .filter((display) => display && typeof display === "object")
+    .map((display) => {
+      const raw = display as Partial<DeviceDisplayInfo>;
+      return {
+        index: Number(raw.index),
+        name: String(raw.name ?? `Display ${raw.index ?? ""}`),
+        width: Number(raw.width),
+        height: Number(raw.height),
+        primary: Boolean(raw.primary),
+      };
+    })
+    .filter(
+      (display) =>
+        Number.isFinite(display.index) &&
+        Number.isFinite(display.width) &&
+        Number.isFinite(display.height) &&
+        display.width > 0 &&
+        display.height > 0,
+    );
+  return displays.length > 0 ? displays : undefined;
 }
 
 function coerceTimestamp(value: unknown): string {

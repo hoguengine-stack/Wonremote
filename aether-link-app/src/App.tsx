@@ -13,6 +13,11 @@ import {
   FileUp,
   Video,
   Volume2,
+  ZoomIn,
+  ZoomOut,
+  Maximize2,
+  RotateCcw,
+  Power,
 } from "lucide-react";
 import React, { FormEvent, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -30,6 +35,7 @@ import {
   sendClipboardText,
   fetchClipboardText,
   uploadFile,
+  uploadFileChunk,
   fetchFiles,
   fetchConnectionHistory,
 } from "./api/viewerApi";
@@ -40,6 +46,16 @@ import {
 } from "./domain/visualPing";
 import { getViewerVersion } from "./domain/versioning";
 import { shouldNotifyUpdate, shouldReloadViewerForUpdate } from "./domain/updatePolicy";
+import {
+  buildKeyboardCommand,
+  buildMouseCommand,
+  buildPasteTextCommand,
+  buildSwitchMonitorCommand,
+  buildSystemCommand,
+  formatTransferStats,
+  mapCanvasPointToAbsolute,
+  type MouseButtonCode,
+} from "./domain/remoteControlCommands";
 import type {
   ManagedDevice,
   RemoteSession,
@@ -407,7 +423,7 @@ function ViewerApp() {
             sessionId={session?.id ?? ""}
             session={session}
             inputLog={inputLog}
-            onInputEvent={(action) => void markInput(action)}
+            onInputEvent={(action) => markInput(action)}
             onCloseSession={handleCloseSession}
           />
         </section>
@@ -739,6 +755,37 @@ function DeviceTable({
   );
 }
 
+const REMOTE_FILE_CHUNK_BYTES = 64 * 1024;
+const DANGEROUS_SYSTEM_COMMANDS = new Set(["logoff", "restart", "shutdown"]);
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  const tagName = target.tagName.toLowerCase();
+  return tagName === "input" || tagName === "textarea" || target.isContentEditable;
+}
+
+function mapMouseButton(button: number): MouseButtonCode {
+  if (button === 1) {
+    return 1;
+  }
+  if (button === 2) {
+    return 2;
+  }
+  return 0;
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    const chunk = bytes.subarray(offset, offset + 0x8000);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+}
+
 function RemoteSessionPanel({
   device,
   sessionId,
@@ -751,12 +798,28 @@ function RemoteSessionPanel({
   sessionId: string;
   session: RemoteSession | null;
   inputLog: string[];
-  onInputEvent: (action: string) => void;
+  onInputEvent: (action: string) => void | Promise<void>;
   onCloseSession: () => void;
 }) {
+  const panelRef = React.useRef<HTMLElement | null>(null);
+  const remotePreviewRef = React.useRef<HTMLDivElement | null>(null);
   const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
+  const pressedKeysRef = React.useRef<Set<string>>(new Set());
+  const pressedButtonsRef = React.useRef<Set<MouseButtonCode>>(new Set());
+  const moveFrameRef = React.useRef<number | null>(null);
+  const pendingMoveRef = React.useRef<{ dx: number; dy: number } | null>(null);
+  const lastClipboardTextRef = React.useRef<string>("");
+  const dangerConfirmUntilRef = React.useRef<Record<string, number>>({});
   const [latencyReport, setLatencyReport] = useState<string>("");
   const [pingState, setPingState] = useState<{ start: number } | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const [selectedDisplayIndex, setSelectedDisplayIndex] = useState(0);
+  const [transferProgress, setTransferProgress] = useState<{
+    fileName: string;
+    progress: number;
+    speed: string;
+    timeLeft: string;
+  } | null>(null);
 
   // Phase 3 states
   const mediaRecorderRef = React.useRef<MediaRecorder | null>(null);
@@ -767,6 +830,18 @@ function RemoteSessionPanel({
   const [isClipboardSyncOn, setIsClipboardSyncOn] = useState(false);
   const [isChatOpen, setIsChatOpen] = useState(false);
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (!device?.displays?.length) {
+      setSelectedDisplayIndex(device?.activeDisplayIndex ?? 0);
+      return;
+    }
+    const activeDisplay =
+      device.displays.find((display) => display.index === device.activeDisplayIndex) ??
+      device.displays.find((display) => display.primary) ??
+      device.displays[0];
+    setSelectedDisplayIndex(activeDisplay.index);
+  }, [device?.id, device?.activeDisplayIndex, device?.displays]);
 
   // Chat/Clipboard/Files polling
   useEffect(() => {
@@ -834,6 +909,33 @@ function RemoteSessionPanel({
       clearInterval(intervalId);
     };
   }, [device, sessionId, session, isClipboardSyncOn]);
+
+  useEffect(() => {
+    if (!isClipboardSyncOn || !sessionId || !session || session.state !== "connected") {
+      return;
+    }
+
+    let active = true;
+    const syncClipboard = async () => {
+      try {
+        const text = await navigator.clipboard.readText();
+        if (!active || !text || text === lastClipboardTextRef.current) {
+          return;
+        }
+        lastClipboardTextRef.current = text;
+        await sendClipboardText(sessionId, text, "viewer");
+      } catch {
+        // Clipboard permission can be unavailable outside the packaged app.
+      }
+    };
+
+    void syncClipboard();
+    const intervalId = window.setInterval(() => void syncClipboard(), 1500);
+    return () => {
+      active = false;
+      window.clearInterval(intervalId);
+    };
+  }, [isClipboardSyncOn, sessionId, session]);
 
   // Stream Frame drawing
   useEffect(() => {
@@ -923,19 +1025,163 @@ function RemoteSessionPanel({
     };
   }, [device, sessionId, pingState, session]);
 
-  const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const releaseAllInputs = () => {
+    if (pressedKeysRef.current.size > 0) {
+      pressedKeysRef.current.clear();
+      onInputEvent("key-release-all");
+    }
+    if (pressedButtonsRef.current.size > 0) {
+      const canvas = canvasRef.current;
+      const rect = canvas?.getBoundingClientRect();
+      const point = rect
+        ? mapCanvasPointToAbsolute(rect.left + rect.width / 2, rect.top + rect.height / 2, rect)
+        : { dx: 32768, dy: 32768 };
+      for (const button of pressedButtonsRef.current) {
+        onInputEvent(buildMouseCommand("up", point.dx, point.dy, button));
+      }
+      pressedButtonsRef.current.clear();
+    }
+  };
+
+  const handlePanelBlur = (event: React.FocusEvent<HTMLElement>) => {
+    const nextTarget = event.relatedTarget;
+    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) {
+      return;
+    }
+    releaseAllInputs();
+  };
+
+  const handleCanvasMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
     const canvas = canvasRef.current;
     if (!canvas) return;
 
     const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-
-    const dx = Math.floor((x / rect.width) * 65535);
-    const dy = Math.floor((y / rect.height) * 65535);
-
-    onInputEvent(`click ${dx} ${dy}`);
+    const { dx, dy } = mapCanvasPointToAbsolute(e.clientX, e.clientY, rect);
+    const button = mapMouseButton(e.button);
+    pressedButtonsRef.current.add(button);
+    panelRef.current?.focus();
+    onInputEvent(buildMouseCommand("down", dx, dy, button));
   };
+
+  const handleCanvasMouseUp = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const { dx, dy } = mapCanvasPointToAbsolute(e.clientX, e.clientY, rect);
+    const button = mapMouseButton(e.button);
+    pressedButtonsRef.current.delete(button);
+    onInputEvent(buildMouseCommand("up", dx, dy, button));
+  };
+
+  const handleCanvasMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    pendingMoveRef.current = mapCanvasPointToAbsolute(e.clientX, e.clientY, rect);
+    if (moveFrameRef.current !== null) {
+      return;
+    }
+    moveFrameRef.current = window.requestAnimationFrame(() => {
+      moveFrameRef.current = null;
+      const point = pendingMoveRef.current;
+      if (point) {
+        onInputEvent(buildMouseCommand("move", point.dx, point.dy));
+      }
+    });
+  };
+
+  const handleCanvasWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const { dx, dy } = mapCanvasPointToAbsolute(e.clientX, e.clientY, rect);
+    onInputEvent(buildMouseCommand("wheel", dx, dy, 0, e.deltaY > 0 ? -120 : 120));
+  };
+
+  const handleKeyDown = async (event: React.KeyboardEvent<HTMLElement>) => {
+    if (isEditableTarget(event.target)) {
+      return;
+    }
+    if (event.repeat) {
+      event.preventDefault();
+      return;
+    }
+
+    if (event.ctrlKey && event.key === "Escape") {
+      event.preventDefault();
+      onInputEvent("keypress Win");
+      return;
+    }
+
+    if (event.ctrlKey && event.key.toLowerCase() === "v") {
+      event.preventDefault();
+      try {
+        const text = await navigator.clipboard.readText();
+        if (text) {
+          onInputEvent(buildPasteTextCommand(text));
+        } else {
+          onInputEvent("paste");
+        }
+      } catch {
+        onInputEvent("paste");
+      }
+      return;
+    }
+
+    if (!event.ctrlKey && !event.altKey && !event.metaKey && event.key.length === 1) {
+      event.preventDefault();
+      onInputEvent(buildPasteTextCommand(event.key));
+      return;
+    }
+
+    event.preventDefault();
+    const command = buildKeyboardCommand("keydown", event.key);
+    pressedKeysRef.current.add(command.slice("key-down ".length));
+    onInputEvent(command);
+  };
+
+  const handleKeyUp = (event: React.KeyboardEvent<HTMLElement>) => {
+    if (isEditableTarget(event.target)) {
+      return;
+    }
+    event.preventDefault();
+    const command = buildKeyboardCommand("keyup", event.key);
+    pressedKeysRef.current.delete(command.slice("key-up ".length));
+    onInputEvent(command);
+  };
+
+  useEffect(() => {
+    const handleWindowMouseUp = () => {
+      if (pressedButtonsRef.current.size === 0) {
+        return;
+      }
+      const canvas = canvasRef.current;
+      const rect = canvas?.getBoundingClientRect();
+      const point = rect
+        ? mapCanvasPointToAbsolute(rect.left + rect.width / 2, rect.top + rect.height / 2, rect)
+        : { dx: 32768, dy: 32768 };
+      for (const button of pressedButtonsRef.current) {
+        onInputEvent(buildMouseCommand("up", point.dx, point.dy, button));
+      }
+      pressedButtonsRef.current.clear();
+    };
+
+    window.addEventListener("mouseup", handleWindowMouseUp);
+    return () => {
+      window.removeEventListener("mouseup", handleWindowMouseUp);
+      if (moveFrameRef.current !== null) {
+        window.cancelAnimationFrame(moveFrameRef.current);
+        moveFrameRef.current = null;
+      }
+      releaseAllInputs();
+    };
+  }, [sessionId]);
 
   const startVisualPing = () => {
     setPingState({ start: performance.now() });
@@ -1022,9 +1268,12 @@ function RemoteSessionPanel({
 
   const handleFetchClipboard = async () => {
     try {
+      await Promise.resolve(onInputEvent("clipboard-request"));
+      await new Promise((resolve) => window.setTimeout(resolve, 600));
       const clips = await fetchClipboardText(sessionId);
-      if (clips.length > 0) {
-        const lastClip = clips[clips.length - 1];
+      const agentClips = clips.filter((clip) => clip.sender === "agent");
+      if (agentClips.length > 0) {
+        const lastClip = agentClips[agentClips.length - 1];
         await navigator.clipboard.writeText(lastClip.text);
         alert(`클립보드 수신 완료: "${lastClip.text}"`);
       } else {
@@ -1037,7 +1286,7 @@ function RemoteSessionPanel({
 
   // Files
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+    const file = e.target.files?.[0] as File;
     if (!file || !sessionId) return;
 
     if (file.size > 10 * 1024 * 1024) {
@@ -1045,17 +1294,85 @@ function RemoteSessionPanel({
       return;
     }
 
+    const transferId = `transfer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const totalChunks = Math.max(1, Math.ceil(file.size / REMOTE_FILE_CHUNK_BYTES));
+    const startedAtMs = performance.now();
+    let sentBytes = 0;
+
+    try {
+      for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
+        const start = chunkIndex * REMOTE_FILE_CHUNK_BYTES;
+        const end = Math.min(file.size, start + REMOTE_FILE_CHUNK_BYTES);
+        const chunk = file.slice(start, end);
+        const fileData = arrayBufferToBase64(await chunk.arrayBuffer());
+        await uploadFileChunk(sessionId, {
+          filename: file.name,
+          fileData,
+          transferId,
+          chunkIndex,
+          totalChunks,
+          isLast: chunkIndex === totalChunks - 1,
+        });
+        sentBytes = end;
+        setTransferProgress({
+          fileName: file.name,
+          ...formatTransferStats(sentBytes, file.size, startedAtMs, performance.now()),
+        });
+      }
+      window.setTimeout(() => setTransferProgress(null), 2500);
+    } catch (err) {
+      setTransferProgress(null);
+      alert("?뚯씪 ?꾩넚 ?ㅽ뙣: " + (err instanceof Error ? err.message : err));
+    } finally {
+      e.target.value = "";
+    }
+    return;
+
     const reader = new FileReader();
     reader.onload = async () => {
       const base64 = (reader.result as string).split(",")[1];
       try {
-        await uploadFile(sessionId, file.name, base64);
+        await uploadFile(sessionId, file!.name, base64);
         alert(`파일 "${file.name}" 전송이 완료되었습니다.`);
       } catch (err) {
         alert("파일 전송 실패: " + (err instanceof Error ? err.message : err));
       }
     };
-    reader.readAsDataURL(file);
+    reader.readAsDataURL(file!);
+  };
+
+  const setFitZoom = () => {
+    setZoom(1);
+  };
+
+  const setActualSizeZoom = () => {
+    const canvas = canvasRef.current;
+    const preview = remotePreviewRef.current;
+    if (!canvas || !preview || canvas.width <= 0 || canvas.height <= 0) {
+      setZoom(1);
+      return;
+    }
+    const fitScale = Math.min(preview.clientWidth / canvas.width, preview.clientHeight / canvas.height);
+    setZoom(fitScale > 0 ? Math.min(8, 1 / fitScale) : 1);
+  };
+
+  const handleSwitchDisplay = (index: number) => {
+    setSelectedDisplayIndex(index);
+    onInputEvent(buildSwitchMonitorCommand(index));
+  };
+
+  const handleSystemCommand = (command: string) => {
+    if (DANGEROUS_SYSTEM_COMMANDS.has(command)) {
+      const now = Date.now();
+      const confirmUntil = dangerConfirmUntilRef.current[command] ?? 0;
+      if (confirmUntil < now) {
+        dangerConfirmUntilRef.current[command] = now + 5000;
+        alert("위험 명령입니다. 5초 안에 같은 버튼을 한 번 더 누르면 실행됩니다.");
+        return;
+      }
+      dangerConfirmUntilRef.current[command] = 0;
+    }
+    onInputEvent(buildSystemCommand(command));
   };
 
   const triggerBeepSound = async () => {
@@ -1105,7 +1422,15 @@ function RemoteSessionPanel({
   }
 
   return (
-    <section className="session-panel" style={{ display: "flex", flexDirection: "column", position: "relative" }}>
+    <section
+      ref={panelRef}
+      className="session-panel"
+      style={{ display: "flex", flexDirection: "column", position: "relative", outline: "none" }}
+      tabIndex={0}
+      onBlur={handlePanelBlur}
+      onKeyDown={handleKeyDown}
+      onKeyUp={handleKeyUp}
+    >
       <div className="section-heading">
         <h2>원격 세션 (실시간 스트림)</h2>
         <span>{device.desktopName}</span>
@@ -1123,11 +1448,22 @@ function RemoteSessionPanel({
               </span>
             )}
           </div>
-          <div className="remote-preview" style={{ padding: 0, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", flex: 1 }}>
+          <div ref={remotePreviewRef} className="remote-preview" style={{ padding: 0, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", flex: 1 }}>
             <canvas
               ref={canvasRef}
-              onClick={handleCanvasClick}
-              style={{ width: "100%", height: "auto", display: "block", cursor: "crosshair" }}
+              onContextMenu={(event) => event.preventDefault()}
+              onMouseDown={handleCanvasMouseDown}
+              onMouseMove={handleCanvasMouseMove}
+              onMouseUp={handleCanvasMouseUp}
+              onWheel={handleCanvasWheel}
+              style={{
+                width: "100%",
+                height: "auto",
+                display: "block",
+                cursor: "crosshair",
+                transform: `scale(${zoom})`,
+                transformOrigin: "center center",
+              }}
             />
           </div>
         </div>
@@ -1173,6 +1509,36 @@ function RemoteSessionPanel({
 
       {/* 액션 컨트롤러 영역 */}
       <div className="session-actions" style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "12px", alignItems: "center" }}>
+        <button className="secondary-button" type="button" onClick={setFitZoom} title="Fit">
+          <Maximize2 size={17} />
+          <span>Fit</span>
+        </button>
+        <button className="secondary-button" type="button" onClick={setActualSizeZoom} title="100%">
+          <Monitor size={17} />
+          <span>100%</span>
+        </button>
+        <button className="secondary-button" type="button" onClick={() => setZoom((value) => Math.max(0.25, Number((value - 0.25).toFixed(2))))} title="Zoom out">
+          <ZoomOut size={17} />
+          <span>{Math.round(zoom * 100)}%</span>
+        </button>
+        <button className="secondary-button" type="button" onClick={() => setZoom((value) => Math.min(8, Number((value + 0.25).toFixed(2))))} title="Zoom in">
+          <ZoomIn size={17} />
+          <span>+</span>
+        </button>
+        {device.displays && device.displays.length > 0 && (
+          <select
+            value={selectedDisplayIndex}
+            onChange={(event) => handleSwitchDisplay(Number(event.target.value))}
+            style={{ background: "#151522", border: "1px solid #2d2d3f", color: "#e5e7eb", borderRadius: "6px", padding: "8px 10px" }}
+            title="Monitor"
+          >
+            {device.displays.map((display) => (
+              <option key={display.index} value={display.index}>
+                {display.primary ? "Primary " : ""}#{display.index + 1} {display.width}x{display.height} {display.name}
+              </option>
+            ))}
+          </select>
+        )}
         <button className="secondary-button" type="button" onClick={startVisualPing}>
           <MousePointerClick size={17} />
           <span>Visual Ping 측정</span>
@@ -1191,6 +1557,30 @@ function RemoteSessionPanel({
         </button>
 
         {/* 3단계 기능들 */}
+        {[
+          ["services.msc", "서비스"],
+          ["taskmgr", "작업 관리자"],
+          ["cmd", "CMD"],
+          ["explorer", "탐색기"],
+          ["devmgmt.msc", "장치관리자"],
+          ["lock", "화면 잠금"],
+          ["logoff", "로그오프"],
+          ["restart", "재시작"],
+          ["shutdown", "전원 끄기"],
+        ].map(([command, label]) => (
+          <button
+            key={command}
+            className="secondary-button"
+            type="button"
+            onClick={() => handleSystemCommand(command)}
+            title={DANGEROUS_SYSTEM_COMMANDS.has(command) ? "Double click required" : label}
+            style={DANGEROUS_SYSTEM_COMMANDS.has(command) ? { borderColor: "rgba(239, 68, 68, 0.45)", color: "#fca5a5" } : undefined}
+          >
+            {DANGEROUS_SYSTEM_COMMANDS.has(command) ? <Power size={17} /> : <RotateCcw size={17} />}
+            <span>{label}</span>
+          </button>
+        ))}
+
         <button className="secondary-button" type="button" onClick={() => setIsChatOpen(!isChatOpen)}>
           <MessageSquare size={17} />
           <span>채팅 {chatMessages.length > 0 && `(${chatMessages.length})`}</span>
@@ -1240,6 +1630,11 @@ function RemoteSessionPanel({
           onChange={handleFileUpload}
           style={{ display: "none" }}
         />
+        {transferProgress && (
+          <span className="status-pill" style={{ background: "rgba(16, 185, 129, 0.15)", color: "#34d399" }}>
+            {transferProgress.fileName} {transferProgress.progress}% {transferProgress.speed} ETA {transferProgress.timeLeft}
+          </span>
+        )}
 
         <button
           className="secondary-button"

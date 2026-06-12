@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyAgentHeartbeat,
   authenticateAdmin,
   groupDevicesByStore,
   normalizeBusinessNumber,
@@ -153,5 +154,41 @@ describe("agent registry domain", () => {
         }),
       ).toThrow("비밀번호가 올바르지 않습니다.");
     });
+  });
+
+  it("updates display inventory from agent heartbeat", () => {
+    const registered = registerAgentFirstRun([], {
+      businessNumber: "1234567890",
+      password: "1234",
+      installId: "agent-display-01",
+    });
+
+    const heartbeat = applyAgentHeartbeat(registered.devices, {
+      deviceId: registered.device.id,
+      installId: "agent-display-01",
+      displays: [
+        {
+          index: 0,
+          name: "\\\\.\\DISPLAY1",
+          width: 1920,
+          height: 1200,
+          primary: true,
+        },
+        {
+          index: 1,
+          name: "\\\\.\\DISPLAY2",
+          width: 1024,
+          height: 768,
+          primary: false,
+        },
+      ],
+      activeDisplayIndex: 1,
+    });
+
+    expect(heartbeat.device.displays).toEqual([
+      expect.objectContaining({ index: 0, width: 1920, height: 1200, primary: true }),
+      expect.objectContaining({ index: 1, width: 1024, height: 768, primary: false }),
+    ]);
+    expect(heartbeat.device.activeDisplayIndex).toBe(1);
   });
 });

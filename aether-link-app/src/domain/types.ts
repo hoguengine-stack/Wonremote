@@ -11,6 +11,16 @@ export interface ManagedDevice {
   lastSeenAt: string;
   connectionCode?: string;
   version?: string;
+  displays?: DeviceDisplayInfo[];
+  activeDisplayIndex?: number;
+}
+
+export interface DeviceDisplayInfo {
+  index: number;
+  name: string;
+  width: number;
+  height: number;
+  primary: boolean;
 }
 
 export interface AgentConnectionInput {
@@ -33,6 +43,8 @@ export interface AgentHeartbeatInput {
   deviceId: string;
   installId: string;
   version?: string;
+  displays?: DeviceDisplayInfo[];
+  activeDisplayIndex?: number;
 }
 
 export interface AgentCommand {
@@ -94,6 +106,10 @@ export interface TransferredFile {
   id: string;
   filename: string;
   fileData: string;
+  transferId?: string;
+  chunkIndex?: number;
+  totalChunks?: number;
+  isLast?: boolean;
 }
 
 export interface ConnectionHistoryEntry {
@@ -105,4 +121,3 @@ export interface ConnectionHistoryEntry {
   endedAt?: string;
   status: "success" | "rejected" | "closed";
 }
-

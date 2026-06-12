@@ -1,0 +1,63 @@
+import { describe, expect, it } from "vitest";
+import { resolveInjectActions } from "./agentCommandActions";
+
+describe("agent command actions", () => {
+  it("tracks key-down and key-up commands for release-all safety", () => {
+    const pressed = new Set<string>();
+
+    expect(resolveInjectActions("key-down Ctrl", pressed)).toEqual({
+      type: "inject",
+      actions: ["key-down Ctrl"],
+    });
+    expect([...pressed]).toEqual(["Ctrl"]);
+
+    expect(resolveInjectActions("key-up Ctrl", pressed)).toEqual({
+      type: "inject",
+      actions: ["key-up Ctrl"],
+    });
+    expect([...pressed]).toEqual([]);
+  });
+
+  it("expands key-release-all into key-up commands and clears tracked keys", () => {
+    const pressed = new Set(["Ctrl", "Shift", "A"]);
+
+    expect(resolveInjectActions("key-release-all", pressed)).toEqual({
+      type: "inject",
+      actions: ["key-up A", "key-up Shift", "key-up Ctrl"],
+    });
+    expect([...pressed]).toEqual([]);
+  });
+
+  it("decodes paste-text-base64 into clipboard text plus paste injection", () => {
+    const text = "한글 text 123";
+    const payload = btoa(String.fromCharCode(...new TextEncoder().encode(text)));
+
+    expect(resolveInjectActions(`paste-text-base64 ${payload}`, new Set())).toEqual({
+      type: "pasteText",
+      text,
+      actions: ["paste"],
+    });
+    expect(resolveInjectActions(`paste_text ${payload}`, new Set())).toEqual({
+      type: "pasteText",
+      text,
+      actions: ["paste"],
+    });
+  });
+
+  it("accepts underscore key_release_all as a compatibility alias", () => {
+    const pressed = new Set(["Ctrl", "V"]);
+
+    expect(resolveInjectActions("key_release_all", pressed)).toEqual({
+      type: "inject",
+      actions: ["key-up V", "key-up Ctrl"],
+    });
+    expect([...pressed]).toEqual([]);
+  });
+
+  it("passes ordinary inject commands through unchanged", () => {
+    expect(resolveInjectActions("mouse-wheel 10 20 -120", new Set())).toEqual({
+      type: "inject",
+      actions: ["mouse-wheel 10 20 -120"],
+    });
+  });
+});

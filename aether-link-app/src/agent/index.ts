@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile, rm, cp, access } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile, rm, cp, access } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { bootstrapAgent } from "./agentBootstrap";
+import { resolveInjectActions } from "./agentCommandActions";
 import { pollAgentCommands, sendAgentHeartbeat } from "./agentClient";
 import { waitForApiHealth } from "./agentHealth";
 import { resolveAgentAppDir, resolveAgentPocPath } from "./agentPaths";
@@ -19,7 +20,7 @@ import type {
   AgentCredentials,
   AgentLocalConfig,
 } from "./agentBootstrap";
-import type { AgentFirstRunResult } from "../domain/types";
+import type { AgentFirstRunResult, DeviceDisplayInfo } from "../domain/types";
 import { spawn, execFile, exec } from "node:child_process";
 import { promisify } from "node:util";
 import readline from "node:readline";
@@ -42,6 +43,8 @@ const USE_FIREBASE = isAgentFirebaseEnabled(process.env);
 let streamProcess: any = null;
 let currentOutputIndex = 0;
 let currentLoopSleepMs = 33;
+const pressedKeys = new Set<string>();
+let displayCache: { loadedAtMs: number; displays: DeviceDisplayInfo[] } | null = null;
 
 let isApprovalPending = false;
 let isSessionActive = false;
@@ -163,7 +166,18 @@ async function pollSessionData(deviceId: string) {
           await mkdir(downloadsDir, { recursive: true });
           const targetPath = resolveSafeDownloadPath(downloadsDir, String(file.filename ?? ""));
           const buffer = Buffer.from(file.fileData, "base64");
-          await writeFile(targetPath, buffer);
+          if (typeof file.transferId === "string" && Number.isInteger(file.chunkIndex)) {
+            if (file.chunkIndex === 0) {
+              await writeFile(targetPath, buffer);
+            } else {
+              await appendFile(targetPath, buffer);
+            }
+            const chunkNumber = Number(file.chunkIndex) + 1;
+            const totalChunks = Number(file.totalChunks ?? chunkNumber);
+            console.log(`[File Chunk Saved] ${chunkNumber}/${totalChunks}: ${targetPath}`);
+          } else {
+            await writeFile(targetPath, buffer);
+          }
           console.log(`[파일 저장 완료] 경로: ${targetPath}`);
         }
       }
@@ -590,11 +604,14 @@ async function sendHeartbeat(config: AgentLocalConfig): Promise<void> {
     throw new Error("Agent 등록 장비 ID가 없습니다.");
   }
 
+  const displays = await discoverDisplays();
   const result = await sendAgentHeartbeat({
     apiBaseUrl: API_BASE_URL,
     deviceId: config.registeredDeviceId,
     installId: config.installId,
     version: config.version,
+    displays,
+    activeDisplayIndex: currentOutputIndex,
   });
   console.log(`Heartbeat accepted: ${result.device.id}`);
 }
@@ -647,6 +664,15 @@ async function pollCommands(config: AgentLocalConfig): Promise<void> {
           console.log(`Adjusting stream loop sleep to: ${currentLoopSleepMs}ms`);
           startStreaming(config.registeredDeviceId!, currentOutputIndex, currentLoopSleepMs);
         }
+      } else if (command.action === "clipboard-request") {
+        const text = await getClipboardText();
+        const sessionId = `session-${config.registeredDeviceId}`;
+        await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/clipboard`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text, sender: "agent" }),
+        });
+        console.log("[Clipboard] Current agent clipboard sent to viewer");
       } else if (command.action === "ping-color-change") {
         if (streamProcess) {
           console.log("Injecting color marker signal to streamer process stdin");
@@ -660,19 +686,75 @@ async function pollCommands(config: AgentLocalConfig): Promise<void> {
         ]);
         console.log(`[Inject Success] ${stdout.trim()}`);
       } else {
-        const { stdout } = await execFileAsync(pocPath, [
-          "--mode",
-          "inject-input",
-          "--action",
-          command.action,
-        ]);
-        console.log(`[Inject Success] ${stdout.trim()}`);
+        const resolved = resolveInjectActions(command.action, pressedKeys);
+        if (resolved.type === "pasteText") {
+          await setClipboardText(resolved.text);
+        }
+
+        for (const action of resolved.actions) {
+          const { stdout } = await execFileAsync(pocPath, [
+            "--mode",
+            "inject-input",
+            "--action",
+            action,
+          ]);
+          console.log(`[Inject Success] ${stdout.trim()}`);
+        }
       }
     } catch (error) {
       console.error(`[Inject Failed] ${error instanceof Error ? error.message : error}`);
     }
   }
 
+}
+
+async function discoverDisplays(): Promise<DeviceDisplayInfo[] | undefined> {
+  const now = Date.now();
+  if (displayCache && now - displayCache.loadedAtMs < 60_000) {
+    return displayCache.displays;
+  }
+
+  try {
+    const { stdout } = await execFileAsync(POC_PATH, ["--mode", "list-displays"]);
+    const parsed = JSON.parse(stdout) as Array<{
+      index?: unknown;
+      name?: unknown;
+      width?: unknown;
+      height?: unknown;
+      primary?: unknown;
+    }>;
+    const displays = parsed
+      .filter(
+        (display) =>
+          Number.isFinite(Number(display.index)) &&
+          Number(display.width) > 0 &&
+          Number(display.height) > 0,
+      )
+      .map((display) => ({
+        index: Number(display.index),
+        name: String(display.name ?? `Display ${display.index}`),
+        width: Number(display.width),
+        height: Number(display.height),
+        primary: Boolean(display.primary),
+      }));
+
+    displayCache = { loadedAtMs: now, displays };
+    return displays;
+  } catch (error) {
+    console.warn(`[Agent] Display inventory unavailable: ${error instanceof Error ? error.message : error}`);
+    return displayCache?.displays;
+  }
+}
+
+async function setClipboardText(text: string): Promise<void> {
+  const base64Text = Buffer.from(text).toString("base64");
+  const psCmd = `[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${base64Text}')) | Set-Clipboard`;
+  await execFileAsync("powershell", ["-NoProfile", "-Command", psCmd]);
+}
+
+async function getClipboardText(): Promise<string> {
+  const { stdout } = await execFileAsync("powershell", ["-NoProfile", "-Command", "Get-Clipboard -Raw"]);
+  return String(stdout ?? "").replace(/\r?\n$/, "");
 }
 
 async function promptCredentials(): Promise<AgentCredentials> {

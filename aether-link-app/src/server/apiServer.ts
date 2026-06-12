@@ -67,7 +67,7 @@ function prepareUpdateFiles() {
     }
 
     const pkg = JSON.parse(readFileSync(path.join(sourceDir, "package.json"), "utf8"));
-    pkg.version = "0.1.3";
+    pkg.version = "0.1.4";
     writeStagedAppVersion(goodStageDir, pkg.version);
     writeFileSync(path.join(goodStageDir, "package.json"), JSON.stringify(pkg, null, 2), "utf8");
     writeFileSync(path.join(goodStageDir, "update_marker.txt"), "GOOD_UPDATE_SUCCESS", "utf8");
@@ -679,7 +679,14 @@ async function routeRequest(
       if (!requireConnectedSession(state, response, sessionId)) {
         return;
       }
-      const body = await readJson<{ filename?: string; fileData?: string }>(request);
+      const body = await readJson<{
+        filename?: string;
+        fileData?: string;
+        transferId?: string;
+        chunkIndex?: number;
+        totalChunks?: number;
+        isLast?: boolean;
+      }>(request);
       const filename = String(body.filename ?? "").trim();
       const fileData = String(body.fileData ?? "");
 
@@ -698,6 +705,10 @@ async function routeRequest(
         id: `file-${files.length + 1}-${Date.now()}`,
         filename,
         fileData,
+        transferId: body.transferId ? String(body.transferId) : undefined,
+        chunkIndex: typeof body.chunkIndex === "number" ? Math.max(0, Math.trunc(body.chunkIndex)) : undefined,
+        totalChunks: typeof body.totalChunks === "number" ? Math.max(1, Math.trunc(body.totalChunks)) : undefined,
+        isLast: typeof body.isLast === "boolean" ? body.isLast : undefined,
       };
       state.sessionFiles.set(sessionId, [...files, newFile]);
       writeJson(response, 200, { ok: true, file: { id: newFile.id, filename: newFile.filename } });

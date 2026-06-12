@@ -171,6 +171,23 @@ export async function uploadFile(sessionId: string, filename: string, fileData: 
   });
 }
 
+export async function uploadFileChunk(
+  sessionId: string,
+  input: {
+    filename: string;
+    fileData: string;
+    transferId: string;
+    chunkIndex: number;
+    totalChunks: number;
+    isLast: boolean;
+  },
+): Promise<void> {
+  await request(`/api/sessions/${encodeURIComponent(sessionId)}/files`, {
+    method: "POST",
+    body: input,
+  });
+}
+
 export async function fetchFiles(sessionId: string): Promise<TransferredFile[]> {
   const body = await request<{ files: TransferredFile[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/files`);
   return body.files;

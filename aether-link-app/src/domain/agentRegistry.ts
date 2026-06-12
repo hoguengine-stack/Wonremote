@@ -130,6 +130,11 @@ export function applyAgentHeartbeat(
     status: "online",
     connectionCode: currentDevice.connectionCode ?? generateConnectionCode(),
     version: input.version ?? currentDevice.version,
+    displays: sanitizeDisplays(input.displays) ?? currentDevice.displays,
+    activeDisplayIndex:
+      typeof input.activeDisplayIndex === "number"
+        ? Math.max(0, Math.trunc(input.activeDisplayIndex))
+        : currentDevice.activeDisplayIndex,
   };
   const nextDevices = devices.map((item, itemIndex) => (itemIndex === index ? device : item));
 
@@ -248,6 +253,22 @@ function sortDevices(devices: ManagedDevice[]): ManagedDevice[] {
     }
     return left.deviceNumber.localeCompare(right.deviceNumber, "ko");
   });
+}
+
+function sanitizeDisplays(displays: AgentHeartbeatInput["displays"]): ManagedDevice["displays"] | undefined {
+  if (!Array.isArray(displays)) {
+    return undefined;
+  }
+  return displays
+    .filter((display) => Number.isFinite(display.index) && display.width > 0 && display.height > 0)
+    .map((display) => ({
+      index: Math.max(0, Math.trunc(display.index)),
+      name: String(display.name || `Display ${display.index}`),
+      width: Math.max(1, Math.trunc(display.width)),
+      height: Math.max(1, Math.trunc(display.height)),
+      primary: Boolean(display.primary),
+    }))
+    .sort((left, right) => left.index - right.index);
 }
 
 function generateConnectionCode(): string {
