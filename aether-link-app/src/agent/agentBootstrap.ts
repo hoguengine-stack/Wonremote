@@ -1,5 +1,5 @@
 import type { AgentFirstRunInput, AgentFirstRunResult, ManagedDevice } from "../domain/types";
-import { AETHER_LINK_APP_VERSION } from "../domain/appVersion";
+import { WONREMOTE_APP_VERSION } from "../domain/appVersion";
 
 export interface AgentCredentials {
   businessNumber: string;
@@ -38,8 +38,8 @@ export type AgentBootstrapResult =
 export async function bootstrapAgent(deps: AgentBootstrapDeps): Promise<AgentBootstrapResult> {
   const existingConfig = await deps.readConfig();
   if (existingConfig?.registeredDeviceId) {
-    if (existingConfig.version !== AETHER_LINK_APP_VERSION) {
-      existingConfig.version = AETHER_LINK_APP_VERSION;
+    if (existingConfig.version !== WONREMOTE_APP_VERSION) {
+      existingConfig.version = WONREMOTE_APP_VERSION;
       await deps.writeConfig(existingConfig);
     }
     return {
@@ -54,14 +54,14 @@ export async function bootstrapAgent(deps: AgentBootstrapDeps): Promise<AgentBoo
     businessNumber: credentials.businessNumber,
     password: credentials.password,
     installId,
-    version: AETHER_LINK_APP_VERSION,
+    version: WONREMOTE_APP_VERSION,
   });
   const config: AgentLocalConfig = {
     businessNumber: result.device.businessNumber,
     installId,
     registeredAt: deps.nowIso(),
     registeredDeviceId: result.device.id,
-    version: AETHER_LINK_APP_VERSION,
+    version: WONREMOTE_APP_VERSION,
   };
   await deps.writeConfig(config);
 

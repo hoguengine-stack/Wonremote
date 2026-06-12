@@ -10,8 +10,8 @@ describe("agent runtime", () => {
 
     const credentials = await resolveAgentCredentials(
       {
-        AETHER_LINK_AGENT_ID: "4445566666",
-        AETHER_LINK_AGENT_PASSWORD: "1234",
+        WONREMOTE_AGENT_ID: "4445566666",
+        WONREMOTE_AGENT_PASSWORD: "1234",
       },
       promptCredentials,
     );

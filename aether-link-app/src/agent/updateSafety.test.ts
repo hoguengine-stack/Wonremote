@@ -6,7 +6,7 @@ import { isSourceTreeUpdateTarget } from "./updateSafety";
 
 describe("agent update safety", () => {
   it("allows source-tree updates only for a complete npm app tree", () => {
-    const tempDir = path.join(os.tmpdir(), `aether-link-update-source-${process.pid}-${Date.now()}`);
+    const tempDir = path.join(os.tmpdir(), `wonremote-update-source-${process.pid}-${Date.now()}`);
     mkdirSync(path.join(tempDir, "src"), { recursive: true });
     writeFileSync(path.join(tempDir, "package.json"), "{}");
     writeFileSync(path.join(tempDir, "package-lock.json"), "{}");
@@ -19,7 +19,7 @@ describe("agent update safety", () => {
   });
 
   it("blocks source-tree updates for packaged Tauri resource directories", () => {
-    const tempDir = path.join(os.tmpdir(), `aether-link-update-packaged-${process.pid}-${Date.now()}`);
+    const tempDir = path.join(os.tmpdir(), `wonremote-update-packaged-${process.pid}-${Date.now()}`);
     mkdirSync(path.join(tempDir, "agent"), { recursive: true });
     mkdirSync(path.join(tempDir, "server"), { recursive: true });
     writeFileSync(path.join(tempDir, "agent", "index.mjs"), "");

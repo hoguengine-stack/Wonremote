@@ -1,11 +1,11 @@
-import { AETHER_LINK_APP_VERSION } from "./appVersion";
+import { WONREMOTE_APP_VERSION } from "./appVersion";
 
 type VersionEnv = {
-  readonly VITE_AETHER_LINK_APP_VERSION?: string;
+  readonly VITE_WONREMOTE_APP_VERSION?: string;
 };
 
 export function getViewerVersion(env: VersionEnv): string {
-  return env.VITE_AETHER_LINK_APP_VERSION?.trim() || AETHER_LINK_APP_VERSION;
+  return env.VITE_WONREMOTE_APP_VERSION?.trim() || WONREMOTE_APP_VERSION;
 }
 
 export function isHigherVersion(latestVersion: string, currentVersion: string): boolean {

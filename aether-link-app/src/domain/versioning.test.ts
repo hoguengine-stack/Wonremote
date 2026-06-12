@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { AETHER_LINK_APP_VERSION } from "./appVersion";
+import { WONREMOTE_APP_VERSION } from "./appVersion";
 import { getViewerVersion, isHigherVersion } from "./versioning";
 
 describe("viewer versioning", () => {
@@ -9,19 +9,19 @@ describe("viewer versioning", () => {
       version: string;
     };
 
-    expect(AETHER_LINK_APP_VERSION).toBe(packageJson.version);
+    expect(WONREMOTE_APP_VERSION).toBe(packageJson.version);
   });
 
   it("reads the viewer version from Vite build-time env", () => {
     expect(
       getViewerVersion({
-        VITE_AETHER_LINK_APP_VERSION: "0.1.1",
+        VITE_WONREMOTE_APP_VERSION: "0.1.1",
       }),
     ).toBe("0.1.1");
   });
 
   it("falls back to the shared app version when Vite env injection is unavailable", () => {
-    expect(getViewerVersion({})).toBe(AETHER_LINK_APP_VERSION);
+    expect(getViewerVersion({})).toBe(WONREMOTE_APP_VERSION);
   });
 
   it("does not treat the same package version as an update", () => {

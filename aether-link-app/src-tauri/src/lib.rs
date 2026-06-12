@@ -29,8 +29,8 @@ use windows_sys::Win32::System::JobObjects::{
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const STARTUP_REGISTRY_PATH: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
-const STARTUP_REGISTRY_VALUE: &str = "AetherLinkViewer";
-const AGENT_REGISTRY_VALUE: &str = "AetherLinkAgent";
+const STARTUP_REGISTRY_VALUE: &str = "WonRemoteViewer";
+const AGENT_REGISTRY_VALUE: &str = "WonRemoteAgent";
 const LOCAL_API_HOST: &str = "127.0.0.1";
 const LOCAL_API_PORT: u16 = 8787;
 
@@ -157,7 +157,7 @@ fn spawn_agent_only_process(
     } else {
         let node_path = bundled_node_path(resource_dir);
         let agent_path = resource_dir.join("agent").join("index.mjs");
-        let poc_path = resource_dir.join("bin").join("aether-link-poc.exe");
+        let poc_path = resource_dir.join("bin").join("wonremote-poc.exe");
 
         ensure_resource_exists(&node_path, "bundled Node runtime")?;
         ensure_resource_exists(&agent_path, "bundled Agent")?;
@@ -166,16 +166,16 @@ fn spawn_agent_only_process(
         let mut cmd = Command::new(&node_path);
         cmd.arg(&agent_path);
         cmd.arg("--watch");
-        cmd.env("AETHER_LINK_POC_PATH", &poc_path);
-        cmd.env("AETHER_LINK_APP_DIR", resource_dir);
+        cmd.env("WONREMOTE_POC_PATH", &poc_path);
+        cmd.env("WONREMOTE_APP_DIR", resource_dir);
         cmd.env("NODE_ENV", "production");
         cmd
     };
 
     if let Some(url) = api_url {
-        command.env("AETHER_LINK_API_URL", url);
+        command.env("WONREMOTE_API_URL", url);
     } else {
-        command.env("AETHER_LINK_API_URL", "http://127.0.0.1:8787");
+        command.env("WONREMOTE_API_URL", "http://127.0.0.1:8787");
     }
 
     add_no_window(&mut command);
@@ -403,13 +403,13 @@ fn spawn_managed(job: &Job, command: &mut Command, label: &str) -> Result<(), io
 }
 
 fn default_agent_config_path() -> Option<PathBuf> {
-    if let Some(config_path) = env::var_os("AETHER_LINK_AGENT_CONFIG") {
+    if let Some(config_path) = env::var_os("WONREMOTE_AGENT_CONFIG") {
         return Some(PathBuf::from(config_path));
     }
 
     env::var_os("APPDATA")
         .map(PathBuf::from)
-        .map(|base_dir| base_dir.join("AetherLink").join("agent-config.json"))
+        .map(|base_dir| base_dir.join("WonRemote").join("agent-config.json"))
 }
 
 fn executable_name_requests_agent() -> bool {
@@ -429,7 +429,7 @@ fn executable_stem_requests_agent(stem: &str) -> bool {
 fn launched_as_agent() -> bool {
     let args: Vec<String> = std::env::args().collect();
     args.iter().any(|arg| arg == "--agent")
-        || env::var("AETHER_LINK_RUN_AS_AGENT").is_ok()
+        || env::var("WONREMOTE_RUN_AS_AGENT").is_ok()
         || executable_name_requests_agent()
 }
 
@@ -532,9 +532,9 @@ fn start_production_api_server_if_needed(job: &Job, resource_dir: &Path) -> Resu
 
     let mut server_cmd = Command::new(&node_path);
     server_cmd.arg(&server_path);
-    server_cmd.env("AETHER_LINK_API_PORT", LOCAL_API_PORT.to_string());
+    server_cmd.env("WONREMOTE_API_PORT", LOCAL_API_PORT.to_string());
     server_cmd.env("NODE_ENV", "production");
-    server_cmd.env("AETHER_LINK_APP_DIR", resource_dir);
+    server_cmd.env("WONREMOTE_APP_DIR", resource_dir);
     add_no_window(&mut server_cmd);
     spawn_managed(job, &mut server_cmd, "production API server")?;
 
@@ -867,7 +867,7 @@ pub fn run() {
             }
         })
         .run(tauri::generate_context!())
-        .expect("failed to run AetherLink Viewer desktop shell");
+        .expect("failed to run WonRemote Viewer desktop shell");
 }
 
 #[cfg(test)]
@@ -876,8 +876,8 @@ mod registry_tests {
 
     #[test]
     fn test_registry_toggle_uses_isolated_test_key() {
-        let test_value_name = format!("AetherLinkViewerTest{}", std::process::id());
-        let test_path = r"Software\AetherLink\Tests\Run";
+        let test_value_name = format!("WonRemoteViewerTest{}", std::process::id());
+        let test_path = r"Software\WonRemote\Tests\Run";
 
         let _ = set_registry_value(test_path, &test_value_name, None);
         assert!(!registry_value_exists(test_path, &test_value_name));
@@ -885,7 +885,7 @@ mod registry_tests {
         set_registry_value(
             test_path,
             &test_value_name,
-            Some(r#""C:\AetherLink\viewer.exe""#),
+            Some(r#""C:\WonRemote\viewer.exe""#),
         )
         .expect("failed to set isolated registry value");
         assert!(registry_value_exists(test_path, &test_value_name));
@@ -897,8 +897,8 @@ mod registry_tests {
 
     #[test]
     fn test_startup_registry_toggle_agent_uses_isolated_test_key() {
-        let test_value_name = format!("AetherLinkAgentTest{}", std::process::id());
-        let test_path = r"Software\AetherLink\Tests\Run";
+        let test_value_name = format!("WonRemoteAgentTest{}", std::process::id());
+        let test_path = r"Software\WonRemote\Tests\Run";
 
         let _ = set_registry_value(test_path, &test_value_name, None);
         assert!(!registry_value_exists(test_path, &test_value_name));
@@ -906,7 +906,7 @@ mod registry_tests {
         set_registry_value(
             test_path,
             &test_value_name,
-            Some(r#""C:\AetherLink\viewer.exe" --agent"#),
+            Some(r#""C:\WonRemote\viewer.exe" --agent"#),
         )
         .expect("failed to set isolated agent registry value");
         assert!(registry_value_exists(test_path, &test_value_name));
@@ -918,23 +918,23 @@ mod registry_tests {
 
     #[test]
     fn test_startup_command_formats_viewer_and_agent_modes() {
-        let exe_path = PathBuf::from(r"C:\Program Files\AetherLink\aether-link-viewer.exe");
+        let exe_path = PathBuf::from(r"C:\Program Files\WonRemote\wonremote-viewer.exe");
 
         assert_eq!(
             format_startup_command(&exe_path, false),
-            r#""C:\Program Files\AetherLink\aether-link-viewer.exe""#,
+            r#""C:\Program Files\WonRemote\wonremote-viewer.exe""#,
         );
         assert_eq!(
             format_startup_command(&exe_path, true),
-            r#""C:\Program Files\AetherLink\aether-link-viewer.exe" --agent"#,
+            r#""C:\Program Files\WonRemote\wonremote-viewer.exe" --agent"#,
         );
     }
 
     #[test]
     fn test_agent_exe_name_enters_agent_mode() {
-        assert!(executable_stem_requests_agent("AetherLink Agent"));
-        assert!(executable_stem_requests_agent("aether-link-agent"));
-        assert!(!executable_stem_requests_agent("AetherLink Viewer"));
+        assert!(executable_stem_requests_agent("WonRemote Agent"));
+        assert!(executable_stem_requests_agent("wonremote-agent"));
+        assert!(!executable_stem_requests_agent("WonRemote Viewer"));
     }
 
     #[test]
@@ -953,7 +953,7 @@ mod registry_tests {
     #[test]
     fn test_config_registration_requires_registered_device_id() {
         let config_path = std::env::temp_dir().join(format!(
-            "aether-link-empty-config-{}.json",
+            "wonremote-empty-config-{}.json",
             std::process::id()
         ));
         std::fs::write(&config_path, r#"{"installId":"agent-test"}"#)
@@ -967,7 +967,7 @@ mod registry_tests {
     #[test]
     fn test_config_registration_accepts_valid_registered_device_id() {
         let config_path = std::env::temp_dir().join(format!(
-            "aether-link-valid-config-{}.json",
+            "wonremote-valid-config-{}.json",
             std::process::id()
         ));
         std::fs::write(

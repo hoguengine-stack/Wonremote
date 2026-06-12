@@ -4,7 +4,7 @@ import { resolveSafeDownloadPath, sanitizeDownloadFilename } from "./fileSafety"
 
 describe("agent file safety", () => {
   it("keeps transferred files inside the configured downloads directory", () => {
-    const downloadsDir = path.join("C:", "Users", "tester", "AppData", "Roaming", "AetherLink", "Downloads");
+    const downloadsDir = path.join("C:", "Users", "tester", "AppData", "Roaming", "WonRemote", "Downloads");
 
     expect(resolveSafeDownloadPath(downloadsDir, "report.txt")).toBe(path.resolve(downloadsDir, "report.txt"));
     expect(resolveSafeDownloadPath(downloadsDir, "..\\..\\Windows\\win.ini")).toBe(

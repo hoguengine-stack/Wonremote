@@ -314,10 +314,50 @@ mod tests {
         let merged = merge_dirty_tiles(&dirty, cols, w, h, ts, max_merge_width);
 
         assert_eq!(merged.len(), 4);
-        assert_eq!(merged[0], MergedTile { tx: 0, ty: 0, x_start: 0, y_start: 0, tile_w: 96, tile_h: 32 });
-        assert_eq!(merged[1], MergedTile { tx: 4, ty: 0, x_start: 128, y_start: 0, tile_w: 32, tile_h: 32 });
-        assert_eq!(merged[2], MergedTile { tx: 0, ty: 1, x_start: 0, y_start: 32, tile_w: 128, tile_h: 32 });
-        assert_eq!(merged[3], MergedTile { tx: 4, ty: 1, x_start: 128, y_start: 32, tile_w: 32, tile_h: 32 });
+        assert_eq!(
+            merged[0],
+            MergedTile {
+                tx: 0,
+                ty: 0,
+                x_start: 0,
+                y_start: 0,
+                tile_w: 96,
+                tile_h: 32
+            }
+        );
+        assert_eq!(
+            merged[1],
+            MergedTile {
+                tx: 4,
+                ty: 0,
+                x_start: 128,
+                y_start: 0,
+                tile_w: 32,
+                tile_h: 32
+            }
+        );
+        assert_eq!(
+            merged[2],
+            MergedTile {
+                tx: 0,
+                ty: 1,
+                x_start: 0,
+                y_start: 32,
+                tile_w: 128,
+                tile_h: 32
+            }
+        );
+        assert_eq!(
+            merged[3],
+            MergedTile {
+                tx: 4,
+                ty: 1,
+                x_start: 128,
+                y_start: 32,
+                tile_w: 32,
+                tile_h: 32
+            }
+        );
     }
 
     #[test]
@@ -332,7 +372,17 @@ mod tests {
         let merged = merge_dirty_tiles(&dirty, cols, w, h, ts, max_merge_width);
 
         assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0], MergedTile { tx: 0, ty: 0, x_start: 0, y_start: 0, tile_w: 70, tile_h: 32 });
+        assert_eq!(
+            merged[0],
+            MergedTile {
+                tx: 0,
+                ty: 0,
+                x_start: 0,
+                y_start: 0,
+                tile_w: 70,
+                tile_h: 32
+            }
+        );
     }
 }
 
@@ -483,7 +533,9 @@ where
                         config.run_mode = RunMode::Benchmark;
                     }
                     "inject-input" => {
-                        config.run_mode = RunMode::InjectInput { action: String::new() };
+                        config.run_mode = RunMode::InjectInput {
+                            action: String::new(),
+                        };
                     }
                     "stream" => {
                         config.run_mode = RunMode::Stream;
@@ -497,8 +549,8 @@ where
             }
             "--output-index" => {
                 let value = parse_u64_arg("--output-index", args.next())?;
-                config.output_index = u32::try_from(value)
-                    .map_err(|_| "--output-index is too large".to_string())?;
+                config.output_index =
+                    u32::try_from(value).map_err(|_| "--output-index is too large".to_string())?;
             }
             "--help" | "-h" => {
                 return Err(benchmark_usage());
@@ -827,7 +879,7 @@ fn create_merged_tile(run: &[usize], cols: usize, w: usize, h: usize, ts: usize)
 
     let x_start = tx_start * ts;
     let y_start = ty * ts;
-    
+
     let x_end = tx_end * ts + ts.min(w.saturating_sub(tx_end * ts));
     let tile_w = x_end.saturating_sub(x_start);
     let tile_h = ts.min(h.saturating_sub(y_start));
@@ -923,9 +975,17 @@ fn inject_input(action: &str) -> std::result::Result<(), String> {
                             },
                         },
                     ];
-                    let sent = windows::Win32::UI::Input::KeyboardAndMouse::SendInput(&inputs, std::mem::size_of::<windows::Win32::UI::Input::KeyboardAndMouse::INPUT>() as i32);
+                    let sent = windows::Win32::UI::Input::KeyboardAndMouse::SendInput(
+                        &inputs,
+                        std::mem::size_of::<windows::Win32::UI::Input::KeyboardAndMouse::INPUT>()
+                            as i32,
+                    );
                     if sent != inputs.len() as u32 {
-                        return Err(format!("SendInput failed. Sent {} of {} events.", sent, inputs.len()));
+                        return Err(format!(
+                            "SendInput failed. Sent {} of {} events.",
+                            sent,
+                            inputs.len()
+                        ));
                     }
                 } else {
                     let inputs = [
@@ -943,9 +1003,17 @@ fn inject_input(action: &str) -> std::result::Result<(), String> {
                             },
                         },
                     ];
-                    let sent = windows::Win32::UI::Input::KeyboardAndMouse::SendInput(&inputs, std::mem::size_of::<windows::Win32::UI::Input::KeyboardAndMouse::INPUT>() as i32);
+                    let sent = windows::Win32::UI::Input::KeyboardAndMouse::SendInput(
+                        &inputs,
+                        std::mem::size_of::<windows::Win32::UI::Input::KeyboardAndMouse::INPUT>()
+                            as i32,
+                    );
                     if sent != inputs.len() as u32 {
-                        return Err(format!("SendInput failed. Sent {} of {} events.", sent, inputs.len()));
+                        return Err(format!(
+                            "SendInput failed. Sent {} of {} events.",
+                            sent,
+                            inputs.len()
+                        ));
                     }
                 }
             }
@@ -958,7 +1026,9 @@ fn inject_input(action: &str) -> std::result::Result<(), String> {
                     let c = key_str.chars().next().unwrap().to_ascii_uppercase();
                     windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY(c as u16)
                 } else {
-                    let raw_code = key_str.parse::<u16>().map_err(|_| "Invalid key character")?;
+                    let raw_code = key_str
+                        .parse::<u16>()
+                        .map_err(|_| "Invalid key character")?;
                     windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY(raw_code)
                 };
 
@@ -969,7 +1039,10 @@ fn inject_input(action: &str) -> std::result::Result<(), String> {
                             ki: windows::Win32::UI::Input::KeyboardAndMouse::KEYBDINPUT {
                                 wVk: vk,
                                 wScan: 0,
-                                dwFlags: windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS(0),
+                                dwFlags:
+                                    windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS(
+                                        0,
+                                    ),
                                 time: 0,
                                 dwExtraInfo: 0,
                             },
@@ -981,16 +1054,25 @@ fn inject_input(action: &str) -> std::result::Result<(), String> {
                             ki: windows::Win32::UI::Input::KeyboardAndMouse::KEYBDINPUT {
                                 wVk: vk,
                                 wScan: 0,
-                                dwFlags: windows::Win32::UI::Input::KeyboardAndMouse::KEYEVENTF_KEYUP,
+                                dwFlags:
+                                    windows::Win32::UI::Input::KeyboardAndMouse::KEYEVENTF_KEYUP,
                                 time: 0,
                                 dwExtraInfo: 0,
                             },
                         },
                     },
                 ];
-                let sent = windows::Win32::UI::Input::KeyboardAndMouse::SendInput(&inputs, std::mem::size_of::<windows::Win32::UI::Input::KeyboardAndMouse::INPUT>() as i32);
+                let sent = windows::Win32::UI::Input::KeyboardAndMouse::SendInput(
+                    &inputs,
+                    std::mem::size_of::<windows::Win32::UI::Input::KeyboardAndMouse::INPUT>()
+                        as i32,
+                );
                 if sent != inputs.len() as u32 {
-                    return Err(format!("SendInput failed. Sent {} of {} events.", sent, inputs.len()));
+                    return Err(format!(
+                        "SendInput failed. Sent {} of {} events.",
+                        sent,
+                        inputs.len()
+                    ));
                 }
             }
             "ping-color-change" => {
@@ -1001,7 +1083,10 @@ fn inject_input(action: &str) -> std::result::Result<(), String> {
                             ki: windows::Win32::UI::Input::KeyboardAndMouse::KEYBDINPUT {
                                 wVk: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY(0x10),
                                 wScan: 0,
-                                dwFlags: windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS(0),
+                                dwFlags:
+                                    windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS(
+                                        0,
+                                    ),
                                 time: 0,
                                 dwExtraInfo: 0,
                             },
@@ -1013,16 +1098,25 @@ fn inject_input(action: &str) -> std::result::Result<(), String> {
                             ki: windows::Win32::UI::Input::KeyboardAndMouse::KEYBDINPUT {
                                 wVk: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY(0x10),
                                 wScan: 0,
-                                dwFlags: windows::Win32::UI::Input::KeyboardAndMouse::KEYEVENTF_KEYUP,
+                                dwFlags:
+                                    windows::Win32::UI::Input::KeyboardAndMouse::KEYEVENTF_KEYUP,
                                 time: 0,
                                 dwExtraInfo: 0,
                             },
                         },
                     },
                 ];
-                let sent = windows::Win32::UI::Input::KeyboardAndMouse::SendInput(&inputs, std::mem::size_of::<windows::Win32::UI::Input::KeyboardAndMouse::INPUT>() as i32);
+                let sent = windows::Win32::UI::Input::KeyboardAndMouse::SendInput(
+                    &inputs,
+                    std::mem::size_of::<windows::Win32::UI::Input::KeyboardAndMouse::INPUT>()
+                        as i32,
+                );
                 if sent != inputs.len() as u32 {
-                    return Err(format!("SendInput failed. Sent {} of {} events.", sent, inputs.len()));
+                    return Err(format!(
+                        "SendInput failed. Sent {} of {} events.",
+                        sent,
+                        inputs.len()
+                    ));
                 }
             }
             _ => return Err(format!("Unknown action: {}", parts[0])),
@@ -1264,7 +1358,7 @@ async fn main() {
     }
 
     println!(
-        "=== AetherLink PoC 2주차: 32x32 타일 차분(Dirty-Tile) & TurboJPEG 인코더 벤치마크 ==="
+        "=== WonRemote PoC 2주차: 32x32 타일 차분(Dirty-Tile) & TurboJPEG 인코더 벤치마크 ==="
     );
 
     // 1. Initialize DXGI Capturer
@@ -1473,7 +1567,8 @@ async fn main() {
                                 let tile_row_start = ty_local * tile.tile_w * 3;
 
                                 for tx_local in 0..tile.tile_w {
-                                    let canvas_idx = canvas_row_start + (tile.x_start + tx_local) * 4;
+                                    let canvas_idx =
+                                        canvas_row_start + (tile.x_start + tx_local) * 4;
                                     let tile_idx_24 = tile_row_start + tx_local * 3;
 
                                     canvas_rgba[canvas_idx] = decomp_rgb24[tile_idx_24]; // R
@@ -1629,9 +1724,16 @@ async fn main() {
 
     println!("------------------------------------------------------------");
     println!("=== 가로축 타일 병합 최적화 요약 (Before vs After) ===");
-    println!("   - 총 타일 개수:        {} -> {}", accum_before_tiles, accum_after_tiles);
-    println!("   - 총 JPEG 인코딩 횟수:  {} -> {}", accum_before_encodes, accum_after_encodes);
-    println!("   - 총 전송 페이로드 크기: {:.2} KB -> {:.2} KB ({:.1}% 절감)",
+    println!(
+        "   - 총 타일 개수:        {} -> {}",
+        accum_before_tiles, accum_after_tiles
+    );
+    println!(
+        "   - 총 JPEG 인코딩 횟수:  {} -> {}",
+        accum_before_encodes, accum_after_encodes
+    );
+    println!(
+        "   - 총 전송 페이로드 크기: {:.2} KB -> {:.2} KB ({:.1}% 절감)",
         accum_before_bytes as f64 / 1024.0,
         accum_after_bytes as f64 / 1024.0,
         if accum_before_bytes > 0 {
@@ -1640,7 +1742,8 @@ async fn main() {
             0.0
         }
     );
-    println!("   - 총 인코딩 지연 시간:  {:.3} ms -> {:.3} ms ({:.1}% 단축)",
+    println!(
+        "   - 총 인코딩 지연 시간:  {:.3} ms -> {:.3} ms ({:.1}% 단축)",
         accum_before_latency_us as f64 / 1000.0,
         accum_after_latency_us as f64 / 1000.0,
         if accum_before_latency_us > 0 {
@@ -1732,7 +1835,7 @@ async fn main() {
         let report = BenchmarkReport {
             schema_version: 2,
             generated_at_unix_ms: report_timestamp_ms,
-            source: "aether-link-poc-week2".to_string(),
+            source: "wonremote-poc-week2".to_string(),
             duration_seconds: total_elapsed.as_secs_f64(),
             config: BenchmarkConfigReport {
                 requested_duration_seconds: config.duration_secs,

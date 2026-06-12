@@ -333,7 +333,7 @@ function ViewerApp() {
         <div className="brand-row">
           <div className="brand-mark">A</div>
           <div>
-            <strong>AetherLink</strong>
+            <strong>WonRemote</strong>
             <span>Viewer Console</span>
           </div>
         </div>
@@ -682,7 +682,7 @@ function LoginScreen({
 }
 
 function getOrCreateAgentInstallId(): string {
-  const existing = window.localStorage.getItem("aether-link-agent-install-id");
+  const existing = window.localStorage.getItem("wonremote-agent-install-id");
   if (existing) {
     return existing;
   }
@@ -692,7 +692,7 @@ function getOrCreateAgentInstallId(): string {
       ? window.crypto.randomUUID().slice(0, 8)
       : Math.random().toString(36).slice(2, 10);
   const installId = `agent-${randomPart}`;
-  window.localStorage.setItem("aether-link-agent-install-id", installId);
+  window.localStorage.setItem("wonremote-agent-install-id", installId);
   return installId;
 }
 

@@ -38,7 +38,7 @@
 ## Gemini에게 줄 최종 프롬프트
 
 ```text
-너는 AetherLink 원격 제어 PoC의 보수적 감사 담당이다.
+너는 WonRemote 원격 제어 PoC의 보수적 감사 담당이다.
 
 다음 규칙을 반드시 지켜라.
 - C:\Users\qpalz\Documents\remote\GEMINI_QUALITY_GUARDRAILS.md를 먼저 읽고 따른다.

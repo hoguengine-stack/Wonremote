@@ -1,4 +1,4 @@
-# AetherLink Windows E2E Work Record
+# WonRemote Windows E2E Work Record
 
 Date: 2026-06-12
 Repository path: `C:\Users\qpalz\Documents\remote`
@@ -22,15 +22,15 @@ git status --short --untracked-files=all: clean
 ## Verified Locally
 
 - Installed viewer binary exists:
-  `C:\Users\qpalz\AppData\Local\AetherLink Viewer\aether-link-viewer.exe`
+  `C:\Users\qpalz\AppData\Local\WonRemote Viewer\wonremote-viewer.exe`
 - Installed viewer binary size:
   `9,083,392 bytes`
 - HKCU Run contains the Agent tray startup value:
-  `AetherLinkAgent REG_SZ "C:\Users\qpalz\AppData\Local\AetherLink Viewer\aether-link-viewer.exe" --agent`
-- `AetherLinkViewer` Run value was not present during CodeX verification.
-- `AetherLinkAgentCLI` Run value was not present during CodeX verification.
+  `WonRemoteAgent REG_SZ "C:\Users\qpalz\AppData\Local\WonRemote Viewer\wonremote-viewer.exe" --agent`
+- `WonRemoteViewer` Run value was not present during CodeX verification.
+- `WonRemoteAgentCLI` Run value was not present during CodeX verification.
 - `aether-link-app\scripts\check-registry-status.bat` executed successfully and reported the same registry state.
-- After the self-healing scenario, `%APPDATA%\AetherLink\agent-config.json` was absent during CodeX verification, which matches the expected config deletion behavior after an unregistered-agent 404.
+- After the self-healing scenario, `%APPDATA%\WonRemote\agent-config.json` was absent during CodeX verification, which matches the expected config deletion behavior after an unregistered-agent 404.
 
 ## Build Artifacts
 
@@ -40,8 +40,8 @@ Fresh file sizes measured by CodeX:
 aether-link-app\dist-server\index.mjs: 37,456 bytes
 aether-link-app\dist-agent\index.mjs: 32,526 bytes
 aether-link-app\dist-runtime\node.exe: 82,818,704 bytes
-aether-link-poc\target\release\aether-link-poc.exe: 3,154,944 bytes
-aether-link-app\src-tauri\target\release\bundle\nsis\AetherLink Viewer_0.1.1_x64-setup.exe: 24,009,576 bytes
+aether-link-poc\target\release\wonremote-poc.exe: 3,154,944 bytes
+aether-link-app\src-tauri\target\release\bundle\nsis\WonRemote Viewer_0.1.2_x64-setup.exe: 24,009,576 bytes
 ```
 
 ## Verification Commands
@@ -53,8 +53,8 @@ git fetch origin
 git rev-parse --short HEAD
 git rev-parse --short origin/main
 git status --short --untracked-files=all
-reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "AetherLinkAgent"
-reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "AetherLinkViewer"
+reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "WonRemoteAgent"
+reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "WonRemoteViewer"
 cmd /c aether-link-app\scripts\check-registry-status.bat
 ```
 
@@ -89,26 +89,26 @@ cargo test in aether-link-poc: 8 passed
 Fresh file sizes:
 
 ```text
-C:\Users\qpalz\AppData\Local\AetherLink Viewer\aether-link-viewer.exe: 9,083,392 bytes
-aether-link-app\src-tauri\target\release\bundle\nsis\AetherLink Viewer_0.1.1_x64-setup.exe: 24,009,576 bytes
+C:\Users\qpalz\AppData\Local\WonRemote Viewer\wonremote-viewer.exe: 9,083,392 bytes
+aether-link-app\src-tauri\target\release\bundle\nsis\WonRemote Viewer_0.1.2_x64-setup.exe: 24,009,576 bytes
 aether-link-app\dist-server\index.mjs: 37,456 bytes
 aether-link-app\dist-agent\index.mjs: 32,526 bytes
 aether-link-app\dist-runtime\node.exe: 82,818,704 bytes
-aether-link-poc\target\release\aether-link-poc.exe: 3,154,944 bytes
+aether-link-poc\target\release\wonremote-poc.exe: 3,154,944 bytes
 ```
 
 Registry state verified by CodeX:
 
 ```text
-AetherLinkAgent REG_SZ "C:\Users\qpalz\AppData\Local\AetherLink Viewer\aether-link-viewer.exe" --agent
-AetherLinkViewer: not present
-AetherLinkAgentCLI: not present
+WonRemoteAgent REG_SZ "C:\Users\qpalz\AppData\Local\WonRemote Viewer\wonremote-viewer.exe" --agent
+WonRemoteViewer: not present
+WonRemoteAgentCLI: not present
 ```
 
 Self-healing state after the prior unregistered-agent scenario:
 
 ```text
-%APPDATA%\AetherLink\agent-config.json: not present
+%APPDATA%\WonRemote\agent-config.json: not present
 ```
 
 Remaining manual validation items:
@@ -129,7 +129,7 @@ Fixed items:
 
 - Removed app-version drift by introducing `src/domain/appVersion.ts` and aligning Viewer, Agent bootstrap, Agent update checks, Tauri fallback, and E2E update packages with the current package version.
 - Added safety around packaged updates: Viewer does not auto-reload unless the API explicitly allows it, and Agent source-tree updates are blocked when running from packaged Tauri resources.
-- Hardened transferred-file saving so Agent writes only sanitized basenames inside `%APPDATA%/AetherLink/Downloads`.
+- Hardened transferred-file saving so Agent writes only sanitized basenames inside `%APPDATA%/WonRemote/Downloads`.
 - Changed Tauri embedded Agent startup to require a valid `registeredDeviceId`, not just any config file.
 - Stabilized E2E logging and version expectations so the full update/rollback flow can run without log pipe failures.
 
@@ -142,7 +142,7 @@ cargo test (aether-link-poc): 8 tests passed
 npm run build: passed
 npx tsx tests/e2e/test_e2e_flow.ts: passed all phases
 npm run desktop:build: passed
-NSIS installer: aether-link-app/src-tauri/target/release/bundle/nsis/AetherLink Viewer_0.1.1_x64-setup.exe
+NSIS installer: aether-link-app/src-tauri/target/release/bundle/nsis/WonRemote Viewer_0.1.2_x64-setup.exe
 ```
 
 Remaining implementation priority:

@@ -17,7 +17,7 @@ describe("desktop packaging scaffold", () => {
       devUrl: "http://127.0.0.1:5173",
       frontendDist: "../dist",
     });
-    expect(config.productName).toBe("AetherLink Viewer");
+    expect(config.productName).toBe("WonRemote Viewer");
     expect(config.version).toBe(packageJson.version);
   });
 
@@ -43,7 +43,7 @@ describe("desktop packaging scaffold", () => {
       "../dist-server/index.mjs": "server/index.mjs",
       "../dist-agent/index.mjs": "agent/index.mjs",
       "../dist-runtime/node.exe": "runtime/node.exe",
-      "../../aether-link-poc/target/release/aether-link-poc.exe": "bin/aether-link-poc.exe",
+      "../../aether-link-poc/target/release/wonremote-poc.exe": "bin/wonremote-poc.exe",
     });
   });
 
@@ -58,8 +58,8 @@ describe("desktop packaging scaffold", () => {
   it("can package separate viewer and agent portable executables", () => {
     const packageReleaseScript = readFileSync(path.join(projectRoot, "scripts", "package-release-exes.js"), "utf8");
 
-    expect(packageReleaseScript).toContain("AetherLink Viewer.exe");
-    expect(packageReleaseScript).toContain("AetherLink Agent.exe");
+    expect(packageReleaseScript).toContain("WonRemote Viewer.exe");
+    expect(packageReleaseScript).toContain("WonRemote Agent.exe");
     expect(packageReleaseScript).toContain("server");
     expect(packageReleaseScript).toContain("runtime");
   });

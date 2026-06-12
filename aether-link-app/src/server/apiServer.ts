@@ -29,7 +29,7 @@ import { createMemoryDeviceStore } from "./deviceStore";
 import type { DeviceStore } from "./deviceStore";
 import { createMemoryHistoryStore } from "./historyStore";
 import type { HistoryStore } from "./historyStore";
-import { AETHER_LINK_APP_VERSION } from "../domain/appVersion";
+import { WONREMOTE_APP_VERSION } from "../domain/appVersion";
 
 let goodChecksum = "";
 let badBinaryChecksum = "";
@@ -40,7 +40,7 @@ let testUpdateMode: "none" | "good" | "bad_checksum" | "bad_binary" = "none";
 function writeStagedAppVersion(stageDir: string, version: string) {
   const appVersionPath = path.join(stageDir, "src", "domain", "appVersion.ts");
   if (existsSync(appVersionPath)) {
-    writeFileSync(appVersionPath, `export const AETHER_LINK_APP_VERSION = "${version}";\n`, "utf8");
+    writeFileSync(appVersionPath, `export const WONREMOTE_APP_VERSION = "${version}";\n`, "utf8");
   }
 }
 
@@ -50,8 +50,8 @@ function prepareUpdateFiles() {
   const goodStageDir = path.join(stagingRoot, "good");
   const badStageDir = path.join(stagingRoot, "bad");
   const sourceDir = resolveUpdateSourceDir();
-  goodUpdatePath = path.join(artifactDir, "aether-link-update-good.zip");
-  badUpdatePath = path.join(artifactDir, "aether-link-update-bad.zip");
+  goodUpdatePath = path.join(artifactDir, "wonremote-update-good.zip");
+  badUpdatePath = path.join(artifactDir, "wonremote-update-bad.zip");
 
   try {
     rmSync(stagingRoot, { recursive: true, force: true });
@@ -67,7 +67,7 @@ function prepareUpdateFiles() {
     }
 
     const pkg = JSON.parse(readFileSync(path.join(sourceDir, "package.json"), "utf8"));
-    pkg.version = "0.1.2";
+    pkg.version = "0.1.3";
     writeStagedAppVersion(goodStageDir, pkg.version);
     writeFileSync(path.join(goodStageDir, "package.json"), JSON.stringify(pkg, null, 2), "utf8");
     writeFileSync(path.join(goodStageDir, "update_marker.txt"), "GOOD_UPDATE_SUCCESS", "utf8");
@@ -98,12 +98,12 @@ function prepareUpdateFiles() {
 }
 
 function resolveUpdateArtifactDir(): string {
-  const configuredDir = process.env.AETHER_LINK_UPDATE_ARTIFACT_DIR?.trim();
+  const configuredDir = process.env.WONREMOTE_UPDATE_ARTIFACT_DIR?.trim();
   const artifactDir = configuredDir
     ? path.resolve(configuredDir)
     : path.join(
         os.tmpdir(),
-        "AetherLink",
+        "WonRemote",
         "update-artifacts",
         createHash("sha256").update(process.cwd()).digest("hex").slice(0, 12),
       );
@@ -112,7 +112,7 @@ function resolveUpdateArtifactDir(): string {
 }
 
 function resolveUpdateSourceDir(): string {
-  return path.resolve(process.env.AETHER_LINK_APP_DIR?.trim() || process.cwd());
+  return path.resolve(process.env.WONREMOTE_APP_DIR?.trim() || process.cwd());
 }
 
 prepareUpdateFiles();
@@ -432,7 +432,7 @@ async function routeRequest(
   // 2. GET /api/update/check
   if (request.method === "GET" && url.pathname === "/api/update/check") {
     const isNone = testUpdateMode === "none";
-    let latestVersion = AETHER_LINK_APP_VERSION;
+    let latestVersion = WONREMOTE_APP_VERSION;
     
     if (isNone) {
       if (process.env.NODE_ENV !== "test") {
@@ -448,14 +448,14 @@ async function routeRequest(
           console.error("[API Server] Failed to fetch latest version from GitHub package.json:", err);
           try {
             const localPkg = JSON.parse(readFileSync(path.join(resolveUpdateSourceDir(), "package.json"), "utf8"));
-            latestVersion = localPkg.version || AETHER_LINK_APP_VERSION;
+            latestVersion = localPkg.version || WONREMOTE_APP_VERSION;
           } catch (e) {}
         }
       } else {
-        latestVersion = AETHER_LINK_APP_VERSION;
+        latestVersion = WONREMOTE_APP_VERSION;
       }
     } else {
-      latestVersion = "0.1.2";
+      latestVersion = "0.1.3";
     }
     
     const badChecksum = testUpdateMode === "bad_checksum";
@@ -515,7 +515,7 @@ async function routeRequest(
     }
 
     const baseDir = process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming");
-    const expectedPath = path.resolve(baseDir, "AetherLink", "update_install.bat");
+    const expectedPath = path.resolve(baseDir, "WonRemote", "update_install.bat");
     const resolvedPath = path.resolve(installerPath);
 
     if (resolvedPath !== expectedPath) {

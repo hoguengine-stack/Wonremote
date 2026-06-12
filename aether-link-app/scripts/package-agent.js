@@ -22,8 +22,8 @@ async function run() {
   const agentMapSrc = path.join(appRoot, "dist-agent", "index.mjs.map");
   const agentMapDest = path.join(pkgDir, "agent.mjs.map");
 
-  const pocSrc = path.join(repoRoot, "aether-link-poc", "target", "release", "aether-link-poc.exe");
-  const pocDest = path.join(binDir, "aether-link-poc.exe");
+  const pocSrc = path.join(repoRoot, "aether-link-poc", "target", "release", "wonremote-poc.exe");
+  const pocDest = path.join(binDir, "wonremote-poc.exe");
 
   console.log("Copying bundled Node runtime...");
   fs.copyFileSync(nodeSrc, nodeDest);
@@ -37,12 +37,12 @@ async function run() {
   console.log("Copying Rust PoC capture binary...");
   fs.copyFileSync(pocSrc, pocDest);
 
-  console.log("Creating launcher batch file aether-link-agent.bat...");
+  console.log("Creating launcher batch file wonremote-agent.bat...");
   const batContent = `@echo off
 cd /d "%~dp0"
 node.exe agent.mjs --watch
 `;
-  fs.writeFileSync(path.join(pkgDir, "aether-link-agent.bat"), batContent, "utf8");
+  fs.writeFileSync(path.join(pkgDir, "wonremote-agent.bat"), batContent, "utf8");
 
   console.log("Agent standalone packaging completed successfully at dist-agent-pkg/!");
 }

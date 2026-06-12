@@ -279,7 +279,7 @@ describe("aether link local API server", () => {
 
 
   it("persists registered devices across API server restarts", async () => {
-    const tempDir = await mkdtemp(path.join(tmpdir(), "aether-link-api-"));
+    const tempDir = await mkdtemp(path.join(tmpdir(), "wonremote-api-"));
     const storePath = path.join(tempDir, "devices.json");
     try {
       await closeServer();
@@ -547,8 +547,8 @@ describe("aether link local API server", () => {
   });
 
   it("serves update packages without depending on artifacts in the app root", async () => {
-    const rootGoodZip = path.join(process.cwd(), "aether-link-update-good.zip");
-    const rootBadZip = path.join(process.cwd(), "aether-link-update-bad.zip");
+    const rootGoodZip = path.join(process.cwd(), "wonremote-update-good.zip");
+    const rootBadZip = path.join(process.cwd(), "wonremote-update-bad.zip");
     await rm(rootGoodZip, { force: true });
     await rm(rootBadZip, { force: true });
 
@@ -563,7 +563,7 @@ describe("aether link local API server", () => {
     const downloadRes = await fetch(`${baseUrl}/api/update/download`);
     expect(downloadRes.status).toBe(200);
 
-    const tempDir = await mkdtemp(path.join(tmpdir(), "aether-link-update-pkg-"));
+    const tempDir = await mkdtemp(path.join(tmpdir(), "wonremote-update-pkg-"));
     const zipPath = path.join(tempDir, "update.zip");
     const extractDir = path.join(tempDir, "extracted");
     await mkdir(extractDir, { recursive: true });
@@ -576,8 +576,8 @@ describe("aether link local API server", () => {
       };
       const appVersionSource = await readFile(path.join(extractDir, "src", "domain", "appVersion.ts"), "utf8");
 
-      expect(packageJson.version).toBe("0.1.2");
-      expect(appVersionSource).toContain(`AETHER_LINK_APP_VERSION = "${packageJson.version}"`);
+      expect(packageJson.version).toBe("0.1.3");
+      expect(appVersionSource).toContain(`WONREMOTE_APP_VERSION = "${packageJson.version}"`);
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }

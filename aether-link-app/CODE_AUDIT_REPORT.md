@@ -17,7 +17,7 @@ Baseline before edits: `d4b493c`
    - This prevents future GitHub version bumps from corrupting installed resources or causing reload loops before a real installer-based updater exists.
 
 3. Unsafe transferred-file save path
-   - Agent file downloads now sanitize names and resolve paths inside `%APPDATA%/AetherLink/Downloads`.
+   - Agent file downloads now sanitize names and resolve paths inside `%APPDATA%/WonRemote/Downloads`.
    - Path traversal inputs such as `..\..\Windows\win.ini` are collapsed to a safe basename.
 
 4. Invalid config auto-start path
@@ -48,7 +48,7 @@ Vitest: 14 files, 66 tests passed
 Tauri Rust tests: 5 passed
 PoC Rust tests: 8 passed
 E2E: connection, checksum rejection, rollback, and 0.1.2 update success passed
-NSIS installer built: src-tauri/target/release/bundle/nsis/AetherLink Viewer_0.1.1_x64-setup.exe
+NSIS installer built: src-tauri/target/release/bundle/nsis/WonRemote Viewer_0.1.2_x64-setup.exe
 ```
 
 ## Remaining Risks

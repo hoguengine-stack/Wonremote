@@ -8,18 +8,18 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const sourceAppDir = path.resolve(__dirname, "..", "..");
 const repoRoot = path.resolve(sourceAppDir, "..");
-const e2eRoot = path.join(os.tmpdir(), `aether-link-e2e-${process.pid}`);
+const e2eRoot = path.join(os.tmpdir(), `wonremote-e2e-${process.pid}`);
 const appDir = path.join(e2eRoot, "aether-link-app");
 const appData = path.join(e2eRoot, "AppData", "Roaming");
 const updateArtifactDir = path.join(e2eRoot, "update-artifacts");
-const pocPath = path.join(repoRoot, "aether-link-poc", "target", "release", "aether-link-poc.exe");
+const pocPath = path.join(repoRoot, "aether-link-poc", "target", "release", "wonremote-poc.exe");
 const sourcePackageJson = JSON.parse(await fs.readFile(path.join(sourceAppDir, "package.json"), "utf8")) as {
   version: string;
 };
 const currentAppVersion = sourcePackageJson.version;
 
 async function readAgentPid(): Promise<number | null> {
-  const pidPath = path.join(appData, "AetherLink", "agent.pid");
+  const pidPath = path.join(appData, "WonRemote", "agent.pid");
   try {
     const content = await fs.readFile(pidPath, "utf8");
     const pid = parseInt(content.trim(), 10);
@@ -62,7 +62,7 @@ async function prepareFixtureApp() {
 async function main() {
   console.log("=== Starting Multi-Phase E2E Flow & Auto-Update/Rollback Verification ===");
 
-  // 1. Cleanup old processes (only on port 8787 and aether-link-poc.exe)
+  // 1. Cleanup old processes (only on port 8787 and wonremote-poc.exe)
   console.log("Cleaning up old processes...");
   try {
     const netstat = execSync("netstat -ano | findstr :8787").toString();
@@ -80,30 +80,30 @@ async function main() {
   } catch (e) {}
 
   try {
-    execSync("taskkill /F /IM aether-link-poc.exe 2>nul || exit 0", { shell: true });
-    console.log("Killed aether-link-poc.exe processes");
+    execSync("taskkill /F /IM wonremote-poc.exe 2>nul || exit 0", { shell: true });
+    console.log("Killed wonremote-poc.exe processes");
   } catch (e) {}
 
   await prepareFixtureApp();
   console.log(`Prepared isolated fixture app: ${appDir}`);
 
   // 2. Remove configuration and history files for clean environment
-  const configPath = path.join(appData, "AetherLink", "agent-config.json");
-  const historyPath = path.join(appData, "AetherLink", "connection_history.json");
-  const devicesPath = path.join(appData, "AetherLink", "devices.json");
-  const downloadsDir = path.join(appData, "AetherLink", "Downloads");
-  const aetherLinkDir = path.join(appData, "AetherLink");
+  const configPath = path.join(appData, "WonRemote", "agent-config.json");
+  const historyPath = path.join(appData, "WonRemote", "connection_history.json");
+  const devicesPath = path.join(appData, "WonRemote", "devices.json");
+  const downloadsDir = path.join(appData, "WonRemote", "Downloads");
+  const wonRemoteDir = path.join(appData, "WonRemote");
 
   try {
     await fs.rm(configPath, { force: true });
     await fs.rm(historyPath, { force: true });
     await fs.rm(devicesPath, { force: true });
     await fs.rm(path.join(downloadsDir, "e2e_test.txt"), { force: true });
-    await fs.rm(path.join(aetherLinkDir, "crash.txt"), { force: true });
-    await fs.rm(path.join(aetherLinkDir, ".update_success"), { force: true });
-    await fs.rm(path.join(aetherLinkDir, "agent.pid"), { force: true });
+    await fs.rm(path.join(wonRemoteDir, "crash.txt"), { force: true });
+    await fs.rm(path.join(wonRemoteDir, ".update_success"), { force: true });
+    await fs.rm(path.join(wonRemoteDir, "agent.pid"), { force: true });
     await fs.rm(path.join(appDir, "crash.txt"), { force: true });
-    await fs.rm(path.join(aetherLinkDir, "installer.log"), { force: true });
+    await fs.rm(path.join(wonRemoteDir, "installer.log"), { force: true });
     console.log("Cleared old configs/histories/devices/downloads/markers/logs");
   } catch (e) {}
 
@@ -120,9 +120,9 @@ async function main() {
       APPDATA: appData,
       PORT: "8787",
       NODE_ENV: "test",
-      AETHER_LINK_AGENT_OFFLINE_MS: "2000",
-      AETHER_LINK_APP_DIR: appDir,
-      AETHER_LINK_UPDATE_ARTIFACT_DIR: updateArtifactDir,
+      WONREMOTE_AGENT_OFFLINE_MS: "2000",
+      WONREMOTE_APP_DIR: appDir,
+      WONREMOTE_UPDATE_ARTIFACT_DIR: updateArtifactDir,
     }
   });
 
@@ -181,12 +181,12 @@ async function main() {
       shell: true,
       env: {
         ...process.env,
-        AETHER_LINK_API_URL: "http://127.0.0.1:8787",
-        AETHER_LINK_AGENT_ID: "1234567890",
-        AETHER_LINK_AGENT_PASSWORD: "1234",
-        AETHER_LINK_AGENT_HEARTBEAT_MS: "1000",
-        AETHER_LINK_APP_DIR: appDir,
-        AETHER_LINK_POC_PATH: pocPath,
+        WONREMOTE_API_URL: "http://127.0.0.1:8787",
+        WONREMOTE_AGENT_ID: "1234567890",
+        WONREMOTE_AGENT_PASSWORD: "1234",
+        WONREMOTE_AGENT_HEARTBEAT_MS: "1000",
+        WONREMOTE_APP_DIR: appDir,
+        WONREMOTE_POC_PATH: pocPath,
         APPDATA: appData,
         NODE_ENV: "test"
       }
@@ -244,7 +244,7 @@ async function main() {
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
     
-    const logPath = path.join(aetherLinkDir, "installer.log");
+    const logPath = path.join(wonRemoteDir, "installer.log");
     try {
       const logs = await fs.readFile(logPath, "utf8");
       console.error("--- Installer Log Output (on timeout) ---");
@@ -390,8 +390,8 @@ async function main() {
     body: JSON.stringify({ mode: "good" })
   });
 
-  console.log("Waiting for Agent to download good zip, restart, and register as version 0.1.2...");
-  const updatedDevice = await waitAgentOnline("0.1.2", rolledBackPid || undefined);
+  console.log("Waiting for Agent to download good zip, restart, and register as version 0.1.3...");
+  const updatedDevice = await waitAgentOnline("0.1.3", rolledBackPid || undefined);
   console.log(`Agent successfully upgraded and registered as version: ${updatedDevice.version}`);
 
   // Capture updated agent PID from agent.pid
@@ -402,7 +402,7 @@ async function main() {
   }
 
   // Confirm .update_success file exists
-  const successFile = path.join(aetherLinkDir, ".update_success");
+  const successFile = path.join(wonRemoteDir, ".update_success");
   const successOk = await fs.access(successFile).then(() => true).catch(() => false);
   console.log(`Success marker .update_success exists: ${successOk}`);
 
@@ -417,7 +417,7 @@ async function main() {
   }
 
   try {
-    execSync("taskkill /F /IM aether-link-poc.exe 2>nul || exit 0", { shell: true });
+    execSync("taskkill /F /IM wonremote-poc.exe 2>nul || exit 0", { shell: true });
   } catch (e) {}
 
   await fs.rm(e2eRoot, { recursive: true, force: true });
@@ -448,7 +448,7 @@ main().catch(async (err) => {
   }
 
   try {
-    execSync("taskkill /F /IM aether-link-poc.exe 2>nul || exit 0", { shell: true });
+    execSync("taskkill /F /IM wonremote-poc.exe 2>nul || exit 0", { shell: true });
   } catch (e) {}
 
   process.exit(1);

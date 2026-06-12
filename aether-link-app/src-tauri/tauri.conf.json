@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "AetherLink Viewer",
-  "version": "0.1.1",
-  "identifier": "com.aetherlink.viewer",
+  "productName": "WonRemote Viewer",
+  "version": "0.1.2",
+  "identifier": "com.wonremote.viewer",
   "build": {
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "AetherLink Viewer",
+        "title": "WonRemote Viewer",
         "width": 1280,
         "height": 800,
         "minWidth": 1024,
@@ -34,7 +34,7 @@
       "../dist-server/index.mjs": "server/index.mjs",
       "../dist-agent/index.mjs": "agent/index.mjs",
       "../dist-runtime/node.exe": "runtime/node.exe",
-      "../../aether-link-poc/target/release/aether-link-poc.exe": "bin/aether-link-poc.exe"
+      "../../aether-link-poc/target/release/wonremote-poc.exe": "bin/wonremote-poc.exe"
     },
     "windows": {
       "webviewInstallMode": {

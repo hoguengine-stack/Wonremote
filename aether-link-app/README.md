@@ -1,4 +1,4 @@
-# AetherLink App
+# WonRemote App
 
 17차 기준에 따라 실장비 성능 검증보다 먼저 만든 Viewer 관리 UI, Agent 최초 실행 등록 화면, 로컬 Agent 부트스트랩 CLI, 파일 기반 장비 저장 로컬 API 서버, Agent heartbeat/offline 판정, Viewer 입력 명령 큐, 원격 세션 골격이다.
 
@@ -33,16 +33,16 @@ npm run agent:watch
 무인 등록 테스트:
 
 ```powershell
-$env:AETHER_LINK_AGENT_ID="1234567890"
-$env:AETHER_LINK_AGENT_PASSWORD="1234"
+$env:WONREMOTE_AGENT_ID="1234567890"
+$env:WONREMOTE_AGENT_PASSWORD="1234"
 npm run agent
 ```
 
 API 장비 저장 파일 경로 지정:
 
 ```powershell
-$env:AETHER_LINK_API_STORE="C:\Users\qpalz\Documents\remote\aether-link-app\.local-devices.json"
-$env:AETHER_LINK_AGENT_OFFLINE_MS="30000"
+$env:WONREMOTE_API_STORE="C:\Users\qpalz\Documents\remote\aether-link-app\.local-devices.json"
+$env:WONREMOTE_AGENT_OFFLINE_MS="30000"
 npm run api
 ```
 

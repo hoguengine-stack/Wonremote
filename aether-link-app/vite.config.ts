@@ -12,6 +12,6 @@ const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
 export default defineConfig({
   plugins: [react()],
   define: {
-    "import.meta.env.VITE_AETHER_LINK_APP_VERSION": JSON.stringify(packageJson.version),
+    "import.meta.env.VITE_WONREMOTE_APP_VERSION": JSON.stringify(packageJson.version),
   },
 });

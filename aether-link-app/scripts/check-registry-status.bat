@@ -2,20 +2,20 @@
 setlocal
 
 echo ===================================================
-echo   AetherLink Registry and Runtime Status Check
+echo   WonRemote Registry and Runtime Status Check
 echo ===================================================
 echo.
 
 echo [1] HKCU Run registry values
 echo ---------------------------------------------------
-call :query_run_value AetherLinkAgent "Agent tray mode, expected command includes --agent"
-call :query_run_value AetherLinkViewer "Viewer mode"
-call :query_run_value AetherLinkAgentCLI "Headless CLI diagnostics only"
+call :query_run_value WonRemoteAgent "Agent tray mode, expected command includes --agent"
+call :query_run_value WonRemoteViewer "Viewer mode"
+call :query_run_value WonRemoteAgentCLI "Headless CLI diagnostics only"
 echo.
 
 echo [2] Agent local config
 echo ---------------------------------------------------
-set "config_path=%APPDATA%\AetherLink\agent-config.json"
+set "config_path=%APPDATA%\WonRemote\agent-config.json"
 if exist "%config_path%" (
     echo [OK] Config file: %config_path%
     type "%config_path%"
@@ -24,15 +24,15 @@ if exist "%config_path%" (
 )
 echo.
 
-echo [3] Running AetherLink processes
+echo [3] Running WonRemote processes
 echo ---------------------------------------------------
-call :show_process aether-link-viewer.exe
+call :show_process wonremote-viewer.exe
 call :show_process node.exe
-call :show_process aether-link-poc.exe
+call :show_process wonremote-poc.exe
 echo.
 
 echo Done.
-if /i "%AETHER_LINK_STATUS_PAUSE%"=="1" pause
+if /i "%WONREMOTE_STATUS_PAUSE%"=="1" pause
 exit /b 0
 
 :query_run_value

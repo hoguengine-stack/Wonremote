@@ -4,8 +4,8 @@ export async function resolveAgentCredentials(
   env: Record<string, string | undefined>,
   promptCredentials: () => Promise<AgentCredentials>,
 ): Promise<AgentCredentials> {
-  const businessNumber = env.AETHER_LINK_AGENT_ID?.trim();
-  const password = env.AETHER_LINK_AGENT_PASSWORD?.trim();
+  const businessNumber = env.WONREMOTE_AGENT_ID?.trim();
+  const password = env.WONREMOTE_AGENT_PASSWORD?.trim();
   if (businessNumber && password) {
     return {
       businessNumber,

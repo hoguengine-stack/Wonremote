@@ -1,12 +1,12 @@
 [package]
-name = "aether-link-viewer"
-version = "0.1.1"
-description = "AetherLink Viewer desktop shell"
-authors = ["AetherLink"]
+name = "wonremote-viewer"
+version = "0.1.2"
+description = "WonRemote Viewer desktop shell"
+authors = ["WonRemote"]
 edition = "2021"
 
 [lib]
-name = "aether_link_viewer_lib"
+name = "wonremote_viewer_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

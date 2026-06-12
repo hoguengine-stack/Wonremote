@@ -11,7 +11,7 @@ import type {
   ConnectionHistoryEntry,
 } from "../domain/types";
 
-const API_BASE_URL = import.meta.env.VITE_AETHER_LINK_API_URL ?? "http://127.0.0.1:8787";
+const API_BASE_URL = import.meta.env.VITE_WONREMOTE_API_URL ?? "http://127.0.0.1:8787";
 
 export async function loginAdmin(username: string, password: string): Promise<void> {
   await request("/api/admin/login", {
@@ -49,7 +49,7 @@ export async function registerFirstRunAgent(input: AgentFirstRunInput & { apiUrl
         }),
       });
     } catch {
-      throw new Error("AetherLink API 서버에 연결할 수 없습니다.");
+      throw new Error("WonRemote API 서버에 연결할 수 없습니다.");
     }
 
     const payload = (await response.json()) as AgentFirstRunResult & { error?: string };

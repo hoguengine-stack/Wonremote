@@ -34,7 +34,7 @@ export async function sendAgentHeartbeat({
       method: "POST",
     });
   } catch {
-    throw new Error("AetherLink API 서버에 heartbeat를 전송할 수 없습니다.");
+    throw new Error("WonRemote API 서버에 heartbeat를 전송할 수 없습니다.");
   }
 
   const payload = (await response.json()) as AgentHeartbeatResult & { error?: string };
@@ -63,7 +63,7 @@ export async function pollAgentCommands({
       method: "POST",
     });
   } catch {
-    throw new Error("AetherLink API 서버에서 명령을 가져올 수 없습니다.");
+    throw new Error("WonRemote API 서버에서 명령을 가져올 수 없습니다.");
   }
 
   const payload = (await response.json()) as AgentCommandPollResult & { error?: string };

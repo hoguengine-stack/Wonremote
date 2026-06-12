@@ -10,7 +10,7 @@ import { waitForApiHealth } from "./agentHealth";
 import { resolveAgentAppDir, resolveAgentPocPath } from "./agentPaths";
 import { resolveAgentCredentials } from "./agentRuntime";
 import { computeSha256 } from "./checksum";
-import { AETHER_LINK_APP_VERSION } from "../domain/appVersion";
+import { WONREMOTE_APP_VERSION } from "../domain/appVersion";
 import { resolveSafeDownloadPath } from "./fileSafety";
 import { isSourceTreeUpdateTarget } from "./updateSafety";
 import type {
@@ -34,8 +34,8 @@ const DEFAULT_APP_DIR = path.resolve(__dirname, "..", "..");
 const AGENT_APP_DIR = resolveAgentAppDir(process.env, DEFAULT_APP_DIR);
 const POC_PATH = resolveAgentPocPath(process.env, AGENT_APP_DIR);
 
-const API_BASE_URL = process.env.AETHER_LINK_API_URL ?? "http://127.0.0.1:8787";
-const HEARTBEAT_INTERVAL_MS = Number(process.env.AETHER_LINK_AGENT_HEARTBEAT_MS ?? 10_000);
+const API_BASE_URL = process.env.WONREMOTE_API_URL ?? "http://127.0.0.1:8787";
+const HEARTBEAT_INTERVAL_MS = Number(process.env.WONREMOTE_AGENT_HEARTBEAT_MS ?? 10_000);
 
 let streamProcess: any = null;
 let currentOutputIndex = 0;
@@ -157,7 +157,7 @@ async function pollSessionData(deviceId: string) {
       if (fileData.files && fileData.files.length > 0) {
         for (const file of fileData.files) {
           console.log(`[파일 전송 수신] 파일명: ${file.filename} (크기: ${Math.round(file.fileData.length * 0.75)} bytes)`);
-          const downloadsDir = path.join(process.env.APPDATA ?? process.cwd(), "AetherLink", "Downloads");
+          const downloadsDir = path.join(process.env.APPDATA ?? process.cwd(), "WonRemote", "Downloads");
           await mkdir(downloadsDir, { recursive: true });
           const targetPath = resolveSafeDownloadPath(downloadsDir, String(file.filename ?? ""));
           const buffer = Buffer.from(file.fileData, "base64");
@@ -175,9 +175,9 @@ async function pollSessionData(deviceId: string) {
 async function main() {
   try {
     const baseDir = process.env.APPDATA ?? process.cwd();
-    const aetherLinkDir = path.join(baseDir, "AetherLink");
-    await mkdir(aetherLinkDir, { recursive: true });
-    await writeFile(path.join(aetherLinkDir, "agent.pid"), String(process.pid), "utf8");
+    const wonRemoteDir = path.join(baseDir, "WonRemote");
+    await mkdir(wonRemoteDir, { recursive: true });
+    await writeFile(path.join(wonRemoteDir, "agent.pid"), String(process.pid), "utf8");
   } catch (err) {
     console.error("Failed to write agent.pid:", err);
   }
@@ -258,8 +258,8 @@ async function main() {
   }
 
   const baseDir = process.env.APPDATA ?? process.cwd();
-  const aetherLinkDir = path.join(baseDir, "AetherLink");
-  const successMarker = path.join(aetherLinkDir, ".update_success");
+  const wonRemoteDir = path.join(baseDir, "WonRemote");
+  const successMarker = path.join(wonRemoteDir, ".update_success");
   try {
     await writeFile(successMarker, "SUCCESS");
   } catch (e) {}
@@ -360,7 +360,7 @@ let isUpdating = false;
 async function checkUpdate(config: AgentLocalConfig) {
   if (isUpdating) return;
   isUpdating = true;
-  const currentVersion = config.version ?? AETHER_LINK_APP_VERSION;
+  const currentVersion = config.version ?? WONREMOTE_APP_VERSION;
   try {
     const res = await fetch(`${API_BASE_URL}/api/update/check`);
     if (!res.ok) {
@@ -372,13 +372,13 @@ async function checkUpdate(config: AgentLocalConfig) {
       const appDir = AGENT_APP_DIR;
       if (!isSourceTreeUpdateTarget(appDir)) {
         console.log(
-          `[AetherLink Agent] Update ${data.latestVersion} detected, but source-tree updater is disabled for packaged resources: ${appDir}`,
+          `[WonRemote Agent] Update ${data.latestVersion} detected, but source-tree updater is disabled for packaged resources: ${appDir}`,
         );
         isUpdating = false;
         return;
       }
 
-      console.log(`\n[AetherLink Agent] 새로운 업데이트가 발견되었습니다! (최신: ${data.latestVersion} / 현재: ${currentVersion})`);
+      console.log(`\n[WonRemote Agent] 새로운 업데이트가 발견되었습니다! (최신: ${data.latestVersion} / 현재: ${currentVersion})`);
       console.log(`다운로드 경로: ${data.downloadUrl}`);
 
       const downloadRes = await fetch(data.downloadUrl);
@@ -410,7 +410,7 @@ async function checkUpdate(config: AgentLocalConfig) {
 
       // Save zip to temp path
       const baseDir = process.env.APPDATA ?? process.cwd();
-      const tempUpdateDir = path.join(baseDir, "AetherLink", "temp_update");
+      const tempUpdateDir = path.join(baseDir, "WonRemote", "temp_update");
       await rm(tempUpdateDir, { recursive: true, force: true });
       await mkdir(tempUpdateDir, { recursive: true });
       
@@ -427,7 +427,7 @@ async function checkUpdate(config: AgentLocalConfig) {
 
       // Backup current files
       console.log("기존 실행 파일 백업 중...");
-      const backupDir = path.join(baseDir, "AetherLink", "backup");
+      const backupDir = path.join(baseDir, "WonRemote", "backup");
       await rm(backupDir, { recursive: true, force: true });
       await mkdir(backupDir, { recursive: true });
 
@@ -446,20 +446,20 @@ async function checkUpdate(config: AgentLocalConfig) {
       await writeAgentConfig(configPath, config);
 
       // Create update_install.bat installer
-      const installerPath = path.join(baseDir, "AetherLink", "update_install.bat");
-      const logFilePath = path.join(baseDir, "AetherLink", "installer.log");
+      const installerPath = path.join(baseDir, "WonRemote", "update_install.bat");
+      const logFilePath = path.join(baseDir, "WonRemote", "installer.log");
 
-      const agentId = process.env.AETHER_LINK_AGENT_ID ?? "1234567890";
-      const agentPassword = process.env.AETHER_LINK_AGENT_PASSWORD ?? "1234";
-      const heartbeatMs = process.env.AETHER_LINK_AGENT_HEARTBEAT_MS ?? "1000";
+      const agentId = process.env.WONREMOTE_AGENT_ID ?? "1234567890";
+      const agentPassword = process.env.WONREMOTE_AGENT_PASSWORD ?? "1234";
+      const heartbeatMs = process.env.WONREMOTE_AGENT_HEARTBEAT_MS ?? "1000";
 
       const installerContent = `@echo off
-set "AETHER_LINK_API_URL=${API_BASE_URL}"
-set "AETHER_LINK_AGENT_ID=${agentId}"
-set "AETHER_LINK_AGENT_PASSWORD=${agentPassword}"
-set "AETHER_LINK_AGENT_HEARTBEAT_MS=${heartbeatMs}"
-set "AETHER_LINK_APP_DIR=${appDir}"
-set "AETHER_LINK_POC_PATH=${POC_PATH}"
+set "WONREMOTE_API_URL=${API_BASE_URL}"
+set "WONREMOTE_AGENT_ID=${agentId}"
+set "WONREMOTE_AGENT_PASSWORD=${agentPassword}"
+set "WONREMOTE_AGENT_HEARTBEAT_MS=${heartbeatMs}"
+set "WONREMOTE_APP_DIR=${appDir}"
+set "WONREMOTE_POC_PATH=${POC_PATH}"
 
 echo [Installer] Starting installation log... > "${logFilePath}"
 echo [Installer] Waiting for Agent CLI to terminate... >> "${logFilePath}"
@@ -469,7 +469,7 @@ echo [Installer] Copying update files to ${appDir}... >> "${logFilePath}"
 xcopy /y /e /s "${path.join(tempUpdateDir, "extracted")}\\*" "${appDir}" >> "${logFilePath}" 2>&1
 
 echo [Installer] Deleting success marker... >> "${logFilePath}"
-del "${path.join(baseDir, "AetherLink", ".update_success")}" /f /q >> "${logFilePath}" 2>&1
+del "${path.join(baseDir, "WonRemote", ".update_success")}" /f /q >> "${logFilePath}" 2>&1
 
 echo [Installer] Starting new Agent version... >> "${logFilePath}"
 cd /d "${appDir}"
@@ -478,7 +478,7 @@ start cmd /c "npm run agent:watch"
 echo [Installer] Waiting 10 seconds to verify boot... >> "${logFilePath}"
 ping -n 11 127.0.0.1 > nul
 
-if exist "${path.join(baseDir, "AetherLink", ".update_success")}" (
+if exist "${path.join(baseDir, "WonRemote", ".update_success")}" (
     echo [Installer] Update verification successful! >> "${logFilePath}"
     rd /s /q "${tempUpdateDir}" >> "${logFilePath}" 2>&1
     rd /s /q "${backupDir}" >> "${logFilePath}" 2>&1
@@ -521,7 +521,7 @@ if exist "${path.join(baseDir, "AetherLink", ".update_success")}" (
         streamProcess = null;
       }
       
-      console.log("[AetherLink Agent] 인스톨러로 전환하며 에이전트를 종료합니다.");
+      console.log("[WonRemote Agent] 인스톨러로 전환하며 에이전트를 종료합니다.");
       await new Promise((resolve) => setTimeout(resolve, 500));
       process.exit(0);
     } else {
@@ -693,7 +693,7 @@ async function registerFirstRun(inputBody: {
       method: "POST",
     });
   } catch {
-    throw new Error("AetherLink API 서버에 연결할 수 없습니다.");
+    throw new Error("WonRemote API 서버에 연결할 수 없습니다.");
   }
 
   const payload = (await response.json()) as AgentFirstRunResult & { error?: string };
@@ -720,12 +720,12 @@ async function writeAgentConfig(configPath: string, config: AgentLocalConfig): P
 }
 
 function getAgentConfigPath(): string {
-  if (process.env.AETHER_LINK_AGENT_CONFIG) {
-    return process.env.AETHER_LINK_AGENT_CONFIG;
+  if (process.env.WONREMOTE_AGENT_CONFIG) {
+    return process.env.WONREMOTE_AGENT_CONFIG;
   }
 
   const baseDir = process.env.APPDATA ?? process.cwd();
-  return path.join(baseDir, "AetherLink", "agent-config.json");
+  return path.join(baseDir, "WonRemote", "agent-config.json");
 }
 
 function isNotFoundError(error: unknown): boolean {
@@ -738,9 +738,9 @@ function isNotFoundError(error: unknown): boolean {
 }
 
 async function handleRegistryInstall() {
-  if (process.env.AETHER_LINK_ALLOW_HEADLESS_REGISTRY !== "1") {
+  if (process.env.WONREMOTE_ALLOW_HEADLESS_REGISTRY !== "1") {
     console.error(
-      "agent:install is disabled. Use the installed Tauri app in --agent mode so the Agent runs with the tray icon and registers HKCU Run\\AetherLinkAgent.",
+      "agent:install is disabled. Use the installed Tauri app in --agent mode so the Agent runs with the tray icon and registers HKCU Run\\WonRemoteAgent.",
     );
     process.exit(1);
   }
@@ -749,11 +749,11 @@ async function handleRegistryInstall() {
   const commandToRun = `cmd /c node "${agentPath}" --watch`;
   // Production startup is owned by the Tauri --agent tray path. This opt-in CLI
   // key is only for local headless diagnostics and must not overwrite it.
-  const psCommand = `New-ItemProperty -Path "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" -Name "AetherLinkAgentCLI" -PropertyType String -Value '${commandToRun}' -Force`;
+  const psCommand = `New-ItemProperty -Path "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" -Name "WonRemoteAgentCLI" -PropertyType String -Value '${commandToRun}' -Force`;
   
   try {
     await execAsync(`powershell -NoProfile -Command "${psCommand}"`);
-    console.log("AetherLink Agent가 윈도우 시작 프로그램에 성공적으로 등록되었습니다.");
+    console.log("WonRemote Agent가 윈도우 시작 프로그램에 성공적으로 등록되었습니다.");
     process.exit(0);
   } catch (error) {
     console.error("자동 실행 등록 실패:", error instanceof Error ? error.message : error);
@@ -762,18 +762,18 @@ async function handleRegistryInstall() {
 }
 
 async function handleRegistryUninstall() {
-  if (process.env.AETHER_LINK_ALLOW_HEADLESS_REGISTRY !== "1") {
+  if (process.env.WONREMOTE_ALLOW_HEADLESS_REGISTRY !== "1") {
     console.error(
-      "agent:uninstall is disabled. Use the Tauri Agent tray menu Run at Startup toggle to remove HKCU Run\\AetherLinkAgent.",
+      "agent:uninstall is disabled. Use the Tauri Agent tray menu Run at Startup toggle to remove HKCU Run\\WonRemoteAgent.",
     );
     process.exit(1);
   }
 
-  const psCommand = `Remove-ItemProperty -Path "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" -Name "AetherLinkAgentCLI" -ErrorAction SilentlyContinue`;
+  const psCommand = `Remove-ItemProperty -Path "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" -Name "WonRemoteAgentCLI" -ErrorAction SilentlyContinue`;
   
   try {
     await execAsync(`powershell -NoProfile -Command "${psCommand}"`);
-    console.log("AetherLink Agent가 윈도우 시작 프로그램에서 제거되었습니다.");
+    console.log("WonRemote Agent가 윈도우 시작 프로그램에서 제거되었습니다.");
     process.exit(0);
   } catch (error) {
     console.error("자동 실행 해제 실패:", error instanceof Error ? error.message : error);

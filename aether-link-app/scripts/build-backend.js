@@ -27,7 +27,7 @@ function prepareBundledNodeRuntime() {
 
 function buildRustPocRelease() {
   const pocDir = path.join(repoRoot, "aether-link-poc");
-  const pocExe = path.join(pocDir, "target", "release", "aether-link-poc.exe");
+  const pocExe = path.join(pocDir, "target", "release", "wonremote-poc.exe");
 
   console.log("Building Rust PoC release binary with cargo build --release...");
   run("cargo", ["build", "--release"], pocDir);

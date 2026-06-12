@@ -1,6 +1,6 @@
 {
   "identifier": "default",
-  "description": "Default permissions for the AetherLink Viewer window.",
+  "description": "Default permissions for the WonRemote Viewer window.",
   "windows": ["main"],
   "permissions": ["core:default"]
 }

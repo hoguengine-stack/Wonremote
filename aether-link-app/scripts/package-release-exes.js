@@ -5,8 +5,9 @@ import { fileURLToPath } from "node:url";
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const releaseTarget = path.join(appRoot, "src-tauri", "target", "release");
 const outputDir = path.join(appRoot, "release-exe");
+const packageJson = JSON.parse(fs.readFileSync(path.join(appRoot, "package.json"), "utf8"));
 
-const viewerSource = path.join(releaseTarget, "aether-link-viewer.exe");
+const viewerSource = path.join(releaseTarget, "wonremote-viewer.exe");
 const requiredResourceDirs = ["server", "agent", "runtime", "bin"];
 
 function ensureExists(targetPath, label) {
@@ -23,12 +24,12 @@ function copyDirectory(name) {
 }
 
 function writeReadme() {
-  const content = `# AetherLink Portable EXE Package
+  const content = `# WonRemote Portable EXE Package
 
 Run these files from this folder:
 
-- AetherLink Viewer.exe: opens the Viewer UI.
-- AetherLink Agent.exe: starts Agent tray/background mode. On first run, it opens the registration screen.
+- WonRemote Viewer.exe: opens the Viewer UI.
+- WonRemote Agent.exe: starts Agent tray/background mode. On first run, it opens the registration screen.
 
 Do not move the EXE files away from the server/, agent/, runtime/, and bin/ folders.
 `;
@@ -40,8 +41,8 @@ ensureExists(viewerSource, "Tauri viewer executable");
 fs.rmSync(outputDir, { recursive: true, force: true });
 fs.mkdirSync(outputDir, { recursive: true });
 
-fs.copyFileSync(viewerSource, path.join(outputDir, "AetherLink Viewer.exe"));
-fs.copyFileSync(viewerSource, path.join(outputDir, "AetherLink Agent.exe"));
+fs.copyFileSync(viewerSource, path.join(outputDir, "WonRemote Viewer.exe"));
+fs.copyFileSync(viewerSource, path.join(outputDir, "WonRemote Agent.exe"));
 
 for (const directory of requiredResourceDirs) {
   copyDirectory(directory);
@@ -49,8 +50,11 @@ for (const directory of requiredResourceDirs) {
 
 const installerDir = path.join(releaseTarget, "bundle", "nsis");
 if (fs.existsSync(installerDir)) {
+  const expectedInstaller = `WonRemote Viewer_${packageJson.version}_x64-setup.exe`;
+  const expectedInstallerPath = path.join(installerDir, expectedInstaller);
+  ensureExists(expectedInstallerPath, "current WonRemote NSIS installer");
   for (const entry of fs.readdirSync(installerDir)) {
-    if (entry.endsWith("_x64-setup.exe")) {
+    if (entry === expectedInstaller) {
       fs.copyFileSync(path.join(installerDir, entry), path.join(outputDir, entry));
     }
   }

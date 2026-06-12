@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "generated_at_unix_ms": 1781171239702,
-  "source": "aether-link-poc-week2",
+  "source": "wonremote-poc-week2",
   "duration_seconds": 5.0534855,
   "config": {
     "requested_duration_seconds": 5,
