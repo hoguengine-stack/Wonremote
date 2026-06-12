@@ -34,6 +34,21 @@ describe("aether link local API server", () => {
     expect(await response.json()).toEqual({ ok: true });
   });
 
+  it("allows temporary local viewer ports through CORS preflight", async () => {
+    const response = await fetch(`${baseUrl}/api/admin/login`, {
+      headers: {
+        "access-control-request-headers": "content-type",
+        "access-control-request-method": "POST",
+        origin: "http://127.0.0.1:5174",
+      },
+      method: "OPTIONS",
+    });
+
+    expect(response.status).toBe(204);
+    expect(response.headers.get("access-control-allow-origin")).toBe("http://127.0.0.1:5174");
+    expect(response.headers.get("access-control-allow-headers")).toBe("content-type");
+  });
+
   it("rejects invalid admin login and accepts the development admin", async () => {
     const rejected = await postJson("/api/admin/login", {
       username: "admin",

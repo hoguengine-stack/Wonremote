@@ -169,7 +169,7 @@ export function createApiServer(options: CreateApiServerOptions | ManagedDevice[
 
 
   return createServer(async (request, response) => {
-    setCorsHeaders(response);
+    setCorsHeaders(request, response);
 
     if (request.method === "OPTIONS") {
       response.writeHead(204);
@@ -836,8 +836,26 @@ function writeJson(response: ServerResponse, statusCode: number, body: unknown) 
   response.end(JSON.stringify(body));
 }
 
-function setCorsHeaders(response: ServerResponse) {
-  response.setHeader("access-control-allow-origin", "http://127.0.0.1:5173");
+function setCorsHeaders(request: IncomingMessage, response: ServerResponse) {
+  const origin = request.headers.origin;
+  const allowedOrigin =
+    typeof origin === "string" && isAllowedLocalViewerOrigin(origin) ? origin : "http://127.0.0.1:5173";
+
+  response.setHeader("access-control-allow-origin", allowedOrigin);
   response.setHeader("access-control-allow-methods", "GET,POST,OPTIONS");
   response.setHeader("access-control-allow-headers", "content-type");
+}
+
+function isAllowedLocalViewerOrigin(origin: string): boolean {
+  try {
+    const url = new URL(origin);
+    return (
+      url.protocol === "http:" &&
+      (url.hostname === "127.0.0.1" || url.hostname === "localhost") &&
+      Number(url.port) >= 1 &&
+      Number(url.port) <= 65535
+    );
+  } catch {
+    return false;
+  }
 }
