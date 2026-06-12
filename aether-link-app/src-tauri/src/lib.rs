@@ -1,12 +1,14 @@
 use std::os::windows::io::AsRawHandle;
 use std::{
     env, io, mem,
+    net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
     process::Command,
-    ptr,
+    ptr, thread,
+    time::{Duration, Instant},
 };
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::sync::{Arc, Mutex};
 
 use tauri::{
@@ -29,6 +31,8 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 const STARTUP_REGISTRY_PATH: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const STARTUP_REGISTRY_VALUE: &str = "AetherLinkViewer";
 const AGENT_REGISTRY_VALUE: &str = "AetherLinkAgent";
+const LOCAL_API_HOST: &str = "127.0.0.1";
+const LOCAL_API_PORT: u16 = 8787;
 
 pub struct Job {
     handle: HANDLE,
@@ -286,8 +290,15 @@ fn save_agent_config(
     set_startup_registry(true, true).map_err(|e| e.to_string())?;
 
     let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
-    spawn_agent_only_process(app.clone(), &agent_state, &job, &resource_dir, Some(&config.api_url))
-        .map_err(|e| e.to_string())?;
+    start_local_api_server_for_mode(&job, &resource_dir).map_err(|e| e.to_string())?;
+    spawn_agent_only_process(
+        app.clone(),
+        &agent_state,
+        &job,
+        &resource_dir,
+        Some(&config.api_url),
+    )
+    .map_err(|e| e.to_string())?;
 
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.hide();
@@ -304,6 +315,8 @@ fn restart_agent_process(
 ) -> Result<(), String> {
     let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
 
+    start_local_api_server_for_mode(&job, &resource_dir).map_err(|e| e.to_string())?;
+
     let mut api_url = None;
     if let Some(config_path) = default_agent_config_path() {
         if config_path.exists() {
@@ -317,8 +330,14 @@ fn restart_agent_process(
         }
     }
 
-    spawn_agent_only_process(app.clone(), &agent_state, &job, &resource_dir, api_url.as_deref())
-        .map_err(|e| e.to_string())?;
+    spawn_agent_only_process(
+        app.clone(),
+        &agent_state,
+        &job,
+        &resource_dir,
+        api_url.as_deref(),
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -393,21 +412,13 @@ fn default_agent_config_path() -> Option<PathBuf> {
         .map(|base_dir| base_dir.join("AetherLink").join("agent-config.json"))
 }
 
-fn should_start_embedded_agent() -> bool {
-    let forced = env::var("AETHER_LINK_DESKTOP_EMBED_AGENT")
-        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-        .unwrap_or(false);
-    let has_env_credentials = env::var_os("AETHER_LINK_AGENT_ID").is_some()
-        && env::var_os("AETHER_LINK_AGENT_PASSWORD").is_some();
-    let has_existing_config = is_agent_registered();
-
-    forced || has_env_credentials || has_existing_config
-}
-
 fn executable_name_requests_agent() -> bool {
     env::current_exe()
         .ok()
-        .and_then(|path| path.file_stem().map(|stem| stem.to_string_lossy().to_string()))
+        .and_then(|path| {
+            path.file_stem()
+                .map(|stem| stem.to_string_lossy().to_string())
+        })
         .is_some_and(|stem| executable_stem_requests_agent(&stem))
 }
 
@@ -441,6 +452,107 @@ fn ensure_resource_exists(path: &Path, label: &str) -> Result<(), io::Error> {
             io::ErrorKind::NotFound,
             format!("{label} is missing: {}", path.display()),
         ))
+    }
+}
+
+fn local_api_addr() -> SocketAddr {
+    SocketAddr::from(([127, 0, 0, 1], LOCAL_API_PORT))
+}
+
+fn is_local_api_health_response(response: &str) -> bool {
+    response.starts_with("HTTP/1.1 200") && response.contains("\"ok\":true")
+}
+
+fn is_local_api_healthy() -> bool {
+    let Ok(mut stream) = TcpStream::connect_timeout(&local_api_addr(), Duration::from_millis(250))
+    else {
+        return false;
+    };
+
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+
+    let request =
+        format!("GET /api/health HTTP/1.1\r\nHost: {LOCAL_API_HOST}\r\nConnection: close\r\n\r\n");
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+
+    let mut response = String::new();
+    if stream.read_to_string(&mut response).is_err() {
+        return false;
+    }
+
+    is_local_api_health_response(&response)
+}
+
+fn wait_for_local_api_healthy(timeout: Duration) -> bool {
+    let started_at = Instant::now();
+    while started_at.elapsed() <= timeout {
+        if is_local_api_healthy() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+    false
+}
+
+fn start_dev_api_server_if_needed(job: &Job) -> Result<(), io::Error> {
+    if is_local_api_healthy() {
+        return Ok(());
+    }
+
+    let cwd = app_root_from_manifest();
+    let mut server_cmd = Command::new("cmd");
+    server_cmd.args(["/c", "npm run api"]);
+    server_cmd.current_dir(&cwd);
+    add_no_window(&mut server_cmd);
+    spawn_managed(job, &mut server_cmd, "dev API server")?;
+
+    if wait_for_local_api_healthy(Duration::from_secs(8)) {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "dev API server did not become healthy on 127.0.0.1:8787",
+        ))
+    }
+}
+
+fn start_production_api_server_if_needed(job: &Job, resource_dir: &Path) -> Result<(), io::Error> {
+    if is_local_api_healthy() {
+        return Ok(());
+    }
+
+    let node_path = bundled_node_path(resource_dir);
+    let server_path = resource_dir.join("server").join("index.mjs");
+
+    ensure_resource_exists(&node_path, "bundled Node runtime")?;
+    ensure_resource_exists(&server_path, "bundled API server")?;
+
+    let mut server_cmd = Command::new(&node_path);
+    server_cmd.arg(&server_path);
+    server_cmd.env("AETHER_LINK_API_PORT", LOCAL_API_PORT.to_string());
+    server_cmd.env("NODE_ENV", "production");
+    server_cmd.env("AETHER_LINK_APP_DIR", resource_dir);
+    add_no_window(&mut server_cmd);
+    spawn_managed(job, &mut server_cmd, "production API server")?;
+
+    if wait_for_local_api_healthy(Duration::from_secs(8)) {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "production API server did not become healthy on 127.0.0.1:8787",
+        ))
+    }
+}
+
+fn start_local_api_server_for_mode(job: &Job, resource_dir: &Path) -> Result<(), io::Error> {
+    if cfg!(debug_assertions) {
+        start_dev_api_server_if_needed(job)
+    } else {
+        start_production_api_server_if_needed(job, resource_dir)
     }
 }
 
@@ -505,56 +617,12 @@ fn is_startup_registered(is_agent: bool) -> bool {
 }
 
 fn start_dev_processes(job: &Job) -> Result<(), io::Error> {
-    let cwd = app_root_from_manifest();
-
-    let mut server_cmd = Command::new("cmd");
-    server_cmd.args(["/c", "npm run api"]);
-    server_cmd.current_dir(&cwd);
-    add_no_window(&mut server_cmd);
-    spawn_managed(job, &mut server_cmd, "dev API server")?;
-
-    if should_start_embedded_agent() {
-        let mut agent_cmd = Command::new("cmd");
-        agent_cmd.args(["/c", "npm run agent:watch"]);
-        agent_cmd.current_dir(&cwd);
-        add_no_window(&mut agent_cmd);
-        spawn_managed(job, &mut agent_cmd, "dev agent")?;
-    }
-
+    start_dev_api_server_if_needed(job)?;
     Ok(())
 }
 
 fn start_production_processes(job: &Job, resource_dir: &Path) -> Result<(), io::Error> {
-    let node_path = bundled_node_path(resource_dir);
-    let server_path = resource_dir.join("server").join("index.mjs");
-    let agent_path = resource_dir.join("agent").join("index.mjs");
-    let poc_path = resource_dir.join("bin").join("aether-link-poc.exe");
-
-    ensure_resource_exists(&node_path, "bundled Node runtime")?;
-    ensure_resource_exists(&server_path, "bundled API server")?;
-    ensure_resource_exists(&agent_path, "bundled Agent")?;
-    ensure_resource_exists(&poc_path, "bundled Rust PoC")?;
-
-    let mut server_cmd = Command::new(&node_path);
-    server_cmd.arg(&server_path);
-    server_cmd.env("AETHER_LINK_API_PORT", "8787");
-    server_cmd.env("NODE_ENV", "production");
-    server_cmd.env("AETHER_LINK_APP_DIR", resource_dir);
-    add_no_window(&mut server_cmd);
-    spawn_managed(job, &mut server_cmd, "production API server")?;
-
-    if should_start_embedded_agent() {
-        let mut agent_cmd = Command::new(&node_path);
-        agent_cmd.arg(&agent_path);
-        agent_cmd.arg("--watch");
-        agent_cmd.env("AETHER_LINK_API_URL", "http://127.0.0.1:8787");
-        agent_cmd.env("AETHER_LINK_POC_PATH", &poc_path);
-        agent_cmd.env("AETHER_LINK_APP_DIR", resource_dir);
-        agent_cmd.env("NODE_ENV", "production");
-        add_no_window(&mut agent_cmd);
-        spawn_managed(job, &mut agent_cmd, "production agent")?;
-    }
-
+    start_production_api_server_if_needed(job, resource_dir)?;
     Ok(())
 }
 
@@ -580,6 +648,8 @@ pub fn run() {
                 } else {
                     app.path().resource_dir()?
                 };
+
+                start_local_api_server_for_mode(&job, &resource_dir)?;
 
                 if is_agent_registered() {
                     // Read api_url from config
@@ -655,6 +725,12 @@ pub fn run() {
                                 } else {
                                     app.path().resource_dir().unwrap()
                                 };
+
+                                if let Err(e) = start_local_api_server_for_mode(&job, &resource_dir)
+                                {
+                                    eprintln!("Failed to ensure local API server: {}", e);
+                                    return;
+                                }
 
                                 let mut api_url = None;
                                 if let Some(config_path) = default_agent_config_path() {
@@ -859,6 +935,19 @@ mod registry_tests {
         assert!(executable_stem_requests_agent("AetherLink Agent"));
         assert!(executable_stem_requests_agent("aether-link-agent"));
         assert!(!executable_stem_requests_agent("AetherLink Viewer"));
+    }
+
+    #[test]
+    fn test_local_api_health_response_requires_ok_payload() {
+        assert!(is_local_api_health_response(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"ok\":true}"
+        ));
+        assert!(!is_local_api_health_response(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nnot-aether-link"
+        ));
+        assert!(!is_local_api_health_response(
+            "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\n\r\n{\"ok\":true}"
+        ));
     }
 
     #[test]

@@ -71,12 +71,26 @@ describe("desktop packaging scaffold", () => {
     expect(tauriLib).not.toContain('Command::new("node")');
   });
 
-  it("starts the embedded agent in watch mode only when credentials already exist", () => {
+  it("keeps the viewer shell from spawning a second agent worker", () => {
+    const tauriLib = readFileSync(path.join(projectRoot, "src-tauri", "src", "lib.rs"), "utf8");
+    const productionStart = tauriLib.slice(
+      tauriLib.indexOf("fn start_production_processes"),
+      tauriLib.indexOf("pub fn run()"),
+    );
+
+    expect(productionStart).toContain("start_production_api_server_if_needed");
+    expect(productionStart).not.toContain("agent_cmd");
+    expect(productionStart).not.toContain('arg("--watch")');
+  });
+
+  it("starts the bundled local API server before agent registration or heartbeat", () => {
     const tauriLib = readFileSync(path.join(projectRoot, "src-tauri", "src", "lib.rs"), "utf8");
 
-    expect(tauriLib).toContain("should_start_embedded_agent");
-    expect(tauriLib).toContain("is_agent_registered()");
-    expect(tauriLib).toContain('agent_cmd.arg("--watch")');
+    expect(tauriLib).toContain("start_production_api_server_if_needed");
+    expect(tauriLib).toContain("start_local_api_server_for_mode(&job, &resource_dir)?;");
+    expect(tauriLib.indexOf("start_local_api_server_for_mode(&job, &resource_dir)?;")).toBeLessThan(
+      tauriLib.indexOf("if is_agent_registered()"),
+    );
   });
 
   it("uses the Rust package version as the Tauri config fallback", () => {
