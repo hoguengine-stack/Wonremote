@@ -456,6 +456,78 @@ input:focus {
   justify-content: center;
 }
 
+.remote-focus-mode {
+  background: #0b1018;
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+.remote-focus-mode .sidebar,
+.remote-focus-mode .topbar,
+.remote-focus-mode .control-panel {
+  display: none;
+}
+
+.remote-focus-mode .workspace,
+.remote-focus-mode .content-grid,
+.remote-focus-mode .session-panel {
+  min-height: 100vh;
+}
+
+.remote-focus-mode .content-grid {
+  gap: 0;
+  grid-template-columns: minmax(0, 1fr);
+  padding: 0;
+}
+
+.remote-focus-mode .session-panel {
+  align-self: stretch;
+  background: #0b1018;
+  border: 0;
+  border-radius: 0;
+  color: #edf2f5;
+  gap: 10px;
+  padding: 12px;
+}
+
+.remote-focus-mode .section-heading {
+  margin-bottom: 4px;
+}
+
+.remote-focus-mode .section-heading h2 {
+  color: #f8fafc;
+}
+
+.remote-focus-mode .section-heading span {
+  color: #aeb9c8;
+}
+
+.remote-work-area {
+  min-width: 0;
+}
+
+.remote-focus-mode .remote-work-area {
+  flex: 1;
+  min-height: 0 !important;
+}
+
+.remote-focus-mode .remote-screen {
+  aspect-ratio: auto;
+  border-radius: 0;
+  min-height: 0;
+}
+
+.remote-focus-mode .remote-preview canvas {
+  height: 100% !important;
+  object-fit: contain;
+  width: 100% !important;
+}
+
+.remote-focus-mode .input-log {
+  max-height: 120px;
+  overflow: auto;
+}
+
 .preview-window {
   background: #eef2f6;
   border: 1px solid #cbd4df;

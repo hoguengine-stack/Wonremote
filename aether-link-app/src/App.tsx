@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import React, { FormEvent, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   closeSession,
   fetchDevices,
@@ -162,6 +163,24 @@ function ViewerApp() {
   const activeDevice = session
     ? devices.find((device) => device.id === session.deviceId) ?? null
     : null;
+  const isRemoteFocusMode = Boolean(session);
+
+  useEffect(() => {
+    if (!(window as any).__TAURI_INTERNALS__) {
+      return;
+    }
+
+    const appWindow = getCurrentWindow();
+    void appWindow.setFullscreen(isRemoteFocusMode).catch(() => {
+      // Browser/dev mode and some restricted shells can reject fullscreen changes.
+    });
+
+    return () => {
+      if (isRemoteFocusMode) {
+        void appWindow.setFullscreen(false).catch(() => {});
+      }
+    };
+  }, [isRemoteFocusMode]);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -284,7 +303,7 @@ function ViewerApp() {
   }
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell${isRemoteFocusMode ? " remote-focus-mode" : ""}`}>
       {updateAlert && (
         <div style={{
           position: "fixed",
@@ -1092,7 +1111,7 @@ function RemoteSessionPanel({
         <span>{device.desktopName}</span>
       </div>
 
-      <div style={{ display: "flex", flex: 1, gap: "16px", minHeight: "450px" }}>
+      <div className="remote-work-area" style={{ display: "flex", flex: 1, gap: "16px", minHeight: "450px" }}>
         {/* 원격 스크린 영역 */}
         <div className="remote-screen connected" style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
           <div className="remote-titlebar">
