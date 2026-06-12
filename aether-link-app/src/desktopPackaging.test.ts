@@ -25,6 +25,7 @@ describe("desktop packaging scaffold", () => {
     expect(packageJson.scripts).toMatchObject({
       "desktop:dev": "tauri dev",
       "desktop:build": "tauri build",
+      "release:exes": "npm run desktop:build && node scripts/package-release-exes.js",
     });
     expect(packageJson.devDependencies["@tauri-apps/cli"]).toBeDefined();
   });
@@ -52,6 +53,15 @@ describe("desktop packaging scaffold", () => {
     expect(buildBackendScript).toContain("cargo build --release");
     expect(buildBackendScript).toContain("dist-runtime");
     expect(buildBackendScript).toContain("process.execPath");
+  });
+
+  it("can package separate viewer and agent portable executables", () => {
+    const packageReleaseScript = readFileSync(path.join(projectRoot, "scripts", "package-release-exes.js"), "utf8");
+
+    expect(packageReleaseScript).toContain("AetherLink Viewer.exe");
+    expect(packageReleaseScript).toContain("AetherLink Agent.exe");
+    expect(packageReleaseScript).toContain("server");
+    expect(packageReleaseScript).toContain("runtime");
   });
 
   it("does not require a system Node installation at runtime", () => {

@@ -231,8 +231,7 @@ fn spawn_agent_only_process(
 
 #[tauri::command]
 fn get_app_mode() -> String {
-    let args: Vec<String> = std::env::args().collect();
-    if args.iter().any(|arg| arg == "--agent") || env::var("AETHER_LINK_RUN_AS_AGENT").is_ok() {
+    if launched_as_agent() {
         "agent".to_string()
     } else {
         "viewer".to_string()
@@ -405,6 +404,24 @@ fn should_start_embedded_agent() -> bool {
     forced || has_env_credentials || has_existing_config
 }
 
+fn executable_name_requests_agent() -> bool {
+    env::current_exe()
+        .ok()
+        .and_then(|path| path.file_stem().map(|stem| stem.to_string_lossy().to_string()))
+        .is_some_and(|stem| executable_stem_requests_agent(&stem))
+}
+
+fn executable_stem_requests_agent(stem: &str) -> bool {
+    stem.to_ascii_lowercase().contains("agent")
+}
+
+fn launched_as_agent() -> bool {
+    let args: Vec<String> = std::env::args().collect();
+    args.iter().any(|arg| arg == "--agent")
+        || env::var("AETHER_LINK_RUN_AS_AGENT").is_ok()
+        || executable_name_requests_agent()
+}
+
 fn bundled_node_path(resource_dir: &Path) -> PathBuf {
     resource_dir.join("runtime").join("node.exe")
 }
@@ -542,9 +559,7 @@ fn start_production_processes(job: &Job, resource_dir: &Path) -> Result<(), io::
 }
 
 pub fn run() {
-    let args: Vec<String> = std::env::args().collect();
-    let is_agent =
-        args.iter().any(|arg| arg == "--agent") || env::var("AETHER_LINK_RUN_AS_AGENT").is_ok();
+    let is_agent = launched_as_agent();
 
     tauri::Builder::default()
         .manage(AgentState::new())
@@ -837,6 +852,13 @@ mod registry_tests {
             format_startup_command(&exe_path, true),
             r#""C:\Program Files\AetherLink\aether-link-viewer.exe" --agent"#,
         );
+    }
+
+    #[test]
+    fn test_agent_exe_name_enters_agent_mode() {
+        assert!(executable_stem_requests_agent("AetherLink Agent"));
+        assert!(executable_stem_requests_agent("aether-link-agent"));
+        assert!(!executable_stem_requests_agent("AetherLink Viewer"));
     }
 
     #[test]

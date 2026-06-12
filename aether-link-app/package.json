@@ -13,6 +13,7 @@
     "desktop:build": "tauri build",
     "desktop:dev": "tauri dev",
     "agent:package": "node scripts/package-agent.js",
+    "release:exes": "npm run desktop:build && node scripts/package-release-exes.js",
     "build": "tsc && vite build && node scripts/build-backend.js && node scripts/package-agent.js",
     "test": "vitest run"
   },
