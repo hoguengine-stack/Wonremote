@@ -1,4 +1,9 @@
 import type { AgentCommandPollResult, AgentHeartbeatResult } from "../domain/types";
+import {
+  isAgentFirebaseEnabled,
+  pollAgentCommandsWithFirebase,
+  sendAgentHeartbeatWithFirebase,
+} from "../firebase/agentFirebase";
 
 interface SendAgentHeartbeatOptions {
   apiBaseUrl: string;
@@ -22,6 +27,14 @@ export async function sendAgentHeartbeat({
   installId,
   version,
 }: SendAgentHeartbeatOptions): Promise<AgentHeartbeatResult> {
+  if (isAgentFirebaseEnabled(process.env)) {
+    return sendAgentHeartbeatWithFirebase({
+      deviceId,
+      installId,
+      version,
+    });
+  }
+
   let response: Response;
   try {
     response = await fetchImpl(`${apiBaseUrl}/api/agent/heartbeat`, {
@@ -52,6 +65,13 @@ export async function pollAgentCommands({
   fetchImpl = fetch,
   installId,
 }: PollAgentCommandsOptions): Promise<AgentCommandPollResult> {
+  if (isAgentFirebaseEnabled(process.env)) {
+    return pollAgentCommandsWithFirebase({
+      deviceId,
+      installId,
+    });
+  }
+
   let response: Response;
   try {
     response = await fetchImpl(`${apiBaseUrl}/api/agent/commands`, {

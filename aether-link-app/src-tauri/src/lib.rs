@@ -33,6 +33,13 @@ const STARTUP_REGISTRY_VALUE: &str = "WonRemoteViewer";
 const AGENT_REGISTRY_VALUE: &str = "WonRemoteAgent";
 const LOCAL_API_HOST: &str = "127.0.0.1";
 const LOCAL_API_PORT: u16 = 8787;
+const FIREBASE_API_KEY: Option<&str> = option_env!("VITE_WONREMOTE_FIREBASE_API_KEY");
+const FIREBASE_AUTH_DOMAIN: Option<&str> = option_env!("VITE_WONREMOTE_FIREBASE_AUTH_DOMAIN");
+const FIREBASE_PROJECT_ID: Option<&str> = option_env!("VITE_WONREMOTE_FIREBASE_PROJECT_ID");
+const FIREBASE_APP_ID: Option<&str> = option_env!("VITE_WONREMOTE_FIREBASE_APP_ID");
+const FIREBASE_STORAGE_BUCKET: Option<&str> = option_env!("VITE_WONREMOTE_FIREBASE_STORAGE_BUCKET");
+const FIREBASE_MESSAGING_SENDER_ID: Option<&str> =
+    option_env!("VITE_WONREMOTE_FIREBASE_MESSAGING_SENDER_ID");
 
 pub struct Job {
     handle: HANDLE,
@@ -177,6 +184,7 @@ fn spawn_agent_only_process(
     } else {
         command.env("WONREMOTE_API_URL", "http://127.0.0.1:8787");
     }
+    apply_firebase_env(&mut command);
 
     add_no_window(&mut command);
 
@@ -455,6 +463,69 @@ fn ensure_resource_exists(path: &Path, label: &str) -> Result<(), io::Error> {
     }
 }
 
+fn firebase_config_value(runtime_key: &str, build_value: Option<&str>) -> Option<String> {
+    env::var(runtime_key)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| build_value.map(str::to_string).filter(|value| !value.trim().is_empty()))
+}
+
+fn firebase_mode_configured() -> bool {
+    has_required_firebase_values(
+        firebase_config_value("WONREMOTE_FIREBASE_API_KEY", FIREBASE_API_KEY),
+        firebase_config_value("WONREMOTE_FIREBASE_AUTH_DOMAIN", FIREBASE_AUTH_DOMAIN),
+        firebase_config_value("WONREMOTE_FIREBASE_PROJECT_ID", FIREBASE_PROJECT_ID),
+        firebase_config_value("WONREMOTE_FIREBASE_APP_ID", FIREBASE_APP_ID),
+    )
+}
+
+fn has_required_firebase_values(
+    api_key: Option<String>,
+    auth_domain: Option<String>,
+    project_id: Option<String>,
+    app_id: Option<String>,
+) -> bool {
+    api_key.is_some() && auth_domain.is_some() && project_id.is_some() && app_id.is_some()
+}
+
+fn apply_firebase_env(command: &mut Command) {
+    let values = [
+        (
+            "WONREMOTE_FIREBASE_API_KEY",
+            firebase_config_value("WONREMOTE_FIREBASE_API_KEY", FIREBASE_API_KEY),
+        ),
+        (
+            "WONREMOTE_FIREBASE_AUTH_DOMAIN",
+            firebase_config_value("WONREMOTE_FIREBASE_AUTH_DOMAIN", FIREBASE_AUTH_DOMAIN),
+        ),
+        (
+            "WONREMOTE_FIREBASE_PROJECT_ID",
+            firebase_config_value("WONREMOTE_FIREBASE_PROJECT_ID", FIREBASE_PROJECT_ID),
+        ),
+        (
+            "WONREMOTE_FIREBASE_APP_ID",
+            firebase_config_value("WONREMOTE_FIREBASE_APP_ID", FIREBASE_APP_ID),
+        ),
+        (
+            "WONREMOTE_FIREBASE_STORAGE_BUCKET",
+            firebase_config_value("WONREMOTE_FIREBASE_STORAGE_BUCKET", FIREBASE_STORAGE_BUCKET),
+        ),
+        (
+            "WONREMOTE_FIREBASE_MESSAGING_SENDER_ID",
+            firebase_config_value(
+                "WONREMOTE_FIREBASE_MESSAGING_SENDER_ID",
+                FIREBASE_MESSAGING_SENDER_ID,
+            ),
+        ),
+    ];
+
+    for (key, value) in values {
+        if let Some(value) = value {
+            command.env(key, value);
+        }
+    }
+}
+
 fn local_api_addr() -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], LOCAL_API_PORT))
 }
@@ -549,6 +620,10 @@ fn start_production_api_server_if_needed(job: &Job, resource_dir: &Path) -> Resu
 }
 
 fn start_local_api_server_for_mode(job: &Job, resource_dir: &Path) -> Result<(), io::Error> {
+    if firebase_mode_configured() {
+        return Ok(());
+    }
+
     if cfg!(debug_assertions) {
         start_dev_api_server_if_needed(job)
     } else {
@@ -947,6 +1022,22 @@ mod registry_tests {
         ));
         assert!(!is_local_api_health_response(
             "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\n\r\n{\"ok\":true}"
+        ));
+    }
+
+    #[test]
+    fn test_firebase_mode_requires_required_config_values() {
+        assert!(has_required_firebase_values(
+            Some("api-key".to_string()),
+            Some("project.firebaseapp.com".to_string()),
+            Some("project-id".to_string()),
+            Some("app-id".to_string()),
+        ));
+        assert!(!has_required_firebase_values(
+            Some("api-key".to_string()),
+            Some("project.firebaseapp.com".to_string()),
+            Some("project-id".to_string()),
+            None,
         ));
     }
 

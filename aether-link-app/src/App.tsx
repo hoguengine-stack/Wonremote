@@ -34,6 +34,7 @@ import {
   fetchFiles,
   fetchConnectionHistory,
 } from "./api/viewerApi";
+import { isViewerFirebaseEnabled, subscribeFirebaseDevices } from "./firebase/viewerFirebase";
 import { groupDevicesByStore } from "./domain/agentRegistry";
 import {
   scheduleVisualPingPresentedMeasurement,
@@ -180,6 +181,19 @@ function ViewerApp() {
       return;
     }
 
+    if (isViewerFirebaseEnabled()) {
+      const unsubscribe = subscribeFirebaseDevices(
+        (nextDevices) => {
+          setDevices(nextDevices);
+          setApiError("");
+        },
+        (error) => {
+          setApiError(error.message);
+        },
+      );
+      return () => unsubscribe();
+    }
+
     let cancelled = false;
     const refreshDevices = async () => {
       try {
@@ -239,7 +253,11 @@ function ViewerApp() {
 
     try {
       await loginAdmin(username, password);
-      setDevices(await fetchDevices());
+      if (isViewerFirebaseEnabled()) {
+        setDevices([]);
+      } else {
+        setDevices(await fetchDevices());
+      }
       setLoginError("");
       setApiError("");
       setIsAuthenticated(true);

@@ -13,6 +13,7 @@ import { computeSha256 } from "./checksum";
 import { WONREMOTE_APP_VERSION } from "../domain/appVersion";
 import { resolveSafeDownloadPath } from "./fileSafety";
 import { isSourceTreeUpdateTarget } from "./updateSafety";
+import { isAgentFirebaseEnabled, registerAgentFirstRunWithFirebase } from "../firebase/agentFirebase";
 import type {
   AgentBootstrapDeps,
   AgentCredentials,
@@ -36,6 +37,7 @@ const POC_PATH = resolveAgentPocPath(process.env, AGENT_APP_DIR);
 
 const API_BASE_URL = process.env.WONREMOTE_API_URL ?? "http://127.0.0.1:8787";
 const HEARTBEAT_INTERVAL_MS = Number(process.env.WONREMOTE_AGENT_HEARTBEAT_MS ?? 10_000);
+const USE_FIREBASE = isAgentFirebaseEnabled(process.env);
 
 let streamProcess: any = null;
 let currentOutputIndex = 0;
@@ -202,24 +204,28 @@ async function main() {
   }
 
   console.log("[Status] Connecting");
-  let apiHealthy = await waitForApiHealth({ apiBaseUrl: API_BASE_URL });
+  if (!USE_FIREBASE) {
+    let apiHealthy = await waitForApiHealth({ apiBaseUrl: API_BASE_URL });
 
-  if (!apiHealthy) {
-    if (process.argv.includes("--watch")) {
-      console.log("[Agent] Waiting for API Server to become healthy...");
-      while (!apiHealthy) {
-        console.log("[Status] Connecting");
-        apiHealthy = await waitForApiHealth({ apiBaseUrl: API_BASE_URL, attempts: 5, intervalMs: 1000 });
-        if (!apiHealthy) {
-          console.log("[Agent ERROR] API Server is still down. Retrying in 5 seconds...");
-          await new Promise((resolve) => setTimeout(resolve, 5000));
+    if (!apiHealthy) {
+      if (process.argv.includes("--watch")) {
+        console.log("[Agent] Waiting for API Server to become healthy...");
+        while (!apiHealthy) {
+          console.log("[Status] Connecting");
+          apiHealthy = await waitForApiHealth({ apiBaseUrl: API_BASE_URL, attempts: 5, intervalMs: 1000 });
+          if (!apiHealthy) {
+            console.log("[Agent ERROR] API Server is still down. Retrying in 5 seconds...");
+            await new Promise((resolve) => setTimeout(resolve, 5000));
+          }
         }
+      } else {
+        console.log("[Status] Offline");
+        console.error("[Agent ERROR] API Server did not become healthy within 15 seconds. Exiting.");
+        process.exit(1);
       }
-    } else {
-      console.log("[Status] Offline");
-      console.error("[Agent ERROR] API Server did not become healthy within 15 seconds. Exiting.");
-      process.exit(1);
     }
+  } else {
+    console.log("[Agent] Firebase mode enabled. Skipping local API health gate.");
   }
 
   console.log("[Status] Online");
@@ -358,6 +364,9 @@ async function main() {
 let isUpdating = false;
 
 async function checkUpdate(config: AgentLocalConfig) {
+  if (USE_FIREBASE) {
+    return;
+  }
   if (isUpdating) return;
   isUpdating = true;
   const currentVersion = config.version ?? WONREMOTE_APP_VERSION;
@@ -685,6 +694,10 @@ async function registerFirstRun(inputBody: {
   installId: string;
   password: string;
 }): Promise<AgentFirstRunResult> {
+  if (USE_FIREBASE) {
+    return registerAgentFirstRunWithFirebase(inputBody);
+  }
+
   let response: Response;
   try {
     response = await fetch(`${API_BASE_URL}/api/agent/first-run`, {

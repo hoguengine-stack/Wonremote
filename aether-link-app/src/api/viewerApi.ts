@@ -10,10 +10,24 @@ import type {
   TransferredFile,
   ConnectionHistoryEntry,
 } from "../domain/types";
+import {
+  closeFirebaseSession,
+  fetchFirebaseSessionStatus,
+  isViewerFirebaseEnabled,
+  loginViewerWithFirebase,
+  openFirebaseSession,
+  recordFirebaseInput,
+  registerFirstRunAgentWithFirebase,
+} from "../firebase/viewerFirebase";
 
 const API_BASE_URL = import.meta.env.VITE_WONREMOTE_API_URL ?? "http://127.0.0.1:8787";
 
 export async function loginAdmin(username: string, password: string): Promise<void> {
+  if (isViewerFirebaseEnabled()) {
+    await loginViewerWithFirebase(username, password);
+    return;
+  }
+
   await request("/api/admin/login", {
     method: "POST",
     body: { username, password },
@@ -35,6 +49,10 @@ export async function connectAgent(input: AgentConnectionInput): Promise<
 }
 
 export async function registerFirstRunAgent(input: AgentFirstRunInput & { apiUrl?: string }): Promise<AgentFirstRunResult> {
+  if (isViewerFirebaseEnabled()) {
+    return registerFirstRunAgentWithFirebase(input);
+  }
+
   const baseUrl = input.apiUrl ?? API_BASE_URL;
   if (input.apiUrl) {
     let response: Response;
@@ -69,6 +87,10 @@ export async function openSession(deviceId: string): Promise<{
   session: RemoteSession;
   inputLog: string[];
 }> {
+  if (isViewerFirebaseEnabled()) {
+    return openFirebaseSession(deviceId);
+  }
+
   return request("/api/sessions", {
     method: "POST",
     body: { deviceId },
@@ -86,6 +108,10 @@ export async function connectByCode(connectionCode: string): Promise<{
 }
 
 export async function recordInput(sessionId: string, action: string): Promise<string[]> {
+  if (isViewerFirebaseEnabled()) {
+    return recordFirebaseInput(sessionId, action);
+  }
+
   const body = await request<{ inputLog: string[] }>(
     `/api/sessions/${encodeURIComponent(sessionId)}/input`,
     {
@@ -97,6 +123,11 @@ export async function recordInput(sessionId: string, action: string): Promise<st
 }
 
 export async function closeSession(sessionId: string): Promise<void> {
+  if (isViewerFirebaseEnabled()) {
+    await closeFirebaseSession(sessionId);
+    return;
+  }
+
   await request(`/api/sessions/${encodeURIComponent(sessionId)}/close`, {
     method: "POST",
   });
@@ -151,6 +182,10 @@ export async function fetchConnectionHistory(): Promise<ConnectionHistoryEntry[]
 }
 
 export async function fetchSessionStatus(sessionId: string): Promise<"pending" | "connected"> {
+  if (isViewerFirebaseEnabled()) {
+    return fetchFirebaseSessionStatus(sessionId);
+  }
+
   const body = await request<{ state: "pending" | "connected" }>(`/api/sessions/${encodeURIComponent(sessionId)}/status`);
   return body.state;
 }
