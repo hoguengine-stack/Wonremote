@@ -1,0 +1,50 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function deviceDoc(deviceId) {
+      return get(/databases/$(database)/documents/devices/$(deviceId));
+    }
+
+    function ownsDevice(deviceId) {
+      return signedIn() && deviceDoc(deviceId).data.ownerUid == request.auth.uid;
+    }
+
+    function isOwnDeviceCreate() {
+      return signedIn()
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.businessNumber is string
+        && request.resource.data.deviceNumber is string
+        && request.resource.data.installId is string
+        && request.resource.data.status == "online";
+    }
+
+    function isPendingCommandCreate() {
+      return signedIn()
+        && request.resource.data.action is string
+        && request.resource.data.state == "pending";
+    }
+
+    match /devices/{deviceId} {
+      allow read: if signedIn();
+      allow create: if isOwnDeviceCreate();
+      allow update: if signedIn() && resource.data.ownerUid == request.auth.uid;
+      allow delete: if false;
+
+      match /commands/{commandId} {
+        allow create: if isPendingCommandCreate();
+        allow read, update: if ownsDevice(deviceId);
+        allow delete: if false;
+      }
+    }
+
+    match /sessions/{sessionId} {
+      allow read, create, update: if signedIn();
+      allow delete: if false;
+    }
+  }
+}

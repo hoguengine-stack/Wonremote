@@ -1,6 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { pollAgentCommands, sendAgentHeartbeat } from "./agentClient";
 
+vi.mock("../firebase/agentFirebase", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../firebase/agentFirebase")>();
+  return {
+    ...original,
+    isAgentFirebaseEnabled: () => false,
+  };
+});
+
 describe("agent client", () => {
   it("sends a heartbeat with the registered device id and install id", async () => {
     const fetchImpl = vi.fn(async () => {
