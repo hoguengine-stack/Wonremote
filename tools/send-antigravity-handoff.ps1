@@ -13,6 +13,9 @@ param(
   [ValidateSet("flash_lite", "flash", "pro")]
   [string]$Model = "flash",
 
+  [Parameter(ParameterSetName = "NewConversation")]
+  [string]$FallbackRecipientId = $env:ANTIGRAVITY_FALLBACK_RECIPIENT_ID,
+
   [switch]$DryRun
 )
 
@@ -129,6 +132,9 @@ if ($DryRun) {
     Write-Output "DRY RUN: send-message to recipient '$RecipientId' via $address"
   } else {
     Write-Output "DRY RUN: new-conversation with model '$Model' via $address"
+    if ($FallbackRecipientId) {
+      Write-Output "DRY RUN: fallback send-message to recipient '$FallbackRecipientId' if new-conversation requires project_id"
+    }
   }
   exit 0
 }
@@ -145,6 +151,26 @@ if ($PSCmdlet.ParameterSetName -eq "SendMessage") {
     -Address $address `
     -CsrfToken $languageServer.CsrfToken `
     -Arguments @("new-conversation", "--model=$Model", $Prompt)
+
+  if (
+    $result.ExitCode -ne 0 -and
+    $FallbackRecipientId -and
+    $result.Output -like "*project_id is required when providing project_env_config*"
+  ) {
+    Write-Warning "Antigravity new-conversation requires an internal project_id that agentapi does not expose. Falling back to send-message recipient '$FallbackRecipientId'."
+    $result = Invoke-AgentApi `
+      -AgentApiPath $agentApiPath `
+      -Address $address `
+      -CsrfToken $languageServer.CsrfToken `
+      -Arguments @("send-message", $FallbackRecipientId, $Prompt)
+  }
+
+  if (
+    $result.ExitCode -ne 0 -and
+    $result.Output -like "*project_id is required when providing project_env_config*"
+  ) {
+    throw "Antigravity new-conversation failed because project_id is required, but agentapi exposes no project_id flag. Use -RecipientId/-Message for an existing Antigravity conversation, or pass -FallbackRecipientId/set ANTIGRAVITY_FALLBACK_RECIPIENT_ID."
+  }
 }
 
 Write-Output $result.Output
