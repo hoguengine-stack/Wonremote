@@ -13,6 +13,9 @@
     "desktop:build": "tauri build",
     "desktop:dev": "tauri dev",
     "agent:package": "node scripts/package-agent.js",
+    "release:keypair": "node scripts/generate-update-keypair.js",
+    "release:manifest": "node scripts/create-update-manifest.js",
+    "release:publish": "powershell -ExecutionPolicy Bypass -File scripts/publish-github-release.ps1",
     "release:exes": "npm run desktop:build && node scripts/package-release-exes.js",
     "build": "tsc && vite build && node scripts/build-backend.js && node scripts/package-agent.js",
     "test": "vitest run"

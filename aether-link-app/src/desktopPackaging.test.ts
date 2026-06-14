@@ -26,6 +26,9 @@ describe("desktop packaging scaffold", () => {
       "desktop:dev": "tauri dev",
       "desktop:build": "tauri build",
       "release:exes": "npm run desktop:build && node scripts/package-release-exes.js",
+      "release:manifest": "node scripts/create-update-manifest.js",
+      "release:keypair": "node scripts/generate-update-keypair.js",
+      "release:publish": "powershell -ExecutionPolicy Bypass -File scripts/publish-github-release.ps1",
     });
     expect(packageJson.devDependencies["@tauri-apps/cli"]).toBeDefined();
   });
@@ -81,6 +84,44 @@ describe("desktop packaging scaffold", () => {
     expect(packageReleaseScript).toContain("WonRemote Agent.exe");
     expect(packageReleaseScript).toContain("server");
     expect(packageReleaseScript).toContain("runtime");
+  });
+
+  it("can create a signed production update manifest for a GitHub release installer", () => {
+    const manifestScriptPath = path.join(projectRoot, "scripts", "create-update-manifest.js");
+    expect(existsSync(manifestScriptPath)).toBe(true);
+
+    const manifestScript = readFileSync(manifestScriptPath, "utf8");
+    expect(manifestScript).toContain("createHash");
+    expect(manifestScript).toContain("sign(null");
+    expect(manifestScript).toContain("version=");
+    expect(manifestScript).toContain("sha256=");
+    expect(manifestScript).toContain("assetName=");
+    expect(manifestScript).toContain("WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY");
+  });
+
+  it("can generate a local Ed25519 update signing key pair without committing secrets", () => {
+    const keypairScriptPath = path.join(projectRoot, "scripts", "generate-update-keypair.js");
+    expect(existsSync(keypairScriptPath)).toBe(true);
+
+    const keypairScript = readFileSync(keypairScriptPath, "utf8");
+    expect(keypairScript).toContain("generateKeyPairSync");
+    expect(keypairScript).toContain("ed25519");
+    expect(keypairScript).toContain(".local-run");
+    expect(keypairScript).toContain("update-signing-private.pem");
+    expect(keypairScript).toContain("update-signing-public.pem");
+  });
+
+  it("can publish the installer and manifest to a GitHub Release when a token is supplied", () => {
+    const publishScriptPath = path.join(projectRoot, "scripts", "publish-github-release.ps1");
+    expect(existsSync(publishScriptPath)).toBe(true);
+
+    const publishScript = readFileSync(publishScriptPath, "utf8");
+    expect(publishScript).toContain("GITHUB_TOKEN");
+    expect(publishScript).toContain("[string]$Repository = \"hoguengine-stack/Wonremote\"");
+    expect(publishScript).toContain("api.github.com/repos/$Repository/releases");
+    expect(publishScript).toContain("uploads.github.com/repos/$Repository/releases");
+    expect(publishScript).toContain("WonRemote Viewer_");
+    expect(publishScript).toContain("wonremote-update-manifest.json");
   });
 
   it("does not require a system Node installation at runtime", () => {
