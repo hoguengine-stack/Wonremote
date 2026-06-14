@@ -160,7 +160,7 @@ impl GdiCapturer {
 
             let bitmap_object = HGDIOBJ(bitmap.0);
             let old_object = SelectObject(memory_dc, bitmap_object);
-            let blit_ok = BitBlt(
+            let blit_result = BitBlt(
                 memory_dc,
                 0,
                 0,
@@ -170,8 +170,10 @@ impl GdiCapturer {
                 0,
                 0,
                 SRCCOPY,
-            )
-            .is_ok();
+            );
+
+            let blit_error = blit_result.err();
+            let _ = SelectObject(memory_dc, old_object);
 
             let mut bgra_buffer = vec![0u8; (self.width * self.height * 4) as usize];
             let mut bitmap_info = BITMAPINFO {
@@ -187,7 +189,7 @@ impl GdiCapturer {
                 ..Default::default()
             };
 
-            let copied_rows = if blit_ok {
+            let copied_rows = if blit_error.is_none() {
                 GetDIBits(
                     memory_dc,
                     bitmap,
@@ -200,14 +202,22 @@ impl GdiCapturer {
             } else {
                 0
             };
+            let dibits_error = if blit_error.is_none() && copied_rows == 0 {
+                Some(Error::from_win32())
+            } else {
+                None
+            };
 
-            let _ = SelectObject(memory_dc, old_object);
             let _ = DeleteObject(bitmap_object);
             let _ = DeleteDC(memory_dc);
             let _ = ReleaseDC(None, screen_dc);
 
-            if !blit_ok || copied_rows == 0 {
-                return Err(Error::from_win32());
+            if let Some(error) = blit_error {
+                return Err(error);
+            }
+
+            if let Some(error) = dibits_error {
+                return Err(error);
             }
 
             let capture_time = capture_start.elapsed().as_micros();
@@ -450,5 +460,20 @@ mod tests {
         } else {
             std::env::remove_var("WONREMOTE_CAPTURE_BACKEND");
         }
+    }
+
+    #[test]
+    fn gdi_capture_deselects_bitmap_before_get_dibits() {
+        let source = include_str!("capturer.rs");
+        let select_bitmap = source
+            .find("let old_object = SelectObject(memory_dc, bitmap_object);")
+            .expect("GDI bitmap selection should exist");
+        let restore_bitmap = source
+            .find("SelectObject(memory_dc, old_object)")
+            .expect("GDI bitmap restore should exist");
+        let get_dibits = source.find("GetDIBits(").expect("GDI pixel readback should exist");
+
+        assert!(select_bitmap < restore_bitmap);
+        assert!(restore_bitmap < get_dibits);
     }
 }
