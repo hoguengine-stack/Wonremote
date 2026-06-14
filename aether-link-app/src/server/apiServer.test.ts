@@ -8,7 +8,7 @@ import { createApiServer } from "./apiServer";
 import { createFileDeviceStore } from "./deviceStore";
 import type { ManagedDevice } from "../domain/types";
 
-describe("aether link local API server", () => {
+describe("WonRemote local API server", () => {
   let server: ReturnType<typeof createApiServer>;
   let baseUrl = "";
 
