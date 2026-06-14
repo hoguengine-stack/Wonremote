@@ -679,7 +679,7 @@ describe("WonRemote local API server", () => {
       };
       const appVersionSource = await readFile(path.join(extractDir, "src", "domain", "appVersion.ts"), "utf8");
 
-      expect(packageJson.version).toBe("0.1.5");
+      expect(packageJson.version).toBe("0.1.6");
       expect(appVersionSource).toContain(`WONREMOTE_APP_VERSION = "${packageJson.version}"`);
     } finally {
       await rm(tempDir, { recursive: true, force: true });

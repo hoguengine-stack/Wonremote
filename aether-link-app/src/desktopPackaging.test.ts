@@ -55,6 +55,25 @@ describe("desktop packaging scaffold", () => {
     expect(buildBackendScript).toContain("process.execPath");
   });
 
+  it("injects createRequire into ESM backend bundles for CommonJS dependencies", () => {
+    const buildBackendScript = readFileSync(path.join(projectRoot, "scripts", "build-backend.js"), "utf8");
+
+    expect(buildBackendScript).toContain("createRequire");
+    expect(buildBackendScript).toContain("banner");
+    expect(buildBackendScript).toContain('outfile: "dist-server/index.mjs"');
+    expect(buildBackendScript).toContain('outfile: "dist-agent/index.mjs"');
+  });
+
+  it("keeps session data polling alive when the stream process exits", () => {
+    const agentEntry = readFileSync(path.join(projectRoot, "src", "agent", "index.ts"), "utf8");
+    const streamCloseStart = agentEntry.indexOf('.on("close"');
+    const startSessionPollingStart = agentEntry.indexOf("function startSessionPolling");
+    const streamCloseBlock = agentEntry.slice(streamCloseStart, startSessionPollingStart);
+
+    expect(streamCloseStart).toBeGreaterThan(-1);
+    expect(streamCloseBlock).not.toContain("stopSessionPolling()");
+  });
+
   it("can package separate viewer and agent portable executables", () => {
     const packageReleaseScript = readFileSync(path.join(projectRoot, "scripts", "package-release-exes.js"), "utf8");
 

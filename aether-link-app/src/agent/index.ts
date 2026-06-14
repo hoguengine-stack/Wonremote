@@ -56,16 +56,17 @@ function startStreaming(deviceId: string, outputIndex = 0, loopSleepMs = 33) {
     streamProcess.kill();
   }
 
-  // Start Phase 3 data polling
+  // Data polling must stay alive even if the capture backend falls back or exits.
   startSessionPolling(deviceId);
 
   const pocPath = POC_PATH;
   
-  console.log(`Starting DXGI capture stream from: ${pocPath} (monitor: ${outputIndex}, sleep: ${loopSleepMs}ms)`);
-  streamProcess = spawn(pocPath, ["--mode", "stream", "--loop-sleep-ms", String(loopSleepMs), "--output-index", String(outputIndex)]);
+  console.log(`Starting capture stream from: ${pocPath} (monitor: ${outputIndex}, sleep: ${loopSleepMs}ms)`);
+  const child = spawn(pocPath, ["--mode", "stream", "--loop-sleep-ms", String(loopSleepMs), "--output-index", String(outputIndex)]);
+  streamProcess = child;
 
   const rl = readline.createInterface({
-    input: streamProcess.stdout,
+    input: child.stdout,
     terminal: false
   });
 
@@ -85,13 +86,33 @@ function startStreaming(deviceId: string, outputIndex = 0, loopSleepMs = 33) {
     }
   });
 
-  streamProcess.stderr.on("data", (data: any) => {
-    console.error(`[POC Stream Error] ${data.toString().trim()}`);
+  let streamStderrBuffer = "";
+  const flushStreamLogLine = (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    if (/error|failed|denied|HRESULT|실패|거부/i.test(trimmed)) {
+      console.error(`[POC Stream Error] ${trimmed}`);
+    } else {
+      console.log(`[POC Stream] ${trimmed}`);
+    }
+  };
+
+  child.stderr.on("data", (data: any) => {
+    streamStderrBuffer += data.toString();
+    const lines = streamStderrBuffer.split(/\r?\n/);
+    streamStderrBuffer = lines.pop() ?? "";
+    for (const line of lines) {
+      flushStreamLogLine(line);
+    }
   });
 
-  streamProcess.on("close", (code: number) => {
-    console.log(`DXGI capture stream process exited with code ${code}`);
-    stopSessionPolling();
+  child.on("close", (code: number) => {
+    flushStreamLogLine(streamStderrBuffer);
+    streamStderrBuffer = "";
+    console.log(`Capture stream process exited with code ${code}`);
+    if (streamProcess === child) {
+      streamProcess = null;
+    }
   });
 }
 
@@ -639,11 +660,11 @@ async function pollCommands(config: AgentLocalConfig): Promise<void> {
         console.log("==============================================");
         isApprovalPending = true;
       } else if (command.action === "start-stream") {
-        console.log("Starting DXGI capture stream due to start-stream command");
+        console.log("Starting capture stream due to start-stream command");
         startStreaming(config.registeredDeviceId!, currentOutputIndex, currentLoopSleepMs);
       } else if (command.action === "stop-stream") {
         if (streamProcess) {
-          console.log("Stopping DXGI capture stream due to stop-stream command");
+          console.log("Stopping capture stream due to stop-stream command");
           streamProcess.kill();
           streamProcess = null;
         }

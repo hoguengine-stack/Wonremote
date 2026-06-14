@@ -380,8 +380,8 @@ async function main() {
     body: JSON.stringify({ mode: "good" })
   });
 
-  console.log("Waiting for Agent to download good zip, restart, and register as version 0.1.5...");
-  const updatedDevice = await waitAgentOnline("0.1.5", rolledBackPid || undefined);
+  console.log("Waiting for Agent to download good zip, restart, and register as version 0.1.6...");
+  const updatedDevice = await waitAgentOnline("0.1.6", rolledBackPid || undefined);
   console.log(`Agent successfully upgraded and registered as version: ${updatedDevice.version}`);
 
   // Capture updated agent PID from agent.pid

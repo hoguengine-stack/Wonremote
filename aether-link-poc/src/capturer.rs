@@ -1,4 +1,4 @@
-use windows::core::{ComInterface, Result};
+use windows::core::{ComInterface, Error, Result};
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_11_1};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, D3D11_CPU_ACCESS_READ,
@@ -9,6 +9,80 @@ use windows::Win32::Graphics::Dxgi::{
     DXGI_ADAPTER_DESC1, DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO,
     DXGI_OUTPUT_DESC,
 };
+use windows::Win32::Graphics::Gdi::{
+    BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits,
+    GetDeviceCaps, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
+    HGDIOBJ, HORZRES, SRCCOPY, VERTRES,
+};
+
+pub struct DesktopCapturer {
+    backend: CaptureBackend,
+}
+
+enum CaptureBackend {
+    Dxgi(DxgiCapturer),
+    Gdi(GdiCapturer),
+}
+
+impl DesktopCapturer {
+    pub fn new_stream(output_index: u32) -> Result<Self> {
+        if should_force_gdi_capture_backend() {
+            eprintln!("Using GDI BitBlt capture because WONREMOTE_CAPTURE_BACKEND=gdi.");
+            return Ok(Self {
+                backend: CaptureBackend::Gdi(GdiCapturer::new(output_index)?),
+            });
+        }
+
+        match DxgiCapturer::new(output_index) {
+            Ok(capturer) => Ok(Self {
+                backend: CaptureBackend::Dxgi(capturer),
+            }),
+            Err(dxgi_error) => {
+                eprintln!(
+                    "DXGI capture init failed: {:?}. Falling back to GDI BitBlt capture.",
+                    dxgi_error
+                );
+                Ok(Self {
+                    backend: CaptureBackend::Gdi(GdiCapturer::new(output_index)?),
+                })
+            }
+        }
+    }
+
+    pub fn capture_frame(&mut self, timeout_ms: u32) -> Result<CaptureFrameStatus> {
+        match &mut self.backend {
+            CaptureBackend::Dxgi(capturer) => capturer.capture_frame(timeout_ms),
+            CaptureBackend::Gdi(capturer) => capturer.capture_frame(),
+        }
+    }
+
+    pub fn get_dimensions(&self) -> (u32, u32) {
+        match &self.backend {
+            CaptureBackend::Dxgi(capturer) => capturer.get_dimensions(),
+            CaptureBackend::Gdi(capturer) => capturer.get_dimensions(),
+        }
+    }
+
+    pub fn get_selection_names(&self) -> (String, String) {
+        match &self.backend {
+            CaptureBackend::Dxgi(capturer) => capturer.get_selection_names(),
+            CaptureBackend::Gdi(capturer) => capturer.get_selection_names(),
+        }
+    }
+
+    pub fn recommended_min_loop_sleep_ms(&self) -> u64 {
+        match &self.backend {
+            CaptureBackend::Dxgi(_) => 0,
+            CaptureBackend::Gdi(_) => 125,
+        }
+    }
+}
+
+fn should_force_gdi_capture_backend() -> bool {
+    std::env::var("WONREMOTE_CAPTURE_BACKEND")
+        .map(|value| value.eq_ignore_ascii_case("gdi"))
+        .unwrap_or(false)
+}
 
 pub enum CaptureFrameStatus {
     Frame {
@@ -31,6 +105,132 @@ pub struct DxgiCapturer {
     adapter_name: String,
     output_name: String,
     output_index: u32,
+}
+
+pub struct GdiCapturer {
+    width: u32,
+    height: u32,
+    output_name: String,
+}
+
+impl GdiCapturer {
+    pub fn new(output_index: u32) -> Result<Self> {
+        unsafe {
+            let screen_dc = GetDC(None);
+            if screen_dc.0 == 0 {
+                return Err(Error::from_win32());
+            }
+
+            let width = GetDeviceCaps(screen_dc, HORZRES);
+            let height = GetDeviceCaps(screen_dc, VERTRES);
+            let _ = ReleaseDC(None, screen_dc);
+
+            if width <= 0 || height <= 0 {
+                return Err(Error::from_win32());
+            }
+
+            Ok(Self {
+                width: width as u32,
+                height: height as u32,
+                output_name: format!("GDI primary desktop fallback (requested output {})", output_index),
+            })
+        }
+    }
+
+    pub fn capture_frame(&mut self) -> Result<CaptureFrameStatus> {
+        unsafe {
+            let capture_start = std::time::Instant::now();
+            let screen_dc = GetDC(None);
+            if screen_dc.0 == 0 {
+                return Err(Error::from_win32());
+            }
+
+            let memory_dc = CreateCompatibleDC(screen_dc);
+            if memory_dc.0 == 0 {
+                let _ = ReleaseDC(None, screen_dc);
+                return Err(Error::from_win32());
+            }
+
+            let bitmap = CreateCompatibleBitmap(screen_dc, self.width as i32, self.height as i32);
+            if bitmap.0 == 0 {
+                let _ = DeleteDC(memory_dc);
+                let _ = ReleaseDC(None, screen_dc);
+                return Err(Error::from_win32());
+            }
+
+            let bitmap_object = HGDIOBJ(bitmap.0);
+            let old_object = SelectObject(memory_dc, bitmap_object);
+            let blit_ok = BitBlt(
+                memory_dc,
+                0,
+                0,
+                self.width as i32,
+                self.height as i32,
+                screen_dc,
+                0,
+                0,
+                SRCCOPY,
+            )
+            .is_ok();
+
+            let mut bgra_buffer = vec![0u8; (self.width * self.height * 4) as usize];
+            let mut bitmap_info = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: self.width as i32,
+                    biHeight: -(self.height as i32),
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+
+            let copied_rows = if blit_ok {
+                GetDIBits(
+                    memory_dc,
+                    bitmap,
+                    0,
+                    self.height,
+                    Some(bgra_buffer.as_mut_ptr() as *mut _),
+                    &mut bitmap_info,
+                    DIB_RGB_COLORS,
+                )
+            } else {
+                0
+            };
+
+            let _ = SelectObject(memory_dc, old_object);
+            let _ = DeleteObject(bitmap_object);
+            let _ = DeleteDC(memory_dc);
+            let _ = ReleaseDC(None, screen_dc);
+
+            if !blit_ok || copied_rows == 0 {
+                return Err(Error::from_win32());
+            }
+
+            let capture_time = capture_start.elapsed().as_micros();
+            let convert_start = std::time::Instant::now();
+            let rgb565_buffer = bgra_to_rgb565(&bgra_buffer, self.width as usize, self.height as usize);
+            let convert_time = convert_start.elapsed().as_micros();
+
+            Ok(CaptureFrameStatus::Frame {
+                bgra: bgra_buffer,
+                rgb565: rgb565_buffer,
+                capture_time_us: capture_time,
+                convert_time_us: convert_time,
+            })
+        }
+    }
+
+    pub fn get_dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    pub fn get_selection_names(&self) -> (String, String) {
+        ("GDI".to_string(), self.output_name.clone())
+    }
 }
 
 impl DxgiCapturer {
@@ -169,29 +369,8 @@ impl DxgiCapturer {
                     let _ = duplication.ReleaseFrame();
                     let capture_time = capture_start.elapsed().as_micros();
 
-                    // 2. Convert to 16-bit RGB565 (2 bytes per pixel) and measure time
                     let convert_start = std::time::Instant::now();
-                    let mut rgb565_buffer = vec![0u8; width * height * 2];
-
-                    for i in 0..(width * height) {
-                        let bgra_idx = i * 4;
-                        let rgb565_idx = i * 2;
-
-                        let b = bgra_buffer[bgra_idx];
-                        let g = bgra_buffer[bgra_idx + 1];
-                        let r = bgra_buffer[bgra_idx + 2];
-
-                        // Convert R (5 bits), G (6 bits), B (5 bits)
-                        let r5 = (r >> 3) as u16;
-                        let g6 = (g >> 2) as u16;
-                        let b5 = (b >> 3) as u16;
-
-                        let rgb565_val = (r5 << 11) | (g6 << 5) | b5;
-
-                        // Store as little-endian
-                        rgb565_buffer[rgb565_idx] = (rgb565_val & 0xFF) as u8;
-                        rgb565_buffer[rgb565_idx + 1] = ((rgb565_val >> 8) & 0xFF) as u8;
-                    }
+                    let rgb565_buffer = bgra_to_rgb565(&bgra_buffer, width, height);
                     let convert_time = convert_start.elapsed().as_micros();
 
                     Ok(CaptureFrameStatus::Frame {
@@ -227,4 +406,49 @@ impl DxgiCapturer {
 fn utf16_to_string(buffer: &[u16]) -> String {
     let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
     String::from_utf16_lossy(&buffer[..len])
+}
+
+fn bgra_to_rgb565(bgra_buffer: &[u8], width: usize, height: usize) -> Vec<u8> {
+    let mut rgb565_buffer = vec![0u8; width * height * 2];
+
+    for i in 0..(width * height) {
+        let bgra_idx = i * 4;
+        let rgb565_idx = i * 2;
+
+        let b = bgra_buffer[bgra_idx];
+        let g = bgra_buffer[bgra_idx + 1];
+        let r = bgra_buffer[bgra_idx + 2];
+
+        let r5 = (r >> 3) as u16;
+        let g6 = (g >> 2) as u16;
+        let b5 = (b >> 3) as u16;
+
+        let rgb565_val = (r5 << 11) | (g6 << 5) | b5;
+        rgb565_buffer[rgb565_idx] = (rgb565_val & 0xFF) as u8;
+        rgb565_buffer[rgb565_idx + 1] = ((rgb565_val >> 8) & 0xFF) as u8;
+    }
+
+    rgb565_buffer
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gdi_capture_backend_can_be_forced_by_environment() {
+        let previous = std::env::var_os("WONREMOTE_CAPTURE_BACKEND");
+
+        std::env::set_var("WONREMOTE_CAPTURE_BACKEND", "gdi");
+        assert!(should_force_gdi_capture_backend());
+
+        std::env::set_var("WONREMOTE_CAPTURE_BACKEND", "dxgi");
+        assert!(!should_force_gdi_capture_backend());
+
+        if let Some(value) = previous {
+            std::env::set_var("WONREMOTE_CAPTURE_BACKEND", value);
+        } else {
+            std::env::remove_var("WONREMOTE_CAPTURE_BACKEND");
+        }
+    }
 }

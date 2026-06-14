@@ -1,6 +1,6 @@
 mod capturer;
 
-use capturer::{CaptureFrameStatus, DxgiCapturer};
+use capturer::{CaptureFrameStatus, DesktopCapturer, DxgiCapturer};
 use serde::Serialize;
 use std::fs::File;
 use std::io::Write;
@@ -9,8 +9,9 @@ use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 use turbojpeg::{Compressor, Decompressor, Image, PixelFormat, Subsamp};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYBD_EVENT_FLAGS,
-    KEYEVENTF_KEYUP, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+    MapVirtualKeyW, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
+    KEYBD_EVENT_FLAGS, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE,
+    MAPVK_VK_TO_VSC_EX, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
     MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
     MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEINPUT, VIRTUAL_KEY,
 };
@@ -303,6 +304,16 @@ mod tests {
         assert_eq!(stats.dirty_frame_count, 1);
         assert_eq!(stats.clean_frame_count, 1);
         assert_eq!(stats.dirty_frame_ratio_percent, 50.0);
+    }
+
+    #[test]
+    fn keyboard_input_prefers_scancodes_for_system_key_combinations() {
+        let input = keyboard_input(VIRTUAL_KEY(0x12), false);
+        let key = unsafe { input.Anonymous.ki };
+
+        assert_eq!(key.wVk.0, 0);
+        assert_ne!(key.wScan, 0);
+        assert_ne!(key.dwFlags.0 & KEYEVENTF_SCANCODE.0, 0);
     }
 
     #[test]
@@ -1223,18 +1234,35 @@ fn system_command_args(command: &str) -> std::result::Result<Vec<&'static str>, 
 }
 
 fn keyboard_input(vk: VIRTUAL_KEY, key_up: bool) -> INPUT {
+    let scan = unsafe { MapVirtualKeyW(vk.0 as u32, MAPVK_VK_TO_VSC_EX) };
+    let use_scancode = scan != 0;
+    let mut flags = if key_up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) };
+    if use_scancode {
+        flags |= KEYEVENTF_SCANCODE;
+        if scan & 0xE000 != 0 || is_extended_virtual_key(vk) {
+            flags |= KEYEVENTF_EXTENDEDKEY;
+        }
+    }
+
     INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
             ki: KEYBDINPUT {
-                wVk: vk,
-                wScan: 0,
-                dwFlags: if key_up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) },
+                wVk: if use_scancode { VIRTUAL_KEY(0) } else { vk },
+                wScan: if use_scancode { (scan & 0xFF) as u16 } else { 0 },
+                dwFlags: flags,
                 time: 0,
                 dwExtraInfo: 0,
             },
         },
     }
+}
+
+fn is_extended_virtual_key(vk: VIRTUAL_KEY) -> bool {
+    matches!(
+        vk.0,
+        0x21 | 0x22 | 0x23 | 0x24 | 0x25 | 0x26 | 0x27 | 0x28 | 0x2D | 0x2E | 0x5B | 0x5C
+    )
 }
 
 fn mouse_input(
@@ -1298,15 +1326,24 @@ fn base64_encode(data: &[u8]) -> String {
 }
 
 async fn run_streaming_loop(config: BenchmarkConfig) {
-    let mut capturer = match DxgiCapturer::new(config.output_index) {
+    let mut capturer = match DesktopCapturer::new_stream(config.output_index) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("DXGI 캡처 초기화 실패: {:?}", e);
+            eprintln!("Screen capture initialization failed: {:?}", e);
             return;
         }
     };
 
     let (width, height) = capturer.get_dimensions();
+    let (adapter_name, output_name) = capturer.get_selection_names();
+    eprintln!("Capture backend: {} / {} ({}x{})", adapter_name, output_name, width, height);
+    let min_loop_sleep_ms = capturer.recommended_min_loop_sleep_ms();
+    if min_loop_sleep_ms > 0 && config.loop_sleep_ms < min_loop_sleep_ms {
+        eprintln!(
+            "Capture backend limited loop sleep from {}ms to {}ms",
+            config.loop_sleep_ms, min_loop_sleep_ms
+        );
+    }
     let tile_size = 32;
     let mut tile_diff = TileDiff::new(width, height, tile_size);
 
@@ -1466,11 +1503,12 @@ async fn run_streaming_loop(config: BenchmarkConfig) {
         }
 
         let elapsed = loop_start.elapsed();
-        let sleep_ms = if config.loop_sleep_ms > 0 {
+        let configured_sleep_ms = if config.loop_sleep_ms > 0 {
             config.loop_sleep_ms
         } else {
             16
         };
+        let sleep_ms = configured_sleep_ms.max(min_loop_sleep_ms);
         if elapsed < Duration::from_millis(sleep_ms) {
             tokio::time::sleep(Duration::from_millis(sleep_ms) - elapsed).await;
         }

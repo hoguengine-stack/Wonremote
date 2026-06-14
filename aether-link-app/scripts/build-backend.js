@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(appRoot, "..");
+const nodeEsmRequireBanner = "import { createRequire } from 'module'; const require = createRequire(import.meta.url);";
 
 function run(command, args, cwd) {
   execFileSync(command, args, {
@@ -54,6 +55,9 @@ async function build() {
     sourcemap: true,
     absWorkingDir: appRoot,
     external: ["fsevents"],
+    banner: {
+      js: nodeEsmRequireBanner,
+    },
   });
 
   console.log("Building Agent to dist-agent/index.mjs...");
@@ -67,6 +71,9 @@ async function build() {
     sourcemap: true,
     absWorkingDir: appRoot,
     external: ["fsevents"],
+    banner: {
+      js: nodeEsmRequireBanner,
+    },
   });
 
   console.log("Backend bundling completed successfully!");
