@@ -8,6 +8,12 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 use turbojpeg::{Compressor, Decompressor, Image, PixelFormat, Subsamp};
+use windows::Win32::Foundation::{CloseHandle, HANDLE};
+use windows::Win32::Security::{
+    GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TokenElevation,
+    TokenIntegrityLevel, TOKEN_ELEVATION, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+};
+use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     MapVirtualKeyW, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
     KEYBD_EVENT_FLAGS, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE,
@@ -81,6 +87,14 @@ pub struct SystemInfo {
 pub struct VideoControllerInfo {
     pub name: String,
     pub driver_version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputDiagnostics {
+    pub win32_error_code: u32,
+    pub win32_error_message: String,
+    pub elevated: Option<bool>,
+    pub integrity_level: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -314,6 +328,25 @@ mod tests {
         assert_eq!(key.wVk.0, 0);
         assert_ne!(key.wScan, 0);
         assert_ne!(key.dwFlags.0 & KEYEVENTF_SCANCODE.0, 0);
+    }
+
+    #[test]
+    fn send_input_failure_message_includes_windows_security_context() {
+        let diagnostics = InputDiagnostics {
+            win32_error_code: 5,
+            win32_error_message: "Access is denied.".to_string(),
+            elevated: Some(false),
+            integrity_level: Some("Medium".to_string()),
+        };
+
+        let message = format_send_input_failure(0, 1, &diagnostics);
+
+        assert!(message.contains("Sent 0 of 1 events"));
+        assert!(message.contains("win32_error=5"));
+        assert!(message.contains("Access is denied."));
+        assert!(message.contains("elevated=false"));
+        assert!(message.contains("integrity=Medium"));
+        assert!(message.contains("UIPI/UAC"));
     }
 
     #[test]
@@ -1294,13 +1327,138 @@ fn send_inputs(inputs: &[INPUT]) -> std::result::Result<(), String> {
         )
     };
     if sent != inputs.len() as u32 {
-        return Err(format!(
-            "SendInput failed. Sent {} of {} events.",
-            sent,
-            inputs.len()
-        ));
+        let diagnostics = collect_input_diagnostics();
+        return Err(format_send_input_failure(sent, inputs.len(), &diagnostics));
     }
     Ok(())
+}
+
+fn format_send_input_failure(sent: u32, expected: usize, diagnostics: &InputDiagnostics) -> String {
+    let elevated = diagnostics
+        .elevated
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let integrity = diagnostics
+        .integrity_level
+        .as_deref()
+        .unwrap_or("unknown");
+
+    format!(
+        "SendInput failed. Sent {} of {} events. win32_error={} ({}) elevated={} integrity={}. \
+         If this happens only for secure desktops, elevated/admin windows, or shell-level key \
+         combinations, treat it as a Windows UIPI/UAC boundary and run the Agent at a matching \
+         or higher integrity level.",
+        sent,
+        expected,
+        diagnostics.win32_error_code,
+        diagnostics.win32_error_message,
+        elevated,
+        integrity
+    )
+}
+
+fn collect_input_diagnostics() -> InputDiagnostics {
+    let error = windows::core::Error::from_win32();
+    let win32_error_code = (error.code().0 as u32) & 0xFFFF;
+
+    let (elevated, integrity_level) = current_process_token_diagnostics()
+        .map(|diagnostics| (diagnostics.0, diagnostics.1))
+        .unwrap_or((None, None));
+
+    InputDiagnostics {
+        win32_error_code,
+        win32_error_message: error.message().to_string(),
+        elevated,
+        integrity_level,
+    }
+}
+
+fn current_process_token_diagnostics() -> Option<(Option<bool>, Option<String>)> {
+    let mut token = HANDLE::default();
+    unsafe {
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
+            return None;
+        }
+    }
+
+    let elevated = query_token_elevated(token);
+    let integrity_level = query_token_integrity_level(token);
+
+    unsafe {
+        let _ = CloseHandle(token);
+    }
+
+    Some((elevated, integrity_level))
+}
+
+fn query_token_elevated(token: HANDLE) -> Option<bool> {
+    let mut elevation = TOKEN_ELEVATION::default();
+    let mut returned = 0_u32;
+    let result = unsafe {
+        GetTokenInformation(
+            token,
+            TokenElevation,
+            Some((&mut elevation as *mut TOKEN_ELEVATION).cast()),
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut returned,
+        )
+    };
+
+    result.ok()?;
+    Some(elevation.TokenIsElevated != 0)
+}
+
+fn query_token_integrity_level(token: HANDLE) -> Option<String> {
+    let mut returned = 0_u32;
+    let _ = unsafe { GetTokenInformation(token, TokenIntegrityLevel, None, 0, &mut returned) };
+    if returned == 0 {
+        return None;
+    }
+
+    let mut buffer = vec![0_u8; returned as usize];
+    let result = unsafe {
+        GetTokenInformation(
+            token,
+            TokenIntegrityLevel,
+            Some(buffer.as_mut_ptr().cast()),
+            returned,
+            &mut returned,
+        )
+    };
+    result.ok()?;
+
+    let label = unsafe { &*(buffer.as_ptr() as *const TOKEN_MANDATORY_LABEL) };
+    let sid = label.Label.Sid;
+    if sid.is_invalid() {
+        return None;
+    }
+
+    let sub_authority_count = unsafe { GetSidSubAuthorityCount(sid) };
+    if sub_authority_count.is_null() {
+        return None;
+    }
+
+    let rid_index = unsafe { *sub_authority_count as u32 }.checked_sub(1)?;
+    let rid = unsafe {
+        let rid_ptr = GetSidSubAuthority(sid, rid_index);
+        if rid_ptr.is_null() {
+            return None;
+        }
+        *rid_ptr
+    };
+
+    Some(integrity_label_from_rid(rid).to_string())
+}
+
+fn integrity_label_from_rid(rid: u32) -> &'static str {
+    match rid {
+        0x0000_0000..=0x0000_0FFF => "Untrusted",
+        0x0000_1000..=0x0000_1FFF => "Low",
+        0x0000_2000..=0x0000_2FFF => "Medium",
+        0x0000_3000..=0x0000_3FFF => "High",
+        0x0000_4000..=0x0000_4FFF => "System",
+        0x0000_5000..=u32::MAX => "Protected",
+    }
 }
 
 fn base64_encode(data: &[u8]) -> String {

@@ -73,7 +73,7 @@ function prepareUpdateFiles() {
     }
 
     const pkg = JSON.parse(readFileSync(path.join(sourceDir, "package.json"), "utf8"));
-    pkg.version = "0.1.7";
+    pkg.version = "0.1.8";
     writeStagedAppVersion(goodStageDir, pkg.version);
     writeFileSync(path.join(goodStageDir, "package.json"), JSON.stringify(pkg, null, 2), "utf8");
     writeFileSync(path.join(goodStageDir, "update_marker.txt"), "GOOD_UPDATE_SUCCESS", "utf8");
@@ -459,7 +459,7 @@ async function routeRequest(
         latestVersion = WONREMOTE_APP_VERSION;
       }
     } else {
-      latestVersion = "0.1.7";
+      latestVersion = "0.1.8";
     }
     
     const badChecksum = testUpdateMode === "bad_checksum";

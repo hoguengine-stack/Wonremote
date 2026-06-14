@@ -15,7 +15,9 @@ windows = { version = "0.52.0", features = [
     "Win32_Graphics_Direct3D",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_Media_Audio",
-    "Win32_System_Com"
+    "Win32_Security",
+    "Win32_System_Com",
+    "Win32_System_Threading"
 ] }
 turbojpeg = "1.4.0"
 serde = { version = "1", features = ["derive"] }
