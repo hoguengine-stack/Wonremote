@@ -164,13 +164,6 @@ export async function fetchClipboardText(sessionId: string): Promise<ClipboardDa
   return body.clipboards;
 }
 
-export async function uploadFile(sessionId: string, filename: string, fileData: string): Promise<void> {
-  await request(`/api/sessions/${encodeURIComponent(sessionId)}/files`, {
-    method: "POST",
-    body: { filename, fileData },
-  });
-}
-
 export async function uploadFileChunk(
   sessionId: string,
   input: {
@@ -179,6 +172,7 @@ export async function uploadFileChunk(
     transferId: string;
     chunkIndex: number;
     totalChunks: number;
+    totalBytes: number;
     isLast: boolean;
   },
 ): Promise<void> {

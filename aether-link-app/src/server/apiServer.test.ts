@@ -285,6 +285,45 @@ describe("aether link local API server", () => {
     expect(await empty.json()).toEqual({ files: [] });
   });
 
+  it("rejects file transfers whose declared total size exceeds 500MB", async () => {
+    const registered = await postJson("/api/agent/first-run", {
+      businessNumber: "4445577777",
+      password: "1234",
+      installId: "agent-file-limit",
+    });
+    const registeredBody = await registered.json();
+    const session = await postJson("/api/sessions", {
+      deviceId: registeredBody.device.id,
+    });
+    const sessionBody = await session.json();
+    const encodedSessionId = encodeURIComponent(sessionBody.session.id);
+
+    const accepted = await postJson(`/api/sessions/${encodedSessionId}/files`, {
+      filename: "accepted.bin",
+      fileData: Buffer.from("chunk").toString("base64"),
+      transferId: "transfer-under-limit",
+      chunkIndex: 0,
+      totalChunks: 1,
+      totalBytes: 500 * 1024 * 1024,
+      isLast: true,
+    });
+    const rejected = await postJson(`/api/sessions/${encodedSessionId}/files`, {
+      filename: "too-large.bin",
+      fileData: Buffer.from("chunk").toString("base64"),
+      transferId: "transfer-over-limit",
+      chunkIndex: 0,
+      totalChunks: 1,
+      totalBytes: 500 * 1024 * 1024 + 1,
+      isLast: true,
+    });
+
+    expect(accepted.status).toBe(200);
+    expect(rejected.status).toBe(400);
+    expect(await rejected.json()).toMatchObject({
+      error: expect.stringContaining("500MB"),
+    });
+  });
+
   it("opens a new session for an already registered device", async () => {
     const connected = await postJson("/api/agent/connect", {
       businessNumber: "1234567890",
@@ -640,7 +679,7 @@ describe("aether link local API server", () => {
       };
       const appVersionSource = await readFile(path.join(extractDir, "src", "domain", "appVersion.ts"), "utf8");
 
-      expect(packageJson.version).toBe("0.1.4");
+      expect(packageJson.version).toBe("0.1.5");
       expect(appVersionSource).toContain(`WONREMOTE_APP_VERSION = "${packageJson.version}"`);
     } finally {
       await rm(tempDir, { recursive: true, force: true });

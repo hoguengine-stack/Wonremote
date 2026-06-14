@@ -34,7 +34,6 @@ import {
   fetchChatMessages,
   sendClipboardText,
   fetchClipboardText,
-  uploadFile,
   uploadFileChunk,
   fetchFiles,
   fetchConnectionHistory,
@@ -56,6 +55,11 @@ import {
   mapCanvasPointToAbsolute,
   type MouseButtonCode,
 } from "./domain/remoteControlCommands";
+import {
+  REMOTE_FILE_CHUNK_BYTES,
+  canTransferRemoteFile,
+  remoteFileLimitLabel,
+} from "./domain/fileTransferPolicy";
 import type {
   ManagedDevice,
   RemoteSession,
@@ -755,7 +759,6 @@ function DeviceTable({
   );
 }
 
-const REMOTE_FILE_CHUNK_BYTES = 64 * 1024;
 const DANGEROUS_SYSTEM_COMMANDS = new Set(["logoff", "restart", "shutdown"]);
 
 function isEditableTarget(target: EventTarget | null): boolean {
@@ -1286,11 +1289,12 @@ function RemoteSessionPanel({
 
   // Files
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0] as File;
+    const file = e.target.files?.[0];
     if (!file || !sessionId) return;
 
-    if (file.size > 10 * 1024 * 1024) {
-      alert("10MB 이하의 파일만 전송 가능합니다.");
+    if (!canTransferRemoteFile(file.size)) {
+      alert(`File transfer limit is ${remoteFileLimitLabel()}.`);
+      e.target.value = "";
       return;
     }
 
@@ -1311,6 +1315,7 @@ function RemoteSessionPanel({
           transferId,
           chunkIndex,
           totalChunks,
+          totalBytes: file.size,
           isLast: chunkIndex === totalChunks - 1,
         });
         sentBytes = end;
@@ -1322,23 +1327,10 @@ function RemoteSessionPanel({
       window.setTimeout(() => setTransferProgress(null), 2500);
     } catch (err) {
       setTransferProgress(null);
-      alert("?뚯씪 ?꾩넚 ?ㅽ뙣: " + (err instanceof Error ? err.message : err));
+      alert("File transfer failed: " + (err instanceof Error ? err.message : err));
     } finally {
       e.target.value = "";
     }
-    return;
-
-    const reader = new FileReader();
-    reader.onload = async () => {
-      const base64 = (reader.result as string).split(",")[1];
-      try {
-        await uploadFile(sessionId, file!.name, base64);
-        alert(`파일 "${file.name}" 전송이 완료되었습니다.`);
-      } catch (err) {
-        alert("파일 전송 실패: " + (err instanceof Error ? err.message : err));
-      }
-    };
-    reader.readAsDataURL(file!);
   };
 
   const setFitZoom = () => {
@@ -1622,7 +1614,7 @@ function RemoteSessionPanel({
 
         <button className="secondary-button" type="button" onClick={() => fileInputRef.current?.click()}>
           <FileUp size={17} />
-          <span>파일 전송 (10MB)</span>
+          <span>{`파일 전송 (${remoteFileLimitLabel()})`}</span>
         </button>
         <input
           type="file"

@@ -109,6 +109,7 @@ export interface TransferredFile {
   transferId?: string;
   chunkIndex?: number;
   totalChunks?: number;
+  totalBytes?: number;
   isLast?: boolean;
 }
 

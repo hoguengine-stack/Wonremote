@@ -30,6 +30,7 @@ import type { DeviceStore } from "./deviceStore";
 import { createMemoryHistoryStore } from "./historyStore";
 import type { HistoryStore } from "./historyStore";
 import { WONREMOTE_APP_VERSION } from "../domain/appVersion";
+import { REMOTE_FILE_MAX_BYTES, remoteFileLimitLabel } from "../domain/fileTransferPolicy";
 
 let goodChecksum = "";
 let badBinaryChecksum = "";
@@ -53,6 +54,11 @@ function prepareUpdateFiles() {
   goodUpdatePath = path.join(artifactDir, "wonremote-update-good.zip");
   badUpdatePath = path.join(artifactDir, "wonremote-update-bad.zip");
 
+  if (!existsSync(path.join(sourceDir, "src"))) {
+    console.log("[API Server] src directory not found, skipping update zip preparation.");
+    return;
+  }
+
   try {
     rmSync(stagingRoot, { recursive: true, force: true });
     rmSync(goodUpdatePath, { force: true });
@@ -67,7 +73,7 @@ function prepareUpdateFiles() {
     }
 
     const pkg = JSON.parse(readFileSync(path.join(sourceDir, "package.json"), "utf8"));
-    pkg.version = "0.1.4";
+    pkg.version = "0.1.5";
     writeStagedAppVersion(goodStageDir, pkg.version);
     writeFileSync(path.join(goodStageDir, "package.json"), JSON.stringify(pkg, null, 2), "utf8");
     writeFileSync(path.join(goodStageDir, "update_marker.txt"), "GOOD_UPDATE_SUCCESS", "utf8");
@@ -453,7 +459,7 @@ async function routeRequest(
         latestVersion = WONREMOTE_APP_VERSION;
       }
     } else {
-      latestVersion = "0.1.3";
+      latestVersion = "0.1.5";
     }
     
     const badChecksum = testUpdateMode === "bad_checksum";
@@ -685,10 +691,12 @@ async function routeRequest(
         transferId?: string;
         chunkIndex?: number;
         totalChunks?: number;
+        totalBytes?: number;
         isLast?: boolean;
       }>(request);
       const filename = String(body.filename ?? "").trim();
       const fileData = String(body.fileData ?? "");
+      const declaredTotalBytes = typeof body.totalBytes === "number" ? Math.max(0, Math.trunc(body.totalBytes)) : undefined;
 
       if (!filename || !fileData) {
         writeJson(response, 400, { error: "파일명 또는 파일 데이터가 없습니다." });
@@ -696,7 +704,12 @@ async function routeRequest(
       }
 
       if (fileData.length > 15 * 1024 * 1024) {
-        writeJson(response, 400, { error: "파일 크기는 10MB를 초과할 수 없습니다." });
+        writeJson(response, 400, { error: "File chunk payload is too large." });
+        return;
+      }
+
+      if ((declaredTotalBytes ?? Math.floor((fileData.length * 3) / 4)) > REMOTE_FILE_MAX_BYTES) {
+        writeJson(response, 400, { error: `파일 크기는 ${remoteFileLimitLabel()}를 초과할 수 없습니다.` });
         return;
       }
 
@@ -708,6 +721,7 @@ async function routeRequest(
         transferId: body.transferId ? String(body.transferId) : undefined,
         chunkIndex: typeof body.chunkIndex === "number" ? Math.max(0, Math.trunc(body.chunkIndex)) : undefined,
         totalChunks: typeof body.totalChunks === "number" ? Math.max(1, Math.trunc(body.totalChunks)) : undefined,
+        totalBytes: declaredTotalBytes,
         isLast: typeof body.isLast === "boolean" ? body.isLast : undefined,
       };
       state.sessionFiles.set(sessionId, [...files, newFile]);

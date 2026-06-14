@@ -535,13 +535,13 @@ fn is_local_api_health_response(response: &str) -> bool {
 }
 
 fn is_local_api_healthy() -> bool {
-    let Ok(mut stream) = TcpStream::connect_timeout(&local_api_addr(), Duration::from_millis(250))
+    let Ok(mut stream) = TcpStream::connect_timeout(&local_api_addr(), Duration::from_millis(1500))
     else {
         return false;
     };
 
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-    let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(2000)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(2000)));
 
     let request =
         format!("GET /api/health HTTP/1.1\r\nHost: {LOCAL_API_HOST}\r\nConnection: close\r\n\r\n");
