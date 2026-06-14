@@ -7,7 +7,11 @@ param(
   [string]$RecipientId,
 
   [Parameter(ParameterSetName = "SendMessage", Mandatory = $true)]
+  [Parameter(ParameterSetName = "SendMessageByTitle", Mandatory = $true)]
   [string]$Message,
+
+  [Parameter(ParameterSetName = "SendMessageByTitle", Mandatory = $true)]
+  [string]$ConversationTitle,
 
   [Parameter(ParameterSetName = "NewConversation")]
   [ValidateSet("flash_lite", "flash", "pro")]
@@ -15,6 +19,9 @@ param(
 
   [Parameter(ParameterSetName = "NewConversation")]
   [string]$FallbackRecipientId = $env:ANTIGRAVITY_FALLBACK_RECIPIENT_ID,
+
+  [Parameter(ParameterSetName = "NewConversation")]
+  [string]$FallbackConversationTitle,
 
   [switch]$DryRun
 )
@@ -87,6 +94,24 @@ function Invoke-AgentApi {
   }
 }
 
+function Resolve-AntigravityConversationId {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Title
+  )
+
+  $knownConversations = [System.Collections.Generic.Dictionary[string,string]]::new(
+    [System.StringComparer]::OrdinalIgnoreCase
+  )
+  $knownConversations["Low Latency Remote Desktop Plan"] = "9314a52e-d7de-48b0-a662-8b45e48d08c4"
+
+  if ($knownConversations.ContainsKey($Title)) {
+    return $knownConversations[$Title]
+  }
+
+  throw "Unknown Antigravity conversation title '$Title'. Add a knownConversations mapping in this script or use -RecipientId directly."
+}
+
 function Resolve-AgentApiAddress {
   param(
     [Parameter(Mandatory = $true)]
@@ -127,8 +152,16 @@ $address = Resolve-AgentApiAddress `
   -LanguageServerPid $languageServer.ProcessId `
   -CsrfToken $languageServer.CsrfToken
 
+if ($ConversationTitle) {
+  $RecipientId = Resolve-AntigravityConversationId -Title $ConversationTitle
+}
+
+if ($FallbackConversationTitle) {
+  $FallbackRecipientId = Resolve-AntigravityConversationId -Title $FallbackConversationTitle
+}
+
 if ($DryRun) {
-  if ($PSCmdlet.ParameterSetName -eq "SendMessage") {
+  if ($PSCmdlet.ParameterSetName -eq "SendMessage" -or $PSCmdlet.ParameterSetName -eq "SendMessageByTitle") {
     Write-Output "DRY RUN: send-message to recipient '$RecipientId' via $address"
   } else {
     Write-Output "DRY RUN: new-conversation with model '$Model' via $address"
@@ -139,7 +172,7 @@ if ($DryRun) {
   exit 0
 }
 
-if ($PSCmdlet.ParameterSetName -eq "SendMessage") {
+if ($PSCmdlet.ParameterSetName -eq "SendMessage" -or $PSCmdlet.ParameterSetName -eq "SendMessageByTitle") {
   $result = Invoke-AgentApi `
     -AgentApiPath $agentApiPath `
     -Address $address `
