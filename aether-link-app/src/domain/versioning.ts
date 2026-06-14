@@ -24,6 +24,11 @@ export function isHigherVersion(latestVersion: string, currentVersion: string): 
   return false;
 }
 
+export function nextPatchVersion(version: string): string {
+  const [major, minor, patch] = parseVersion(version);
+  return `${major}.${minor}.${patch + 1}`;
+}
+
 function parseVersion(version: string): [number, number, number] {
   const parts = version.split(".").map((part) => Number(part));
   return [

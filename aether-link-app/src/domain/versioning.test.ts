@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { WONREMOTE_APP_VERSION } from "./appVersion";
-import { getViewerVersion, isHigherVersion } from "./versioning";
+import { getViewerVersion, isHigherVersion, nextPatchVersion } from "./versioning";
 
 describe("viewer versioning", () => {
   it("keeps the shared app version aligned with package.json", () => {
@@ -30,5 +30,10 @@ describe("viewer versioning", () => {
 
   it("detects a higher semantic version", () => {
     expect(isHigherVersion("0.1.2", "0.1.1")).toBe(true);
+  });
+
+  it("increments the patch version for staged source-tree update fixtures", () => {
+    expect(nextPatchVersion("0.1.8")).toBe("0.1.9");
+    expect(nextPatchVersion("bad")).toBe("0.0.1");
   });
 });

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createApiServer } from "./apiServer";
 import { createFileDeviceStore } from "./deviceStore";
 import type { ManagedDevice } from "../domain/types";
+import { nextPatchVersion } from "../domain/versioning";
 
 describe("WonRemote local API server", () => {
   let server: ReturnType<typeof createApiServer>;
@@ -649,6 +650,51 @@ describe("WonRemote local API server", () => {
     expect(buffer.byteLength).toBeGreaterThan(0);
   });
 
+  it("serves production installer update metadata from a release manifest file", async () => {
+    const tempDir = await mkdtemp(path.join(tmpdir(), "wonremote-manifest-"));
+    const manifestPath = path.join(tempDir, "wonremote-update-manifest.json");
+    const previousManifestFile = process.env.WONREMOTE_UPDATE_MANIFEST_FILE;
+    await writeFile(
+      manifestPath,
+      JSON.stringify({
+        version: "0.1.9",
+        windows: {
+          x64: {
+            name: "WonRemote Viewer_0.1.9_x64-setup.exe",
+            url: "https://github.com/hoguengine-stack/Wonremote/releases/download/v0.1.9/WonRemote%20Viewer_0.1.9_x64-setup.exe",
+            sha256: "b".repeat(64),
+            signature: "signature-placeholder",
+          },
+        },
+      }),
+      "utf8",
+    );
+
+    try {
+      process.env.WONREMOTE_UPDATE_MANIFEST_FILE = manifestPath;
+
+      const checkRes = await fetch(`${baseUrl}/api/update/check`);
+      expect(checkRes.status).toBe(200);
+      expect(await checkRes.json()).toMatchObject({
+        assetName: "WonRemote Viewer_0.1.9_x64-setup.exe",
+        checksum: "b".repeat(64),
+        downloadUrl: expect.stringContaining("github.com/hoguengine-stack/Wonremote/releases/download/v0.1.9"),
+        forceUpdate: false,
+        latestVersion: "0.1.9",
+        reloadViewer: false,
+        signature: "signature-placeholder",
+        updateKind: "installer",
+      });
+    } finally {
+      if (previousManifestFile === undefined) {
+        delete process.env.WONREMOTE_UPDATE_MANIFEST_FILE;
+      } else {
+        process.env.WONREMOTE_UPDATE_MANIFEST_FILE = previousManifestFile;
+      }
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("serves update packages without depending on artifacts in the app root", async () => {
     const rootGoodZip = path.join(process.cwd(), "wonremote-update-good.zip");
     const rootBadZip = path.join(process.cwd(), "wonremote-update-bad.zip");
@@ -678,8 +724,11 @@ describe("WonRemote local API server", () => {
         version: string;
       };
       const appVersionSource = await readFile(path.join(extractDir, "src", "domain", "appVersion.ts"), "utf8");
+      const currentPackageJson = JSON.parse(await readFile(path.join(process.cwd(), "package.json"), "utf8")) as {
+        version: string;
+      };
 
-      expect(packageJson.version).toBe("0.1.8");
+      expect(packageJson.version).toBe(nextPatchVersion(currentPackageJson.version));
       expect(appVersionSource).toContain(`WONREMOTE_APP_VERSION = "${packageJson.version}"`);
     } finally {
       await rm(tempDir, { recursive: true, force: true });

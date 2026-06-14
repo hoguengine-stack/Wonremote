@@ -14,6 +14,11 @@ import { computeSha256 } from "./checksum";
 import { WONREMOTE_APP_VERSION } from "../domain/appVersion";
 import { resolveSafeDownloadPath } from "./fileSafety";
 import { isSourceTreeUpdateTarget } from "./updateSafety";
+import {
+  downloadInstallerUpdate,
+  isInstallerUpdateMetadata,
+  type SafeInstallerUpdateMetadata,
+} from "./productionInstallerUpdate";
 import { isAgentFirebaseEnabled, registerAgentFirstRunWithFirebase } from "../firebase/agentFirebase";
 import type {
   AgentBootstrapDeps,
@@ -413,6 +418,11 @@ async function checkUpdate(config: AgentLocalConfig) {
     }
     const data: any = await res.json();
     if (data.latestVersion && isHigherVersion(data.latestVersion, currentVersion)) {
+      if (isInstallerUpdateMetadata(data)) {
+        await handoffToProductionInstallerUpdate(data);
+        return;
+      }
+
       const appDir = AGENT_APP_DIR;
       if (!isSourceTreeUpdateTarget(appDir)) {
         console.log(
@@ -575,6 +585,28 @@ if exist "${path.join(baseDir, "WonRemote", ".update_success")}" (
     console.error("[업데이트 실패]:", e instanceof Error ? e.message : e);
     isUpdating = false;
   }
+}
+
+async function handoffToProductionInstallerUpdate(data: SafeInstallerUpdateMetadata): Promise<void> {
+  const baseDir = process.env.APPDATA ?? process.cwd();
+  const { installerArgs, installerPath } = await downloadInstallerUpdate(data, { baseDir });
+  console.log(`[WonRemote Agent] Verified installer update downloaded: ${installerPath}`);
+  console.log(`[WonRemote Agent] Launching installer with args: ${installerArgs.join(" ")}`);
+
+  const installerProcess = spawn(installerPath, installerArgs, {
+    detached: true,
+    stdio: "ignore",
+  });
+  installerProcess.unref();
+
+  if (streamProcess) {
+    streamProcess.kill();
+    streamProcess = null;
+  }
+
+  console.log("[WonRemote Agent] Handed off to production installer and exiting current Agent.");
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  process.exit(0);
 }
 
 

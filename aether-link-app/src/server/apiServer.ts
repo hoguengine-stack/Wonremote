@@ -31,6 +31,11 @@ import { createMemoryHistoryStore } from "./historyStore";
 import type { HistoryStore } from "./historyStore";
 import { WONREMOTE_APP_VERSION } from "../domain/appVersion";
 import { REMOTE_FILE_MAX_BYTES, remoteFileLimitLabel } from "../domain/fileTransferPolicy";
+import {
+  parseProductionUpdateManifest,
+  type ProductionUpdateMetadata,
+} from "../domain/updateManifest";
+import { nextPatchVersion } from "../domain/versioning";
 
 let goodChecksum = "";
 let badBinaryChecksum = "";
@@ -73,7 +78,7 @@ function prepareUpdateFiles() {
     }
 
     const pkg = JSON.parse(readFileSync(path.join(sourceDir, "package.json"), "utf8"));
-    pkg.version = "0.1.8";
+    pkg.version = nextPatchVersion(WONREMOTE_APP_VERSION);
     writeStagedAppVersion(goodStageDir, pkg.version);
     writeFileSync(path.join(goodStageDir, "package.json"), JSON.stringify(pkg, null, 2), "utf8");
     writeFileSync(path.join(goodStageDir, "update_marker.txt"), "GOOD_UPDATE_SUCCESS", "utf8");
@@ -121,7 +126,49 @@ function resolveUpdateSourceDir(): string {
   return path.resolve(process.env.WONREMOTE_APP_DIR?.trim() || process.cwd());
 }
 
+async function loadProductionUpdateMetadata(): Promise<ProductionUpdateMetadata | null> {
+  const publicKeyPem = process.env.WONREMOTE_UPDATE_MANIFEST_PUBLIC_KEY?.trim();
+  const manifestFile = process.env.WONREMOTE_UPDATE_MANIFEST_FILE?.trim();
+  if (manifestFile) {
+    try {
+      return parseProductionUpdateManifest(JSON.parse(readFileSync(path.resolve(manifestFile), "utf8")), {
+        publicKeyPem: publicKeyPem || undefined,
+      });
+    } catch (error) {
+      console.error("[API Server] Failed to read production update manifest file:", error);
+      return null;
+    }
+  }
+
+  const manifestUrl = process.env.WONREMOTE_UPDATE_MANIFEST_URL?.trim() || DEFAULT_UPDATE_MANIFEST_URL;
+  if (process.env.NODE_ENV === "test" && !process.env.WONREMOTE_UPDATE_MANIFEST_URL?.trim()) {
+    return null;
+  }
+  if (process.env.NODE_ENV !== "test" && !publicKeyPem) {
+    console.error("[API Server] WONREMOTE_UPDATE_MANIFEST_PUBLIC_KEY is required for production update manifests.");
+    return null;
+  }
+
+  try {
+    const separator = manifestUrl.includes("?") ? "&" : "?";
+    const manifestResponse = await fetch(`${manifestUrl}${separator}nocache=${Date.now()}`);
+    if (!manifestResponse.ok) {
+      console.error(`[API Server] Production update manifest fetch failed: HTTP ${manifestResponse.status}`);
+      return null;
+    }
+    return parseProductionUpdateManifest(await manifestResponse.json(), {
+      publicKeyPem: publicKeyPem || undefined,
+    });
+  } catch (error) {
+    console.error("[API Server] Failed to fetch production update manifest:", error);
+    return null;
+  }
+}
+
 prepareUpdateFiles();
+
+const DEFAULT_UPDATE_MANIFEST_URL =
+  "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/wonremote-update-manifest.json";
 
 
 interface ApiState {
@@ -439,27 +486,15 @@ async function routeRequest(
     let latestVersion = WONREMOTE_APP_VERSION;
     
     if (isNone) {
-      if (process.env.NODE_ENV !== "test") {
-        try {
-          const ghRes = await fetch("https://raw.githubusercontent.com/hoguengine-stack/Wonremote/main/aether-link-app/package.json?nocache=" + Date.now());
-          if (ghRes.ok) {
-            const ghPkg = await ghRes.json() as { version?: string };
-            if (ghPkg && ghPkg.version) {
-              latestVersion = ghPkg.version;
-            }
-          }
-        } catch (err) {
-          console.error("[API Server] Failed to fetch latest version from GitHub package.json:", err);
-          try {
-            const localPkg = JSON.parse(readFileSync(path.join(resolveUpdateSourceDir(), "package.json"), "utf8"));
-            latestVersion = localPkg.version || WONREMOTE_APP_VERSION;
-          } catch (e) {}
-        }
+      const productionUpdate = await loadProductionUpdateMetadata();
+      if (productionUpdate) {
+        writeJson(response, 200, productionUpdate);
+        return;
       } else {
         latestVersion = WONREMOTE_APP_VERSION;
       }
     } else {
-      latestVersion = "0.1.8";
+      latestVersion = nextPatchVersion(WONREMOTE_APP_VERSION);
     }
     
     const badChecksum = testUpdateMode === "bad_checksum";

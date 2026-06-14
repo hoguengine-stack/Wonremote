@@ -17,6 +17,7 @@ const sourcePackageJson = JSON.parse(await fs.readFile(path.join(sourceAppDir, "
   version: string;
 };
 const currentAppVersion = sourcePackageJson.version;
+const nextAppVersion = nextPatchVersion(currentAppVersion);
 
 async function readAgentPid(): Promise<number | null> {
   const pidPath = path.join(appData, "WonRemote", "agent.pid");
@@ -380,8 +381,8 @@ async function main() {
     body: JSON.stringify({ mode: "good" })
   });
 
-  console.log("Waiting for Agent to download good zip, restart, and register as version 0.1.8...");
-  const updatedDevice = await waitAgentOnline("0.1.8", rolledBackPid || undefined);
+  console.log(`Waiting for Agent to download good zip, restart, and register as version ${nextAppVersion}...`);
+  const updatedDevice = await waitAgentOnline(nextAppVersion, rolledBackPid || undefined);
   console.log(`Agent successfully upgraded and registered as version: ${updatedDevice.version}`);
 
   // Capture updated agent PID from agent.pid
@@ -412,6 +413,14 @@ async function main() {
 
   await fs.rm(e2eRoot, { recursive: true, force: true });
   process.exit(0);
+}
+
+function nextPatchVersion(version: string): string {
+  const parts = version.split(".").map((part) => Number(part));
+  const major = Number.isFinite(parts[0]) ? parts[0] : 0;
+  const minor = Number.isFinite(parts[1]) ? parts[1] : 0;
+  const patch = Number.isFinite(parts[2]) ? parts[2] : 0;
+  return `${major}.${minor}.${patch + 1}`;
 }
 
 main().catch(async (err) => {
