@@ -804,6 +804,7 @@ function ConnectionHistorySection() {
 }
 
 function AgentFirstRunApp() {
+  const firebaseMode = isViewerFirebaseEnabled();
   const [businessNumber, setBusinessNumber] = useState("");
   const [password, setPassword] = useState("");
   const [apiUrl, setApiUrl] = useState("http://127.0.0.1:8787");
@@ -835,7 +836,7 @@ function AgentFirstRunApp() {
         businessNumber,
         password,
         installId,
-        apiUrl,
+        apiUrl: firebaseMode ? undefined : apiUrl,
       });
       setRegisteredDevice(result.device);
       setError("");
@@ -845,7 +846,7 @@ function AgentFirstRunApp() {
         installId,
         registeredDeviceId: result.device.id,
         version: getViewerVersion(import.meta.env),
-        apiUrl,
+        apiUrl: firebaseMode ? "" : apiUrl,
       };
 
       if ((window as any).__TAURI_INTERNALS__) {
@@ -872,7 +873,7 @@ function AgentFirstRunApp() {
           </div>
           <h1>Agent 가동 중</h1>
           <div className="agent-result" style={{ background: "rgba(16, 185, 129, 0.1)", border: "1px solid rgba(16, 185, 129, 0.2)", padding: "16px", borderRadius: "8px", display: "flex", flexDirection: "column", gap: "8px", width: "100%", boxSizing: "border-box" }}>
-            <div>
+            <div style={{ display: firebaseMode ? "none" : undefined }}>
               <span style={{ color: "#94a3b8", fontSize: "12px" }}>서버 주소:</span>
               <strong style={{ display: "block", color: "#fff" }}>{registeredConfig.apiUrl}</strong>
             </div>
@@ -914,7 +915,7 @@ function AgentFirstRunApp() {
 
   return (
     <main className="login-screen agent-screen">
-      <form className="login-panel agent-panel" onSubmit={handleFirstRun}>
+      <form className={`login-panel agent-panel ${firebaseMode ? "firebase-agent-panel" : ""}`} onSubmit={handleFirstRun}>
         <div className="login-badge">
           <Monitor size={20} />
           <span>Agent</span>

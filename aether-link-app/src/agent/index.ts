@@ -19,6 +19,7 @@ import {
   isInstallerUpdateMetadata,
   type SafeInstallerUpdateMetadata,
 } from "./productionInstallerUpdate";
+import { loadProductionInstallerUpdateMetadata } from "./productionUpdateMetadata";
 import { isAgentFirebaseEnabled, registerAgentFirstRunWithFirebase } from "../firebase/agentFirebase";
 import type {
   AgentBootstrapDeps,
@@ -35,6 +36,29 @@ import { fileURLToPath } from "node:url";
 
 const execFileAsync = promisify(execFile);
 const execAsync = promisify(exec);
+async function execFileHidden(
+  file: string,
+  args: string[],
+): Promise<{ stdout: string; stderr: string }> {
+  const result = await execFileAsync(file, args, {
+    encoding: "utf8",
+    windowsHide: true,
+  } as any) as any;
+  return {
+    stderr: String(result.stderr ?? ""),
+    stdout: String(result.stdout ?? ""),
+  };
+}
+async function execHidden(command: string): Promise<{ stdout: string; stderr: string }> {
+  const result = await execAsync(command, {
+    encoding: "utf8",
+    windowsHide: true,
+  } as any) as any;
+  return {
+    stderr: String(result.stderr ?? ""),
+    stdout: String(result.stdout ?? ""),
+  };
+}
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DEFAULT_APP_DIR = path.resolve(__dirname, "..", "..");
@@ -67,7 +91,9 @@ function startStreaming(deviceId: string, outputIndex = 0, loopSleepMs = 33) {
   const pocPath = POC_PATH;
   
   console.log(`Starting capture stream from: ${pocPath} (monitor: ${outputIndex}, sleep: ${loopSleepMs}ms)`);
-  const child = spawn(pocPath, ["--mode", "stream", "--loop-sleep-ms", String(loopSleepMs), "--output-index", String(outputIndex)]);
+  const child = spawn(pocPath, ["--mode", "stream", "--loop-sleep-ms", String(loopSleepMs), "--output-index", String(outputIndex)], {
+    windowsHide: true,
+  });
   streamProcess = child;
 
   const rl = readline.createInterface({
@@ -169,7 +195,7 @@ async function pollSessionData(deviceId: string) {
             console.log(`[클립보드 수신] 텍스트: ${item.text}`);
             const base64Text = Buffer.from(item.text).toString("base64");
             const psCmd = `powershell -NoProfile -Command "[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${base64Text}')) | Set-Clipboard"`;
-            exec(psCmd, (err) => {
+            exec(psCmd, { windowsHide: true }, (err) => {
               if (err) {
                 console.error("[클립보드 주입 실패]", err.message);
               } else {
@@ -404,19 +430,16 @@ async function main() {
 let isUpdating = false;
 
 async function checkUpdate(config: AgentLocalConfig) {
-  if (USE_FIREBASE) {
-    return;
-  }
   if (isUpdating) return;
   isUpdating = true;
   const currentVersion = config.version ?? WONREMOTE_APP_VERSION;
   try {
-    const res = await fetch(`${API_BASE_URL}/api/update/check`);
-    if (!res.ok) {
+    const data = await loadUpdateCheckData();
+    if (!data) {
       isUpdating = false;
       return;
     }
-    const data: any = await res.json();
+
     if (data.latestVersion && isHigherVersion(data.latestVersion, currentVersion)) {
       if (isInstallerUpdateMetadata(data)) {
         await handoffToProductionInstallerUpdate(data);
@@ -477,7 +500,7 @@ async function checkUpdate(config: AgentLocalConfig) {
 
       console.log("업데이트 압축 파일 해제 중...");
       const extractPsCmd = `powershell -NoProfile -Command "Expand-Archive -Path '${zipPath}' -DestinationPath '${extractDest}' -Force"`;
-      await execAsync(extractPsCmd);
+      await execHidden(extractPsCmd);
 
       // Backup current files
       console.log("기존 실행 파일 백업 중...");
@@ -564,7 +587,8 @@ if exist "${path.join(baseDir, "WonRemote", ".update_success")}" (
         const instProcess = spawn("cmd.exe", ["/c", installerPath], {
           detached: true,
           stdio: "ignore",
-          creationFlags: 0x00000010
+          windowsHide: true,
+          creationFlags: 0x08000000
         } as any) as any;
         instProcess.unref();
       }
@@ -587,6 +611,18 @@ if exist "${path.join(baseDir, "WonRemote", ".update_success")}" (
   }
 }
 
+async function loadUpdateCheckData(): Promise<any | null> {
+  if (USE_FIREBASE) {
+    return loadProductionInstallerUpdateMetadata(process.env);
+  }
+
+  const res = await fetch(`${API_BASE_URL}/api/update/check`);
+  if (!res.ok) {
+    return null;
+  }
+  return res.json();
+}
+
 async function handoffToProductionInstallerUpdate(data: SafeInstallerUpdateMetadata): Promise<void> {
   const baseDir = process.env.APPDATA ?? process.cwd();
   const { installerArgs, installerPath } = await downloadInstallerUpdate(data, { baseDir });
@@ -596,6 +632,7 @@ async function handoffToProductionInstallerUpdate(data: SafeInstallerUpdateMetad
   const installerProcess = spawn(installerPath, installerArgs, {
     detached: true,
     stdio: "ignore",
+    windowsHide: true,
   });
   installerProcess.unref();
 
@@ -738,7 +775,7 @@ async function pollCommands(config: AgentLocalConfig): Promise<void> {
           console.log("Injecting color marker signal to streamer process stdin");
           streamProcess.stdin.write("ping-color-change\n");
         }
-        const { stdout } = await execFileAsync(pocPath, [
+        const { stdout } = await execFileHidden(pocPath, [
           "--mode",
           "inject-input",
           "--action",
@@ -752,7 +789,7 @@ async function pollCommands(config: AgentLocalConfig): Promise<void> {
         }
 
         for (const action of resolved.actions) {
-          const { stdout } = await execFileAsync(pocPath, [
+          const { stdout } = await execFileHidden(pocPath, [
             "--mode",
             "inject-input",
             "--action",
@@ -775,7 +812,7 @@ async function discoverDisplays(): Promise<DeviceDisplayInfo[] | undefined> {
   }
 
   try {
-    const { stdout } = await execFileAsync(POC_PATH, ["--mode", "list-displays"]);
+    const { stdout } = await execFileHidden(POC_PATH, ["--mode", "list-displays"]);
     const parsed = JSON.parse(stdout) as Array<{
       index?: unknown;
       name?: unknown;
@@ -809,7 +846,7 @@ async function discoverDisplays(): Promise<DeviceDisplayInfo[] | undefined> {
 async function setClipboardText(text: string): Promise<void> {
   const base64Text = Buffer.from(text).toString("base64");
   const psCmd = `[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${base64Text}')) | Set-Clipboard`;
-  await execFileAsync("powershell", ["-NoProfile", "-Command", psCmd]);
+  await execFileHidden("powershell", ["-NoProfile", "-Command", psCmd]);
 }
 
 async function showSecurityCode(code: string): Promise<void> {
@@ -824,7 +861,7 @@ async function showSecurityCode(code: string): Promise<void> {
     `[System.Windows.MessageBox]::Show('WonRemote 보안접속 코드: ${escapedCode}', 'WonRemote 보안접속') | Out-Null`,
   ].join("; ");
 
-  execFile("powershell", ["-NoProfile", "-WindowStyle", "Hidden", "-Command", script], (error) => {
+  execFile("powershell", ["-NoProfile", "-WindowStyle", "Hidden", "-Command", script], { windowsHide: true }, (error) => {
     if (error) {
       console.error(`[Security Connect] Failed to show code popup: ${error.message}`);
     }
@@ -832,7 +869,7 @@ async function showSecurityCode(code: string): Promise<void> {
 }
 
 async function getClipboardText(): Promise<string> {
-  const { stdout } = await execFileAsync("powershell", ["-NoProfile", "-Command", "Get-Clipboard -Raw"]);
+  const { stdout } = await execFileHidden("powershell", ["-NoProfile", "-Command", "Get-Clipboard -Raw"]);
   return String(stdout ?? "").replace(/\r?\n$/, "");
 }
 
@@ -926,7 +963,7 @@ async function handleRegistryInstall() {
   const psCommand = `New-ItemProperty -Path "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" -Name "WonRemoteAgentCLI" -PropertyType String -Value '${commandToRun}' -Force`;
   
   try {
-    await execAsync(`powershell -NoProfile -Command "${psCommand}"`);
+    await execHidden(`powershell -NoProfile -Command "${psCommand}"`);
     console.log("WonRemote Agent가 윈도우 시작 프로그램에 성공적으로 등록되었습니다.");
     process.exit(0);
   } catch (error) {
@@ -946,7 +983,7 @@ async function handleRegistryUninstall() {
   const psCommand = `Remove-ItemProperty -Path "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" -Name "WonRemoteAgentCLI" -ErrorAction SilentlyContinue`;
   
   try {
-    await execAsync(`powershell -NoProfile -Command "${psCommand}"`);
+    await execHidden(`powershell -NoProfile -Command "${psCommand}"`);
     console.log("WonRemote Agent가 윈도우 시작 프로그램에서 제거되었습니다.");
     process.exit(0);
   } catch (error) {

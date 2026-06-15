@@ -39,6 +39,15 @@ describe("desktop packaging scaffold", () => {
     expect(cargoToml).toContain(`version = "${packageJson.version}"`);
   });
 
+  it("builds release desktop executables without attaching a console window", () => {
+    const mainRs = readFileSync(path.join(projectRoot, "src-tauri", "src", "main.rs"), "utf8");
+    const libRs = readFileSync(path.join(projectRoot, "src-tauri", "src", "lib.rs"), "utf8");
+
+    expect(mainRs).toContain('windows_subsystem = "windows"');
+    expect(libRs).toContain("CREATE_NO_WINDOW");
+    expect(libRs).toContain("command.creation_flags(CREATE_NO_WINDOW)");
+  });
+
   it("bundles the backend scripts, Node runtime, and Rust PoC executable as desktop resources", () => {
     const config = JSON.parse(readFileSync(path.join(projectRoot, "src-tauri", "tauri.conf.json"), "utf8"));
 
@@ -75,6 +84,34 @@ describe("desktop packaging scaffold", () => {
 
     expect(streamCloseStart).toBeGreaterThan(-1);
     expect(streamCloseBlock).not.toContain("stopSessionPolling()");
+  });
+
+  it("keeps packaged Agent child processes hidden on Windows", () => {
+    const agentEntry = readFileSync(path.join(projectRoot, "src", "agent", "index.ts"), "utf8");
+    const apiServer = readFileSync(path.join(projectRoot, "src", "server", "apiServer.ts"), "utf8");
+
+    expect(agentEntry).toContain("windowsHide: true");
+    expect(agentEntry).toContain("creationFlags: 0x08000000");
+    expect(apiServer).toContain("windowsHide: true");
+  });
+
+  it("checks the signed release manifest directly when the Agent runs in Firebase mode", () => {
+    const agentEntry = readFileSync(path.join(projectRoot, "src", "agent", "index.ts"), "utf8");
+    const updateLoader = readFileSync(path.join(projectRoot, "src", "agent", "productionUpdateMetadata.ts"), "utf8");
+
+    expect(agentEntry).toContain("loadProductionInstallerUpdateMetadata(process.env)");
+    expect(agentEntry).not.toContain("if (USE_FIREBASE) {\n    return;");
+    expect(updateLoader).toContain("releases/latest/download/wonremote-update-manifest.json");
+  });
+
+  it("hides the local server URL field from the Firebase Agent registration UI", () => {
+    const appTsx = readFileSync(path.join(projectRoot, "src", "App.tsx"), "utf8");
+    const styles = readFileSync(path.join(projectRoot, "src", "styles.css"), "utf8");
+
+    expect(appTsx).toContain("const firebaseMode = isViewerFirebaseEnabled();");
+    expect(appTsx).toContain("firebase-agent-panel");
+    expect(appTsx).toContain("apiUrl: firebaseMode ? undefined : apiUrl");
+    expect(styles).toContain(".firebase-agent-panel label:has");
   });
 
   it("can package separate viewer and agent portable executables", () => {

@@ -680,6 +680,7 @@ async function routeRequest(
       const instProcess = spawn("cmd.exe", ["/c", resolvedPath], {
         detached: true,
         stdio: "ignore",
+        windowsHide: true,
       });
       instProcess.unref();
       writeJson(response, 200, { ok: true });
