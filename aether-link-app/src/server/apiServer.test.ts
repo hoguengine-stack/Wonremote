@@ -49,6 +49,7 @@ describe("WonRemote local API server", () => {
 
     expect(response.status).toBe(204);
     expect(response.headers.get("access-control-allow-origin")).toBe("http://127.0.0.1:5174");
+    expect(response.headers.get("access-control-allow-methods")).toContain("PATCH");
     expect(response.headers.get("access-control-allow-headers")).toBe("content-type");
   });
 
@@ -105,6 +106,48 @@ describe("WonRemote local API server", () => {
     const devices = await fetch(`${baseUrl}/api/devices`);
     expect(await devices.json()).toMatchObject({
       devices: [expect.objectContaining({ id: "222-33-44444:AGENT-POS-77" })],
+    });
+  });
+
+  it("updates device metadata for sidebar grouping without changing the connection id or business number", async () => {
+    const registered = await postJson("/api/agent/first-run", {
+      businessNumber: "2223344444",
+      password: "1234",
+      installId: "agent-edit-api",
+    });
+    const registeredBody = await registered.json();
+    const deviceId = registeredBody.device.id;
+
+    const updated = await patchJson(`/api/devices/${encodeURIComponent(deviceId)}`, {
+      businessNumber: "9998877777",
+      storeName: "Won Chicken Gangnam",
+      deviceName: "Kitchen POS",
+      desktopName: "KITCHEN-PC",
+    });
+
+    expect(updated.status).toBe(200);
+    expect(await updated.json()).toMatchObject({
+      device: {
+        id: deviceId,
+        businessNumber: "222-33-44444",
+        storeName: "Won Chicken Gangnam",
+        deviceNumber: "AGENT-EDIT-API",
+        deviceName: "Kitchen POS",
+        desktopName: "KITCHEN-PC",
+      },
+    });
+
+    const devices = await fetch(`${baseUrl}/api/devices`);
+    expect(await devices.json()).toMatchObject({
+      devices: [
+        expect.objectContaining({
+          id: deviceId,
+          businessNumber: "222-33-44444",
+          storeName: "Won Chicken Gangnam",
+          deviceName: "Kitchen POS",
+          desktopName: "KITCHEN-PC",
+        }),
+      ],
     });
   });
 
@@ -481,6 +524,63 @@ describe("WonRemote local API server", () => {
     });
   });
 
+  it("opens secure sessions only after the viewer enters the code shown by the agent", async () => {
+    const registered = await postJson("/api/agent/first-run", {
+      businessNumber: "2468800000",
+      password: "1234",
+      installId: "agent-secure-01",
+    });
+    const registeredBody = await registered.json();
+    const deviceId = registeredBody.device.id;
+
+    const request = await postJson("/api/sessions/secure-request", { deviceId });
+    expect(request.status).toBe(200);
+    const requestBody = await request.json();
+    expect(requestBody).toMatchObject({
+      challengeId: expect.any(String),
+      expiresAt: expect.any(String),
+    });
+    expect(requestBody.code).toBeUndefined();
+
+    const codePoll = await postJson("/api/agent/commands", {
+      deviceId,
+      installId: "agent-secure-01",
+    });
+    const codePollBody = await codePoll.json();
+    const securityCommand = codePollBody.commands[0].action as string;
+    expect(securityCommand).toMatch(/^security-code secure-[^ ]+ \d{3} \d{3}$/);
+    const shownCode = securityCommand.match(/(\d{3} \d{3})$/)?.[1];
+    expect(shownCode).toBeDefined();
+
+    const wrong = await postJson("/api/sessions/secure-connect", {
+      challengeId: requestBody.challengeId,
+      code: "000 000",
+      deviceId,
+    });
+    expect(wrong.status).toBe(401);
+
+    const connected = await postJson("/api/sessions/secure-connect", {
+      challengeId: requestBody.challengeId,
+      code: shownCode,
+      deviceId,
+    });
+    expect(connected.status).toBe(200);
+    expect(await connected.json()).toMatchObject({
+      session: {
+        deviceId,
+        state: "connected",
+      },
+    });
+
+    const streamPoll = await postJson("/api/agent/commands", {
+      deviceId,
+      installId: "agent-secure-01",
+    });
+    expect(await streamPoll.json()).toMatchObject({
+      commands: [expect.objectContaining({ action: "start-stream" })],
+    });
+  });
+
   it("allows posting and getting tiles for a session and clears tiles queue after getting", async () => {
     const connected = await postJson("/api/agent/connect", {
       businessNumber: "1234567890",
@@ -810,6 +910,14 @@ describe("WonRemote local API server", () => {
   function postJson(path: string, body: unknown) {
     return fetch(`${baseUrl}${path}`, {
       method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  function patchJson(path: string, body: unknown) {
+    return fetch(`${baseUrl}${path}`, {
+      method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     });

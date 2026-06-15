@@ -41,6 +41,18 @@ export function resolveInjectActions(action: string, pressedKeys: Set<string>): 
   return { type: "inject", actions: [trimmed] };
 }
 
+export function parseSecurityCodeCommand(action: string): { challengeId: string; code: string } | null {
+  const match = action.trim().match(/^security-code\s+(\S+)\s+(\d{3}\s\d{3})$/);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    challengeId: match[1],
+    code: match[2],
+  };
+}
+
 function decodeUtf8Base64(value: string): string {
   const binary = atob(value);
   const bytes = new Uint8Array(binary.length);

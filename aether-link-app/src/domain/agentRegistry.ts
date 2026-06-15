@@ -6,6 +6,8 @@ import type {
   AgentHeartbeatResult,
   AgentRegistrationResult,
   DeviceGroup,
+  DeviceMetadataUpdateInput,
+  DeviceMetadataUpdateResult,
   ManagedDevice,
 } from "./types";
 
@@ -190,6 +192,48 @@ export function resolveDeviceStatuses(
       };
     }),
   );
+}
+
+export function updateDeviceMetadata(
+  devices: ManagedDevice[],
+  input: DeviceMetadataUpdateInput,
+): DeviceMetadataUpdateResult {
+  const deviceId = input.deviceId.trim();
+  if (!deviceId) {
+    throw new Error("Device id is required.");
+  }
+
+  const index = devices.findIndex((device) => device.id === deviceId);
+  if (index === -1) {
+    throw new Error("Device not found.");
+  }
+
+  const currentDevice = devices[index];
+  const nextStoreName =
+    typeof input.storeName === "string" && input.storeName.trim()
+      ? input.storeName.trim()
+      : currentDevice.storeName;
+  const nextDeviceName =
+    typeof input.deviceName === "string" && input.deviceName.trim()
+      ? input.deviceName.trim()
+      : currentDevice.deviceName;
+  const nextDesktopName =
+    typeof input.desktopName === "string" && input.desktopName.trim()
+      ? input.desktopName.trim()
+      : currentDevice.desktopName;
+
+  const device: ManagedDevice = {
+    ...currentDevice,
+    storeName: nextStoreName,
+    deviceName: nextDeviceName,
+    desktopName: nextDesktopName,
+  };
+  const nextDevices = devices.map((item, itemIndex) => (itemIndex === index ? device : item));
+
+  return {
+    devices: sortDevices(nextDevices),
+    device,
+  };
 }
 
 export function groupDevicesByStore(devices: ManagedDevice[]): DeviceGroup[] {

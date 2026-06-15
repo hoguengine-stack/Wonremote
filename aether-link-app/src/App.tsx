@@ -37,6 +37,9 @@ import {
   uploadFileChunk,
   fetchFiles,
   fetchConnectionHistory,
+  updateDeviceMetadata,
+  requestSecureSession,
+  connectSecureSession,
 } from "./api/viewerApi";
 import { isViewerFirebaseEnabled, subscribeFirebaseDevices } from "./firebase/viewerFirebase";
 import { groupDevicesByStore } from "./domain/agentRegistry";
@@ -67,7 +70,20 @@ import type {
   ClipboardData,
   TransferredFile,
   ConnectionHistoryEntry,
+  DeviceMetadataUpdateInput,
 } from "./domain/types";
+
+type DeviceEditTarget =
+  | { mode: "device"; devices: [ManagedDevice] }
+  | { mode: "group"; devices: ManagedDevice[] };
+
+type SecureConnectState = {
+  challengeId: string;
+  code: string;
+  device: ManagedDevice;
+  expiresAt: string;
+  isSubmitting: boolean;
+};
 
 function playBeepSound() {
   try {
@@ -124,6 +140,8 @@ function ViewerApp() {
   const [selectedStore, setSelectedStore] = useState("전체");
   const [inputLog, setInputLog] = useState<string[]>([]);
   const [updateAlert, setUpdateAlert] = useState<string | null>(null);
+  const [editTarget, setEditTarget] = useState<DeviceEditTarget | null>(null);
+  const [secureConnect, setSecureConnect] = useState<SecureConnectState | null>(null);
 
   // Viewer auto update check loop
   useEffect(() => {
@@ -318,6 +336,106 @@ function ViewerApp() {
     }
   }
 
+  async function handleConnectDevice(device: ManagedDevice) {
+    if (device.status !== "online") {
+      setApiError("온라인 상태의 Agent만 접속할 수 있습니다.");
+      return;
+    }
+    try {
+      const result = await openSession(device.id);
+      setSession(result.session);
+      setInputLog(result.inputLog);
+      setApiError("");
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : "세션 연결 실패");
+    }
+  }
+
+  async function handleSecureConnectRequest(device: ManagedDevice) {
+    if (device.status !== "online") {
+      setApiError("온라인 상태의 Agent만 보안접속을 요청할 수 있습니다.");
+      return;
+    }
+    try {
+      const challenge = await requestSecureSession(device.id);
+      setSecureConnect({
+        challengeId: challenge.challengeId,
+        code: "",
+        device,
+        expiresAt: challenge.expiresAt,
+        isSubmitting: false,
+      });
+      setApiError("");
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : "보안접속 코드 요청 실패");
+    }
+  }
+
+  async function handleSecureConnectSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!secureConnect) {
+      return;
+    }
+    setSecureConnect({ ...secureConnect, isSubmitting: true });
+    try {
+      const result = await connectSecureSession({
+        challengeId: secureConnect.challengeId,
+        code: secureConnect.code,
+        deviceId: secureConnect.device.id,
+      });
+      setSession(result.session);
+      setInputLog(result.inputLog);
+      setSecureConnect(null);
+      setApiError("");
+    } catch (error) {
+      setSecureConnect({ ...secureConnect, isSubmitting: false });
+      setApiError(error instanceof Error ? error.message : "보안접속 실패");
+    }
+  }
+
+  async function handleSaveDeviceMetadata(input: Omit<DeviceMetadataUpdateInput, "deviceId">) {
+    if (!editTarget || editTarget.devices.length === 0) {
+      return;
+    }
+
+    const previousStore = editTarget.devices[0].storeName;
+    const nextDeviceState = [...devices];
+    const updatedDevices: ManagedDevice[] = [];
+
+    try {
+      for (const device of editTarget.devices) {
+        const updateInput =
+          editTarget.mode === "group"
+            ? {
+                storeName: input.storeName,
+              }
+            : {
+                desktopName: input.desktopName,
+                deviceName: input.deviceName,
+                storeName: input.storeName,
+              };
+        const updated = await updateDeviceMetadata(device.id, updateInput);
+        updatedDevices.push(updated);
+        const index = nextDeviceState.findIndex((item) => item.id === updated.id);
+        if (index === -1) {
+          nextDeviceState.push(updated);
+        } else {
+          nextDeviceState[index] = updated;
+        }
+      }
+
+      setDevices(nextDeviceState);
+      const firstUpdated = updatedDevices[0];
+      if (firstUpdated && selectedStore === previousStore) {
+        setSelectedStore(firstUpdated.storeName);
+      }
+      setEditTarget(null);
+      setApiError("");
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : "장비 정보 수정 실패");
+    }
+  }
+
   if (!isAuthenticated) {
     return <LoginScreen error={loginError} onSubmit={handleLogin} />;
   }
@@ -368,9 +486,18 @@ function ViewerApp() {
               key={group.storeName}
               type="button"
               onClick={() => setSelectedStore(group.storeName)}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                if (group.devices.length > 0) {
+                  setEditTarget({ mode: "group", devices: group.devices });
+                }
+              }}
             >
               <CircleDot size={16} />
-              <span>{group.storeName}</span>
+              <span className="group-label">
+                <strong>{group.storeName}</strong>
+                <small>{formatGroupBusinessNumber(group.devices)}</small>
+              </span>
               <b>{group.devices.length}</b>
             </button>
           ))}
@@ -404,20 +531,9 @@ function ViewerApp() {
             <DeviceTable
               devices={filteredDevices}
               activeDeviceId={session?.deviceId ?? ""}
-              onConnect={async (device) => {
-                if (device.status !== "online") {
-                  setApiError("온라인 상태의 Agent만 접속할 수 있습니다.");
-                  return;
-                }
-                try {
-                  const result = await openSession(device.id);
-                  setSession(result.session);
-                  setInputLog(result.inputLog);
-                  setApiError("");
-                } catch (error) {
-                  setApiError(error instanceof Error ? error.message : "세션 연결 실패");
-                }
-              }}
+              onConnect={handleConnectDevice}
+              onEdit={(device) => setEditTarget({ mode: "device", devices: [device] })}
+              onSecureConnect={handleSecureConnectRequest}
             />
             <ConnectionHistorySection />
           </section>
@@ -432,6 +548,198 @@ function ViewerApp() {
           />
         </section>
       </main>
+      {editTarget && (
+        <DeviceEditDialog
+          target={editTarget}
+          onClose={() => setEditTarget(null)}
+          onSave={handleSaveDeviceMetadata}
+        />
+      )}
+      {secureConnect && (
+        <SecureConnectDialog
+          state={secureConnect}
+          onCancel={() => setSecureConnect(null)}
+          onCodeChange={(code) => setSecureConnect({ ...secureConnect, code })}
+          onSubmit={handleSecureConnectSubmit}
+        />
+      )}
+    </div>
+  );
+}
+
+function formatGroupBusinessNumber(devices: ManagedDevice[]): string {
+  const businessNumbers = [...new Set(devices.map((device) => device.businessNumber).filter(Boolean))];
+  if (businessNumbers.length === 0) {
+    return "사업자번호 없음";
+  }
+  if (businessNumbers.length === 1) {
+    return businessNumbers[0];
+  }
+  return `${businessNumbers[0]} 외 ${businessNumbers.length - 1}개`;
+}
+
+function formatSecurityCodeInput(value: string): string {
+  const digits = value.replace(/\D/g, "").slice(0, 6);
+  if (digits.length <= 3) {
+    return digits;
+  }
+  return `${digits.slice(0, 3)} ${digits.slice(3)}`;
+}
+
+function DeviceEditDialog({
+  onClose,
+  onSave,
+  target,
+}: {
+  onClose: () => void;
+  onSave: (input: Omit<DeviceMetadataUpdateInput, "deviceId">) => Promise<void>;
+  target: DeviceEditTarget;
+}) {
+  const primaryDevice = target.devices[0];
+  const isGroupEdit = target.mode === "group";
+  const [form, setForm] = useState({
+    businessNumber: primaryDevice.businessNumber,
+    desktopName: primaryDevice.desktopName,
+    deviceName: primaryDevice.deviceName,
+    storeName: primaryDevice.storeName,
+  });
+  const [isSaving, setIsSaving] = useState(false);
+
+  useEffect(() => {
+    setForm({
+      businessNumber: primaryDevice.businessNumber,
+      desktopName: primaryDevice.desktopName,
+      deviceName: primaryDevice.deviceName,
+      storeName: primaryDevice.storeName,
+    });
+  }, [primaryDevice.id]);
+
+  async function saveCurrentForm() {
+    if (isSaving) {
+      return;
+    }
+    setIsSaving(true);
+    try {
+      await onSave(form);
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await saveCurrentForm();
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <form className="modal-panel" onMouseDown={(event) => event.stopPropagation()} onSubmit={handleSubmit}>
+        <div className="section-heading">
+          <h2>{isGroupEdit ? "장비 그룹 수정" : "등록 장비 수정"}</h2>
+          <span>{isGroupEdit ? `${target.devices.length}대 적용` : primaryDevice.deviceNumber}</span>
+        </div>
+        <div className="form-grid">
+          <label>
+            가맹점 상호명
+            <input
+              value={form.storeName}
+              onChange={(event) => setForm((prev) => ({ ...prev, storeName: event.target.value }))}
+              placeholder="가맹점 상호명"
+            />
+          </label>
+          <label>
+            사업자번호
+            <input
+              readOnly
+              value={form.businessNumber}
+              placeholder="123-45-67890"
+            />
+          </label>
+          {!isGroupEdit && (
+            <>
+              <label>
+                장비명
+                <input
+                  value={form.deviceName}
+                  onChange={(event) => setForm((prev) => ({ ...prev, deviceName: event.target.value }))}
+                  placeholder="장비명"
+                />
+              </label>
+              <label>
+                데스크탑명
+                <input
+                  value={form.desktopName}
+                  onChange={(event) => setForm((prev) => ({ ...prev, desktopName: event.target.value }))}
+                  placeholder="데스크탑명"
+                />
+              </label>
+            </>
+          )}
+        </div>
+        <div className="modal-actions">
+          <button className="secondary-button" type="button" onClick={onClose}>
+            취소
+          </button>
+          <button
+            className="primary-button compact"
+            disabled={isSaving}
+            type="button"
+            onClick={() => void saveCurrentForm()}
+            onMouseDown={(event) => {
+              event.preventDefault();
+              void saveCurrentForm();
+            }}
+          >
+            저장
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function SecureConnectDialog({
+  onCancel,
+  onCodeChange,
+  onSubmit,
+  state,
+}: {
+  onCancel: () => void;
+  onCodeChange: (code: string) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  state: SecureConnectState;
+}) {
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onCancel}>
+      <form className="modal-panel compact-modal" onMouseDown={(event) => event.stopPropagation()} onSubmit={onSubmit}>
+        <div className="section-heading">
+          <h2>보안접속</h2>
+          <span>{state.device.desktopName}</span>
+        </div>
+        <p className="modal-help">
+          Agent PC 화면에 표시된 6자리 코드를 입력하면 원격 세션이 시작됩니다.
+        </p>
+        <label>
+          보안 코드
+          <input
+            autoFocus
+            inputMode="numeric"
+            maxLength={7}
+            value={state.code}
+            onChange={(event) => onCodeChange(formatSecurityCodeInput(event.target.value))}
+            placeholder="000 000"
+          />
+        </label>
+        <small className="modal-help">만료 시각: {new Date(state.expiresAt).toLocaleTimeString()}</small>
+        <div className="modal-actions">
+          <button className="secondary-button" type="button" onClick={onCancel}>
+            취소
+          </button>
+          <button className="primary-button compact" disabled={state.isSubmitting || state.code.replace(/\D/g, "").length !== 6} type="submit">
+            접속
+          </button>
+        </div>
+      </form>
     </div>
   );
 }
@@ -710,10 +1018,14 @@ function DeviceTable({
   activeDeviceId,
   devices,
   onConnect,
+  onEdit,
+  onSecureConnect,
 }: {
   activeDeviceId: string;
   devices: ManagedDevice[];
-  onConnect: (device: ManagedDevice) => void;
+  onConnect: (device: ManagedDevice) => void | Promise<void>;
+  onEdit: (device: ManagedDevice) => void;
+  onSecureConnect: (device: ManagedDevice) => void | Promise<void>;
 }) {
   return (
     <section className="device-section">
@@ -732,7 +1044,10 @@ function DeviceTable({
         {devices.map((device) => {
           const isOnline = device.status === "online";
           return (
-            <div className="table-row" key={device.id}>
+            <div className="table-row" key={device.id} onContextMenu={(event) => {
+              event.preventDefault();
+              onEdit(device);
+            }}>
               <span className="status-pill">{device.status}</span>
               <span>{device.storeName}</span>
               <span>
@@ -740,16 +1055,36 @@ function DeviceTable({
                 <small>{device.deviceName}</small>
               </span>
               <span>{device.desktopName}</span>
-              <button
-                className={activeDeviceId === device.id ? "connect-button active" : "connect-button"}
-                disabled={!isOnline}
-                type="button"
-                title={isOnline ? "접속" : "오프라인"}
-                onClick={() => onConnect(device)}
-              >
-                <PlugZap size={16} />
-                <span>접속</span>
-              </button>
+              <span className="device-actions">
+                <button
+                  className={activeDeviceId === device.id ? "connect-button active" : "connect-button"}
+                  disabled={!isOnline}
+                  type="button"
+                  title={isOnline ? "접속" : "오프라인"}
+                  onClick={() => onConnect(device)}
+                >
+                  <PlugZap size={16} />
+                  <span>접속</span>
+                </button>
+                <button
+                  className="connect-button secure"
+                  disabled={!isOnline}
+                  type="button"
+                  title={isOnline ? "보안접속" : "오프라인"}
+                  onClick={() => onSecureConnect(device)}
+                >
+                  <ShieldCheck size={16} />
+                  <span>보안</span>
+                </button>
+                <button
+                  className="connect-button edit"
+                  type="button"
+                  title="장비 정보 수정"
+                  onClick={() => onEdit(device)}
+                >
+                  수정
+                </button>
+              </span>
             </div>
           );
         })}

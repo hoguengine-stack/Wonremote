@@ -59,6 +59,19 @@ export interface AgentCommandPollInput {
   installId: string;
 }
 
+export interface DeviceMetadataUpdateInput {
+  deviceId: string;
+  businessNumber?: string;
+  storeName?: string;
+  deviceName?: string;
+  desktopName?: string;
+}
+
+export interface DeviceMetadataUpdateResult {
+  devices: ManagedDevice[];
+  device: ManagedDevice;
+}
+
 export interface RemoteSession {
   id: string;
   deviceId: string;

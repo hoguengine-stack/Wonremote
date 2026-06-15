@@ -9,6 +9,7 @@ import type {
   ClipboardData,
   TransferredFile,
   ConnectionHistoryEntry,
+  DeviceMetadataUpdateInput,
 } from "../domain/types";
 import {
   closeFirebaseSession,
@@ -18,6 +19,7 @@ import {
   openFirebaseSession,
   recordFirebaseInput,
   registerFirstRunAgentWithFirebase,
+  updateFirebaseDeviceMetadata,
 } from "../firebase/viewerFirebase";
 
 const API_BASE_URL = import.meta.env.VITE_WONREMOTE_API_URL ?? "http://127.0.0.1:8787";
@@ -37,6 +39,21 @@ export async function loginAdmin(username: string, password: string): Promise<vo
 export async function fetchDevices(): Promise<ManagedDevice[]> {
   const body = await request<{ devices: ManagedDevice[] }>("/api/devices");
   return body.devices;
+}
+
+export async function updateDeviceMetadata(
+  deviceId: string,
+  input: Omit<DeviceMetadataUpdateInput, "deviceId">,
+): Promise<ManagedDevice> {
+  if (isViewerFirebaseEnabled()) {
+    return updateFirebaseDeviceMetadata(deviceId, input);
+  }
+
+  const body = await request<{ device: ManagedDevice }>(`/api/devices/${encodeURIComponent(deviceId)}`, {
+    method: "PATCH",
+    body: input,
+  });
+  return body.device;
 }
 
 export async function connectAgent(input: AgentConnectionInput): Promise<
@@ -94,6 +111,35 @@ export async function openSession(deviceId: string): Promise<{
   return request("/api/sessions", {
     method: "POST",
     body: { deviceId },
+  });
+}
+
+export async function requestSecureSession(deviceId: string): Promise<{ challengeId: string; expiresAt: string }> {
+  if (isViewerFirebaseEnabled()) {
+    throw new Error("Firebase secure connection requires Cloud Functions validation.");
+  }
+
+  return request("/api/sessions/secure-request", {
+    method: "POST",
+    body: { deviceId },
+  });
+}
+
+export async function connectSecureSession(input: {
+  challengeId: string;
+  code: string;
+  deviceId: string;
+}): Promise<{
+  session: RemoteSession;
+  inputLog: string[];
+}> {
+  if (isViewerFirebaseEnabled()) {
+    throw new Error("Firebase secure connection requires Cloud Functions validation.");
+  }
+
+  return request("/api/sessions/secure-connect", {
+    method: "POST",
+    body: input,
   });
 }
 

@@ -6,6 +6,7 @@ import {
   normalizeBusinessNumber,
   registerAgentFirstRun,
   registerAgentConnection,
+  updateDeviceMetadata,
 } from "./agentRegistry";
 
 describe("agent registry domain", () => {
@@ -125,6 +126,33 @@ describe("agent registry domain", () => {
         ]),
       },
     ]);
+  });
+
+  it("updates display metadata without changing the agent connection identity or business number", () => {
+    const registered = registerAgentFirstRun([], {
+      businessNumber: "1234567890",
+      password: "1234",
+      installId: "agent-edit-meta",
+    }, "2026-06-10T01:20:00.000Z");
+
+    const result = updateDeviceMetadata(registered.devices, {
+      deviceId: registered.device.id,
+      businessNumber: "9998877777",
+      storeName: "Won Chicken Gangnam",
+      deviceName: "Main POS",
+      desktopName: "FRONT-DESK-PC",
+    });
+
+    expect(result.device).toMatchObject({
+      id: "123-45-67890:AGENT-EDIT-META",
+      businessNumber: "123-45-67890",
+      storeName: "Won Chicken Gangnam",
+      deviceNumber: "AGENT-EDIT-META",
+      deviceName: "Main POS",
+      desktopName: "FRONT-DESK-PC",
+    });
+    expect(result.device.id).toBe(registered.device.id);
+    expect(result.device.deviceNumber).toBe(registered.device.deviceNumber);
   });
 
   describe("agent first-run registration", () => {

@@ -2,6 +2,20 @@ import path from "node:path";
 
 const WINDOWS_RESERVED_FILENAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
 
+export function resolveAgentDownloadDir(env: Record<string, string | undefined> = process.env): string {
+  const overrideDir = env.WONREMOTE_AGENT_DOWNLOADS_DIR?.trim() || env.WONREMOTE_DOWNLOAD_DIR?.trim();
+  if (overrideDir) {
+    return path.resolve(overrideDir);
+  }
+
+  const userProfile = env.USERPROFILE?.trim();
+  if (userProfile) {
+    return path.resolve(userProfile, "Desktop");
+  }
+
+  return path.resolve(env.APPDATA ?? process.cwd(), "WonRemote", "Downloads");
+}
+
 export function sanitizeDownloadFilename(filename: string): string {
   const basename = path.basename(filename.trim() || "download.bin");
   const sanitized = basename

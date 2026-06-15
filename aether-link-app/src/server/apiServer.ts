@@ -1,7 +1,7 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { execFileSync, spawn } from "node:child_process";
 import { writeFileSync, mkdirSync, readFileSync, existsSync, cpSync, rmSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomInt } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
 import {
@@ -10,6 +10,7 @@ import {
   registerAgentFirstRun,
   registerAgentConnection,
   resolveDeviceStatuses,
+  updateDeviceMetadata,
   verifyAgentInstall,
 } from "../domain/agentRegistry";
 import type {
@@ -24,6 +25,7 @@ import type {
   ClipboardData,
   TransferredFile,
   ConnectionHistoryEntry,
+  DeviceMetadataUpdateInput,
 } from "../domain/types";
 import { createMemoryDeviceStore } from "./deviceStore";
 import type { DeviceStore } from "./deviceStore";
@@ -186,6 +188,13 @@ interface ApiState {
   sessionChats: Map<string, ChatMessage[]>;
   sessionClipboards: Map<string, ClipboardData[]>;
   sessionFiles: Map<string, TransferredFile[]>;
+  secureChallenges: Map<string, SecureSessionChallenge>;
+}
+
+interface SecureSessionChallenge {
+  code: string;
+  deviceId: string;
+  expiresAtMs: number;
 }
 
 interface CreateApiServerOptions {
@@ -219,6 +228,7 @@ export function createApiServer(options: CreateApiServerOptions | ManagedDevice[
     sessionChats: new Map(),
     sessionClipboards: new Map(),
     sessionFiles: new Map(),
+    secureChallenges: new Map(),
   };
 
 
@@ -270,6 +280,31 @@ async function routeRequest(
       devices: resolveDeviceStatuses(state.devices, nowIso(state), state.offlineAfterMs),
     });
     return;
+  }
+
+  if (request.method === "PATCH" && url.pathname.startsWith("/api/devices/")) {
+    const match = url.pathname.match(/^\/api\/devices\/(.+)$/);
+    if (match) {
+      const deviceId = decodeURIComponent(match[1]);
+      const body = await readJson<Omit<DeviceMetadataUpdateInput, "deviceId">>(request);
+      try {
+        const result = updateDeviceMetadata(state.devices, {
+          ...body,
+          deviceId,
+        });
+        state.devices = result.devices;
+        await state.deviceStore.writeDevices(state.devices);
+        writeJson(response, 200, {
+          device: result.device,
+          devices: state.devices,
+        });
+      } catch (error) {
+        writeJson(response, 404, {
+          error: error instanceof Error ? error.message : "Device metadata update failed.",
+        });
+      }
+      return;
+    }
   }
 
   if (request.method === "POST" && url.pathname === "/api/agent/first-run") {
@@ -362,6 +397,83 @@ async function routeRequest(
       return;
     }
 
+    const opened = await openConnectedSession(state, device);
+    writeJson(response, 200, {
+      session: opened.session,
+      inputLog: opened.inputLog,
+    });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/sessions/secure-request") {
+    const body = await readJson<{ deviceId?: string }>(request);
+    const deviceId = String(body.deviceId ?? "").trim();
+    const device = resolveDeviceStatuses(state.devices, nowIso(state), state.offlineAfterMs).find(
+      (item) => item.id === deviceId,
+    );
+    if (!device) {
+      writeJson(response, 404, { error: "Device not found." });
+      return;
+    }
+
+    if (device.status !== "online") {
+      writeJson(response, 409, { error: "Only online agents can accept secure connections." });
+      return;
+    }
+
+    const challengeId = `secure-${Date.now()}-${randomInt(1000, 10000)}`;
+    const code = generateSecurityCode();
+    const expiresAtMs = state.now().getTime() + 120_000;
+    state.secureChallenges.set(challengeId, {
+      code,
+      deviceId,
+      expiresAtMs,
+    });
+    enqueueAgentCommand(state, deviceId, `security-code ${challengeId} ${code}`);
+
+    writeJson(response, 200, {
+      challengeId,
+      expiresAt: new Date(expiresAtMs).toISOString(),
+    });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/sessions/secure-connect") {
+    const body = await readJson<{ challengeId?: string; code?: string; deviceId?: string }>(request);
+    const challengeId = String(body.challengeId ?? "").trim();
+    const deviceId = String(body.deviceId ?? "").trim();
+    const code = normalizeSecurityCode(String(body.code ?? ""));
+    const challenge = state.secureChallenges.get(challengeId);
+    if (!challenge || challenge.deviceId !== deviceId) {
+      writeJson(response, 401, { error: "Invalid secure connection code." });
+      return;
+    }
+
+    if (challenge.expiresAtMs < state.now().getTime()) {
+      state.secureChallenges.delete(challengeId);
+      writeJson(response, 410, { error: "Secure connection code expired." });
+      return;
+    }
+
+    if (normalizeSecurityCode(challenge.code) !== code) {
+      writeJson(response, 401, { error: "Invalid secure connection code." });
+      return;
+    }
+
+    const device = resolveDeviceStatuses(state.devices, nowIso(state), state.offlineAfterMs).find(
+      (item) => item.id === deviceId,
+    );
+    if (!device) {
+      writeJson(response, 404, { error: "Device not found." });
+      return;
+    }
+
+    if (device.status !== "online") {
+      writeJson(response, 409, { error: "Only online agents can accept secure connections." });
+      return;
+    }
+
+    state.secureChallenges.delete(challengeId);
     const opened = await openConnectedSession(state, device);
     writeJson(response, 200, {
       session: opened.session,
@@ -875,6 +987,15 @@ function enqueueAgentCommand(state: ApiState, deviceId: string, action: string):
   );
 }
 
+function generateSecurityCode(): string {
+  const code = randomInt(0, 1_000_000).toString().padStart(6, "0");
+  return `${code.slice(0, 3)} ${code.slice(3)}`;
+}
+
+function normalizeSecurityCode(code: string): string {
+  return code.replace(/\D/g, "");
+}
+
 function requireConnectedSession(
   state: ApiState,
   response: ServerResponse,
@@ -929,7 +1050,7 @@ function setCorsHeaders(request: IncomingMessage, response: ServerResponse) {
     typeof origin === "string" && isAllowedLocalViewerOrigin(origin) ? origin : "http://127.0.0.1:5173";
 
   response.setHeader("access-control-allow-origin", allowedOrigin);
-  response.setHeader("access-control-allow-methods", "GET,POST,OPTIONS");
+  response.setHeader("access-control-allow-methods", "GET,POST,PATCH,OPTIONS");
   response.setHeader("access-control-allow-headers", "content-type");
 }
 

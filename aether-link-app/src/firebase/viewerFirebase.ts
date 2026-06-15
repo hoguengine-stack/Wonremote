@@ -12,7 +12,13 @@ import {
   updateDoc,
   type Unsubscribe,
 } from "firebase/firestore";
-import type { AgentFirstRunInput, AgentFirstRunResult, ManagedDevice, RemoteSession } from "../domain/types";
+import type {
+  AgentFirstRunInput,
+  AgentFirstRunResult,
+  DeviceMetadataUpdateInput,
+  ManagedDevice,
+  RemoteSession,
+} from "../domain/types";
 import { resolveFirebaseConfig } from "./firebaseConfig";
 import { buildAgentAuthEmail, buildAgentAuthPassword } from "./firebaseIdentity";
 import { buildFirestoreDevice, mapFirestoreDevice } from "./firestoreDevice";
@@ -48,6 +54,35 @@ export function subscribeFirebaseDevices(
     },
     (error) => onError(error),
   );
+}
+
+export async function updateFirebaseDeviceMetadata(
+  deviceId: string,
+  input: Omit<DeviceMetadataUpdateInput, "deviceId">,
+  env: ViewerFirebaseEnv = import.meta.env,
+): Promise<ManagedDevice> {
+  const services = getViewerFirebaseServices(env);
+  const deviceRef = doc(services.db, "devices", deviceId);
+  const update: Record<string, unknown> = {
+    updatedAt: serverTimestamp(),
+  };
+
+  if (typeof input.storeName === "string" && input.storeName.trim()) {
+    update.storeName = input.storeName.trim();
+  }
+  if (typeof input.deviceName === "string" && input.deviceName.trim()) {
+    update.deviceName = input.deviceName.trim();
+  }
+  if (typeof input.desktopName === "string" && input.desktopName.trim()) {
+    update.desktopName = input.desktopName.trim();
+  }
+
+  await updateDoc(deviceRef, update);
+  const snapshot = await getDoc(deviceRef);
+  if (!snapshot.exists()) {
+    throw new Error("Firebase device not found.");
+  }
+  return mapFirestoreDevice(snapshot.id, snapshot.data());
 }
 
 export async function registerFirstRunAgentWithFirebase(

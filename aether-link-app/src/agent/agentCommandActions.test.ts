@@ -60,4 +60,14 @@ describe("agent command actions", () => {
       actions: ["mouse-wheel 10 20 -120"],
     });
   });
+
+  it("parses security-code commands without treating them as input injection", async () => {
+    const { parseSecurityCodeCommand } = await import("./agentCommandActions");
+
+    expect(parseSecurityCodeCommand("security-code secure-123 987 654")).toEqual({
+      challengeId: "secure-123",
+      code: "987 654",
+    });
+    expect(parseSecurityCodeCommand("security-code broken")).toBeNull();
+  });
 });

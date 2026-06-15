@@ -5,14 +5,14 @@ import process from "node:process";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { bootstrapAgent } from "./agentBootstrap";
-import { resolveInjectActions } from "./agentCommandActions";
+import { parseSecurityCodeCommand, resolveInjectActions } from "./agentCommandActions";
 import { pollAgentCommands, sendAgentHeartbeat } from "./agentClient";
 import { waitForApiHealth } from "./agentHealth";
 import { resolveAgentAppDir, resolveAgentPocPath } from "./agentPaths";
 import { resolveAgentCredentials } from "./agentRuntime";
 import { computeSha256 } from "./checksum";
 import { WONREMOTE_APP_VERSION } from "../domain/appVersion";
-import { resolveSafeDownloadPath } from "./fileSafety";
+import { resolveAgentDownloadDir, resolveSafeDownloadPath } from "./fileSafety";
 import { isSourceTreeUpdateTarget } from "./updateSafety";
 import {
   downloadInstallerUpdate,
@@ -188,7 +188,7 @@ async function pollSessionData(deviceId: string) {
       if (fileData.files && fileData.files.length > 0) {
         for (const file of fileData.files) {
           console.log(`[파일 전송 수신] 파일명: ${file.filename} (크기: ${Math.round(file.fileData.length * 0.75)} bytes)`);
-          const downloadsDir = path.join(process.env.APPDATA ?? process.cwd(), "WonRemote", "Downloads");
+          const downloadsDir = resolveAgentDownloadDir(process.env);
           await mkdir(downloadsDir, { recursive: true });
           const targetPath = resolveSafeDownloadPath(downloadsDir, String(file.filename ?? ""));
           const buffer = Buffer.from(file.fileData, "base64");
@@ -726,6 +726,13 @@ async function pollCommands(config: AgentLocalConfig): Promise<void> {
           body: JSON.stringify({ text, sender: "agent" }),
         });
         console.log("[Clipboard] Current agent clipboard sent to viewer");
+      } else if (command.action.startsWith("security-code ")) {
+        const securityCode = parseSecurityCodeCommand(command.action);
+        if (!securityCode) {
+          console.warn(`[Security Connect] Invalid security-code command: ${command.action}`);
+          continue;
+        }
+        await showSecurityCode(securityCode.code);
       } else if (command.action === "ping-color-change") {
         if (streamProcess) {
           console.log("Injecting color marker signal to streamer process stdin");
@@ -803,6 +810,25 @@ async function setClipboardText(text: string): Promise<void> {
   const base64Text = Buffer.from(text).toString("base64");
   const psCmd = `[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${base64Text}')) | Set-Clipboard`;
   await execFileAsync("powershell", ["-NoProfile", "-Command", psCmd]);
+}
+
+async function showSecurityCode(code: string): Promise<void> {
+  console.log(`[Security Connect] Code shown on agent PC: ${code}`);
+  if (process.env.NODE_ENV === "test") {
+    return;
+  }
+
+  const escapedCode = code.replace(/'/g, "''");
+  const script = [
+    "Add-Type -AssemblyName PresentationFramework",
+    `[System.Windows.MessageBox]::Show('WonRemote 보안접속 코드: ${escapedCode}', 'WonRemote 보안접속') | Out-Null`,
+  ].join("; ");
+
+  execFile("powershell", ["-NoProfile", "-WindowStyle", "Hidden", "-Command", script], (error) => {
+    if (error) {
+      console.error(`[Security Connect] Failed to show code popup: ${error.message}`);
+    }
+  });
 }
 
 async function getClipboardText(): Promise<string> {

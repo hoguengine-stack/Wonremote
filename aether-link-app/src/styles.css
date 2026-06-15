@@ -205,9 +205,32 @@ input:focus {
   border-radius: 6px;
   color: #d6dee8;
   justify-content: flex-start;
-  min-height: 38px;
-  padding: 0 10px;
+  min-height: 50px;
+  padding: 7px 10px;
   width: 100%;
+}
+
+.group-label {
+  display: grid;
+  line-height: 1.2;
+  min-width: 0;
+  text-align: left;
+}
+
+.group-label strong {
+  color: inherit;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.group-label small {
+  color: #aeb9c8;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .group-button b {
@@ -345,7 +368,7 @@ input:focus {
   border-top: 1px solid #e8edf3;
   display: grid;
   gap: 10px;
-  grid-template-columns: 80px 1fr 1.2fr 1.3fr 88px;
+  grid-template-columns: 80px minmax(120px, 1fr) minmax(150px, 1.2fr) minmax(150px, 1.3fr) minmax(238px, auto);
   min-height: 54px;
   padding: 0 12px;
 }
@@ -411,10 +434,66 @@ input:focus {
   color: #ffffff;
 }
 
+.connect-button.secure {
+  background: #eef6ff;
+  border-color: #b7d6f8;
+  color: #174f89;
+}
+
+.connect-button.edit {
+  min-width: 48px;
+}
+
+.device-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .empty-row {
   color: #667287;
   padding: 22px;
   text-align: center;
+}
+
+.modal-backdrop {
+  align-items: center;
+  background: rgba(15, 23, 42, 0.46);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 20px;
+  position: fixed;
+  z-index: 50;
+}
+
+.modal-panel {
+  background: #ffffff;
+  border: 1px solid #d8dee7;
+  border-radius: 8px;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.24);
+  display: grid;
+  gap: 14px;
+  max-width: 560px;
+  padding: 18px;
+  width: min(560px, 100%);
+}
+
+.compact-modal {
+  max-width: 420px;
+}
+
+.modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.modal-help {
+  color: #667287;
+  font-size: 13px;
+  margin: 0;
 }
 
 .session-panel {
