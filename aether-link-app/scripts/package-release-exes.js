@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -7,6 +8,7 @@ const releaseTarget = path.join(appRoot, "src-tauri", "target", "release");
 const outputDir = path.join(appRoot, "release-exe");
 const packageJson = JSON.parse(fs.readFileSync(path.join(appRoot, "package.json"), "utf8"));
 const stableInstallerName = "WonRemote-Viewer-Setup.exe";
+const stablePortableZipName = "WonRemote-Viewer-Agent-Portable.zip";
 
 const viewerSource = path.join(releaseTarget, "wonremote-viewer.exe");
 const requiredResourceDirs = ["server", "agent", "runtime", "bin"];
@@ -37,6 +39,31 @@ Do not move the EXE files away from the server/, agent/, runtime/, and bin/ fold
   fs.writeFileSync(path.join(outputDir, "README.txt"), content, "utf8");
 }
 
+function quotePowerShellLiteral(value) {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function createPortableZip() {
+  const zipPath = path.join(outputDir, stablePortableZipName);
+  const portableEntries = [
+    "WonRemote Viewer.exe",
+    "WonRemote Agent.exe",
+    "README.txt",
+    ...requiredResourceDirs,
+  ].map((entry) => path.join(outputDir, entry));
+  const literalPaths = portableEntries.map(quotePowerShellLiteral).join(", ");
+  const command = [
+    `$ErrorActionPreference = 'Stop'`,
+    `Compress-Archive -LiteralPath @(${literalPaths}) -DestinationPath ${quotePowerShellLiteral(zipPath)} -CompressionLevel Optimal -Force`,
+  ].join("; ");
+
+  fs.rmSync(zipPath, { force: true });
+  execFileSync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command], {
+    stdio: "pipe",
+    windowsHide: true,
+  });
+}
+
 ensureExists(viewerSource, "Tauri viewer executable");
 
 fs.rmSync(outputDir, { recursive: true, force: true });
@@ -63,5 +90,6 @@ if (fs.existsSync(installerDir)) {
 }
 
 writeReadme();
+createPortableZip();
 
 console.log(`Portable EXE package created at ${outputDir}`);

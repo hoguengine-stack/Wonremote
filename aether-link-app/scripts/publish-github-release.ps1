@@ -28,11 +28,13 @@ $ReleaseDir = Join-Path $AppRoot "release-exe"
 $InstallerName = "WonRemote Viewer_${Version}_x64-setup.exe"
 $InstallerAssetName = $InstallerName -replace "\s+", "."
 $StableInstallerAssetName = "WonRemote-Viewer-Setup.exe"
+$PortableZipName = "WonRemote-Viewer-Agent-Portable.zip"
 $ManifestName = "wonremote-update-manifest.json"
 $InstallerPath = Join-Path $ReleaseDir $InstallerName
+$PortableZipPath = Join-Path $ReleaseDir $PortableZipName
 $ManifestPath = Join-Path $ReleaseDir $ManifestName
 
-foreach ($RequiredPath in @($InstallerPath, $ManifestPath)) {
+foreach ($RequiredPath in @($InstallerPath, $PortableZipPath, $ManifestPath)) {
   if (-not (Test-Path -LiteralPath $RequiredPath)) {
     throw "Required release asset is missing: $RequiredPath"
   }
@@ -81,7 +83,7 @@ try {
 $AssetsApi = "$ReleaseApi/$($Release.id)/assets"
 $ExistingAssets = Invoke-GitHubJson "Get" $AssetsApi
 foreach ($Asset in $ExistingAssets) {
-  if ($Asset.name -eq $InstallerName -or $Asset.name -eq $InstallerAssetName -or $Asset.name -eq $StableInstallerAssetName -or $Asset.name -eq $ManifestName) {
+  if ($Asset.name -eq $InstallerName -or $Asset.name -eq $InstallerAssetName -or $Asset.name -eq $StableInstallerAssetName -or $Asset.name -eq $PortableZipName -or $Asset.name -eq $ManifestName) {
     Write-Host "Deleting existing asset $($Asset.name)."
     Invoke-GitHubJson "Delete" "https://api.github.com/repos/$Repository/releases/assets/$($Asset.id)" | Out-Null
   }
@@ -96,6 +98,7 @@ function Publish-Asset($FilePath, $AssetName, $ContentType) {
 
 Publish-Asset $InstallerPath $InstallerAssetName "application/octet-stream"
 Publish-Asset $InstallerPath $StableInstallerAssetName "application/octet-stream"
+Publish-Asset $PortableZipPath $PortableZipName "application/zip"
 Publish-Asset $ManifestPath $ManifestName "application/json"
 
 Write-Host "Published WonRemote release assets for $Tag."
