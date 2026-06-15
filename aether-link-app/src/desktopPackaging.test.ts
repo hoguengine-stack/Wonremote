@@ -119,6 +119,8 @@ describe("desktop packaging scaffold", () => {
 
     expect(packageReleaseScript).toContain("WonRemote Viewer.exe");
     expect(packageReleaseScript).toContain("WonRemote Agent.exe");
+    expect(packageReleaseScript).toContain("WonRemote-Agent-Setup.exe");
+    expect(packageReleaseScript).toContain("WonRemote-Viewer-Agent-Setup.exe");
     expect(packageReleaseScript).toContain("WonRemote-Viewer-Agent-Portable.zip");
     expect(packageReleaseScript).toContain("WonRemote-Agent-Portable.zip");
     expect(packageReleaseScript).toContain("Compress-Archive");
@@ -162,9 +164,27 @@ describe("desktop packaging scaffold", () => {
     expect(publishScript).toContain("uploads.github.com/repos/$Repository/releases");
     expect(publishScript).toContain("WonRemote Viewer_");
     expect(publishScript).toContain("WonRemote-Viewer-Setup.exe");
+    expect(publishScript).toContain("WonRemote-Agent-Setup.exe");
+    expect(publishScript).toContain("WonRemote-Viewer-Agent-Setup.exe");
     expect(publishScript).toContain("WonRemote-Viewer-Agent-Portable.zip");
     expect(publishScript).toContain("WonRemote-Agent-Portable.zip");
     expect(publishScript).toContain("wonremote-update-manifest.json");
+  });
+
+  it("exposes the four public download redirects plus the agent portable diagnostic link", () => {
+    const firebaseConfig = JSON.parse(readFileSync(path.join(projectRoot, "..", "firebase.json"), "utf8"));
+    const redirects = Object.fromEntries(
+      firebaseConfig.hosting.redirects.map((redirect: { source: string; destination: string }) => [
+        redirect.source,
+        redirect.destination,
+      ]),
+    );
+
+    expect(redirects["/download/viewer"]).toContain("WonRemote-Viewer-Setup.exe");
+    expect(redirects["/download/agent"]).toContain("WonRemote-Agent-Setup.exe");
+    expect(redirects["/download/portable"]).toContain("WonRemote-Viewer-Agent-Portable.zip");
+    expect(redirects["/download/viewer-agent"]).toContain("WonRemote-Viewer-Agent-Setup.exe");
+    expect(redirects["/download/agent-portable"]).toContain("WonRemote-Agent-Portable.zip");
   });
 
   it("does not require a system Node installation at runtime", () => {

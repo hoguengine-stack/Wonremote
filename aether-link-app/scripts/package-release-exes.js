@@ -8,6 +8,8 @@ const releaseTarget = path.join(appRoot, "src-tauri", "target", "release");
 const outputDir = path.join(appRoot, "release-exe");
 const packageJson = JSON.parse(fs.readFileSync(path.join(appRoot, "package.json"), "utf8"));
 const stableInstallerName = "WonRemote-Viewer-Setup.exe";
+const stableAgentInstallerName = "WonRemote-Agent-Setup.exe";
+const stableFullInstallerName = "WonRemote-Viewer-Agent-Setup.exe";
 const stablePortableZipName = "WonRemote-Viewer-Agent-Portable.zip";
 const stableAgentZipName = "WonRemote-Agent-Portable.zip";
 
@@ -98,6 +100,8 @@ if (fs.existsSync(installerDir)) {
     if (entry === expectedInstaller) {
       fs.copyFileSync(path.join(installerDir, entry), path.join(outputDir, entry));
       fs.copyFileSync(path.join(installerDir, entry), path.join(outputDir, stableInstallerName));
+      fs.copyFileSync(path.join(installerDir, entry), path.join(outputDir, stableAgentInstallerName));
+      fs.copyFileSync(path.join(installerDir, entry), path.join(outputDir, stableFullInstallerName));
     }
   }
 }

@@ -22,6 +22,16 @@
       },
       {
         "source": "/download/agent",
+        "destination": "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Agent-Setup.exe",
+        "type": 302
+      },
+      {
+        "source": "/download/viewer-agent",
+        "destination": "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Viewer-Agent-Setup.exe",
+        "type": 302
+      },
+      {
+        "source": "/download/agent-portable",
         "destination": "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Agent-Portable.zip",
         "type": 302
       }
