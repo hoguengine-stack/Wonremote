@@ -4481,7 +4481,7 @@ dependencies = [
 
 [[package]]
 name = "wonremote-viewer"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "serde",
  "serde_json",
