@@ -26,6 +26,7 @@ if (-not $Token) {
 $Tag = "v$Version"
 $ReleaseDir = Join-Path $AppRoot "release-exe"
 $InstallerName = "WonRemote Viewer_${Version}_x64-setup.exe"
+$InstallerAssetName = $InstallerName -replace "\s+", "."
 $ManifestName = "wonremote-update-manifest.json"
 $InstallerPath = Join-Path $ReleaseDir $InstallerName
 $ManifestPath = Join-Path $ReleaseDir $ManifestName
@@ -79,7 +80,7 @@ try {
 $AssetsApi = "$ReleaseApi/$($Release.id)/assets"
 $ExistingAssets = Invoke-GitHubJson "Get" $AssetsApi
 foreach ($Asset in $ExistingAssets) {
-  if ($Asset.name -eq $InstallerName -or $Asset.name -eq $ManifestName) {
+  if ($Asset.name -eq $InstallerName -or $Asset.name -eq $InstallerAssetName -or $Asset.name -eq $ManifestName) {
     Write-Host "Deleting existing asset $($Asset.name)."
     Invoke-GitHubJson "Delete" "https://api.github.com/repos/$Repository/releases/assets/$($Asset.id)" | Out-Null
   }
@@ -92,7 +93,7 @@ function Publish-Asset($FilePath, $AssetName, $ContentType) {
   Invoke-RestMethod -Method Post -Uri $UploadUrl -Headers $Headers -InFile $FilePath -ContentType $ContentType | Out-Null
 }
 
-Publish-Asset $InstallerPath $InstallerName "application/octet-stream"
+Publish-Asset $InstallerPath $InstallerAssetName "application/octet-stream"
 Publish-Asset $ManifestPath $ManifestName "application/json"
 
 Write-Host "Published WonRemote release assets for $Tag."

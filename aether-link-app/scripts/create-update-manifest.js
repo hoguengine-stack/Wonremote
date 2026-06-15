@@ -55,6 +55,10 @@ function buildDownloadUrl(args, version, assetName) {
   return `https://github.com/${repository}/releases/download/${tag}/${encodeURIComponent(assetName)}`;
 }
 
+function normalizeGitHubAssetName(assetName) {
+  return assetName.replace(/\s+/g, ".");
+}
+
 function defaultInstallerPath(version) {
   return path.join(appRoot, "release-exe", `WonRemote Viewer_${version}_x64-setup.exe`);
 }
@@ -76,7 +80,7 @@ const args = readArgs(process.argv.slice(2));
 const version = args.get("--version") || packageJson.version;
 const installerPath = path.resolve(args.get("--installer") || defaultInstallerPath(version));
 const outPath = path.resolve(args.get("--out") || defaultOutputPath());
-const assetName = args.get("--asset-name") || path.basename(installerPath);
+const assetName = normalizeGitHubAssetName(args.get("--asset-name") || path.basename(installerPath));
 const downloadUrl = buildDownloadUrl(args, version, assetName);
 
 if (!downloadUrl.startsWith("https://")) {
