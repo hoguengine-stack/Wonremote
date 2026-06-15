@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const packageJson = JSON.parse(fs.readFileSync(path.join(appRoot, "package.json"), "utf8"));
+const stableInstallerAssetName = "WonRemote-Viewer-Setup.exe";
 
 function readArgs(argv) {
   const args = new Map();
@@ -51,12 +52,21 @@ function buildDownloadUrl(args, version, assetName) {
     return explicitUrl;
   }
   const repository = args.get("--repository") || "hoguengine-stack/Wonremote";
-  const tag = args.get("--release-tag") || `v${version}`;
-  return `https://github.com/${repository}/releases/download/${tag}/${encodeURIComponent(assetName)}`;
+  const tag = args.get("--release-tag");
+  const releasePath = tag ? `download/${tag}` : "latest/download";
+  return `https://github.com/${repository}/releases/${releasePath}/${encodeURIComponent(assetName)}`;
 }
 
 function normalizeGitHubAssetName(assetName) {
   return assetName.replace(/\s+/g, ".");
+}
+
+function assetNameFromDownloadUrl(downloadUrl) {
+  try {
+    return normalizeGitHubAssetName(decodeURIComponent(path.basename(new URL(downloadUrl).pathname)));
+  } catch {
+    return stableInstallerAssetName;
+  }
 }
 
 function defaultInstallerPath(version) {
@@ -80,7 +90,9 @@ const args = readArgs(process.argv.slice(2));
 const version = args.get("--version") || packageJson.version;
 const installerPath = path.resolve(args.get("--installer") || defaultInstallerPath(version));
 const outPath = path.resolve(args.get("--out") || defaultOutputPath());
-const assetName = normalizeGitHubAssetName(args.get("--asset-name") || path.basename(installerPath));
+const assetName = normalizeGitHubAssetName(
+  args.get("--asset-name") || (args.get("--download-url") ? assetNameFromDownloadUrl(args.get("--download-url")) : stableInstallerAssetName),
+);
 const downloadUrl = buildDownloadUrl(args, version, assetName);
 
 if (!downloadUrl.startsWith("https://")) {

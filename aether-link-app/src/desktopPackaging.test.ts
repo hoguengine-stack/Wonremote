@@ -121,6 +121,7 @@ describe("desktop packaging scaffold", () => {
     expect(publishScript).toContain("api.github.com/repos/$Repository/releases");
     expect(publishScript).toContain("uploads.github.com/repos/$Repository/releases");
     expect(publishScript).toContain("WonRemote Viewer_");
+    expect(publishScript).toContain("WonRemote-Viewer-Setup.exe");
     expect(publishScript).toContain("wonremote-update-manifest.json");
   });
 

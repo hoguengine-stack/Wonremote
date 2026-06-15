@@ -56,7 +56,7 @@ describe("production update manifest scripts", () => {
     expect(metadata.signature).toMatch(/^[A-Za-z0-9+/=]+$/);
   });
 
-  it("uses the GitHub-normalized installer asset name when no URL is supplied", () => {
+  it("uses a stable latest GitHub installer URL when no URL is supplied", () => {
     const tempDir = mkdtempSync(path.join(tmpdir(), "wonremote-release-manifest-url-"));
     const installerPath = path.join(tempDir, "WonRemote Viewer_9.9.9_x64-setup.exe");
     const privateKeyPath = path.join(tempDir, "update-signing-private.pem");
@@ -91,9 +91,9 @@ describe("production update manifest scripts", () => {
     const publicKeyPem = readFileSync(publicKeyPath, "utf8");
     const metadata = parseProductionUpdateManifest(manifest, { publicKeyPem });
 
-    expect(metadata.assetName).toBe("WonRemote.Viewer_9.9.9_x64-setup.exe");
+    expect(metadata.assetName).toBe("WonRemote-Viewer-Setup.exe");
     expect(metadata.downloadUrl).toBe(
-      "https://github.com/hoguengine-stack/Wonremote/releases/download/v9.9.9/WonRemote.Viewer_9.9.9_x64-setup.exe",
+      "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Viewer-Setup.exe",
     );
   });
 });

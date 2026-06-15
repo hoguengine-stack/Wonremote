@@ -6,6 +6,7 @@ const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const releaseTarget = path.join(appRoot, "src-tauri", "target", "release");
 const outputDir = path.join(appRoot, "release-exe");
 const packageJson = JSON.parse(fs.readFileSync(path.join(appRoot, "package.json"), "utf8"));
+const stableInstallerName = "WonRemote-Viewer-Setup.exe";
 
 const viewerSource = path.join(releaseTarget, "wonremote-viewer.exe");
 const requiredResourceDirs = ["server", "agent", "runtime", "bin"];
@@ -56,6 +57,7 @@ if (fs.existsSync(installerDir)) {
   for (const entry of fs.readdirSync(installerDir)) {
     if (entry === expectedInstaller) {
       fs.copyFileSync(path.join(installerDir, entry), path.join(outputDir, entry));
+      fs.copyFileSync(path.join(installerDir, entry), path.join(outputDir, stableInstallerName));
     }
   }
 }
