@@ -54,15 +54,25 @@ describe("desktop packaging scaffold", () => {
 
     for (const hook of [viewerHook, agentHook]) {
       expect(hook).toContain("WONREMOTE_STOP_RUNNING_PROCESSES");
-      expect(hook).toContain("Get-CimInstance Win32_Process");
+      expect(hook).toContain("Get-Process");
       expect(hook).toContain("Stop-Process -Id");
-      expect(hook).toContain("wonremote-viewer.exe");
-      expect(hook).toContain("WonRemote Agent.exe");
-      expect(hook).toContain("wonremote-poc.exe");
-      expect(hook).toContain("node.exe");
+      expect(hook).toContain("wonremote-viewer");
+      expect(hook).toContain("WonRemote Agent");
+      expect(hook).toContain("wonremote-poc");
+      expect(hook).toContain("node");
       expect(hook).toContain("*\\WonRemote\\*");
+      expect(hook).not.toContain("Get-CimInstance");
       expect(hook).not.toContain("taskkill /F /IM node.exe");
     }
+  });
+
+  it("restarts the Agent in background after the Agent installer finishes", () => {
+    const viewerHook = readFileSync(path.join(projectRoot, "src-tauri", "windows", "viewer-install-hooks.nsh"), "utf8");
+    const agentHook = readFileSync(path.join(projectRoot, "src-tauri", "windows", "agent-install-hooks.nsh"), "utf8");
+
+    expect(agentHook).toContain("NSIS_HOOK_POSTINSTALL");
+    expect(agentHook).toContain('Exec \'"$INSTDIR\\wonremote-viewer.exe" --agent\'');
+    expect(viewerHook).not.toContain("NSIS_HOOK_POSTINSTALL");
   });
 
   it("exposes desktop packaging npm scripts", () => {
