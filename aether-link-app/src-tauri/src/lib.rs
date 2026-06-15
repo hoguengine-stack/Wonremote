@@ -133,13 +133,17 @@ fn config_has_registered_device_id(config_path: &Path) -> bool {
     let Ok(content) = std::fs::read_to_string(config_path) else {
         return false;
     };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
+    let Ok(json) = parse_json_config(&content) else {
         return false;
     };
 
     json.get("registeredDeviceId")
         .and_then(|v| v.as_str())
         .is_some_and(|device_id| !device_id.trim().is_empty())
+}
+
+fn parse_json_config(content: &str) -> Result<serde_json::Value, serde_json::Error> {
+    serde_json::from_str(content.trim_start_matches('\u{feff}'))
 }
 
 fn spawn_agent_only_process(
@@ -336,7 +340,7 @@ fn restart_agent_process(
     if let Some(config_path) = default_agent_config_path() {
         if config_path.exists() {
             if let Ok(content) = std::fs::read_to_string(&config_path) {
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Ok(json) = parse_json_config(&content) {
                     if let Some(url) = json.get("apiUrl").and_then(|v| v.as_str()) {
                         api_url = Some(url.to_string());
                     }
@@ -363,7 +367,7 @@ fn get_agent_config() -> Option<GetConfigOutput> {
         return None;
     }
     let content = std::fs::read_to_string(config_path).ok()?;
-    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let json = parse_json_config(&content).ok()?;
     Some(GetConfigOutput {
         business_number: json
             .get("businessNumber")
@@ -781,7 +785,7 @@ pub fn run() {
                     let mut api_url = None;
                     if let Some(config_path) = default_agent_config_path() {
                         if let Ok(content) = std::fs::read_to_string(&config_path) {
-                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                            if let Ok(json) = parse_json_config(&content) {
                                 if let Some(url) = json.get("apiUrl").and_then(|v| v.as_str()) {
                                     api_url = Some(url.to_string());
                                 }
@@ -861,7 +865,7 @@ pub fn run() {
                                 if let Some(config_path) = default_agent_config_path() {
                                     if let Ok(content) = std::fs::read_to_string(&config_path) {
                                         if let Ok(json) =
-                                            serde_json::from_str::<serde_json::Value>(&content)
+                                            parse_json_config(&content)
                                         {
                                             if let Some(url) =
                                                 json.get("apiUrl").and_then(|v| v.as_str())
@@ -1122,6 +1126,23 @@ mod registry_tests {
         std::fs::write(
             &config_path,
             r#"{"installId":"agent-test","registeredDeviceId":"123-45-67890:AGENT-TEST"}"#,
+        )
+        .expect("failed to write temp config");
+
+        assert!(config_has_registered_device_id(&config_path));
+
+        let _ = std::fs::remove_file(config_path);
+    }
+
+    #[test]
+    fn test_config_registration_accepts_utf8_bom_json() {
+        let config_path = std::env::temp_dir().join(format!(
+            "wonremote-bom-config-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(
+            &config_path,
+            "\u{feff}{\"installId\":\"agent-test\",\"registeredDeviceId\":\"123-45-67890:AGENT-TEST\"}",
         )
         .expect("failed to write temp config");
 

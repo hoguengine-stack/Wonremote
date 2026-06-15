@@ -5,6 +5,7 @@ import process from "node:process";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { bootstrapAgent } from "./agentBootstrap";
+import { parseAgentConfigJson } from "./agentConfigJson";
 import { parseSecurityCodeCommand, resolveInjectActions } from "./agentCommandActions";
 import { pollAgentCommands, sendAgentHeartbeat } from "./agentClient";
 import { waitForApiHealth } from "./agentHealth";
@@ -994,7 +995,7 @@ async function registerFirstRun(inputBody: {
 
 async function readAgentConfig(configPath: string): Promise<AgentLocalConfig | null> {
   try {
-    return JSON.parse(await readFile(configPath, "utf8")) as AgentLocalConfig;
+    return parseAgentConfigJson(await readFile(configPath, "utf8"));
   } catch (error) {
     if (isNotFoundError(error)) {
       return null;
