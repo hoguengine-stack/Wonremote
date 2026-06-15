@@ -8,6 +8,10 @@ import { bootstrapAgent } from "./agentBootstrap";
 import { parseSecurityCodeCommand, resolveInjectActions } from "./agentCommandActions";
 import { pollAgentCommands, sendAgentHeartbeat } from "./agentClient";
 import { waitForApiHealth } from "./agentHealth";
+import {
+  canRecoverMissingAgentRegistration,
+  recoverMissingAgentRegistration,
+} from "./agentRegistrationRecovery";
 import { resolveAgentAppDir, resolveAgentPocPath } from "./agentPaths";
 import { resolveAgentCredentials } from "./agentRuntime";
 import { computeSha256 } from "./checksum";
@@ -20,7 +24,11 @@ import {
   type SafeInstallerUpdateMetadata,
 } from "./productionInstallerUpdate";
 import { loadProductionInstallerUpdateMetadata } from "./productionUpdateMetadata";
-import { isAgentFirebaseEnabled, registerAgentFirstRunWithFirebase } from "../firebase/agentFirebase";
+import {
+  authenticateAgentWithFirebase,
+  isAgentFirebaseEnabled,
+  registerAgentFirstRunWithFirebase,
+} from "../firebase/agentFirebase";
 import type {
   AgentBootstrapDeps,
   AgentCredentials,
@@ -307,6 +315,8 @@ async function main() {
     writeConfig: (config) => writeAgentConfig(configPath, config),
   } satisfies AgentBootstrapDeps);
 
+  let activeConfig = result.config;
+
   if (result.status === "already_registered") {
     console.log(`Agent already registered: ${result.config.registeredDeviceId}`);
     console.log(`Config: ${configPath}`);
@@ -317,10 +327,11 @@ async function main() {
   }
 
   // Check version updates on start
-  await checkUpdate(result.config);
+  await ensureFirebaseAgentAuth(activeConfig);
+  await checkUpdate(activeConfig);
 
   try {
-    await sendHeartbeat(result.config);
+    activeConfig = await sendHeartbeatWithRecovery(activeConfig);
   } catch (error: any) {
     if (error.status === 404) {
       await handleUnregisteredDevice();
@@ -337,13 +348,23 @@ async function main() {
   } catch (e) {}
 
   try {
-    await pollCommands(result.config);
+    await pollCommands(activeConfig);
   } catch (error: any) {
+    let recovered = false;
     if (error.status === 404) {
-      await handleUnregisteredDevice();
+      const recoveredConfig = await recoverConfigAfterMissingDevice(activeConfig);
+      if (recoveredConfig) {
+        activeConfig = recoveredConfig;
+        await pollCommands(activeConfig);
+        recovered = true;
+      } else {
+        await handleUnregisteredDevice();
+      }
     }
-    console.log("[Status] Connecting");
-    console.error(error instanceof Error ? error.message : error);
+    if (!recovered) {
+      console.log("[Status] Connecting");
+      console.error(error instanceof Error ? error.message : error);
+    }
   }
 
 
@@ -358,7 +379,7 @@ async function main() {
     if (!text) return;
 
     if (isApprovalPending) {
-      const sessionId = `session-${result.config.registeredDeviceId}`;
+      const sessionId = `session-${activeConfig.registeredDeviceId}`;
       if (text.toLowerCase() === "y" || text.toLowerCase() === "yes") {
         isApprovalPending = false;
         console.log("접속 요청을 승인했습니다. 세션을 기동합니다.");
@@ -384,8 +405,8 @@ async function main() {
 
     if (text.startsWith("chat ")) {
       const msg = text.slice(5).trim();
-      if (msg && result.config.registeredDeviceId) {
-        const sessionId = `session-${result.config.registeredDeviceId}`;
+      if (msg && activeConfig.registeredDeviceId) {
+        const sessionId = `session-${activeConfig.registeredDeviceId}`;
         await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/chat`, {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -395,8 +416,8 @@ async function main() {
       }
     } else if (text.startsWith("clipboard ")) {
       const clip = text.slice(10);
-      if (result.config.registeredDeviceId) {
-        const sessionId = `session-${result.config.registeredDeviceId}`;
+      if (activeConfig.registeredDeviceId) {
+        const sessionId = `session-${activeConfig.registeredDeviceId}`;
         await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/clipboard`, {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -405,8 +426,8 @@ async function main() {
         console.log(`[보낸 클립보드] 클립보드 텍스트를 전송했습니다.`);
       }
     } else if (text === "audio") {
-      if (result.config.registeredDeviceId) {
-        const sessionId = `session-${result.config.registeredDeviceId}`;
+      if (activeConfig.registeredDeviceId) {
+        const sessionId = `session-${activeConfig.registeredDeviceId}`;
         await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/chat`, {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -422,7 +443,9 @@ async function main() {
   if (process.argv.includes("--watch")) {
     console.log(`Heartbeat interval: ${HEARTBEAT_INTERVAL_MS}ms`);
     setInterval(() => {
-      void runAgentTick(result.config);
+      void runAgentTick(activeConfig).then((nextConfig) => {
+        activeConfig = nextConfig;
+      });
     }, HEARTBEAT_INTERVAL_MS);
   }
 }
@@ -673,21 +696,75 @@ async function handleUnregisteredDevice() {
   process.exit(1);
 }
 
-async function runAgentTick(config: AgentLocalConfig): Promise<void> {
+async function runAgentTick(config: AgentLocalConfig): Promise<AgentLocalConfig> {
+  let activeConfig = config;
   try {
-    await sendHeartbeat(config);
-    await pollCommands(config);
-    await checkUpdate(config);
+    activeConfig = await sendHeartbeatWithRecovery(activeConfig);
+    await pollCommands(activeConfig);
+    await checkUpdate(activeConfig);
     console.log("[Status] Online");
   } catch (error: any) {
     if (error.status === 404) {
-      await handleUnregisteredDevice();
+      const recoveredConfig = await recoverConfigAfterMissingDevice(activeConfig);
+      if (recoveredConfig) {
+        activeConfig = recoveredConfig;
+        await sendHeartbeat(activeConfig);
+        console.log("[Status] Online");
+        return activeConfig;
+      } else {
+        await handleUnregisteredDevice();
+      }
     }
     console.log("[Status] Connecting");
     console.error(error instanceof Error ? error.message : error);
   }
+  return activeConfig;
 }
 
+
+async function sendHeartbeatWithRecovery(config: AgentLocalConfig): Promise<AgentLocalConfig> {
+  try {
+    await sendHeartbeat(config);
+    return config;
+  } catch (error: any) {
+    if (error.status !== 404) {
+      throw error;
+    }
+    const recoveredConfig = await recoverConfigAfterMissingDevice(config);
+    if (!recoveredConfig) {
+      throw error;
+    }
+    let activeConfig = recoveredConfig;
+    await sendHeartbeat(activeConfig);
+    return activeConfig;
+  }
+}
+
+async function recoverConfigAfterMissingDevice(config: AgentLocalConfig): Promise<AgentLocalConfig | null> {
+  if (!USE_FIREBASE || !canRecoverMissingAgentRegistration(config)) {
+    return null;
+  }
+
+  console.log("[Agent] Firebase device document is missing. Re-registering from local config.");
+  return recoverMissingAgentRegistration(config, {
+    nowIso: () => new Date().toISOString(),
+    registerFirstRun,
+    writeConfig: (nextConfig) => writeAgentConfig(getAgentConfigPath(), nextConfig),
+  });
+}
+
+async function ensureFirebaseAgentAuth(config: AgentLocalConfig): Promise<void> {
+  if (!USE_FIREBASE) {
+    return;
+  }
+  if (!config.businessNumber) {
+    throw new Error("Firebase Agent auth requires businessNumber in local config.");
+  }
+  await authenticateAgentWithFirebase({
+    businessNumber: config.businessNumber,
+    password: "1234",
+  });
+}
 
 async function sendHeartbeat(config: AgentLocalConfig): Promise<void> {
   if (!config.registeredDeviceId) {
@@ -891,6 +968,7 @@ async function registerFirstRun(inputBody: {
   businessNumber: string;
   installId: string;
   password: string;
+  version?: string;
 }): Promise<AgentFirstRunResult> {
   if (USE_FIREBASE) {
     return registerAgentFirstRunWithFirebase(inputBody);

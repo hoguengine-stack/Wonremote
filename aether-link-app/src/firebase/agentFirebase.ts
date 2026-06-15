@@ -32,6 +32,20 @@ export function isAgentFirebaseEnabled(env: AgentFirebaseEnv = process.env): boo
   return resolveFirebaseConfig(env) !== null;
 }
 
+export async function authenticateAgentWithFirebase(
+  input: { businessNumber: string; password?: string },
+  env: AgentFirebaseEnv = process.env,
+): Promise<void> {
+  const services = getAgentFirebaseServices(env);
+  const email = buildAgentAuthEmail(input.businessNumber);
+  const authPassword = buildAgentAuthPassword(input.businessNumber, input.password ?? "1234");
+  try {
+    await signInWithEmailAndPassword(services.auth, email, authPassword);
+  } catch (error) {
+    throwExplainedFirebaseAuthError(error);
+  }
+}
+
 export async function registerAgentFirstRunWithFirebase(
   input: AgentFirstRunInput,
   env: AgentFirebaseEnv = process.env,

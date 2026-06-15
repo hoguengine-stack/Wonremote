@@ -175,6 +175,25 @@ describe("desktop packaging scaffold", () => {
     expect(updateLoader).toContain("releases/latest/download/wonremote-update-manifest.json");
   });
 
+  it("recovers a missing Firebase device document before giving up on a saved Agent config", () => {
+    const agentEntry = readFileSync(path.join(projectRoot, "src", "agent", "index.ts"), "utf8");
+
+    expect(agentEntry).toContain("recoverMissingAgentRegistration");
+    expect(agentEntry).toContain("recoverConfigAfterMissingDevice");
+    expect(agentEntry).toContain("activeConfig = recoveredConfig");
+    expect(agentEntry).toContain("await sendHeartbeat(activeConfig)");
+    expect(agentEntry).toContain("void runAgentTick(activeConfig)");
+  });
+
+  it("authenticates the Agent with Firebase again when a saved config is reused", () => {
+    const agentEntry = readFileSync(path.join(projectRoot, "src", "agent", "index.ts"), "utf8");
+    const agentFirebase = readFileSync(path.join(projectRoot, "src", "firebase", "agentFirebase.ts"), "utf8");
+
+    expect(agentFirebase).toContain("authenticateAgentWithFirebase");
+    expect(agentEntry).toContain("ensureFirebaseAgentAuth");
+    expect(agentEntry).toContain("await ensureFirebaseAgentAuth(activeConfig)");
+  });
+
   it("hides the local server URL field from the Firebase Agent registration UI", () => {
     const appTsx = readFileSync(path.join(projectRoot, "src", "App.tsx"), "utf8");
     const styles = readFileSync(path.join(projectRoot, "src", "styles.css"), "utf8");
