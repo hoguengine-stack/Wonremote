@@ -9,6 +9,18 @@
       "**/.*",
       "**/node_modules/**"
     ],
+    "redirects": [
+      {
+        "source": "/download/viewer",
+        "destination": "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Viewer-Setup.exe",
+        "type": 302
+      },
+      {
+        "source": "/download/portable",
+        "destination": "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Viewer-Agent-Portable.zip",
+        "type": 302
+      }
+    ],
     "rewrites": [
       {
         "source": "**",

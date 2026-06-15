@@ -4,6 +4,7 @@ node_modules/
 # Build outputs
 dist/
 target/
+.firebase/
 aether-link-app/dist/
 aether-link-app/dist-agent/
 aether-link-app/dist-agent-pkg/

@@ -48,18 +48,23 @@ Default manifest output:
 
 - `release-exe/wonremote-update-manifest.json`
 
-The default download URL points to:
+The default update download URL points to the stable latest installer asset:
 
 ```text
-https://github.com/hoguengine-stack/Wonremote/releases/download/v<version>/WonRemote.Viewer_<version>_x64-setup.exe
+https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Viewer-Setup.exe
 ```
 
-Upload both files to the same GitHub Release tag. GitHub release assets should use
-the normalized dot name, because spaces in asset names are normalized by the
-release API and would otherwise break manifest downloads:
+Upload these files to the same GitHub Release tag:
 
 - `WonRemote.Viewer_<version>_x64-setup.exe`
+- `WonRemote-Viewer-Setup.exe`
+- `WonRemote-Viewer-Agent-Portable.zip`
 - `wonremote-update-manifest.json`
+
+User-facing Firebase Hosting download links:
+
+- Viewer installer: `https://wonremote-a7fd3.web.app/download/viewer`
+- Viewer + Agent portable zip: `https://wonremote-a7fd3.web.app/download/portable`
 
 ## Runtime Verification Key
 
