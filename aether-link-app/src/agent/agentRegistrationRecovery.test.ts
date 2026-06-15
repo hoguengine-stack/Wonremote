@@ -14,7 +14,7 @@ const recoveredDevice: ManagedDevice = {
   id: "123-45-67890:AGENT-82220F6D",
   lastSeenAt: "2026-06-16T01:00:00.000Z",
   status: "online",
-  storeName: "사업자 123-45-67890",
+  storeName: "상호명 미설정",
 };
 
 describe("agent registration recovery", () => {

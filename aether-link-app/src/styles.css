@@ -360,7 +360,8 @@ input:focus {
 .device-table {
   border: 1px solid #e1e7ef;
   border-radius: 8px;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .table-row {
@@ -368,7 +369,8 @@ input:focus {
   border-top: 1px solid #e8edf3;
   display: grid;
   gap: 10px;
-  grid-template-columns: 80px minmax(120px, 1fr) minmax(150px, 1.2fr) minmax(150px, 1.3fr) minmax(238px, auto);
+  grid-template-columns: 76px minmax(126px, 1fr) minmax(132px, 1.05fr) minmax(132px, 1.1fr) minmax(116px, auto);
+  min-width: 650px;
   min-height: 54px;
   padding: 0 12px;
 }
@@ -388,6 +390,21 @@ input:focus {
 .table-row small {
   color: #667287;
   display: block;
+}
+
+.store-cell {
+  min-width: 0;
+}
+
+.store-cell b,
+.table-row > span {
+  min-width: 0;
+}
+
+.store-cell b,
+.table-row b,
+.table-row small {
+  overflow-wrap: anywhere;
 }
 
 .status-pill {
@@ -449,6 +466,17 @@ input:focus {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  justify-content: flex-end;
+}
+
+.device-actions .connect-button {
+  height: 30px;
+  min-width: 34px;
+  padding: 0 8px;
+}
+
+.device-actions .connect-button span {
+  display: none;
 }
 
 .empty-row {
@@ -651,6 +679,12 @@ input:focus {
   padding: 10px;
 }
 
+@media (max-width: 1280px) {
+  .content-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 980px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -658,10 +692,6 @@ input:focus {
 
   .sidebar {
     min-height: auto;
-  }
-
-  .content-grid {
-    grid-template-columns: 1fr;
   }
 }
 

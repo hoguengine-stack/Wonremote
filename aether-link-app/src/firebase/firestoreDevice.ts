@@ -1,4 +1,5 @@
 import type { DeviceDisplayInfo, DeviceStatus, ManagedDevice } from "../domain/types";
+import { DEFAULT_STORE_NAME, normalizeStoreNameForDisplay } from "../domain/deviceDefaults";
 import {
   buildAgentDeviceNumber,
   buildDesktopName,
@@ -16,6 +17,7 @@ export interface FirestoreDeviceDocument {
   ownerUid?: string;
   status: DeviceStatus;
   storeName: string;
+  storeNameSource?: string;
   version?: string;
   activeDisplayIndex?: number;
   displays?: unknown;
@@ -35,12 +37,13 @@ export function buildFirestoreDevice(input: BuildFirestoreDeviceInput): ManagedD
   return {
     id: buildFirebaseDeviceId(businessNumber, input.installId),
     businessNumber,
-    storeName: `사업자 ${businessNumber}`,
+    storeName: DEFAULT_STORE_NAME,
     deviceNumber,
     deviceName: `Agent ${deviceNumber}`,
     desktopName: buildDesktopName(businessNumber, input.installId),
     status: "online",
     lastSeenAt: input.nowIso,
+    storeNameSource: "default",
     version: input.version,
     ownerUid: input.ownerUid,
   };
@@ -50,7 +53,9 @@ export function mapFirestoreDevice(id: string, data: Partial<FirestoreDeviceDocu
   return {
     id,
     businessNumber: String(data.businessNumber ?? ""),
-    storeName: String(data.storeName ?? ""),
+    storeName: normalizeStoreNameForDisplay(data.storeName, String(data.businessNumber ?? ""), {
+      preserveLegacyGeneratedName: data.storeNameSource === "user",
+    }),
     deviceNumber: String(data.deviceNumber ?? ""),
     deviceName: String(data.deviceName ?? ""),
     desktopName: String(data.desktopName ?? ""),

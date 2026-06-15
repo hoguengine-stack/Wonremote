@@ -1116,12 +1116,25 @@ function DeviceTable({
         {devices.map((device) => {
           const isOnline = device.status === "online";
           return (
-            <div className="table-row" key={device.id} onContextMenu={(event) => {
-              event.preventDefault();
-              onEdit(device);
-            }}>
+            <div
+              className="table-row"
+              key={device.id}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                onEdit(device);
+              }}
+              onDoubleClick={() => {
+                if (isOnline) {
+                  void onConnect(device);
+                }
+              }}
+              title={isOnline ? "더블클릭하면 바로 접속합니다." : "오프라인 장비입니다."}
+            >
               <span className="status-pill">{device.status}</span>
-              <span>{device.storeName}</span>
+              <span className="store-cell">
+                <b>{device.storeName}</b>
+                <small>{device.businessNumber}</small>
+              </span>
               <span>
                 <b>{device.deviceNumber}</b>
                 <small>{device.deviceName}</small>

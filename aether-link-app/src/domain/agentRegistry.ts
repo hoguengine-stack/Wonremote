@@ -10,6 +10,7 @@ import type {
   DeviceMetadataUpdateResult,
   ManagedDevice,
 } from "./types";
+import { DEFAULT_STORE_NAME } from "./deviceDefaults";
 
 export function authenticateAdmin(username: string, password: string): boolean {
   return username.trim() === "admin" && password === "admin1234";
@@ -84,7 +85,7 @@ export function registerAgentFirstRun(
   const derivedInput: AgentConnectionInput = {
     businessNumber,
     password,
-    storeName: `사업자 ${businessNumber}`,
+    storeName: DEFAULT_STORE_NAME,
     deviceNumber,
     deviceName: `Agent ${deviceNumber}`,
     version: input.version,
@@ -289,7 +290,7 @@ function buildFirstRunDeviceNumber(installId: string): string {
   return `AGENT-${suffix.slice(0, 16)}`;
 }
 
-function sortDevices(devices: ManagedDevice[]): ManagedDevice[] {
+export function sortDevices(devices: ManagedDevice[]): ManagedDevice[] {
   return [...devices].sort((left, right) => {
     const storeCompare = left.storeName.localeCompare(right.storeName, "ko");
     if (storeCompare !== 0) {

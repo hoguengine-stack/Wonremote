@@ -70,7 +70,7 @@ describe("agent registry domain", () => {
     expect(result.device).toMatchObject({
       id: "123-45-67890:AGENT-ABC123",
       businessNumber: "123-45-67890",
-      storeName: "사업자 123-45-67890",
+      storeName: "상호명 미설정",
       deviceNumber: "AGENT-ABC123",
       deviceName: "Agent AGENT-ABC123",
       desktopName: "DESKTOP-67890-AGENT-ABC123",
@@ -168,7 +168,7 @@ describe("agent registry domain", () => {
         businessNumber: "123-45-67890",
         deviceNumber: "AGENT-TESTINSTALLID",
         desktopName: "DESKTOP-67890-AGENT-TESTINSTALLID",
-        storeName: "사업자 123-45-67890",
+        storeName: "상호명 미설정",
         deviceName: "Agent AGENT-TESTINSTALLID",
       });
     });

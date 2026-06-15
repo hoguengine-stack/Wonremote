@@ -13,8 +13,6 @@ import {
   getDoc,
   getDocs,
   onSnapshot,
-  orderBy,
-  query,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -27,6 +25,7 @@ import type {
   ManagedDevice,
   RemoteSession,
 } from "../domain/types";
+import { sortDevices } from "../domain/agentRegistry";
 import { resolveFirebaseConfig } from "./firebaseConfig";
 import { buildAgentAuthEmail, buildAgentAuthPassword } from "./firebaseIdentity";
 import { buildFirestoreDevice, mapFirestoreDevice } from "./firestoreDevice";
@@ -77,12 +76,12 @@ export function subscribeFirebaseDevices(
   env: ViewerFirebaseEnv = import.meta.env,
 ): Unsubscribe {
   const services = getViewerFirebaseServices(env);
-  const devicesQuery = query(collection(services.db, "devices"), orderBy("storeName"), orderBy("deviceNumber"));
+  const devicesCollection = collection(services.db, "devices");
 
   return onSnapshot(
-    devicesQuery,
+    devicesCollection,
     (snapshot) => {
-      onDevices(snapshot.docs.map((deviceDoc) => mapFirestoreDevice(deviceDoc.id, deviceDoc.data())));
+      onDevices(sortDevices(snapshot.docs.map((deviceDoc) => mapFirestoreDevice(deviceDoc.id, deviceDoc.data()))));
     },
     (error) => onError(error),
   );
@@ -90,9 +89,8 @@ export function subscribeFirebaseDevices(
 
 export async function fetchFirebaseDevices(env: ViewerFirebaseEnv = import.meta.env): Promise<ManagedDevice[]> {
   const services = getViewerFirebaseServices(env);
-  const devicesQuery = query(collection(services.db, "devices"), orderBy("storeName"), orderBy("deviceNumber"));
-  const snapshot = await getDocs(devicesQuery);
-  return snapshot.docs.map((deviceDoc) => mapFirestoreDevice(deviceDoc.id, deviceDoc.data()));
+  const snapshot = await getDocs(collection(services.db, "devices"));
+  return sortDevices(snapshot.docs.map((deviceDoc) => mapFirestoreDevice(deviceDoc.id, deviceDoc.data())));
 }
 
 export async function updateFirebaseDeviceMetadata(
@@ -108,6 +106,7 @@ export async function updateFirebaseDeviceMetadata(
 
   if (typeof input.storeName === "string" && input.storeName.trim()) {
     update.storeName = input.storeName.trim();
+    update.storeNameSource = "user";
   }
   if (typeof input.deviceName === "string" && input.deviceName.trim()) {
     update.deviceName = input.deviceName.trim();

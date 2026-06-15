@@ -4,6 +4,7 @@ export interface ManagedDevice {
   id: string;
   businessNumber: string;
   storeName: string;
+  storeNameSource?: string;
   deviceNumber: string;
   deviceName: string;
   desktopName: string;

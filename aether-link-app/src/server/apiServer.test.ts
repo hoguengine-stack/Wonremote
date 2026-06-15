@@ -93,7 +93,7 @@ describe("WonRemote local API server", () => {
     const registeredBody = await registered.json();
     expect(registeredBody.device).toMatchObject({
       id: "222-33-44444:AGENT-POS-77",
-      storeName: "사업자 222-33-44444",
+      storeName: "상호명 미설정",
       deviceNumber: "AGENT-POS-77",
       deviceName: "Agent AGENT-POS-77",
       status: "online",

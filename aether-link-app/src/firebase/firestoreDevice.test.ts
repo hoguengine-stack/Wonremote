@@ -14,11 +14,12 @@ describe("firestore device mapping", () => {
     expect(device).toMatchObject({
       id: "123-45-67890:AGENT-LOCALENV-425D1CB",
       businessNumber: "123-45-67890",
-      storeName: "사업자 123-45-67890",
+      storeName: "상호명 미설정",
       deviceNumber: "AGENT-LOCALENV-425D1CB",
       deviceName: "Agent AGENT-LOCALENV-425D1CB",
       ownerUid: "uid-1",
       status: "online",
+      storeNameSource: "default",
       version: "0.1.2",
     });
     expect("connectionCode" in device).toBe(false);
@@ -27,7 +28,7 @@ describe("firestore device mapping", () => {
   it("maps Firestore data back to the existing ManagedDevice shape", () => {
     const managed = mapFirestoreDevice("device-1", {
       businessNumber: "123-45-67890",
-      storeName: "사업자 123-45-67890",
+      storeName: "강남 1호점",
       deviceNumber: "AGENT-01",
       deviceName: "Agent AGENT-01",
       desktopName: "DESKTOP-67890-AGENT-01",
@@ -45,7 +46,7 @@ describe("firestore device mapping", () => {
     expect(managed).toEqual({
       id: "device-1",
       businessNumber: "123-45-67890",
-      storeName: "사업자 123-45-67890",
+      storeName: "강남 1호점",
       deviceNumber: "AGENT-01",
       deviceName: "Agent AGENT-01",
       desktopName: "DESKTOP-67890-AGENT-01",
@@ -59,5 +60,44 @@ describe("firestore device mapping", () => {
         { index: 1, name: "DISPLAY2", width: 1600, height: 900, primary: false },
       ],
     });
+  });
+
+  it("normalizes legacy generated store names for display", () => {
+    expect(
+      mapFirestoreDevice("device-legacy", {
+        businessNumber: "123-45-67890",
+        storeName: "사업자 123-45-67890",
+        deviceNumber: "AGENT-01",
+        deviceName: "Agent AGENT-01",
+        desktopName: "DESKTOP-67890-AGENT-01",
+        status: "online",
+        lastSeenAt: "2026-06-12T09:00:00.000Z",
+      }).storeName,
+    ).toBe("상호명 미설정");
+
+    expect(
+      mapFirestoreDevice("device-mojibake", {
+        businessNumber: "123-45-67890",
+        storeName: "??? 123-45-67890",
+        deviceNumber: "AGENT-01",
+        deviceName: "Agent AGENT-01",
+        desktopName: "DESKTOP-67890-AGENT-01",
+        status: "online",
+        lastSeenAt: "2026-06-12T09:00:00.000Z",
+      }).storeName,
+    ).toBe("상호명 미설정");
+
+    expect(
+      mapFirestoreDevice("device-user-named", {
+        businessNumber: "123-45-67890",
+        storeName: "사업자 123-45-67890",
+        storeNameSource: "user",
+        deviceNumber: "AGENT-01",
+        deviceName: "Agent AGENT-01",
+        desktopName: "DESKTOP-67890-AGENT-01",
+        status: "online",
+        lastSeenAt: "2026-06-12T09:00:00.000Z",
+      }).storeName,
+    ).toBe("사업자 123-45-67890");
   });
 });

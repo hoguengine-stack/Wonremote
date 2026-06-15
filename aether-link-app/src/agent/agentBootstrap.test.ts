@@ -7,7 +7,7 @@ import type { ManagedDevice } from "../domain/types";
 const registeredDevice: ManagedDevice = {
   id: "123-45-67890:AGENT-CLI-001",
   businessNumber: "123-45-67890",
-  storeName: "사업자 123-45-67890",
+  storeName: "상호명 미설정",
   deviceNumber: "AGENT-CLI-001",
   deviceName: "Agent AGENT-CLI-001",
   desktopName: "DESKTOP-67890-AGENT-CLI-001",
