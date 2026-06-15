@@ -9,6 +9,7 @@ const outputDir = path.join(appRoot, "release-exe");
 const packageJson = JSON.parse(fs.readFileSync(path.join(appRoot, "package.json"), "utf8"));
 const stableInstallerName = "WonRemote-Viewer-Setup.exe";
 const stablePortableZipName = "WonRemote-Viewer-Agent-Portable.zip";
+const stableAgentZipName = "WonRemote-Agent-Portable.zip";
 
 const viewerSource = path.join(releaseTarget, "wonremote-viewer.exe");
 const requiredResourceDirs = ["server", "agent", "runtime", "bin"];
@@ -43,14 +44,9 @@ function quotePowerShellLiteral(value) {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
-function createPortableZip() {
-  const zipPath = path.join(outputDir, stablePortableZipName);
-  const portableEntries = [
-    "WonRemote Viewer.exe",
-    "WonRemote Agent.exe",
-    "README.txt",
-    ...requiredResourceDirs,
-  ].map((entry) => path.join(outputDir, entry));
+function createZip(zipName, entries) {
+  const zipPath = path.join(outputDir, zipName);
+  const portableEntries = entries.map((entry) => path.join(outputDir, entry));
   const literalPaths = portableEntries.map(quotePowerShellLiteral).join(", ");
   const command = [
     `$ErrorActionPreference = 'Stop'`,
@@ -62,6 +58,23 @@ function createPortableZip() {
     stdio: "pipe",
     windowsHide: true,
   });
+}
+
+function createPortableZip() {
+  createZip(stablePortableZipName, [
+    "WonRemote Viewer.exe",
+    "WonRemote Agent.exe",
+    "README.txt",
+    ...requiredResourceDirs,
+  ]);
+}
+
+function createAgentPortableZip() {
+  createZip(stableAgentZipName, [
+    "WonRemote Agent.exe",
+    "README.txt",
+    ...requiredResourceDirs,
+  ]);
 }
 
 ensureExists(viewerSource, "Tauri viewer executable");
@@ -91,5 +104,6 @@ if (fs.existsSync(installerDir)) {
 
 writeReadme();
 createPortableZip();
+createAgentPortableZip();
 
 console.log(`Portable EXE package created at ${outputDir}`);

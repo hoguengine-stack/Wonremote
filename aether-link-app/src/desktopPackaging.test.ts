@@ -120,6 +120,7 @@ describe("desktop packaging scaffold", () => {
     expect(packageReleaseScript).toContain("WonRemote Viewer.exe");
     expect(packageReleaseScript).toContain("WonRemote Agent.exe");
     expect(packageReleaseScript).toContain("WonRemote-Viewer-Agent-Portable.zip");
+    expect(packageReleaseScript).toContain("WonRemote-Agent-Portable.zip");
     expect(packageReleaseScript).toContain("Compress-Archive");
     expect(packageReleaseScript).toContain("server");
     expect(packageReleaseScript).toContain("runtime");
@@ -162,6 +163,7 @@ describe("desktop packaging scaffold", () => {
     expect(publishScript).toContain("WonRemote Viewer_");
     expect(publishScript).toContain("WonRemote-Viewer-Setup.exe");
     expect(publishScript).toContain("WonRemote-Viewer-Agent-Portable.zip");
+    expect(publishScript).toContain("WonRemote-Agent-Portable.zip");
     expect(publishScript).toContain("wonremote-update-manifest.json");
   });
 

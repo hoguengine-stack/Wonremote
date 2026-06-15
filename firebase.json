@@ -19,6 +19,11 @@
         "source": "/download/portable",
         "destination": "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Viewer-Agent-Portable.zip",
         "type": 302
+      },
+      {
+        "source": "/download/agent",
+        "destination": "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Agent-Portable.zip",
+        "type": 302
       }
     ],
     "rewrites": [
