@@ -187,6 +187,7 @@ async function main() {
         WONREMOTE_AGENT_HEARTBEAT_MS: "1000",
         WONREMOTE_APP_DIR: appDir,
         WONREMOTE_POC_PATH: pocPath,
+        WONREMOTE_DOWNLOAD_DIR: downloadsDir,
         APPDATA: appData,
         NODE_ENV: "test"
       }

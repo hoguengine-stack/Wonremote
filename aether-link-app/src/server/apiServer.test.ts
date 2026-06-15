@@ -17,11 +17,7 @@ describe("WonRemote local API server", () => {
 
   beforeEach(async () => {
     server = createApiServer();
-    await new Promise<void>((resolve) => {
-      server.listen(0, "127.0.0.1", resolve);
-    });
-    const address = server.address() as AddressInfo;
-    baseUrl = `http://127.0.0.1:${address.port}`;
+    await listen();
   });
 
   afterEach(async () => {
@@ -930,9 +926,34 @@ describe("WonRemote local API server", () => {
   }
 
   async function listen() {
-    await new Promise<void>((resolve) => {
-      server.listen(0, "127.0.0.1", resolve);
-    });
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const port = 20000 + Math.floor(Math.random() * 30000);
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const handleError = (error: Error) => {
+            server.off("listening", handleListening);
+            reject(error);
+          };
+          const handleListening = () => {
+            server.off("error", handleError);
+            resolve();
+          };
+
+          server.once("error", handleError);
+          server.once("listening", handleListening);
+          server.listen(port, "127.0.0.1");
+        });
+        break;
+      } catch (error) {
+        const errorCode = (error as { code?: string }).code;
+        if (errorCode !== "EADDRINUSE" && errorCode !== "EACCES") {
+          throw error;
+        }
+        if (attempt === 49) {
+          throw error;
+        }
+      }
+    }
     const address = server.address() as AddressInfo;
     baseUrl = `http://127.0.0.1:${address.port}`;
   }
