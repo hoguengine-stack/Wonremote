@@ -91,9 +91,9 @@ describe("production update manifest scripts", () => {
     const publicKeyPem = readFileSync(publicKeyPath, "utf8");
     const metadata = parseProductionUpdateManifest(manifest, { publicKeyPem });
 
-    expect(metadata.assetName).toBe("WonRemote-Viewer-Setup.exe");
+    expect(metadata.assetName).toBe("WonRemote-Viewer-Agent-Setup.exe");
     expect(metadata.downloadUrl).toBe(
-      "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Viewer-Setup.exe",
+      "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Viewer-Agent-Setup.exe",
     );
   });
 });

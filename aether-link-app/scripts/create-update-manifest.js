@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const packageJson = JSON.parse(fs.readFileSync(path.join(appRoot, "package.json"), "utf8"));
-const stableInstallerAssetName = "WonRemote-Viewer-Setup.exe";
+const stableInstallerAssetName = "WonRemote-Viewer-Agent-Setup.exe";
 
 function readArgs(argv) {
   const args = new Map();
@@ -70,7 +70,7 @@ function assetNameFromDownloadUrl(downloadUrl) {
 }
 
 function defaultInstallerPath(version) {
-  return path.join(appRoot, "release-exe", `WonRemote Viewer_${version}_x64-setup.exe`);
+  return path.join(appRoot, "release-exe", stableInstallerAssetName);
 }
 
 function defaultOutputPath() {

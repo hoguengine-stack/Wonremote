@@ -40,20 +40,32 @@ $pkg = Get-Content -Raw -Path "package.json" | ConvertFrom-Json
 $version = $pkg.version
 Write-Host "Detected package version: $version" -ForegroundColor Green
 
-# Verify Installer
-$installerPath = "release-exe/WonRemote Viewer_${version}_x64-setup.exe"
+# Verify Installers
+$viewerInstallerPath = "release-exe/WonRemote Viewer_${version}_x64-setup.exe"
+$agentInstallerPath = "release-exe/WonRemote-Agent-Setup.exe"
+$installerPath = $agentInstallerPath
+if (-not (Test-Path $viewerInstallerPath)) {
+    throw "Viewer installer not found at $viewerInstallerPath"
+}
+if (-not (Test-Path $agentInstallerPath)) {
+    throw "Agent installer not found at $agentInstallerPath"
+}
 if (-not (Test-Path $installerPath)) {
     throw "Installer not found at $installerPath"
 }
-Write-Host "Found installer at $installerPath" -ForegroundColor Green
+Write-Host "Found viewer installer at $viewerInstallerPath" -ForegroundColor Green
+Write-Host "Found agent installer at $agentInstallerPath" -ForegroundColor Green
 
 Write-Host "==================================================" -ForegroundColor Cyan
 Write-Host "Step 3: Performing clean installation..." -ForegroundColor Cyan
 Write-Host "==================================================" -ForegroundColor Cyan
-$installDir = "$env:LOCALAPPDATA\WonRemote Viewer"
-if (Test-Path $installDir) {
-    Write-Host "Removing existing installation directory..."
-    Remove-Item -Path $installDir -Recurse -Force -ErrorAction SilentlyContinue
+$viewerInstallDir = "$env:LOCALAPPDATA\WonRemote\Viewer"
+$agentInstallDir = "$env:LOCALAPPDATA\WonRemote\Agent"
+foreach ($installDir in @($viewerInstallDir, $agentInstallDir)) {
+    if (Test-Path $installDir) {
+        Write-Host "Removing existing installation directory: $installDir"
+        Remove-Item -Path $installDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 Write-Host "Running silent installation..."
@@ -87,7 +99,7 @@ Write-Host "Agent configuration written to $configPath" -ForegroundColor Green
 Write-Host "==================================================" -ForegroundColor Cyan
 Write-Host "Step 5: Starting Agent in background..." -ForegroundColor Cyan
 Write-Host "==================================================" -ForegroundColor Cyan
-$agentPath = "$installDir\wonremote-viewer.exe"
+$agentPath = "$agentInstallDir\wonremote-viewer.exe"
 if (-not (Test-Path $agentPath)) {
     throw "wonremote-viewer.exe not found at $agentPath"
 }

@@ -19,6 +19,9 @@ const npmCommand = process.platform === "win32" ? "cmd.exe" : "npm";
 const desktopBuildArgs = process.platform === "win32"
   ? ["/d", "/s", "/c", "npm run desktop:build"]
   : ["run", "desktop:build"];
+const agentDesktopBuildArgs = process.platform === "win32"
+  ? ["/d", "/s", "/c", "npx tauri build --config src-tauri/tauri.agent.conf.json"]
+  : ["exec", "tauri", "build", "--", "--config", "src-tauri/tauri.agent.conf.json"];
 
 function ensureExists(targetPath, label) {
   if (!fs.existsSync(targetPath)) {
@@ -83,9 +86,73 @@ function createAgentPortableZip() {
   ]);
 }
 
+function escapeNsisString(value) {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '$\\"');
+}
+
+function resolveMakensisPath() {
+  const candidates = [
+    process.env.WONREMOTE_MAKENSIS_PATH,
+    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, "tauri", "NSIS", "makensis.exe") : undefined,
+    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, "tauri", "NSIS", "Bin", "makensis.exe") : undefined,
+    "makensis.exe",
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (candidate === "makensis.exe" || fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  throw new Error("makensis.exe is missing. Build with Tauri once or set WONREMOTE_MAKENSIS_PATH.");
+}
+
+function createCombinedInstaller(viewerInstallerPath, agentInstallerPath) {
+  const outputPath = path.join(outputDir, stableFullInstallerName);
+  const scriptPath = path.join(outputDir, "WonRemote-Viewer-Agent-Setup.nsi");
+  const script = `!include LogicLib.nsh
+Unicode true
+Name "WonRemote Viewer + Agent"
+OutFile "${escapeNsisString(outputPath)}"
+RequestExecutionLevel user
+InstallDir "$LOCALAPPDATA\\WonRemote"
+Page instfiles
+
+Section "Install"
+  InitPluginsDir
+  SetOutPath "$PLUGINSDIR"
+  File /oname=WonRemote-Viewer-Setup.exe "${escapeNsisString(viewerInstallerPath)}"
+  File /oname=WonRemote-Agent-Setup.exe "${escapeNsisString(agentInstallerPath)}"
+
+  DetailPrint "Installing WonRemote Viewer..."
+  ExecWait '"$PLUGINSDIR\\WonRemote-Viewer-Setup.exe" /S' $0
+  \${If} $0 != 0
+    SetErrorLevel $0
+    Abort "WonRemote Viewer installer failed."
+  \${EndIf}
+
+  DetailPrint "Installing WonRemote Agent..."
+  ExecWait '"$PLUGINSDIR\\WonRemote-Agent-Setup.exe" /S' $1
+  \${If} $1 != 0
+    SetErrorLevel $1
+    Abort "WonRemote Agent installer failed."
+  \${EndIf}
+SectionEnd
+`;
+
+  fs.writeFileSync(scriptPath, script, "utf8");
+  fs.rmSync(outputPath, { force: true });
+  execFileSync(resolveMakensisPath(), [scriptPath], {
+    cwd: appRoot,
+    stdio: "inherit",
+    windowsHide: true,
+  });
+  fs.rmSync(scriptPath, { force: true });
+  ensureExists(outputPath, "combined WonRemote viewer and agent installer");
+}
+
 function buildAgentDefaultInstaller() {
   console.log("Building Agent-default NSIS installer...");
-  execFileSync(npmCommand, desktopBuildArgs, {
+  execFileSync(npmCommand, agentDesktopBuildArgs, {
     cwd: appRoot,
     env: {
       ...process.env,
@@ -114,19 +181,21 @@ for (const directory of requiredResourceDirs) {
 const installerDir = path.join(releaseTarget, "bundle", "nsis");
 if (fs.existsSync(installerDir)) {
   const expectedInstaller = `WonRemote Viewer_${packageJson.version}_x64-setup.exe`;
+  const expectedAgentInstaller = `WonRemote Agent_${packageJson.version}_x64-setup.exe`;
   const expectedInstallerPath = path.join(installerDir, expectedInstaller);
+  const expectedAgentInstallerPath = path.join(installerDir, expectedAgentInstaller);
   ensureExists(expectedInstallerPath, "current WonRemote NSIS installer");
   for (const entry of fs.readdirSync(installerDir)) {
     if (entry === expectedInstaller) {
       const viewerInstallerPath = path.join(installerDir, entry);
       copyInstaller(viewerInstallerPath, entry);
       copyInstaller(viewerInstallerPath, stableInstallerName);
-      copyInstaller(viewerInstallerPath, stableFullInstallerName);
     }
   }
   buildAgentDefaultInstaller();
-  ensureExists(expectedInstallerPath, "Agent-default WonRemote NSIS installer");
-  copyInstaller(expectedInstallerPath, stableAgentInstallerName);
+  ensureExists(expectedAgentInstallerPath, "Agent-default WonRemote NSIS installer");
+  copyInstaller(expectedAgentInstallerPath, stableAgentInstallerName);
+  createCombinedInstaller(expectedInstallerPath, expectedAgentInstallerPath);
 }
 
 writeReadme();

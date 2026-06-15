@@ -24,6 +24,7 @@ import { resolveFirebaseConfig } from "./firebaseConfig";
 import { buildAgentAuthEmail, buildAgentAuthPassword } from "./firebaseIdentity";
 import { buildFirestoreDevice, mapFirestoreDevice } from "./firestoreDevice";
 import { getWonRemoteFirebaseServices } from "./firebaseServices";
+import { throwExplainedFirebaseAuthError } from "./firebaseError";
 
 type ViewerFirebaseEnv = ImportMetaEnv;
 
@@ -37,7 +38,11 @@ export async function loginViewerWithFirebase(
   env: ViewerFirebaseEnv = import.meta.env,
 ): Promise<void> {
   const services = getViewerFirebaseServices(env);
-  await signInWithEmailAndPassword(services.auth, username.trim(), password);
+  try {
+    await signInWithEmailAndPassword(services.auth, username.trim(), password);
+  } catch (error) {
+    throwExplainedFirebaseAuthError(error);
+  }
 }
 
 export function subscribeFirebaseDevices(
@@ -110,8 +115,11 @@ export async function registerFirstRunAgentWithFirebase(
       if (isFirebaseAuthCode(createError, "auth/email-already-in-use")) {
         credential = await signInWithEmailAndPassword(services.auth, email, authPassword);
       } else {
-        throw error;
+        throwExplainedFirebaseAuthError(createError);
       }
+    }
+    if (!credential) {
+      throwExplainedFirebaseAuthError(error);
     }
   }
 

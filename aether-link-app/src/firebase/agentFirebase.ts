@@ -24,6 +24,7 @@ import { resolveFirebaseConfig } from "./firebaseConfig";
 import { buildAgentAuthEmail, buildAgentAuthPassword } from "./firebaseIdentity";
 import { buildFirestoreDevice, mapFirestoreDevice } from "./firestoreDevice";
 import { getWonRemoteFirebaseServices } from "./firebaseServices";
+import { throwExplainedFirebaseAuthError } from "./firebaseError";
 
 type AgentFirebaseEnv = Record<string, string | undefined>;
 
@@ -49,8 +50,11 @@ export async function registerAgentFirstRunWithFirebase(
       if (isFirebaseAuthCode(createError, "auth/email-already-in-use")) {
         credential = await signInWithEmailAndPassword(services.auth, email, authPassword);
       } else {
-        throw error;
+        throwExplainedFirebaseAuthError(createError);
       }
+    }
+    if (!credential) {
+      throwExplainedFirebaseAuthError(error);
     }
   }
 

@@ -21,6 +21,33 @@ describe("desktop packaging scaffold", () => {
     expect(config.version).toBe(packageJson.version);
   });
 
+  it("installs viewer and agent builds under separate WonRemote folders", () => {
+    const config = JSON.parse(readFileSync(path.join(projectRoot, "src-tauri", "tauri.conf.json"), "utf8"));
+    const agentConfigPath = path.join(projectRoot, "src-tauri", "tauri.agent.conf.json");
+    const viewerHookPath = path.join(projectRoot, "src-tauri", "windows", "viewer-install-hooks.nsh");
+    const agentHookPath = path.join(projectRoot, "src-tauri", "windows", "agent-install-hooks.nsh");
+    const packageReleaseScript = readFileSync(path.join(projectRoot, "scripts", "package-release-exes.js"), "utf8");
+
+    expect(config.bundle.windows.nsis).toMatchObject({
+      installerHooks: "./windows/viewer-install-hooks.nsh",
+      startMenuFolder: "WonRemote",
+    });
+    expect(readFileSync(viewerHookPath, "utf8")).toContain('StrCpy $INSTDIR "$LOCALAPPDATA\\WonRemote\\Viewer"');
+
+    expect(existsSync(agentConfigPath)).toBe(true);
+    const agentConfig = JSON.parse(readFileSync(agentConfigPath, "utf8"));
+    expect(agentConfig).toMatchObject({
+      productName: "WonRemote Agent",
+      identifier: "com.wonremote.agent",
+    });
+    expect(agentConfig.bundle.windows.nsis).toMatchObject({
+      installerHooks: "./windows/agent-install-hooks.nsh",
+      startMenuFolder: "WonRemote",
+    });
+    expect(readFileSync(agentHookPath, "utf8")).toContain('StrCpy $INSTDIR "$LOCALAPPDATA\\WonRemote\\Agent"');
+    expect(packageReleaseScript).toContain("tauri.agent.conf.json");
+  });
+
   it("exposes desktop packaging npm scripts", () => {
     expect(packageJson.scripts).toMatchObject({
       "desktop:dev": "tauri dev",
@@ -37,6 +64,23 @@ describe("desktop packaging scaffold", () => {
     const cargoToml = readFileSync(path.join(projectRoot, "src-tauri", "Cargo.toml"), "utf8");
 
     expect(cargoToml).toContain(`version = "${packageJson.version}"`);
+  });
+
+  it("limits Tauri Rust build parallelism for low-memory Windows build machines", () => {
+    const cargoConfig = readFileSync(path.join(projectRoot, "src-tauri", ".cargo", "config.toml"), "utf8");
+
+    expect(cargoConfig).toContain("[build]");
+    expect(cargoConfig).toContain("jobs = 1");
+  });
+
+  it("uses a memory-conservative Rust release profile for Windows packaging", () => {
+    const cargoToml = readFileSync(path.join(projectRoot, "src-tauri", "Cargo.toml"), "utf8");
+
+    expect(cargoToml).toContain("[profile.release]");
+    expect(cargoToml).toContain('opt-level = "s"');
+    expect(cargoToml).toContain("codegen-units = 16");
+    expect(cargoToml).toContain("lto = false");
+    expect(cargoToml).toContain('strip = "debuginfo"');
   });
 
   it("builds release desktop executables without attaching a console window", () => {
@@ -121,6 +165,9 @@ describe("desktop packaging scaffold", () => {
     expect(packageReleaseScript).toContain("WonRemote Agent.exe");
     expect(packageReleaseScript).toContain("WonRemote-Agent-Setup.exe");
     expect(packageReleaseScript).toContain("WonRemote-Viewer-Agent-Setup.exe");
+    expect(packageReleaseScript).toContain("createCombinedInstaller");
+    expect(packageReleaseScript).toContain("makensis.exe");
+    expect(packageReleaseScript).not.toContain("copyInstaller(viewerInstallerPath, stableFullInstallerName)");
     expect(packageReleaseScript).toContain("WonRemote-Viewer-Agent-Portable.zip");
     expect(packageReleaseScript).toContain("WonRemote-Agent-Portable.zip");
     expect(packageReleaseScript).toContain("WONREMOTE_DEFAULT_APP_MODE");
@@ -139,6 +186,7 @@ describe("desktop packaging scaffold", () => {
     expect(manifestScript).toContain("version=");
     expect(manifestScript).toContain("sha256=");
     expect(manifestScript).toContain("assetName=");
+    expect(manifestScript).toContain("WonRemote-Viewer-Agent-Setup.exe");
     expect(manifestScript).toContain("WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY");
   });
 
@@ -188,6 +236,14 @@ describe("desktop packaging scaffold", () => {
     expect(redirects["/download/portable"]).toContain("WonRemote-Viewer-Agent-Portable.zip");
     expect(redirects["/download/viewer-agent"]).toContain("WonRemote-Viewer-Agent-Setup.exe");
     expect(redirects["/download/agent-portable"]).toContain("WonRemote-Agent-Portable.zip");
+  });
+
+  it("verifies delivery against the split WonRemote install folders", () => {
+    const verifyDeliveryScript = readFileSync(path.join(projectRoot, "scripts", "verify-delivery.ps1"), "utf8");
+
+    expect(verifyDeliveryScript).toContain("$env:LOCALAPPDATA\\WonRemote\\Viewer");
+    expect(verifyDeliveryScript).toContain("$env:LOCALAPPDATA\\WonRemote\\Agent");
+    expect(verifyDeliveryScript).not.toContain("$env:LOCALAPPDATA\\WonRemote Viewer");
   });
 
   it("does not require a system Node installation at runtime", () => {
