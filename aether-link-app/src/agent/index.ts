@@ -21,6 +21,7 @@ import { resolveAgentDownloadDir, resolveSafeDownloadPath } from "./fileSafety";
 import { isSourceTreeUpdateTarget } from "./updateSafety";
 import {
   downloadInstallerUpdate,
+  prepareInstallerHandoff,
   isInstallerUpdateMetadata,
   type SafeInstallerUpdateMetadata,
 } from "./productionInstallerUpdate";
@@ -649,15 +650,20 @@ async function loadUpdateCheckData(): Promise<any | null> {
 
 async function handoffToProductionInstallerUpdate(data: SafeInstallerUpdateMetadata): Promise<void> {
   const baseDir = process.env.APPDATA ?? process.cwd();
-  const { installerArgs, installerPath } = await downloadInstallerUpdate(data, { baseDir });
+  const download = await downloadInstallerUpdate(data, { baseDir });
+  const handoff = await prepareInstallerHandoff(download, { baseDir });
+  const { installerArgs, installerPath } = download;
   console.log(`[WonRemote Agent] Verified installer update downloaded: ${installerPath}`);
   console.log(`[WonRemote Agent] Launching installer with args: ${installerArgs.join(" ")}`);
+  console.log(`[WonRemote Agent] Installer handoff script: ${handoff.scriptPath}`);
+  console.log(`[WonRemote Agent] Installer handoff log: ${handoff.logPath}`);
 
-  const installerProcess = spawn(installerPath, installerArgs, {
+  const installerProcess = spawn(handoff.command, handoff.args, {
     detached: true,
     stdio: "ignore",
     windowsHide: true,
-  });
+    creationFlags: handoff.creationFlags,
+  } as any);
   installerProcess.unref();
 
   if (streamProcess) {

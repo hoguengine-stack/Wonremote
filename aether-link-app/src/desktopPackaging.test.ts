@@ -66,6 +66,17 @@ describe("desktop packaging scaffold", () => {
     }
   });
 
+  it("allows installer update handoff to break away from the tray process job object", () => {
+    const tauriLib = readFileSync(path.join(projectRoot, "src-tauri", "src", "lib.rs"), "utf8");
+    const agentIndex = readFileSync(path.join(projectRoot, "src", "agent", "index.ts"), "utf8");
+
+    expect(tauriLib).toContain("JOB_OBJECT_LIMIT_BREAKAWAY_OK");
+    expect(tauriLib).toContain("JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK");
+    expect(agentIndex).toContain("prepareInstallerHandoff");
+    expect(agentIndex).toContain("creationFlags: handoff.creationFlags");
+    expect(agentIndex).not.toContain("spawn(installerPath, installerArgs");
+  });
+
   it("restarts the Agent in background after the Agent installer finishes", () => {
     const viewerHook = readFileSync(path.join(projectRoot, "src-tauri", "windows", "viewer-install-hooks.nsh"), "utf8");
     const agentHook = readFileSync(path.join(projectRoot, "src-tauri", "windows", "agent-install-hooks.nsh"), "utf8");

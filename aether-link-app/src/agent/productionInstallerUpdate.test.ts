@@ -1,9 +1,11 @@
-import { mkdir, readFile, rm } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  INSTALLER_HANDOFF_CREATION_FLAGS,
+  prepareInstallerHandoff,
   downloadInstallerUpdate,
   installerArgsForUpdate,
   isInstallerUpdateMetadata,
@@ -71,5 +73,36 @@ describe("production installer update", () => {
     expect(isInstallerUpdateMetadata({ updateKind: "source-tree" })).toBe(false);
     expect(installerArgsForUpdate({ installerArgs: ["/S", "/D=C:\\WonRemote"] })).toEqual(["/S", "/D=C:\\WonRemote"]);
     expect(installerArgsForUpdate({ installerArgs: ["", 12, "/S"] })).toEqual(["/S"]);
+  });
+
+  it("prepares a detached PowerShell handoff script that can break away from the Tauri job object", async () => {
+    const baseDir = path.join(os.tmpdir(), `wonremote-installer-handoff-${process.pid}-${Date.now()}`);
+    const installerPath = path.join(baseDir, "WonRemote", "updates", "WonRemote-Viewer-Agent-Setup.exe");
+
+    try {
+      await mkdir(path.dirname(installerPath), { recursive: true });
+      await writeFile(installerPath, "installer");
+
+      const result = await prepareInstallerHandoff(
+        {
+          installerArgs: ["/S", "/D=C:\\Users\\Tester\\WonRemote Agent"],
+          installerPath,
+        },
+        { baseDir },
+      );
+
+      const script = await readFile(result.scriptPath, "utf8");
+      expect(result.command).toBe("powershell.exe");
+      expect(result.args).toEqual(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", result.scriptPath]);
+      expect(result.creationFlags).toBe(INSTALLER_HANDOFF_CREATION_FLAGS);
+      expect(result.logPath).toBe(path.join(baseDir, "WonRemote", "updates", "installer-handoff.log"));
+      expect(script).toContain("Start-Process -FilePath");
+      expect(script).toContain("WaitForExit()");
+      expect(script).toContain("Installer exit code");
+      expect(script).toContain("WonRemote-Viewer-Agent-Setup.exe");
+      expect(script).toContain("/D=C:\\Users\\Tester\\WonRemote Agent");
+    } finally {
+      await rm(baseDir, { recursive: true, force: true });
+    }
   });
 });
