@@ -10,6 +10,12 @@ const FIREBASE_VITE_KEYS: [&str; 6] = [
 ];
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=WONREMOTE_DEFAULT_APP_MODE");
+    if let Ok(default_mode) = std::env::var("WONREMOTE_DEFAULT_APP_MODE") {
+        if !default_mode.trim().is_empty() {
+            println!("cargo:rustc-env=WONREMOTE_DEFAULT_APP_MODE={}", default_mode.trim());
+        }
+    }
     export_public_firebase_env_from_dotenv();
     tauri_build::build()
 }

@@ -13,6 +13,7 @@ import type {
 } from "../domain/types";
 import {
   closeFirebaseSession,
+  fetchFirebaseDevices,
   fetchFirebaseSessionStatus,
   isViewerFirebaseEnabled,
   loginViewerWithFirebase,
@@ -37,6 +38,10 @@ export async function loginAdmin(username: string, password: string): Promise<vo
 }
 
 export async function fetchDevices(): Promise<ManagedDevice[]> {
+  if (isViewerFirebaseEnabled()) {
+    return fetchFirebaseDevices();
+  }
+
   const body = await request<{ devices: ManagedDevice[] }>("/api/devices");
   return body.devices;
 }

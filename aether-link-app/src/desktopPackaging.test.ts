@@ -123,6 +123,7 @@ describe("desktop packaging scaffold", () => {
     expect(packageReleaseScript).toContain("WonRemote-Viewer-Agent-Setup.exe");
     expect(packageReleaseScript).toContain("WonRemote-Viewer-Agent-Portable.zip");
     expect(packageReleaseScript).toContain("WonRemote-Agent-Portable.zip");
+    expect(packageReleaseScript).toContain("WONREMOTE_DEFAULT_APP_MODE");
     expect(packageReleaseScript).toContain("Compress-Archive");
     expect(packageReleaseScript).toContain("server");
     expect(packageReleaseScript).toContain("runtime");
@@ -168,6 +169,8 @@ describe("desktop packaging scaffold", () => {
     expect(publishScript).toContain("WonRemote-Viewer-Agent-Setup.exe");
     expect(publishScript).toContain("WonRemote-Viewer-Agent-Portable.zip");
     expect(publishScript).toContain("WonRemote-Agent-Portable.zip");
+    expect(publishScript).toContain("$StableAgentInstallerPath");
+    expect(publishScript).toContain("Publish-Asset $StableAgentInstallerPath $StableAgentInstallerAssetName");
     expect(publishScript).toContain("wonremote-update-manifest.json");
   });
 
@@ -196,14 +199,14 @@ describe("desktop packaging scaffold", () => {
 
   it("keeps the viewer shell from spawning a second agent worker", () => {
     const tauriLib = readFileSync(path.join(projectRoot, "src-tauri", "src", "lib.rs"), "utf8");
-    const productionStart = tauriLib.slice(
-      tauriLib.indexOf("fn start_production_processes"),
-      tauriLib.indexOf("pub fn run()"),
+    const viewerModeSetup = tauriLib.slice(
+      tauriLib.indexOf("// Viewer Mode Setup"),
+      tauriLib.indexOf("// Show window for Viewer"),
     );
 
-    expect(productionStart).toContain("start_production_api_server_if_needed");
-    expect(productionStart).not.toContain("agent_cmd");
-    expect(productionStart).not.toContain('arg("--watch")');
+    expect(viewerModeSetup).toContain("start_local_api_server_for_mode");
+    expect(viewerModeSetup).not.toContain("agent_cmd");
+    expect(viewerModeSetup).not.toContain('arg("--watch")');
   });
 
   it("starts the bundled local API server before agent registration or heartbeat", () => {

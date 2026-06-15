@@ -15,6 +15,10 @@ const stableAgentZipName = "WonRemote-Agent-Portable.zip";
 
 const viewerSource = path.join(releaseTarget, "wonremote-viewer.exe");
 const requiredResourceDirs = ["server", "agent", "runtime", "bin"];
+const npmCommand = process.platform === "win32" ? "cmd.exe" : "npm";
+const desktopBuildArgs = process.platform === "win32"
+  ? ["/d", "/s", "/c", "npm run desktop:build"]
+  : ["run", "desktop:build"];
 
 function ensureExists(targetPath, label) {
   if (!fs.existsSync(targetPath)) {
@@ -79,6 +83,22 @@ function createAgentPortableZip() {
   ]);
 }
 
+function buildAgentDefaultInstaller() {
+  console.log("Building Agent-default NSIS installer...");
+  execFileSync(npmCommand, desktopBuildArgs, {
+    cwd: appRoot,
+    env: {
+      ...process.env,
+      WONREMOTE_DEFAULT_APP_MODE: "agent",
+    },
+    stdio: "inherit",
+  });
+}
+
+function copyInstaller(sourcePath, targetName) {
+  fs.copyFileSync(sourcePath, path.join(outputDir, targetName));
+}
+
 ensureExists(viewerSource, "Tauri viewer executable");
 
 fs.rmSync(outputDir, { recursive: true, force: true });
@@ -98,12 +118,15 @@ if (fs.existsSync(installerDir)) {
   ensureExists(expectedInstallerPath, "current WonRemote NSIS installer");
   for (const entry of fs.readdirSync(installerDir)) {
     if (entry === expectedInstaller) {
-      fs.copyFileSync(path.join(installerDir, entry), path.join(outputDir, entry));
-      fs.copyFileSync(path.join(installerDir, entry), path.join(outputDir, stableInstallerName));
-      fs.copyFileSync(path.join(installerDir, entry), path.join(outputDir, stableAgentInstallerName));
-      fs.copyFileSync(path.join(installerDir, entry), path.join(outputDir, stableFullInstallerName));
+      const viewerInstallerPath = path.join(installerDir, entry);
+      copyInstaller(viewerInstallerPath, entry);
+      copyInstaller(viewerInstallerPath, stableInstallerName);
+      copyInstaller(viewerInstallerPath, stableFullInstallerName);
     }
   }
+  buildAgentDefaultInstaller();
+  ensureExists(expectedInstallerPath, "Agent-default WonRemote NSIS installer");
+  copyInstaller(expectedInstallerPath, stableAgentInstallerName);
 }
 
 writeReadme();

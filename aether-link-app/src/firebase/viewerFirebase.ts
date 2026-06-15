@@ -4,6 +4,7 @@ import {
   collection,
   doc,
   getDoc,
+  getDocs,
   onSnapshot,
   orderBy,
   query,
@@ -54,6 +55,13 @@ export function subscribeFirebaseDevices(
     },
     (error) => onError(error),
   );
+}
+
+export async function fetchFirebaseDevices(env: ViewerFirebaseEnv = import.meta.env): Promise<ManagedDevice[]> {
+  const services = getViewerFirebaseServices(env);
+  const devicesQuery = query(collection(services.db, "devices"), orderBy("storeName"), orderBy("deviceNumber"));
+  const snapshot = await getDocs(devicesQuery);
+  return snapshot.docs.map((deviceDoc) => mapFirestoreDevice(deviceDoc.id, deviceDoc.data()));
 }
 
 export async function updateFirebaseDeviceMetadata(

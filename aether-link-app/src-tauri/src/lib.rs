@@ -40,6 +40,13 @@ const FIREBASE_APP_ID: Option<&str> = option_env!("VITE_WONREMOTE_FIREBASE_APP_I
 const FIREBASE_STORAGE_BUCKET: Option<&str> = option_env!("VITE_WONREMOTE_FIREBASE_STORAGE_BUCKET");
 const FIREBASE_MESSAGING_SENDER_ID: Option<&str> =
     option_env!("VITE_WONREMOTE_FIREBASE_MESSAGING_SENDER_ID");
+const DEFAULT_APP_MODE: Option<&str> = option_env!("WONREMOTE_DEFAULT_APP_MODE");
+const PUBLIC_FIREBASE_API_KEY: &str = "AIzaSyDb1Ihymmrt1SSYvbOAB2NjRV9PiWMY2y8";
+const PUBLIC_FIREBASE_AUTH_DOMAIN: &str = "wonremote-a7fd3.firebaseapp.com";
+const PUBLIC_FIREBASE_PROJECT_ID: &str = "wonremote-a7fd3";
+const PUBLIC_FIREBASE_APP_ID: &str = "1:52940136204:web:b4b4ff3e57c215e5dc3329";
+const PUBLIC_FIREBASE_STORAGE_BUCKET: &str = "wonremote-a7fd3.appspot.com";
+const PUBLIC_FIREBASE_MESSAGING_SENDER_ID: &str = "52940136204";
 
 pub struct Job {
     handle: HANDLE,
@@ -438,7 +445,19 @@ fn launched_as_agent() -> bool {
     let args: Vec<String> = std::env::args().collect();
     args.iter().any(|arg| arg == "--agent")
         || env::var("WONREMOTE_RUN_AS_AGENT").is_ok()
+        || default_mode_requests_agent()
         || executable_name_requests_agent()
+}
+
+fn default_mode_requests_agent() -> bool {
+    mode_value_requests_agent(DEFAULT_APP_MODE)
+        || env::var("WONREMOTE_DEFAULT_APP_MODE")
+            .ok()
+            .is_some_and(|mode| mode_value_requests_agent(Some(&mode)))
+}
+
+fn mode_value_requests_agent(mode: Option<&str>) -> bool {
+    mode.is_some_and(|value| value.eq_ignore_ascii_case("agent"))
 }
 
 fn bundled_node_path(resource_dir: &Path) -> PathBuf {
@@ -463,19 +482,43 @@ fn ensure_resource_exists(path: &Path, label: &str) -> Result<(), io::Error> {
     }
 }
 
-fn firebase_config_value(runtime_key: &str, build_value: Option<&str>) -> Option<String> {
+fn firebase_config_value(
+    runtime_key: &str,
+    build_value: Option<&str>,
+    public_value: &str,
+) -> Option<String> {
     env::var(runtime_key)
         .ok()
         .filter(|value| !value.trim().is_empty())
         .or_else(|| build_value.map(str::to_string).filter(|value| !value.trim().is_empty()))
+        .or_else(|| Some(public_value.to_string()))
+}
+
+fn firebase_disabled() -> bool {
+    ["WONREMOTE_DISABLE_FIREBASE", "VITE_WONREMOTE_DISABLE_FIREBASE"]
+        .iter()
+        .filter_map(|key| env::var(key).ok())
+        .any(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
 }
 
 fn firebase_mode_configured() -> bool {
+    if firebase_disabled() {
+        return false;
+    }
+
     has_required_firebase_values(
-        firebase_config_value("WONREMOTE_FIREBASE_API_KEY", FIREBASE_API_KEY),
-        firebase_config_value("WONREMOTE_FIREBASE_AUTH_DOMAIN", FIREBASE_AUTH_DOMAIN),
-        firebase_config_value("WONREMOTE_FIREBASE_PROJECT_ID", FIREBASE_PROJECT_ID),
-        firebase_config_value("WONREMOTE_FIREBASE_APP_ID", FIREBASE_APP_ID),
+        firebase_config_value("WONREMOTE_FIREBASE_API_KEY", FIREBASE_API_KEY, PUBLIC_FIREBASE_API_KEY),
+        firebase_config_value(
+            "WONREMOTE_FIREBASE_AUTH_DOMAIN",
+            FIREBASE_AUTH_DOMAIN,
+            PUBLIC_FIREBASE_AUTH_DOMAIN,
+        ),
+        firebase_config_value(
+            "WONREMOTE_FIREBASE_PROJECT_ID",
+            FIREBASE_PROJECT_ID,
+            PUBLIC_FIREBASE_PROJECT_ID,
+        ),
+        firebase_config_value("WONREMOTE_FIREBASE_APP_ID", FIREBASE_APP_ID, PUBLIC_FIREBASE_APP_ID),
     )
 }
 
@@ -489,32 +532,49 @@ fn has_required_firebase_values(
 }
 
 fn apply_firebase_env(command: &mut Command) {
+    if firebase_disabled() {
+        return;
+    }
+
     let values = [
         (
             "WONREMOTE_FIREBASE_API_KEY",
-            firebase_config_value("WONREMOTE_FIREBASE_API_KEY", FIREBASE_API_KEY),
+            firebase_config_value("WONREMOTE_FIREBASE_API_KEY", FIREBASE_API_KEY, PUBLIC_FIREBASE_API_KEY),
         ),
         (
             "WONREMOTE_FIREBASE_AUTH_DOMAIN",
-            firebase_config_value("WONREMOTE_FIREBASE_AUTH_DOMAIN", FIREBASE_AUTH_DOMAIN),
+            firebase_config_value(
+                "WONREMOTE_FIREBASE_AUTH_DOMAIN",
+                FIREBASE_AUTH_DOMAIN,
+                PUBLIC_FIREBASE_AUTH_DOMAIN,
+            ),
         ),
         (
             "WONREMOTE_FIREBASE_PROJECT_ID",
-            firebase_config_value("WONREMOTE_FIREBASE_PROJECT_ID", FIREBASE_PROJECT_ID),
+            firebase_config_value(
+                "WONREMOTE_FIREBASE_PROJECT_ID",
+                FIREBASE_PROJECT_ID,
+                PUBLIC_FIREBASE_PROJECT_ID,
+            ),
         ),
         (
             "WONREMOTE_FIREBASE_APP_ID",
-            firebase_config_value("WONREMOTE_FIREBASE_APP_ID", FIREBASE_APP_ID),
+            firebase_config_value("WONREMOTE_FIREBASE_APP_ID", FIREBASE_APP_ID, PUBLIC_FIREBASE_APP_ID),
         ),
         (
             "WONREMOTE_FIREBASE_STORAGE_BUCKET",
-            firebase_config_value("WONREMOTE_FIREBASE_STORAGE_BUCKET", FIREBASE_STORAGE_BUCKET),
+            firebase_config_value(
+                "WONREMOTE_FIREBASE_STORAGE_BUCKET",
+                FIREBASE_STORAGE_BUCKET,
+                PUBLIC_FIREBASE_STORAGE_BUCKET,
+            ),
         ),
         (
             "WONREMOTE_FIREBASE_MESSAGING_SENDER_ID",
             firebase_config_value(
                 "WONREMOTE_FIREBASE_MESSAGING_SENDER_ID",
                 FIREBASE_MESSAGING_SENDER_ID,
+                PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
             ),
         ),
     ];
@@ -691,16 +751,6 @@ fn is_startup_registered(is_agent: bool) -> bool {
     registry_value_exists(STARTUP_REGISTRY_PATH, value_name)
 }
 
-fn start_dev_processes(job: &Job) -> Result<(), io::Error> {
-    start_dev_api_server_if_needed(job)?;
-    Ok(())
-}
-
-fn start_production_processes(job: &Job, resource_dir: &Path) -> Result<(), io::Error> {
-    start_production_api_server_if_needed(job, resource_dir)?;
-    Ok(())
-}
-
 pub fn run() {
     let is_agent = launched_as_agent();
 
@@ -860,12 +910,12 @@ pub fn run() {
                 }
             } else {
                 // Viewer Mode Setup
-                if cfg!(debug_assertions) {
-                    start_dev_processes(&job)?;
+                let resource_dir = if cfg!(debug_assertions) {
+                    app_root_from_manifest()
                 } else {
-                    let resource_dir = app.path().resource_dir()?;
-                    start_production_processes(&job, &resource_dir)?;
-                }
+                    app.path().resource_dir()?
+                };
+                start_local_api_server_for_mode(&job, &resource_dir)?;
 
                 // Show window for Viewer
                 if let Some(window) = app.get_webview_window("main") {
@@ -1010,6 +1060,14 @@ mod registry_tests {
         assert!(executable_stem_requests_agent("WonRemote Agent"));
         assert!(executable_stem_requests_agent("wonremote-agent"));
         assert!(!executable_stem_requests_agent("WonRemote Viewer"));
+    }
+
+    #[test]
+    fn test_agent_default_compile_mode_enters_agent_mode() {
+        assert!(mode_value_requests_agent(Some("agent")));
+        assert!(mode_value_requests_agent(Some("AGENT")));
+        assert!(!mode_value_requests_agent(Some("viewer")));
+        assert!(!mode_value_requests_agent(None));
     }
 
     #[test]

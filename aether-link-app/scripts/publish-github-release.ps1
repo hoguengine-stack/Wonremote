@@ -34,11 +34,14 @@ $PortableZipName = "WonRemote-Viewer-Agent-Portable.zip"
 $AgentZipName = "WonRemote-Agent-Portable.zip"
 $ManifestName = "wonremote-update-manifest.json"
 $InstallerPath = Join-Path $ReleaseDir $InstallerName
+$StableInstallerPath = Join-Path $ReleaseDir $StableInstallerAssetName
+$StableAgentInstallerPath = Join-Path $ReleaseDir $StableAgentInstallerAssetName
+$StableFullInstallerPath = Join-Path $ReleaseDir $StableFullInstallerAssetName
 $PortableZipPath = Join-Path $ReleaseDir $PortableZipName
 $AgentZipPath = Join-Path $ReleaseDir $AgentZipName
 $ManifestPath = Join-Path $ReleaseDir $ManifestName
 
-foreach ($RequiredPath in @($InstallerPath, $PortableZipPath, $AgentZipPath, $ManifestPath)) {
+foreach ($RequiredPath in @($InstallerPath, $StableInstallerPath, $StableAgentInstallerPath, $StableFullInstallerPath, $PortableZipPath, $AgentZipPath, $ManifestPath)) {
   if (-not (Test-Path -LiteralPath $RequiredPath)) {
     throw "Required release asset is missing: $RequiredPath"
   }
@@ -101,9 +104,9 @@ function Publish-Asset($FilePath, $AssetName, $ContentType) {
 }
 
 Publish-Asset $InstallerPath $InstallerAssetName "application/octet-stream"
-Publish-Asset $InstallerPath $StableInstallerAssetName "application/octet-stream"
-Publish-Asset $InstallerPath $StableAgentInstallerAssetName "application/octet-stream"
-Publish-Asset $InstallerPath $StableFullInstallerAssetName "application/octet-stream"
+Publish-Asset $StableInstallerPath $StableInstallerAssetName "application/octet-stream"
+Publish-Asset $StableAgentInstallerPath $StableAgentInstallerAssetName "application/octet-stream"
+Publish-Asset $StableFullInstallerPath $StableFullInstallerAssetName "application/octet-stream"
 Publish-Asset $PortableZipPath $PortableZipName "application/zip"
 Publish-Asset $AgentZipPath $AgentZipName "application/zip"
 Publish-Asset $ManifestPath $ManifestName "application/json"
