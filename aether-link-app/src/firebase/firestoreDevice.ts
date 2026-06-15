@@ -41,7 +41,6 @@ export function buildFirestoreDevice(input: BuildFirestoreDeviceInput): ManagedD
     desktopName: buildDesktopName(businessNumber, input.installId),
     status: "online",
     lastSeenAt: input.nowIso,
-    connectionCode: undefined,
     version: input.version,
     ownerUid: input.ownerUid,
   };

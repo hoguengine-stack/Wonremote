@@ -14,12 +14,14 @@ describe("firestore device mapping", () => {
     expect(device).toMatchObject({
       id: "123-45-67890:AGENT-LOCALENV-425D1CB",
       businessNumber: "123-45-67890",
+      storeName: "사업자 123-45-67890",
       deviceNumber: "AGENT-LOCALENV-425D1CB",
       deviceName: "Agent AGENT-LOCALENV-425D1CB",
       ownerUid: "uid-1",
       status: "online",
       version: "0.1.2",
     });
+    expect("connectionCode" in device).toBe(false);
   });
 
   it("maps Firestore data back to the existing ManagedDevice shape", () => {
