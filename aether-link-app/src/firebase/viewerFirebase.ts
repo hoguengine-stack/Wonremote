@@ -1,4 +1,11 @@
-import { createUserWithEmailAndPassword, signInWithEmailAndPassword } from "firebase/auth";
+import {
+  browserLocalPersistence,
+  createUserWithEmailAndPassword,
+  onAuthStateChanged,
+  setPersistence,
+  signInWithEmailAndPassword,
+  signOut,
+} from "firebase/auth";
 import {
   addDoc,
   collection,
@@ -39,10 +46,29 @@ export async function loginViewerWithFirebase(
 ): Promise<void> {
   const services = getViewerFirebaseServices(env);
   try {
+    await setPersistence(services.auth, browserLocalPersistence);
     await signInWithEmailAndPassword(services.auth, username.trim(), password);
   } catch (error) {
     throwExplainedFirebaseAuthError(error);
   }
+}
+
+export function subscribeViewerAuthState(
+  onAuthenticated: (isAuthenticated: boolean) => void,
+  onError: (error: Error) => void,
+  env: ViewerFirebaseEnv = import.meta.env,
+): Unsubscribe {
+  const services = getViewerFirebaseServices(env);
+  return onAuthStateChanged(
+    services.auth,
+    (user) => onAuthenticated(Boolean(user)),
+    (error) => onError(error),
+  );
+}
+
+export async function logoutViewerWithFirebase(env: ViewerFirebaseEnv = import.meta.env): Promise<void> {
+  const services = getViewerFirebaseServices(env);
+  await signOut(services.auth);
 }
 
 export function subscribeFirebaseDevices(

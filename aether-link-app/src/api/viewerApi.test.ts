@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ManagedDevice } from "../domain/types";
-import { fetchFirebaseDevices, isViewerFirebaseEnabled } from "../firebase/viewerFirebase";
-import { fetchDevices } from "./viewerApi";
+import { fetchFirebaseDevices, isViewerFirebaseEnabled, logoutViewerWithFirebase } from "../firebase/viewerFirebase";
+import { fetchDevices, logoutAdmin } from "./viewerApi";
 
 const mockState = vi.hoisted(() => ({
   firebaseEnabled: true,
@@ -25,6 +25,7 @@ vi.mock("../firebase/viewerFirebase", () => ({
   fetchFirebaseSessionStatus: vi.fn(),
   isViewerFirebaseEnabled: vi.fn(() => mockState.firebaseEnabled),
   loginViewerWithFirebase: vi.fn(),
+  logoutViewerWithFirebase: vi.fn(),
   openFirebaseSession: vi.fn(),
   recordFirebaseInput: vi.fn(),
   registerFirstRunAgentWithFirebase: vi.fn(),
@@ -73,5 +74,21 @@ describe("viewer API routing", () => {
       headers: undefined,
       method: "GET",
     });
+  });
+
+  it("signs out of Firebase when the Viewer logs out in Firebase mode", async () => {
+    await logoutAdmin();
+
+    expect(isViewerFirebaseEnabled).toHaveBeenCalled();
+    expect(logoutViewerWithFirebase).toHaveBeenCalled();
+  });
+
+  it("does not touch Firebase sign-out when the Viewer logs out in local fallback mode", async () => {
+    mockState.firebaseEnabled = false;
+
+    await logoutAdmin();
+
+    expect(isViewerFirebaseEnabled).toHaveBeenCalled();
+    expect(logoutViewerWithFirebase).not.toHaveBeenCalled();
   });
 });

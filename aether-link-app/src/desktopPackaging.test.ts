@@ -302,6 +302,21 @@ describe("desktop packaging scaffold", () => {
     );
   });
 
+  it("restores a persisted Firebase Viewer session without storing the password", () => {
+    const appTsx = readFileSync(path.join(projectRoot, "src", "App.tsx"), "utf8");
+    const viewerApi = readFileSync(path.join(projectRoot, "src", "api", "viewerApi.ts"), "utf8");
+    const viewerFirebase = readFileSync(path.join(projectRoot, "src", "firebase", "viewerFirebase.ts"), "utf8");
+
+    expect(viewerFirebase).toContain("onAuthStateChanged");
+    expect(viewerFirebase).toContain("subscribeViewerAuthState");
+    expect(viewerApi).toContain("logoutAdmin");
+    expect(viewerApi).toContain("logoutViewerWithFirebase");
+    expect(appTsx).toContain("isCheckingAutoLogin");
+    expect(appTsx).toContain("subscribeViewerAuthState");
+    expect(appTsx).toContain("handleLogout");
+    expect(appTsx).not.toContain("localStorage.setItem(\"viewer-password\"");
+  });
+
   it("uses the Rust package version as the Tauri config fallback", () => {
     const tauriLib = readFileSync(path.join(projectRoot, "src-tauri", "src", "lib.rs"), "utf8");
 

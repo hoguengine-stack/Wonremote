@@ -26,6 +26,7 @@ import {
   closeSession,
   fetchDevices,
   loginAdmin,
+  logoutAdmin,
   openSession,
   recordInput,
   registerFirstRunAgent,
@@ -41,7 +42,11 @@ import {
   requestSecureSession,
   connectSecureSession,
 } from "./api/viewerApi";
-import { isViewerFirebaseEnabled, subscribeFirebaseDevices } from "./firebase/viewerFirebase";
+import {
+  isViewerFirebaseEnabled,
+  subscribeFirebaseDevices,
+  subscribeViewerAuthState,
+} from "./firebase/viewerFirebase";
 import { groupDevicesByStore } from "./domain/agentRegistry";
 import {
   scheduleVisualPingPresentedMeasurement,
@@ -132,6 +137,7 @@ export function App() {
 
 function ViewerApp() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isCheckingAutoLogin, setIsCheckingAutoLogin] = useState(() => isViewerFirebaseEnabled());
   const [loginError, setLoginError] = useState("");
   const [devices, setDevices] = useState<ManagedDevice[]>([]);
   const [session, setSession] = useState<RemoteSession | null>(null);
@@ -142,6 +148,40 @@ function ViewerApp() {
   const [updateAlert, setUpdateAlert] = useState<string | null>(null);
   const [editTarget, setEditTarget] = useState<DeviceEditTarget | null>(null);
   const [secureConnect, setSecureConnect] = useState<SecureConnectState | null>(null);
+
+  useEffect(() => {
+    if (!isViewerFirebaseEnabled()) {
+      setIsCheckingAutoLogin(false);
+      return;
+    }
+
+    let cancelled = false;
+    const unsubscribe = subscribeViewerAuthState(
+      (hasSession) => {
+        if (cancelled) {
+          return;
+        }
+        setIsAuthenticated(hasSession);
+        if (hasSession) {
+          setLoginError("");
+          setApiError("");
+        }
+        setIsCheckingAutoLogin(false);
+      },
+      (error) => {
+        if (cancelled) {
+          return;
+        }
+        setLoginError(error.message);
+        setIsCheckingAutoLogin(false);
+      },
+    );
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
 
   // Viewer auto update check loop
   useEffect(() => {
@@ -310,6 +350,18 @@ function ViewerApp() {
     }
   }
 
+  async function handleLogout() {
+    try {
+      await logoutAdmin();
+    } finally {
+      setIsAuthenticated(false);
+      setSession(null);
+      setInputLog([]);
+      setDevices([]);
+      setApiError("");
+    }
+  }
+
   async function markInput(action: string) {
     if (!session) {
       return;
@@ -436,6 +488,10 @@ function ViewerApp() {
     }
   }
 
+  if (isCheckingAutoLogin) {
+    return <AutoLoginScreen />;
+  }
+
   if (!isAuthenticated) {
     return <LoginScreen error={loginError} onSubmit={handleLogin} />;
   }
@@ -503,7 +559,7 @@ function ViewerApp() {
           ))}
         </div>
 
-        <button className="logout-button" type="button" onClick={() => setIsAuthenticated(false)}>
+        <button className="logout-button" type="button" onClick={handleLogout}>
           <LogOut size={17} />
           <span>로그아웃</span>
         </button>
@@ -996,6 +1052,21 @@ function LoginScreen({
           <span>진입</span>
         </button>
       </form>
+    </main>
+  );
+}
+
+function AutoLoginScreen() {
+  return (
+    <main className="login-screen">
+      <div className="login-panel">
+        <div className="login-badge">
+          <ShieldCheck size={20} />
+          <span>Viewer</span>
+        </div>
+        <h1>Auto login</h1>
+        <p>Checking saved Viewer session...</p>
+      </div>
     </main>
   );
 }

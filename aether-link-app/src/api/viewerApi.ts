@@ -17,6 +17,7 @@ import {
   fetchFirebaseSessionStatus,
   isViewerFirebaseEnabled,
   loginViewerWithFirebase,
+  logoutViewerWithFirebase,
   openFirebaseSession,
   recordFirebaseInput,
   registerFirstRunAgentWithFirebase,
@@ -35,6 +36,12 @@ export async function loginAdmin(username: string, password: string): Promise<vo
     method: "POST",
     body: { username, password },
   });
+}
+
+export async function logoutAdmin(): Promise<void> {
+  if (isViewerFirebaseEnabled()) {
+    await logoutViewerWithFirebase();
+  }
 }
 
 export async function fetchDevices(): Promise<ManagedDevice[]> {
