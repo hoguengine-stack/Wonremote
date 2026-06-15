@@ -35,6 +35,7 @@ import {
   parseProductionUpdateManifest,
   type ProductionUpdateMetadata,
 } from "../domain/updateManifest";
+import { resolveProductionUpdatePublicKey } from "../domain/updateTrust";
 import { nextPatchVersion } from "../domain/versioning";
 
 let goodChecksum = "";
@@ -127,7 +128,7 @@ function resolveUpdateSourceDir(): string {
 }
 
 async function loadProductionUpdateMetadata(): Promise<ProductionUpdateMetadata | null> {
-  const publicKeyPem = process.env.WONREMOTE_UPDATE_MANIFEST_PUBLIC_KEY?.trim();
+  const publicKeyPem = resolveProductionUpdatePublicKey();
   const manifestFile = process.env.WONREMOTE_UPDATE_MANIFEST_FILE?.trim();
   if (manifestFile) {
     try {
@@ -145,7 +146,7 @@ async function loadProductionUpdateMetadata(): Promise<ProductionUpdateMetadata 
     return null;
   }
   if (process.env.NODE_ENV !== "test" && !publicKeyPem) {
-    console.error("[API Server] WONREMOTE_UPDATE_MANIFEST_PUBLIC_KEY is required for production update manifests.");
+    console.error("[API Server] A production update manifest public key is required.");
     return null;
   }
 

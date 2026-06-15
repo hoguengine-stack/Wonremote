@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { generateKeyPairSync, sign } from "node:crypto";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -7,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createApiServer } from "./apiServer";
 import { createFileDeviceStore } from "./deviceStore";
 import type { ManagedDevice } from "../domain/types";
+import { buildProductionUpdateSignaturePayload } from "../domain/updateManifest";
 import { nextPatchVersion } from "../domain/versioning";
 
 describe("WonRemote local API server", () => {
@@ -654,16 +656,35 @@ describe("WonRemote local API server", () => {
     const tempDir = await mkdtemp(path.join(tmpdir(), "wonremote-manifest-"));
     const manifestPath = path.join(tempDir, "wonremote-update-manifest.json");
     const previousManifestFile = process.env.WONREMOTE_UPDATE_MANIFEST_FILE;
+    const previousPublicKey = process.env.WONREMOTE_UPDATE_MANIFEST_PUBLIC_KEY;
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    const assetName = "WonRemote Viewer_0.1.9_x64-setup.exe";
+    const downloadUrl =
+      "https://github.com/hoguengine-stack/Wonremote/releases/download/v0.1.9/WonRemote%20Viewer_0.1.9_x64-setup.exe";
+    const checksum = "b".repeat(64);
+    const signature = sign(
+      null,
+      Buffer.from(
+        buildProductionUpdateSignaturePayload({
+          assetName,
+          checksum,
+          downloadUrl,
+          latestVersion: "0.1.9",
+        }),
+        "utf8",
+      ),
+      privateKey,
+    ).toString("base64");
     await writeFile(
       manifestPath,
       JSON.stringify({
         version: "0.1.9",
         windows: {
           x64: {
-            name: "WonRemote Viewer_0.1.9_x64-setup.exe",
-            url: "https://github.com/hoguengine-stack/Wonremote/releases/download/v0.1.9/WonRemote%20Viewer_0.1.9_x64-setup.exe",
-            sha256: "b".repeat(64),
-            signature: "signature-placeholder",
+            name: assetName,
+            url: downloadUrl,
+            sha256: checksum,
+            signature,
           },
         },
       }),
@@ -672,17 +693,18 @@ describe("WonRemote local API server", () => {
 
     try {
       process.env.WONREMOTE_UPDATE_MANIFEST_FILE = manifestPath;
+      process.env.WONREMOTE_UPDATE_MANIFEST_PUBLIC_KEY = publicKey.export({ format: "pem", type: "spki" }).toString();
 
       const checkRes = await fetch(`${baseUrl}/api/update/check`);
       expect(checkRes.status).toBe(200);
       expect(await checkRes.json()).toMatchObject({
-        assetName: "WonRemote Viewer_0.1.9_x64-setup.exe",
-        checksum: "b".repeat(64),
+        assetName,
+        checksum,
         downloadUrl: expect.stringContaining("github.com/hoguengine-stack/Wonremote/releases/download/v0.1.9"),
         forceUpdate: false,
         latestVersion: "0.1.9",
         reloadViewer: false,
-        signature: "signature-placeholder",
+        signature,
         updateKind: "installer",
       });
     } finally {
@@ -690,6 +712,56 @@ describe("WonRemote local API server", () => {
         delete process.env.WONREMOTE_UPDATE_MANIFEST_FILE;
       } else {
         process.env.WONREMOTE_UPDATE_MANIFEST_FILE = previousManifestFile;
+      }
+      if (previousPublicKey === undefined) {
+        delete process.env.WONREMOTE_UPDATE_MANIFEST_PUBLIC_KEY;
+      } else {
+        process.env.WONREMOTE_UPDATE_MANIFEST_PUBLIC_KEY = previousPublicKey;
+      }
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an invalid production manifest signature with the bundled release key", async () => {
+    const tempDir = await mkdtemp(path.join(tmpdir(), "wonremote-manifest-"));
+    const manifestPath = path.join(tempDir, "wonremote-update-manifest.json");
+    const previousManifestFile = process.env.WONREMOTE_UPDATE_MANIFEST_FILE;
+    const previousPublicKey = process.env.WONREMOTE_UPDATE_MANIFEST_PUBLIC_KEY;
+    await writeFile(
+      manifestPath,
+      JSON.stringify({
+        version: "9.9.9",
+        windows: {
+          x64: {
+            name: "WonRemote.Viewer_9.9.9_x64-setup.exe",
+            url: "https://github.com/hoguengine-stack/Wonremote/releases/download/v9.9.9/WonRemote.Viewer_9.9.9_x64-setup.exe",
+            sha256: "f".repeat(64),
+            signature: "invalid-signature",
+          },
+        },
+      }),
+      "utf8",
+    );
+
+    try {
+      process.env.WONREMOTE_UPDATE_MANIFEST_FILE = manifestPath;
+      delete process.env.WONREMOTE_UPDATE_MANIFEST_PUBLIC_KEY;
+
+      const checkRes = await fetch(`${baseUrl}/api/update/check`);
+      expect(checkRes.status).toBe(200);
+      const body = await checkRes.json();
+      expect(body.latestVersion).not.toBe("9.9.9");
+      expect(body.updateKind).toBeUndefined();
+    } finally {
+      if (previousManifestFile === undefined) {
+        delete process.env.WONREMOTE_UPDATE_MANIFEST_FILE;
+      } else {
+        process.env.WONREMOTE_UPDATE_MANIFEST_FILE = previousManifestFile;
+      }
+      if (previousPublicKey === undefined) {
+        delete process.env.WONREMOTE_UPDATE_MANIFEST_PUBLIC_KEY;
+      } else {
+        process.env.WONREMOTE_UPDATE_MANIFEST_PUBLIC_KEY = previousPublicKey;
       }
       await rm(tempDir, { recursive: true, force: true });
     }

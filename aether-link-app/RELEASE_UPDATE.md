@@ -30,6 +30,10 @@ Default output:
 
 The private key must not be committed. The `.local-run` path is ignored by git.
 
+The public verification key is not secret. It must match the bundled key in
+`src/domain/updateTrust.ts` before producing a release installer. Rotate that
+bundled key only when intentionally replacing the release signing key.
+
 ## Create Signed Manifest
 
 Use an environment variable for the private key path. This avoids npm treating `--private-key` as an npm option on Windows.
@@ -47,23 +51,28 @@ Default manifest output:
 The default download URL points to:
 
 ```text
-https://github.com/hoguengine-stack/Wonremote/releases/download/v<version>/WonRemote%20Viewer_<version>_x64-setup.exe
+https://github.com/hoguengine-stack/Wonremote/releases/download/v<version>/WonRemote.Viewer_<version>_x64-setup.exe
 ```
 
-Upload both files to the same GitHub Release tag:
+Upload both files to the same GitHub Release tag. GitHub release assets should use
+the normalized dot name, because spaces in asset names are normalized by the
+release API and would otherwise break manifest downloads:
 
-- `WonRemote Viewer_<version>_x64-setup.exe`
+- `WonRemote.Viewer_<version>_x64-setup.exe`
 - `wonremote-update-manifest.json`
 
 ## Runtime Verification Key
 
-Configure the packaged API server environment with the public PEM:
+The packaged API server contains a bundled public verification key in
+`src/domain/updateTrust.ts`, so installed EXEs can validate production manifests
+without requiring a user-level environment variable.
+
+`WONREMOTE_UPDATE_MANIFEST_PUBLIC_KEY` is only an override for tests, temporary
+key rotation, or emergency recovery:
 
 ```powershell
 $env:WONREMOTE_UPDATE_MANIFEST_PUBLIC_KEY = Get-Content .local-run\update-signing\update-signing-public.pem -Raw
 ```
-
-Without `WONREMOTE_UPDATE_MANIFEST_PUBLIC_KEY`, production update checks intentionally return no update.
 
 ## Local Manifest Verification
 

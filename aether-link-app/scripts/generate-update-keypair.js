@@ -58,4 +58,4 @@ fs.writeFileSync(publicKeyPath, publicKeyPem, "utf8");
 
 console.log(`Private update signing key written to ${privateKeyPath}`);
 console.log(`Public update verification key written to ${publicKeyPath}`);
-console.log("Keep the private key out of git. Configure WONREMOTE_UPDATE_MANIFEST_PUBLIC_KEY with the public PEM.");
+console.log("Keep the private key out of git. Update src/domain/updateTrust.ts with the public PEM when rotating keys.");
