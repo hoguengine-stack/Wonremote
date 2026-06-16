@@ -21,4 +21,16 @@ describe("Firebase error handling", () => {
     );
     expect(explainFirebaseAuthError({ code: "auth/configuration-not-found" })).toContain("Email/Password");
   });
+
+  it("translates common Firebase Auth error codes to helpful Korean messages", () => {
+    expect(explainFirebaseAuthError({ code: "auth/invalid-email" })).toContain(
+      "올바른 이메일 형식이 아닙니다"
+    );
+    expect(explainFirebaseAuthError({ code: "auth/wrong-password" })).toContain(
+      "이메일 주소 또는 비밀번호가 일치하지 않습니다"
+    );
+    expect(explainFirebaseAuthError({ code: "auth/too-many-requests" })).toContain(
+      "로그인 시도가 너무 많아"
+    );
+  });
 });

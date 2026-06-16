@@ -37,6 +37,9 @@ const API_BASE_URL = import.meta.env.VITE_WONREMOTE_API_URL ?? "http://127.0.0.1
 
 export async function loginAdmin(username: string, password: string): Promise<void> {
   if (isViewerFirebaseEnabled()) {
+    if (username.trim() === "admin") {
+      throw new Error("Firebase 연동 모드에서는 'admin' 계정을 사용할 수 없습니다. 등록된 이메일 계정으로 로그인해 주세요.");
+    }
     await loginViewerWithFirebase(username, password);
     return;
   }

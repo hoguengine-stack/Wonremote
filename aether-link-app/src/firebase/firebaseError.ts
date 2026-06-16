@@ -26,6 +26,22 @@ export function explainFirebaseAuthError(error: unknown): string {
     ].join(" ");
   }
 
+  const code = readStringField(error, "code");
+  if (code) {
+    switch (code) {
+      case "auth/invalid-email":
+        return "올바른 이메일 형식이 아닙니다. Firebase 연동 모드에서는 이메일 주소를 계정명으로 사용해야 합니다.";
+      case "auth/invalid-credential":
+      case "auth/user-not-found":
+      case "auth/wrong-password":
+        return "이메일 주소 또는 비밀번호가 일치하지 않습니다.";
+      case "auth/user-disabled":
+        return "비활성화된 사용자 계정입니다.";
+      case "auth/too-many-requests":
+        return "로그인 시도가 너무 많아 일시적으로 계정이 차단되었습니다. 잠시 후 다시 시도해 주세요.";
+    }
+  }
+
   if (error instanceof Error && error.message.trim()) {
     return error.message;
   }
