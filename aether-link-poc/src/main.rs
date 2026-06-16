@@ -39,6 +39,7 @@ pub struct BenchmarkReport {
 #[derive(Debug, Clone, PartialEq)]
 pub enum RunMode {
     Benchmark,
+    Diagnostics,
     InjectInput { action: String },
     ListDisplays,
     Stream,
@@ -89,7 +90,7 @@ pub struct VideoControllerInfo {
     pub driver_version: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct InputDiagnostics {
     pub win32_error_code: u32,
     pub win32_error_message: String,
@@ -286,6 +287,13 @@ mod tests {
         let config = parse_benchmark_config(["aether-link-poc", "--mode", "list-displays"]).unwrap();
 
         assert!(matches!(config.run_mode, RunMode::ListDisplays));
+    }
+
+    #[test]
+    fn parse_config_accepts_diagnostics_mode() {
+        let config = parse_benchmark_config(["wonremote-poc", "--mode", "diagnostics"]).unwrap();
+
+        assert!(matches!(config.run_mode, RunMode::Diagnostics));
     }
 
     #[test]
@@ -679,6 +687,9 @@ where
                     "benchmark" => {
                         config.run_mode = RunMode::Benchmark;
                     }
+                    "diagnostics" => {
+                        config.run_mode = RunMode::Diagnostics;
+                    }
                     "inject-input" => {
                         config.run_mode = RunMode::InjectInput {
                             action: String::new(),
@@ -739,7 +750,7 @@ fn parse_positive_u64_arg(name: &str, value: Option<String>) -> Result<u64, Stri
 }
 
 fn benchmark_usage() -> String {
-    "usage: aether-link-poc [--duration seconds] [--output file.json] [--snapshot file.png] [--loop-sleep-ms ms] [--capture-timeout-ms ms] [--mode benchmark|inject-input|list-displays|stream] [--action command] [--output-index index]".to_string()
+    "usage: aether-link-poc [--duration seconds] [--output file.json] [--snapshot file.png] [--loop-sleep-ms ms] [--capture-timeout-ms ms] [--mode benchmark|diagnostics|inject-input|list-displays|stream] [--action command] [--output-index index]".to_string()
 }
 
 fn benchmark_output_path(
@@ -1684,6 +1695,14 @@ async fn main() {
     };
 
     match &config.run_mode {
+        RunMode::Diagnostics => {
+            println!(
+                "{}",
+                serde_json::to_string(&collect_input_diagnostics())
+                    .unwrap_or_else(|_| "{}".to_string())
+            );
+            return;
+        }
         RunMode::InjectInput { action } => {
             if action.is_empty() {
                 eprintln!("Error: --action is required in inject-input mode");

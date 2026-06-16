@@ -139,6 +139,7 @@ export function applyAgentHeartbeat(
         ? Math.max(0, Math.trunc(input.activeDisplayIndex))
         : currentDevice.activeDisplayIndex,
     macAddresses: sanitizeMacAddresses(input.macAddresses) ?? currentDevice.macAddresses,
+    controlDiagnostics: sanitizeControlDiagnostics(input.controlDiagnostics) ?? currentDevice.controlDiagnostics,
   };
   const nextDevices = devices.map((item, itemIndex) => (itemIndex === index ? device : item));
 
@@ -330,6 +331,29 @@ function sanitizeMacAddresses(macAddresses: AgentHeartbeatInput["macAddresses"])
     ),
   );
   return normalized.length > 0 ? normalized : undefined;
+}
+
+function sanitizeControlDiagnostics(
+  diagnostics: AgentHeartbeatInput["controlDiagnostics"],
+): ManagedDevice["controlDiagnostics"] | undefined {
+  if (!diagnostics || typeof diagnostics !== "object") {
+    return undefined;
+  }
+  return {
+    elevated: typeof diagnostics.elevated === "boolean" ? diagnostics.elevated : undefined,
+    integrityLevel:
+      typeof diagnostics.integrityLevel === "string" && diagnostics.integrityLevel.trim()
+        ? diagnostics.integrityLevel.trim()
+        : undefined,
+    win32ErrorCode:
+      typeof diagnostics.win32ErrorCode === "number" && Number.isFinite(diagnostics.win32ErrorCode)
+        ? Math.max(0, Math.trunc(diagnostics.win32ErrorCode))
+        : undefined,
+    win32ErrorMessage:
+      typeof diagnostics.win32ErrorMessage === "string" && diagnostics.win32ErrorMessage.trim()
+        ? diagnostics.win32ErrorMessage.trim()
+        : undefined,
+  };
 }
 
 function generateConnectionCode(): string {

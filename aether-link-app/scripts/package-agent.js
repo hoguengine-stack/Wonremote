@@ -8,10 +8,13 @@ const repoRoot = path.resolve(appRoot, "..");
 async function run() {
   const pkgDir = path.join(appRoot, "dist-agent-pkg");
   const binDir = path.join(pkgDir, "bin");
+  const nodeModulesDir = path.join(pkgDir, "node_modules");
 
   console.log(`Creating agent package directory at ${pkgDir}...`);
+  fs.rmSync(pkgDir, { recursive: true, force: true });
   fs.mkdirSync(pkgDir, { recursive: true });
   fs.mkdirSync(binDir, { recursive: true });
+  fs.mkdirSync(nodeModulesDir, { recursive: true });
 
   const nodeSrc = path.join(appRoot, "dist-runtime", "node.exe");
   const nodeDest = path.join(pkgDir, "node.exe");
@@ -36,6 +39,13 @@ async function run() {
 
   console.log("Copying Rust PoC capture binary...");
   fs.copyFileSync(pocSrc, pocDest);
+
+  console.log("Copying native WebRTC runtime...");
+  fs.cpSync(
+    path.join(appRoot, "node_modules", "node-datachannel"),
+    path.join(nodeModulesDir, "node-datachannel"),
+    { recursive: true },
+  );
 
   console.log("Creating launcher batch file wonremote-agent.bat...");
   const batContent = `@echo off

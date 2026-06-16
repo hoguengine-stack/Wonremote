@@ -14,7 +14,7 @@ const stablePortableZipName = "WonRemote-Viewer-Agent-Portable.zip";
 const stableAgentZipName = "WonRemote-Agent-Portable.zip";
 
 const viewerSource = path.join(releaseTarget, "wonremote-viewer.exe");
-const requiredResourceDirs = ["server", "agent", "runtime", "bin"];
+const requiredResourceDirs = ["server", "agent", "runtime", "bin", "node_modules"];
 const npmCommand = process.platform === "win32" ? "cmd.exe" : "npm";
 const desktopBuildArgs = process.platform === "win32"
   ? ["/d", "/s", "/c", "npm run desktop:build"]

@@ -22,6 +22,7 @@ export interface FirestoreDeviceDocument {
   activeDisplayIndex?: number;
   displays?: unknown;
   macAddresses?: unknown;
+  controlDiagnostics?: unknown;
 }
 
 interface BuildFirestoreDeviceInput {
@@ -67,6 +68,7 @@ export function mapFirestoreDevice(id: string, data: Partial<FirestoreDeviceDocu
     activeDisplayIndex: Number.isFinite(Number(data.activeDisplayIndex)) ? Number(data.activeDisplayIndex) : undefined,
     displays: sanitizeDisplays(data.displays),
     macAddresses: sanitizeMacAddresses(data.macAddresses),
+    controlDiagnostics: sanitizeControlDiagnostics(data.controlDiagnostics),
   };
 }
 
@@ -110,6 +112,19 @@ function sanitizeMacAddresses(value: unknown): string[] | undefined {
     ),
   );
   return macAddresses.length > 0 ? macAddresses : undefined;
+}
+
+function sanitizeControlDiagnostics(value: unknown): ManagedDevice["controlDiagnostics"] | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const raw = value as Record<string, unknown>;
+  return {
+    elevated: typeof raw.elevated === "boolean" ? raw.elevated : undefined,
+    integrityLevel: typeof raw.integrityLevel === "string" ? raw.integrityLevel : undefined,
+    win32ErrorCode: typeof raw.win32ErrorCode === "number" ? raw.win32ErrorCode : undefined,
+    win32ErrorMessage: typeof raw.win32ErrorMessage === "string" ? raw.win32ErrorMessage : undefined,
+  };
 }
 
 function coerceTimestamp(value: unknown): string {

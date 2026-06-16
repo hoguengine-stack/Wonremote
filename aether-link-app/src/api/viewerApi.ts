@@ -8,6 +8,7 @@ import type {
   ChatMessage,
   ClipboardData,
   TransferredFile,
+  FileTransferReceipt,
   ConnectionHistoryEntry,
   DeviceMetadataUpdateInput,
 } from "../domain/types";
@@ -16,6 +17,7 @@ import {
   fetchFirebaseChatMessages,
   fetchFirebaseDevices,
   fetchFirebaseClipboardText,
+  fetchFirebaseFileTransferReceipts,
   fetchFirebaseFiles,
   fetchFirebaseSessionStatus,
   fetchFirebaseTiles,
@@ -279,6 +281,14 @@ export async function fetchFiles(sessionId: string): Promise<TransferredFile[]> 
 
   const body = await request<{ files: TransferredFile[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/files`);
   return body.files;
+}
+
+export async function fetchFileTransferReceipts(sessionId: string): Promise<FileTransferReceipt[]> {
+  if (isViewerFirebaseEnabled()) {
+    return fetchFirebaseFileTransferReceipts(sessionId);
+  }
+
+  return [];
 }
 
 export async function fetchTiles(sessionId: string): Promise<{ tiles: any[]; width: number; height: number }> {

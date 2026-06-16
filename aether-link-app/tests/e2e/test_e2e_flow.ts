@@ -19,6 +19,44 @@ const sourcePackageJson = JSON.parse(await fs.readFile(path.join(sourceAppDir, "
 const currentAppVersion = sourcePackageJson.version;
 const nextAppVersion = nextPatchVersion(currentAppVersion);
 
+const FIREBASE_AND_RTC_ENV_KEYS = [
+  "VITE_WONREMOTE_FIREBASE_API_KEY",
+  "VITE_WONREMOTE_FIREBASE_AUTH_DOMAIN",
+  "VITE_WONREMOTE_FIREBASE_PROJECT_ID",
+  "VITE_WONREMOTE_FIREBASE_APP_ID",
+  "VITE_WONREMOTE_FIREBASE_STORAGE_BUCKET",
+  "VITE_WONREMOTE_FIREBASE_MESSAGING_SENDER_ID",
+  "WONREMOTE_FIREBASE_API_KEY",
+  "WONREMOTE_FIREBASE_AUTH_DOMAIN",
+  "WONREMOTE_FIREBASE_PROJECT_ID",
+  "WONREMOTE_FIREBASE_APP_ID",
+  "WONREMOTE_FIREBASE_STORAGE_BUCKET",
+  "WONREMOTE_FIREBASE_MESSAGING_SENDER_ID",
+  "VITE_WONREMOTE_RTC_STUN_URLS",
+  "VITE_WONREMOTE_RTC_TURN_URLS",
+  "VITE_WONREMOTE_RTC_TURN_USERNAME",
+  "VITE_WONREMOTE_RTC_TURN_CREDENTIAL",
+  "VITE_WONREMOTE_RTC_RELAY_ONLY",
+  "WONREMOTE_RTC_STUN_URLS",
+  "WONREMOTE_RTC_TURN_URLS",
+  "WONREMOTE_RTC_TURN_USERNAME",
+  "WONREMOTE_RTC_TURN_CREDENTIAL",
+  "WONREMOTE_RTC_RELAY_ONLY",
+] as const;
+
+function localE2eEnv(overrides: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of FIREBASE_AND_RTC_ENV_KEYS) {
+    delete env[key];
+  }
+  return {
+    ...env,
+    VITE_WONREMOTE_DISABLE_FIREBASE: "1",
+    WONREMOTE_DISABLE_FIREBASE: "1",
+    ...overrides,
+  };
+}
+
 async function readAgentPid(): Promise<number | null> {
   const pidPath = path.join(appData, "WonRemote", "agent.pid");
   try {
@@ -116,15 +154,14 @@ async function main() {
   const apiServer = spawn("npm", ["run", "api"], {
     cwd: appDir,
     shell: true,
-    env: {
-      ...process.env,
+    env: localE2eEnv({
       APPDATA: appData,
       PORT: "8787",
       NODE_ENV: "test",
       WONREMOTE_AGENT_OFFLINE_MS: "2000",
       WONREMOTE_APP_DIR: appDir,
       WONREMOTE_UPDATE_ARTIFACT_DIR: updateArtifactDir,
-    }
+    }),
   });
 
   if (apiServer.pid) {
@@ -179,8 +216,7 @@ async function main() {
     agentProcess = spawn("npm", ["run", "agent:watch"], {
       cwd: appDir,
       shell: true,
-      env: {
-        ...process.env,
+      env: localE2eEnv({
         WONREMOTE_API_URL: "http://127.0.0.1:8787",
         WONREMOTE_AGENT_ID: "1234567890",
         WONREMOTE_AGENT_PASSWORD: "1234",
@@ -190,7 +226,7 @@ async function main() {
         WONREMOTE_DOWNLOAD_DIR: downloadsDir,
         APPDATA: appData,
         NODE_ENV: "test"
-      }
+      }),
     });
 
     if (agentProcess.pid) {

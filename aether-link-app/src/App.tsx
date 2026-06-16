@@ -35,6 +35,7 @@ import {
   fetchChatMessages,
   sendClipboardText,
   fetchClipboardText,
+  fetchFileTransferReceipts,
   uploadFileChunk,
   fetchFiles,
   fetchConnectionHistory,
@@ -45,6 +46,7 @@ import {
 } from "./api/viewerApi";
 import {
   isViewerFirebaseEnabled,
+  startFirebaseViewerWebRtcTransport,
   subscribeFirebaseDevices,
   subscribeViewerAuthState,
 } from "./firebase/viewerFirebase";
@@ -1166,7 +1168,14 @@ function DeviceTable({
                 <b>{device.deviceNumber}</b>
                 <small>{device.deviceName}</small>
               </span>
-              <span>{device.desktopName}</span>
+              <span>
+                <b>{device.desktopName}</b>
+                {device.controlDiagnostics && (
+                  <small>
+                    {device.controlDiagnostics.elevated ? "Admin" : "User"} · {device.controlDiagnostics.integrityLevel ?? "Unknown"}
+                  </small>
+                )}
+              </span>
               <span className="device-actions">
                 <button
                   className={activeDeviceId === device.id ? "connect-button active" : "connect-button"}
@@ -1281,6 +1290,7 @@ function RemoteSessionPanel({
   const moveFrameRef = React.useRef<number | null>(null);
   const pendingMoveRef = React.useRef<{ dx: number; dy: number } | null>(null);
   const lastClipboardTextRef = React.useRef<string>("");
+  const activeTransferIdRef = React.useRef<string>("");
   const dangerConfirmUntilRef = React.useRef<Record<string, number>>({});
   const [latencyReport, setLatencyReport] = useState<string>("");
   const [pingState, setPingState] = useState<{ start: number } | null>(null);
@@ -1370,6 +1380,30 @@ function RemoteSessionPanel({
             console.log(`[File Auto Download]: ${file.filename}`);
           }
         }
+
+        const receipts = await fetchFileTransferReceipts(sessionId);
+        if (active && activeTransferIdRef.current && receipts.length > 0) {
+          const receipt = receipts.find((item) => item.transferId === activeTransferIdRef.current);
+          if (receipt?.status === "received") {
+            setTransferProgress({
+              fileName: receipt.filename,
+              progress: 100,
+              speed: "저장 완료",
+              timeLeft: "0s",
+            });
+            activeTransferIdRef.current = "";
+            window.setTimeout(() => setTransferProgress(null), 2500);
+          } else if (receipt?.status === "failed") {
+            activeTransferIdRef.current = "";
+            setTransferProgress(null);
+            alert(`File transfer failed on agent: ${receipt.error ?? "unknown error"}`);
+          } else if (receipt?.status === "partial") {
+            setTransferProgress((previous) => previous && {
+              ...previous,
+              progress: Math.max(previous.progress, Math.round((receipt.receivedChunks / Math.max(1, receipt.totalChunks)) * 100)),
+            });
+          }
+        }
       } catch (e) {
         // ignore
       }
@@ -1416,68 +1450,85 @@ function RemoteSessionPanel({
     }
 
     let active = true;
+    let webRtcTransport: { close: () => void } | null = null;
+    const drawTileFrame = (data: { tiles?: any[]; width?: number; height?: number }) => {
+      if (!active) return;
+
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      if (!ctx) return;
+
+      if (data.width && data.height) {
+        if (canvas.width !== data.width || canvas.height !== data.height) {
+          canvas.width = data.width;
+          canvas.height = data.height;
+          ctx.fillStyle = "#1e1e2e";
+          ctx.fillRect(0, 0, data.width, data.height);
+        }
+      }
+
+      if (data.tiles && data.tiles.length > 0) {
+        let loadedCount = 0;
+        for (const tile of data.tiles) {
+          const img = new Image();
+          img.onload = () => {
+            if (active) {
+              ctx.drawImage(img, tile.x * 32, tile.y * 32, tile.w, tile.h);
+            }
+            loadedCount++;
+
+            if (loadedCount === data.tiles!.length && pingState) {
+              scheduleVisualPingPresentedMeasurement({
+                requestAnimationFrame: (callback) =>
+                  requestAnimationFrame(() => {
+                    if (active) {
+                      callback();
+                    }
+                  }),
+                startedAtMs: pingState.start,
+                readPixel: () => {
+                  const imgData = ctx.getImageData(5, 5, 1, 1).data;
+                  return { r: imgData[0], g: imgData[1], b: imgData[2] };
+                },
+                nowMs: () => performance.now(),
+                onPresented: ({ latencyMs, sleepCommand }) => {
+                  if (!active) return;
+                  setLatencyReport(`E2E Latency: ${latencyMs.toFixed(1)}ms`);
+                  setPingState(null);
+
+                  if (sleepCommand === "set-sleep 100") {
+                    console.log(`Latency ${latencyMs.toFixed(1)}ms > 150ms. Switching to low FPS (sleep 100ms)`);
+                  }
+                  onInputEvent(sleepCommand);
+                },
+              });
+            }
+          };
+          img.src = `data:image/jpeg;base64,${tile.data}`;
+        }
+      }
+    };
+
+    if (isViewerFirebaseEnabled()) {
+      void startFirebaseViewerWebRtcTransport(sessionId, {
+        onFrame: drawTileFrame,
+        onState: (state) => setLatencyReport(state.replace(/^webrtc-/, "WebRTC: ")),
+        onError: (error) => console.warn("[WebRTC Viewer]", error.message),
+      }).then((transport) => {
+        if (!active) {
+          transport.close();
+          return;
+        }
+        webRtcTransport = transport;
+      }).catch((error) => {
+        console.warn("[WebRTC Viewer] transport unavailable:", error instanceof Error ? error.message : error);
+      });
+    }
+
     const pollTiles = async () => {
       try {
-        const data = await fetchTiles(sessionId);
-
-        if (!active) return;
-
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-        const ctx = canvas.getContext("2d", { willReadFrequently: true });
-        if (!ctx) return;
-
-        if (data.width && data.height) {
-          if (canvas.width !== data.width || canvas.height !== data.height) {
-            canvas.width = data.width;
-            canvas.height = data.height;
-            ctx.fillStyle = "#1e1e2e";
-            ctx.fillRect(0, 0, data.width, data.height);
-          }
-        }
-
-        if (data.tiles && data.tiles.length > 0) {
-          let loadedCount = 0;
-          for (const tile of data.tiles) {
-            const img = new Image();
-            img.onload = () => {
-              if (active) {
-                ctx.drawImage(img, tile.x * 32, tile.y * 32, tile.w, tile.h);
-              }
-              loadedCount++;
-
-              if (loadedCount === data.tiles.length) {
-                if (pingState) {
-                  scheduleVisualPingPresentedMeasurement({
-                    requestAnimationFrame: (callback) =>
-                      requestAnimationFrame(() => {
-                        if (active) {
-                          callback();
-                        }
-                      }),
-                    startedAtMs: pingState.start,
-                    readPixel: () => {
-                      const imgData = ctx.getImageData(5, 5, 1, 1).data;
-                      return { r: imgData[0], g: imgData[1], b: imgData[2] };
-                    },
-                    nowMs: () => performance.now(),
-                    onPresented: ({ latencyMs, sleepCommand }) => {
-                      if (!active) return;
-                      setLatencyReport(`E2E Latency: ${latencyMs.toFixed(1)}ms`);
-                      setPingState(null);
-
-                      if (sleepCommand === "set-sleep 100") {
-                        console.log(`Latency ${latencyMs.toFixed(1)}ms > 150ms. Switching to low FPS (sleep 100ms)`);
-                      }
-                      onInputEvent(sleepCommand);
-                    },
-                  });
-                }
-              }
-            };
-            img.src = `data:image/jpeg;base64,${tile.data}`;
-          }
-        }
+        drawTileFrame(await fetchTiles(sessionId));
       } catch (e) {
         // ignore
       }
@@ -1491,6 +1542,7 @@ function RemoteSessionPanel({
 
     return () => {
       active = false;
+      webRtcTransport?.close();
       clearInterval(intervalId);
     };
   }, [device, sessionId, pingState, session]);
@@ -1766,6 +1818,7 @@ function RemoteSessionPanel({
     }
 
     const transferId = `transfer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    activeTransferIdRef.current = transferId;
     const totalChunks = Math.max(1, Math.ceil(file.size / REMOTE_FILE_CHUNK_BYTES));
     const startedAtMs = performance.now();
     let sentBytes = 0;

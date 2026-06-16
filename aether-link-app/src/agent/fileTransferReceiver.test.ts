@@ -1,0 +1,92 @@
+import { mkdtemp, readFile, stat } from "node:fs/promises";
+import path from "node:path";
+import { tmpdir } from "node:os";
+import { describe, expect, it } from "vitest";
+import { computeSha256 } from "./checksum";
+import { saveTransferredFileChunk } from "./fileTransferReceiver";
+
+function base64(value: string): string {
+  return Buffer.from(value, "utf8").toString("base64");
+}
+
+describe("agent file transfer receiver", () => {
+  it("stores chunked files as part files and atomically completes them", async () => {
+    const downloadsDir = await mkdtemp(path.join(tmpdir(), "wonremote-files-"));
+    const env = { WONREMOTE_AGENT_DOWNLOADS_DIR: downloadsDir };
+
+    const first = await saveTransferredFileChunk(
+      {
+        id: "file-1",
+        filename: "report.txt",
+        fileData: base64("hello "),
+        transferId: "transfer-1",
+        chunkIndex: 0,
+        totalChunks: 2,
+        totalBytes: 11,
+        isLast: false,
+      },
+      env,
+    );
+    expect(first).toMatchObject({ status: "partial", receivedChunks: 1, receivedBytes: 6 });
+
+    const second = await saveTransferredFileChunk(
+      {
+        id: "file-2",
+        filename: "report.txt",
+        fileData: base64("world"),
+        transferId: "transfer-1",
+        chunkIndex: 1,
+        totalChunks: 2,
+        totalBytes: 11,
+        isLast: true,
+        fileSha256: computeSha256(Buffer.from("hello world")),
+      },
+      env,
+    );
+
+    expect(second).toMatchObject({ status: "complete", receivedChunks: 2, receivedBytes: 11 });
+    await expect(readFile(path.join(downloadsDir, "report.txt"), "utf8")).resolves.toBe("hello world");
+  });
+
+  it("rejects out-of-order chunks instead of silently corrupting the file", async () => {
+    const downloadsDir = await mkdtemp(path.join(tmpdir(), "wonremote-files-"));
+
+    await expect(
+      saveTransferredFileChunk(
+        {
+          id: "file-2",
+          filename: "report.txt",
+          fileData: base64("world"),
+          transferId: "transfer-1",
+          chunkIndex: 1,
+          totalChunks: 2,
+          totalBytes: 11,
+          isLast: true,
+        },
+        { WONREMOTE_AGENT_DOWNLOADS_DIR: downloadsDir },
+      ),
+    ).rejects.toThrow("Missing first file chunk");
+  });
+
+  it("ignores duplicate already-written chunks", async () => {
+    const downloadsDir = await mkdtemp(path.join(tmpdir(), "wonremote-files-"));
+    const env = { WONREMOTE_AGENT_DOWNLOADS_DIR: downloadsDir };
+    const firstChunk = {
+      id: "file-1",
+      filename: "report.txt",
+      fileData: base64("hello "),
+      transferId: "transfer-1",
+      chunkIndex: 0,
+      totalChunks: 2,
+      totalBytes: 11,
+      isLast: false,
+    };
+
+    await saveTransferredFileChunk(firstChunk, env);
+    const duplicate = await saveTransferredFileChunk(firstChunk, env);
+    expect(duplicate).toMatchObject({ status: "partial", receivedChunks: 1 });
+
+    const partStat = await stat(path.join(downloadsDir, "report.txt.transfer-1.part"));
+    expect(partStat.size).toBe(6);
+  });
+});

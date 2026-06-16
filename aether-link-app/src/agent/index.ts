@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, readFile, writeFile, rm, cp, access, rename } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rm, cp, access } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { networkInterfaces } from "node:os";
@@ -22,9 +22,9 @@ import {
   resolveCommandPollIntervalMs,
   type StreamCaptureBackend,
 } from "./agentStreamPolicy";
-import { computeSha256 } from "./checksum";
 import { WONREMOTE_APP_VERSION } from "../domain/appVersion";
-import { resolveAgentDownloadDir, resolveSafeDownloadPath } from "./fileSafety";
+import { computeSha256 } from "./checksum";
+import { saveTransferredFileChunk } from "./fileTransferReceiver";
 import { isSourceTreeUpdateTarget } from "./updateSafety";
 import {
   downloadInstallerUpdate,
@@ -35,19 +35,23 @@ import {
 import { loadProductionInstallerUpdateMetadata } from "./productionUpdateMetadata";
 import {
   authenticateAgentWithFirebase,
+  type AgentWebRtcTransport,
+  fetchActiveFirebaseSessionsForAgent,
   fetchSessionDataWithFirebase,
   isAgentFirebaseEnabled,
   postChatWithFirebase,
   postClipboardWithFirebase,
+  postFileTransferReceiptWithFirebase,
   postSessionTilesWithFirebase,
   registerAgentFirstRunWithFirebase,
+  startAgentWebRtcTransportWithFirebase,
 } from "../firebase/agentFirebase";
 import type {
   AgentBootstrapDeps,
   AgentCredentials,
   AgentLocalConfig,
 } from "./agentBootstrap";
-import type { AgentFirstRunResult, DeviceDisplayInfo } from "../domain/types";
+import type { AgentControlDiagnostics, AgentFirstRunResult, DeviceDisplayInfo } from "../domain/types";
 import { spawn, execFile, exec } from "node:child_process";
 import { promisify } from "node:util";
 import readline from "node:readline";
@@ -97,6 +101,7 @@ let streamRestartTimer: any = null;
 let streamFailureCount = 0;
 let streamBackend: StreamCaptureBackend = "dxgi";
 let streamGeneration = 0;
+let webRtcTransport: AgentWebRtcTransport | null = null;
 let currentOutputIndex = 0;
 let currentLoopSleepMs = 33;
 const pressedKeys = new Set<string>();
@@ -130,6 +135,22 @@ function startStreaming(
   startSessionPolling(deviceId);
 
   const pocPath = POC_PATH;
+  const sessionId = `session-${deviceId}`;
+  if (USE_FIREBASE) {
+    void startAgentWebRtcTransportWithFirebase(sessionId)
+      .then(async (transport) => {
+        if (!transport || generation !== streamGeneration) {
+          await transport?.close();
+          return;
+        }
+        await webRtcTransport?.close();
+        webRtcTransport = transport;
+        console.log("[WebRTC] Agent tile data channel transport is ready.");
+      })
+      .catch((error) => {
+        console.warn(`[WebRTC] Agent transport unavailable: ${error instanceof Error ? error.message : error}`);
+      });
+  }
   
   const env = {
     ...process.env,
@@ -152,14 +173,13 @@ function startStreaming(
       const data = JSON.parse(line);
       if (data.type === "frame") {
         streamFailureCount = 0;
-        const sessionId = `session-${deviceId}`;
-        if (USE_FIREBASE) {
+        if (USE_FIREBASE && !webRtcTransport?.sendFrame({ tiles: data.tiles, width: data.width, height: data.height })) {
           await postSessionTilesWithFirebase(sessionId, {
             tiles: data.tiles,
             width: data.width,
             height: data.height,
           });
-        } else {
+        } else if (!USE_FIREBASE) {
           await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/tiles`, {
             method: "POST",
             headers: { "content-type": "application/json" },
@@ -236,6 +256,8 @@ function stopSessionPolling() {
     clearTimeout(streamRestartTimer);
     streamRestartTimer = null;
   }
+  void webRtcTransport?.close();
+  webRtcTransport = null;
   isSessionActive = false;
   if (sessionPollIntervalId) {
     clearInterval(sessionPollIntervalId);
@@ -264,7 +286,7 @@ async function pollSessionData(deviceId: string) {
         }
       }
       for (const file of sessionData.files) {
-        await saveTransferredFile(file);
+        await saveTransferredFileAndReport(sessionId, file);
       }
       return;
     }
@@ -314,39 +336,7 @@ async function pollSessionData(deviceId: string) {
       const fileData: any = await fileRes.json();
       if (fileData.files && fileData.files.length > 0) {
         for (const file of fileData.files) {
-          console.log(`[파일 전송 수신] 파일명: ${file.filename} (크기: ${Math.round(file.fileData.length * 0.75)} bytes)`);
-          const downloadsDir = resolveAgentDownloadDir(process.env);
-          await mkdir(downloadsDir, { recursive: true });
-          const targetPath = resolveSafeDownloadPath(downloadsDir, String(file.filename ?? ""));
-          const buffer = Buffer.from(file.fileData, "base64");
-          if (typeof file.chunkSha256 === "string" && file.chunkSha256.trim()) {
-            const computedChunkSha256 = computeSha256(buffer);
-            if (computedChunkSha256 !== file.chunkSha256.trim().toLowerCase()) {
-              throw new Error(
-                `File chunk checksum mismatch: ${file.filename} #${file.chunkIndex ?? 0}`,
-              );
-            }
-          }
-          if (typeof file.transferId === "string" && Number.isInteger(file.chunkIndex)) {
-            const safeTransferId = file.transferId.replace(/[^a-zA-Z0-9_.-]/g, "_");
-            const partPath = `${targetPath}.${safeTransferId}.part`;
-            if (file.chunkIndex === 0) {
-              await writeFile(partPath, buffer);
-            } else {
-              await appendFile(partPath, buffer);
-            }
-            const chunkNumber = Number(file.chunkIndex) + 1;
-            const totalChunks = Number(file.totalChunks ?? chunkNumber);
-            console.log(`[File Chunk Saved] ${chunkNumber}/${totalChunks}: ${targetPath}`);
-            if (file.isLast) {
-              await rm(targetPath, { force: true });
-              await rename(partPath, targetPath);
-              console.log(`[File Transfer Complete] ${targetPath}`);
-            }
-          } else {
-            await writeFile(targetPath, buffer);
-          }
-          console.log(`[파일 저장 완료] 경로: ${targetPath}`);
+          await saveTransferredFileAndReport(sessionId, file);
         }
       }
     }
@@ -355,37 +345,36 @@ async function pollSessionData(deviceId: string) {
   }
 }
 
-async function saveTransferredFile(file: any): Promise<void> {
-  console.log(`[File Received] ${file.filename} (${Math.round(String(file.fileData ?? "").length * 0.75)} bytes)`);
-  const downloadsDir = resolveAgentDownloadDir(process.env);
-  await mkdir(downloadsDir, { recursive: true });
-  const targetPath = resolveSafeDownloadPath(downloadsDir, String(file.filename ?? ""));
-  const buffer = Buffer.from(String(file.fileData ?? ""), "base64");
-  if (typeof file.chunkSha256 === "string" && file.chunkSha256.trim()) {
-    const computedChunkSha256 = computeSha256(buffer);
-    if (computedChunkSha256 !== file.chunkSha256.trim().toLowerCase()) {
-      throw new Error(`File chunk checksum mismatch: ${file.filename} #${file.chunkIndex ?? 0}`);
+async function saveTransferredFileAndReport(sessionId: string, file: any): Promise<void> {
+  try {
+    const result = await saveTransferredFileChunk(file, process.env);
+    console.log(
+      `[File ${result.status}] ${result.filename} ${result.receivedChunks}/${result.totalChunks} chunks (${result.receivedBytes} bytes)`,
+    );
+    if (USE_FIREBASE && result.transferId) {
+      await postFileTransferReceiptWithFirebase(sessionId, {
+        transferId: result.transferId,
+        filename: result.filename,
+        status: result.status === "complete" ? "received" : "partial",
+        receivedChunks: result.receivedChunks,
+        totalChunks: result.totalChunks,
+        receivedBytes: result.receivedBytes,
+        savedPath: result.status === "complete" ? result.targetPath : undefined,
+      });
     }
-  }
-  if (typeof file.transferId === "string" && Number.isInteger(file.chunkIndex)) {
-    const safeTransferId = file.transferId.replace(/[^a-zA-Z0-9_.-]/g, "_");
-    const partPath = `${targetPath}.${safeTransferId}.part`;
-    if (file.chunkIndex === 0) {
-      await writeFile(partPath, buffer);
-    } else {
-      await appendFile(partPath, buffer);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[File Transfer Failed] ${String(file?.filename ?? "unknown")}: ${message}`);
+    if (USE_FIREBASE && typeof file?.transferId === "string") {
+      await postFileTransferReceiptWithFirebase(sessionId, {
+        transferId: file.transferId,
+        filename: String(file.filename ?? ""),
+        status: "failed",
+        receivedChunks: Number.isInteger(file.chunkIndex) ? Number(file.chunkIndex) : 0,
+        totalChunks: Number.isInteger(file.totalChunks) ? Number(file.totalChunks) : 0,
+        error: message,
+      });
     }
-    const chunkNumber = Number(file.chunkIndex) + 1;
-    const totalChunks = Number(file.totalChunks ?? chunkNumber);
-    console.log(`[File Chunk Saved] ${chunkNumber}/${totalChunks}: ${targetPath}`);
-    if (file.isLast) {
-      await rm(targetPath, { force: true });
-      await rename(partPath, targetPath);
-      console.log(`[File Transfer Complete] ${targetPath}`);
-    }
-  } else {
-    await writeFile(targetPath, buffer);
-    console.log(`[File Saved] ${targetPath}`);
   }
 }
 
@@ -474,6 +463,7 @@ async function main() {
 
   try {
     activeConfig = await sendHeartbeatWithRecovery(activeConfig);
+    await ensureActiveFirebaseSessionRecovery(activeConfig);
   } catch (error: any) {
     if (error.status === 404) {
       await handleUnregisteredDevice();
@@ -865,6 +855,7 @@ async function runAgentTick(config: AgentLocalConfig): Promise<AgentLocalConfig>
   let activeConfig = config;
   try {
     activeConfig = await sendHeartbeatWithRecovery(activeConfig);
+    await ensureActiveFirebaseSessionRecovery(activeConfig);
     await pollCommands(activeConfig);
     await checkUpdate(activeConfig);
     console.log("[Status] Online");
@@ -874,6 +865,7 @@ async function runAgentTick(config: AgentLocalConfig): Promise<AgentLocalConfig>
       if (recoveredConfig) {
         activeConfig = recoveredConfig;
         await sendHeartbeat(activeConfig);
+        await ensureActiveFirebaseSessionRecovery(activeConfig);
         console.log("[Status] Online");
         return activeConfig;
       } else {
@@ -909,6 +901,21 @@ async function runCommandPollTick(config: AgentLocalConfig): Promise<AgentLocalC
   } finally {
     isCommandPollInFlight = false;
   }
+}
+
+async function ensureActiveFirebaseSessionRecovery(config: AgentLocalConfig): Promise<void> {
+  if (!USE_FIREBASE || !config.registeredDeviceId || streamDesired) {
+    return;
+  }
+  const sessions = await fetchActiveFirebaseSessionsForAgent({
+    deviceId: config.registeredDeviceId,
+    installId: config.installId,
+  });
+  if (sessions.length === 0) {
+    return;
+  }
+  console.log(`[Agent] Recovering active remote session after restart: ${sessions[0].id}`);
+  startStreaming(config.registeredDeviceId, currentOutputIndex, currentLoopSleepMs);
 }
 
 
@@ -963,6 +970,7 @@ async function sendHeartbeat(config: AgentLocalConfig): Promise<void> {
 
   const displays = await discoverDisplays();
   const macAddresses = discoverMacAddresses();
+  const controlDiagnostics = await discoverControlDiagnostics();
   const result = await sendAgentHeartbeat({
     apiBaseUrl: API_BASE_URL,
     deviceId: config.registeredDeviceId,
@@ -971,6 +979,7 @@ async function sendHeartbeat(config: AgentLocalConfig): Promise<void> {
     displays,
     activeDisplayIndex: currentOutputIndex,
     macAddresses,
+    controlDiagnostics,
   });
   console.log(`Heartbeat accepted: ${result.device.id}`);
 }
@@ -1127,6 +1136,27 @@ function discoverMacAddresses(): string[] | undefined {
     ),
   );
   return macAddresses.length > 0 ? macAddresses : undefined;
+}
+
+async function discoverControlDiagnostics(): Promise<AgentControlDiagnostics | undefined> {
+  try {
+    const { stdout } = await execFileHidden(POC_PATH, ["--mode", "diagnostics"]);
+    const parsed = JSON.parse(stdout) as {
+      elevated?: unknown;
+      integrity_level?: unknown;
+      win32_error_code?: unknown;
+      win32_error_message?: unknown;
+    };
+    return {
+      elevated: typeof parsed.elevated === "boolean" ? parsed.elevated : undefined,
+      integrityLevel: typeof parsed.integrity_level === "string" ? parsed.integrity_level : undefined,
+      win32ErrorCode: typeof parsed.win32_error_code === "number" ? parsed.win32_error_code : undefined,
+      win32ErrorMessage: typeof parsed.win32_error_message === "string" ? parsed.win32_error_message : undefined,
+    };
+  } catch (error) {
+    console.warn(`[Agent] Control diagnostics unavailable: ${error instanceof Error ? error.message : error}`);
+    return undefined;
+  }
 }
 
 async function setClipboardText(text: string): Promise<void> {

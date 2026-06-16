@@ -70,7 +70,7 @@ async function build() {
     outfile: "dist-agent/index.mjs",
     sourcemap: true,
     absWorkingDir: appRoot,
-    external: ["fsevents"],
+    external: ["fsevents", "node-datachannel", "node-datachannel/polyfill"],
     banner: {
       js: nodeEsmRequireBanner,
     },

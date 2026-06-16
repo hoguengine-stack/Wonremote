@@ -29,11 +29,13 @@ import type {
   ChatMessage,
   ClipboardData,
   DeviceMetadataUpdateInput,
+  FileTransferReceipt,
   ManagedDevice,
   RemoteSession,
   TransferredFile,
 } from "../domain/types";
 import { sortDevices } from "../domain/agentRegistry";
+import { resolveRtcIceServers, shouldUseRelayOnly } from "../domain/rtcTransport";
 import { resolveFirebaseConfig } from "./firebaseConfig";
 import { buildAgentAuthEmail, buildAgentAuthPassword } from "./firebaseIdentity";
 import { buildFirestoreDevice, mapFirestoreDevice } from "./firestoreDevice";
@@ -41,6 +43,10 @@ import { getWonRemoteFirebaseServices } from "./firebaseServices";
 import { throwExplainedFirebaseAuthError } from "./firebaseError";
 
 type ViewerFirebaseEnv = ImportMetaEnv;
+
+export interface ViewerWebRtcTransport {
+  close: () => void;
+}
 
 export function isViewerFirebaseEnabled(env: ViewerFirebaseEnv = import.meta.env): boolean {
   return resolveFirebaseConfig(env) !== null;
@@ -318,6 +324,28 @@ export async function fetchFirebaseFiles(
   }), env);
 }
 
+export async function fetchFirebaseFileTransferReceipts(
+  sessionId: string,
+  env: ViewerFirebaseEnv = import.meta.env,
+): Promise<FileTransferReceipt[]> {
+  const services = getViewerFirebaseServices(env);
+  const snapshot = await getDocs(collection(services.db, "sessions", sessionId, "fileReceipts"));
+  return snapshot.docs.map((receiptDoc) => {
+    const data = receiptDoc.data() as Record<string, unknown>;
+    return {
+      transferId: String(data.transferId ?? receiptDoc.id),
+      filename: String(data.filename ?? ""),
+      status: data.status === "failed" ? "failed" : data.status === "received" ? "received" : "partial",
+      receivedChunks: Number(data.receivedChunks ?? 0),
+      totalChunks: Number(data.totalChunks ?? 0),
+      receivedBytes: typeof data.receivedBytes === "number" ? data.receivedBytes : undefined,
+      savedPath: typeof data.savedPath === "string" ? data.savedPath : undefined,
+      error: typeof data.error === "string" ? data.error : undefined,
+      updatedAt: coerceCreatedAt(data.updatedAt),
+    };
+  });
+}
+
 export async function fetchFirebaseTiles(
   sessionId: string,
   env: ViewerFirebaseEnv = import.meta.env,
@@ -335,6 +363,119 @@ export async function fetchFirebaseTiles(
     }),
     { tiles: [] as any[], width: 0, height: 0 },
   );
+}
+
+export async function startFirebaseViewerWebRtcTransport(
+  sessionId: string,
+  handlers: {
+    onFrame: (frame: { tiles: any[]; width: number; height: number }) => void;
+    onState?: (state: string) => void;
+    onError?: (error: Error) => void;
+  },
+  env: ViewerFirebaseEnv = import.meta.env,
+): Promise<ViewerWebRtcTransport> {
+  const services = getViewerFirebaseServices(env);
+  const peer = new RTCPeerConnection({
+    iceServers: resolveRtcIceServers(env),
+    iceTransportPolicy: shouldUseRelayOnly(env) ? "relay" : "all",
+  });
+  const signalRef = doc(services.db, "sessions", sessionId, "webrtc", "signal");
+  const viewerCandidates = collection(services.db, "sessions", sessionId, "viewerCandidates");
+  const agentCandidates = collection(services.db, "sessions", sessionId, "agentCandidates");
+  const appliedCandidateIds = new Set<string>();
+  let answerApplied = false;
+
+  const channel = peer.createDataChannel("wonremote-tiles", {
+    ordered: false,
+    maxRetransmits: 0,
+  });
+  channel.onopen = () => handlers.onState?.("webrtc-open");
+  channel.onclose = () => handlers.onState?.("webrtc-closed");
+  channel.onerror = () => handlers.onError?.(new Error("Viewer WebRTC data channel failed."));
+  channel.onmessage = (event) => {
+    try {
+      const frame = JSON.parse(String(event.data)) as { tiles?: unknown; width?: unknown; height?: unknown };
+      if (Array.isArray(frame.tiles)) {
+        handlers.onFrame({
+          tiles: frame.tiles,
+          width: Number(frame.width ?? 0),
+          height: Number(frame.height ?? 0),
+        });
+      }
+    } catch (error) {
+      handlers.onError?.(error instanceof Error ? error : new Error(String(error)));
+    }
+  };
+
+  peer.onconnectionstatechange = () => handlers.onState?.(`webrtc-${peer.connectionState}`);
+  peer.onicecandidate = (event) => {
+    if (!event.candidate) {
+      return;
+    }
+    void addDoc(viewerCandidates, {
+      candidate: event.candidate.toJSON(),
+      createdAt: serverTimestamp(),
+    }).catch((error) => handlers.onError?.(error instanceof Error ? error : new Error(String(error))));
+  };
+
+  const unsubscribeSignal = onSnapshot(
+    signalRef,
+    (snapshot) => {
+      const answer = snapshot.data()?.answer as { type?: unknown; sdp?: unknown } | undefined;
+      if (answerApplied || answer?.type !== "answer" || typeof answer.sdp !== "string") {
+        return;
+      }
+      answerApplied = true;
+      void peer
+        .setRemoteDescription({ type: "answer", sdp: answer.sdp })
+        .catch((error) => handlers.onError?.(error instanceof Error ? error : new Error(String(error))));
+    },
+    (error) => handlers.onError?.(error),
+  );
+
+  const unsubscribeAgentCandidates = onSnapshot(
+    agentCandidates,
+    (snapshot) => {
+      snapshot.docs.forEach((candidateDoc) => {
+        if (appliedCandidateIds.has(candidateDoc.id)) {
+          return;
+        }
+        appliedCandidateIds.add(candidateDoc.id);
+        const candidate = candidateDoc.data().candidate;
+        if (candidate) {
+          void peer
+            .addIceCandidate(candidate as RTCIceCandidateInit)
+            .catch((error) => handlers.onError?.(error instanceof Error ? error : new Error(String(error))));
+        }
+      });
+    },
+    (error) => handlers.onError?.(error),
+  );
+
+  const offer = await peer.createOffer();
+  await peer.setLocalDescription(offer);
+  await setDoc(
+    signalRef,
+    {
+      offer: {
+        type: offer.type,
+        sdp: offer.sdp,
+      },
+      state: "viewer-offer",
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true },
+  );
+  handlers.onState?.("webrtc-offer-sent");
+
+  return {
+    close: () => {
+      unsubscribeSignal();
+      unsubscribeAgentCandidates();
+      channel.close();
+      peer.close();
+    },
+  };
 }
 
 export async function fetchFirebaseSessionStatus(

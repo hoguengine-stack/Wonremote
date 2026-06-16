@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "WonRemote Viewer",
-  "version": "0.1.20",
+  "version": "0.1.21",
   "identifier": "com.wonremote.viewer",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -34,6 +34,7 @@
       "../dist-server/index.mjs": "server/index.mjs",
       "../dist-agent/index.mjs": "agent/index.mjs",
       "../dist-runtime/node.exe": "runtime/node.exe",
+      "../node_modules/node-datachannel": "node_modules/node-datachannel",
       "../../aether-link-poc/target/release/wonremote-poc.exe": "bin/wonremote-poc.exe"
     },
     "windows": {

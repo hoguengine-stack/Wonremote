@@ -15,6 +15,14 @@ export interface ManagedDevice {
   displays?: DeviceDisplayInfo[];
   activeDisplayIndex?: number;
   macAddresses?: string[];
+  controlDiagnostics?: AgentControlDiagnostics;
+}
+
+export interface AgentControlDiagnostics {
+  elevated?: boolean;
+  integrityLevel?: string;
+  win32ErrorCode?: number;
+  win32ErrorMessage?: string;
 }
 
 export interface DeviceDisplayInfo {
@@ -48,6 +56,7 @@ export interface AgentHeartbeatInput {
   displays?: DeviceDisplayInfo[];
   activeDisplayIndex?: number;
   macAddresses?: string[];
+  controlDiagnostics?: AgentControlDiagnostics;
 }
 
 export interface AgentCommand {
@@ -129,6 +138,18 @@ export interface TransferredFile {
   isLast?: boolean;
   chunkSha256?: string;
   fileSha256?: string;
+}
+
+export interface FileTransferReceipt {
+  transferId: string;
+  filename: string;
+  status: "partial" | "received" | "failed";
+  receivedChunks: number;
+  totalChunks: number;
+  receivedBytes?: number;
+  savedPath?: string;
+  error?: string;
+  updatedAt: string;
 }
 
 export interface ConnectionHistoryEntry {
