@@ -90,12 +90,72 @@ describe("desktop packaging scaffold", () => {
     expect(packageJson.scripts).toMatchObject({
       "desktop:dev": "tauri dev",
       "desktop:build": "tauri build",
+      "firebase:deploy": "powershell -ExecutionPolicy Bypass -File scripts/deploy-firebase.ps1",
+      "firebase:deploy:spark": "powershell -ExecutionPolicy Bypass -File scripts/deploy-firebase.ps1 -SparkOnly",
+      "firebase:deploy:spark:no-storage": "powershell -ExecutionPolicy Bypass -File scripts/deploy-firebase.ps1 -SparkOnly -SkipStorage",
       "release:exes": "npm run desktop:build && node scripts/package-release-exes.js",
       "release:manifest": "node scripts/create-update-manifest.js",
       "release:keypair": "node scripts/generate-update-keypair.js",
       "release:publish": "powershell -ExecutionPolicy Bypass -File scripts/publish-github-release.ps1",
     });
     expect(packageJson.devDependencies["@tauri-apps/cli"]).toBeDefined();
+  });
+
+  it("deploys Firebase functions, rules, and hosting only behind an explicit gate", () => {
+    const deployScriptPath = path.join(projectRoot, "scripts", "deploy-firebase.ps1");
+    expect(existsSync(deployScriptPath)).toBe(true);
+
+    const deployScript = readFileSync(deployScriptPath, "utf8");
+    expect(deployScript).toContain("WONREMOTE_FIREBASE_DEPLOY_APPROVED");
+    expect(deployScript).toContain("[switch]$SparkOnly");
+    expect(deployScript).toContain("[switch]$SkipStorage");
+    expect(deployScript).toContain('if ($DeployApproved -ne "YES")');
+    expect(deployScript).toContain("npm run build");
+    expect(deployScript).toContain("functions");
+    expect(deployScript).toContain("firebase.json");
+    expect(deployScript).toContain(".firebaserc");
+    expect(deployScript).toContain('"firestore:rules,storage,hosting"');
+    expect(deployScript).toContain('"firestore:rules,hosting"');
+    expect(deployScript).toContain('"functions,firestore:rules,storage,hosting"');
+    expect(deployScript).toContain('"functions,firestore:rules,hosting"');
+    expect(deployScript).toContain("Skipping Firebase Storage rules deploy");
+    expect(deployScript).toContain("firebase");
+    expect(deployScript).toContain("firebase-tools");
+    expect(deployScript).toContain("Get-Command npx");
+  });
+
+  it("does not render the local API URL field in Firebase Agent mode", () => {
+    const appSource = readFileSync(path.join(projectRoot, "src", "App.tsx"), "utf8");
+    const stylesSource = readFileSync(path.join(projectRoot, "src", "styles.css"), "utf8");
+
+    expect(appSource).toContain("{!firebaseMode && (");
+    expect(stylesSource).not.toContain('label:has(input[placeholder="http://127.0.0.1:8787"])');
+  });
+
+  it("routes Firebase file uploads through Storage before chunking starts", () => {
+    const appSource = readFileSync(path.join(projectRoot, "src", "App.tsx"), "utf8");
+
+    expect(appSource).toContain("if (isViewerFirebaseEnabled())");
+    expect(appSource).toContain("await uploadFileToStorage(sessionId, {");
+    expect(appSource.indexOf("await uploadFileToStorage(sessionId, {")).toBeLessThan(
+      appSource.indexOf("await uploadFileChunk(sessionId, {"),
+    );
+  });
+
+  it("downloads Firebase Storage file metadata through the Agent stream receiver", () => {
+    const agentSource = readFileSync(path.join(projectRoot, "src", "agent", "index.ts"), "utf8");
+
+    expect(agentSource).toContain("saveTransferredFileDownloadStream");
+    expect(agentSource).toContain("resolveFirebaseStorageDownloadUrl");
+    expect(agentSource).toContain('file.delivery === "firebase-storage"');
+    expect(agentSource).not.toContain("file.downloadUrl");
+  });
+
+  it("hashes Firebase Storage uploads before creating file metadata", () => {
+    const appSource = readFileSync(path.join(projectRoot, "src", "App.tsx"), "utf8");
+
+    expect(appSource).toContain("const fileSha256 = await sha256BlobHex(file)");
+    expect(appSource).toContain("fileSha256,");
   });
 
   it("keeps the Rust shell version aligned with the app package version", () => {
@@ -219,8 +279,9 @@ describe("desktop packaging scaffold", () => {
 
     expect(appTsx).toContain("const firebaseMode = isViewerFirebaseEnabled();");
     expect(appTsx).toContain("firebase-agent-panel");
+    expect(appTsx).toContain("{!firebaseMode && (");
     expect(appTsx).toContain("apiUrl: firebaseMode ? undefined : apiUrl");
-    expect(styles).toContain(".firebase-agent-panel label:has");
+    expect(styles).not.toContain(".firebase-agent-panel label:has");
   });
 
   it("can package separate viewer and agent portable executables", () => {
@@ -267,12 +328,15 @@ describe("desktop packaging scaffold", () => {
     expect(keypairScript).toContain("update-signing-public.pem");
   });
 
-  it("can publish the installer and manifest to a GitHub Release when a token is supplied", () => {
+  it("can publish the installer and manifest to a GitHub Release only after the release gate is approved", () => {
     const publishScriptPath = path.join(projectRoot, "scripts", "publish-github-release.ps1");
     expect(existsSync(publishScriptPath)).toBe(true);
 
     const publishScript = readFileSync(publishScriptPath, "utf8");
     expect(publishScript).toContain("GITHUB_TOKEN");
+    expect(publishScript).toContain("WONREMOTE_RELEASE_GATE_APPROVED");
+    expect(publishScript).toContain('if ($ReleaseGateApproved -ne "YES")');
+    expect(publishScript).toContain("WonRemote release gate is locked.");
     expect(publishScript).toContain("[string]$Repository = \"hoguengine-stack/Wonremote\"");
     expect(publishScript).toContain("api.github.com/repos/$Repository/releases");
     expect(publishScript).toContain("uploads.github.com/repos/$Repository/releases");

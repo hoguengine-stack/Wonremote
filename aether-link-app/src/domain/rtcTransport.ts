@@ -33,6 +33,16 @@ export function shouldUseRelayOnly(env: RtcEnv): boolean {
   return value ? ["1", "true", "yes", "on"].includes(value.trim().toLowerCase()) : false;
 }
 
+export function requireTurnWhenRelayOnly(env: RtcEnv): void {
+  if (!shouldUseRelayOnly(env)) {
+    return;
+  }
+  const turnUrls = parseCsv(firstEnv(env, "WONREMOTE_RTC_TURN_URLS", "VITE_WONREMOTE_RTC_TURN_URLS"));
+  if (turnUrls.length === 0) {
+    throw new Error("TURN relay-only mode requires WONREMOTE_RTC_TURN_URLS or VITE_WONREMOTE_RTC_TURN_URLS.");
+  }
+}
+
 function firstEnv(env: RtcEnv, ...keys: string[]): string | undefined {
   for (const key of keys) {
     const value = env[key]?.trim();

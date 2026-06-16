@@ -1,15 +1,29 @@
-import { describe, expect, it, vi } from "vitest";
-import { pollAgentCommands, sendAgentHeartbeat } from "./agentClient";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { pollAgentCommands, postAgentSessionApproval, sendAgentHeartbeat } from "./agentClient";
+
+const firebaseMock = vi.hoisted(() => ({
+  enabled: false,
+  pollAgentCommandsWithFirebase: vi.fn(),
+  sendAgentHeartbeatWithFirebase: vi.fn(),
+}));
 
 vi.mock("../firebase/agentFirebase", async (importOriginal) => {
   const original = await importOriginal<typeof import("../firebase/agentFirebase")>();
   return {
     ...original,
-    isAgentFirebaseEnabled: () => false,
+    isAgentFirebaseEnabled: () => firebaseMock.enabled,
+    pollAgentCommandsWithFirebase: firebaseMock.pollAgentCommandsWithFirebase,
+    sendAgentHeartbeatWithFirebase: firebaseMock.sendAgentHeartbeatWithFirebase,
   };
 });
 
 describe("agent client", () => {
+  afterEach(() => {
+    firebaseMock.enabled = false;
+    firebaseMock.pollAgentCommandsWithFirebase.mockReset();
+    firebaseMock.sendAgentHeartbeatWithFirebase.mockReset();
+  });
+
   it("sends a heartbeat with the registered device id and install id", async () => {
     const fetchImpl = vi.fn(async () => {
       return new Response(
@@ -183,5 +197,85 @@ describe("agent client", () => {
       message: "device not found",
       status: 404,
     });
+  });
+
+  it("routes heartbeat through Firebase without touching the local API", async () => {
+    firebaseMock.enabled = true;
+    firebaseMock.sendAgentHeartbeatWithFirebase.mockResolvedValue({
+      device: {
+        id: "123-45-67890:AGENT-ABC123",
+        status: "online",
+      },
+    });
+    const fetchImpl = vi.fn();
+
+    const result = await sendAgentHeartbeat({
+      apiBaseUrl: "http://127.0.0.1:8787",
+      deviceId: "123-45-67890:AGENT-ABC123",
+      fetchImpl,
+      installId: "agent-abc123",
+      version: "0.1.24",
+    });
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(firebaseMock.sendAgentHeartbeatWithFirebase).toHaveBeenCalledWith(
+      expect.objectContaining({
+        deviceId: "123-45-67890:AGENT-ABC123",
+        installId: "agent-abc123",
+        version: "0.1.24",
+      }),
+    );
+    expect(result.device).toMatchObject({
+      id: "123-45-67890:AGENT-ABC123",
+      status: "online",
+    });
+  });
+
+  it("routes command polling through Firebase without touching the local API", async () => {
+    firebaseMock.enabled = true;
+    firebaseMock.pollAgentCommandsWithFirebase.mockResolvedValue({
+      commands: [
+        {
+          action: "start-stream",
+          createdAt: "2026-06-16T01:00:00.000Z",
+          deviceId: "123-45-67890:AGENT-ABC123",
+          id: "cmd-firebase",
+        },
+      ],
+    });
+    const fetchImpl = vi.fn();
+
+    const result = await pollAgentCommands({
+      apiBaseUrl: "http://127.0.0.1:8787",
+      deviceId: "123-45-67890:AGENT-ABC123",
+      fetchImpl,
+      installId: "agent-abc123",
+    });
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(firebaseMock.pollAgentCommandsWithFirebase).toHaveBeenCalledWith({
+      deviceId: "123-45-67890:AGENT-ABC123",
+      installId: "agent-abc123",
+    });
+    expect(result.commands).toEqual([
+      expect.objectContaining({
+        action: "start-stream",
+        id: "cmd-firebase",
+      }),
+    ]);
+  });
+
+  it("does not post approval decisions to the local API in Firebase mode", async () => {
+    firebaseMock.enabled = true;
+    const fetchImpl = vi.fn();
+
+    await postAgentSessionApproval({
+      apiBaseUrl: "http://127.0.0.1:8787",
+      approved: true,
+      fetchImpl,
+      sessionId: "session-123-45-67890:AGENT-ABC123",
+    });
+
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

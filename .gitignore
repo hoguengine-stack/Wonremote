@@ -15,6 +15,7 @@ aether-link-app/dist-server/
 aether-link-app/release-exe/
 aether-link-app/src-tauri/gen/schemas/
 aether-link-poc/target/
+functions/lib/
 
 # Local runtime data and logs
 *.log

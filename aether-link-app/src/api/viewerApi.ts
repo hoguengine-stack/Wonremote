@@ -13,6 +13,11 @@ import type {
   DeviceMetadataUpdateInput,
 } from "../domain/types";
 import {
+  FIRESTORE_DIRECT_FILE_TRANSFER_MAX_BYTES,
+  canUseFirestoreDirectFilePayload,
+  canUseFirestoreDirectFileTransfer,
+} from "../domain/fileTransferPolicy";
+import {
   closeFirebaseSession,
   fetchFirebaseChatMessages,
   fetchFirebaseDevices,
@@ -24,13 +29,16 @@ import {
   isViewerFirebaseEnabled,
   loginViewerWithFirebase,
   logoutViewerWithFirebase,
+  connectFirebaseSecureSession,
   openFirebaseSession,
   recordFirebaseInput,
   registerFirstRunAgentWithFirebase,
+  requestFirebaseSecureSession,
   sendFirebaseChatMessage,
   sendFirebaseClipboardText,
   updateFirebaseDeviceMetadata,
   uploadFirebaseFileChunk,
+  uploadFirebaseFileToStorage,
 } from "../firebase/viewerFirebase";
 
 const API_BASE_URL = import.meta.env.VITE_WONREMOTE_API_URL ?? "http://127.0.0.1:8787";
@@ -140,7 +148,7 @@ export async function openSession(deviceId: string): Promise<{
 
 export async function requestSecureSession(deviceId: string): Promise<{ challengeId: string; expiresAt: string }> {
   if (isViewerFirebaseEnabled()) {
-    throw new Error("Firebase secure connection requires Cloud Functions validation.");
+    return requestFirebaseSecureSession(deviceId);
   }
 
   return request("/api/sessions/secure-request", {
@@ -158,7 +166,7 @@ export async function connectSecureSession(input: {
   inputLog: string[];
 }> {
   if (isViewerFirebaseEnabled()) {
-    throw new Error("Firebase secure connection requires Cloud Functions validation.");
+    return connectFirebaseSecureSession(input);
   }
 
   return request("/api/sessions/secure-connect", {
@@ -267,6 +275,15 @@ export async function uploadFileChunk(
   },
 ): Promise<void> {
   if (isViewerFirebaseEnabled()) {
+    if (!canUseFirestoreDirectFileTransfer(input.totalBytes)) {
+      throw new Error(
+        `Firebase direct file transfer is limited to ${Math.floor(FIRESTORE_DIRECT_FILE_TRANSFER_MAX_BYTES / (1024 * 1024))}MB until Firebase Storage or WebRTC file transport is enabled.`,
+      );
+    }
+    const payloadBytes = Math.floor((input.fileData.length * 3) / 4);
+    if (!canUseFirestoreDirectFilePayload(payloadBytes)) {
+      throw new Error("Firebase direct file chunk is too large for one Firestore document.");
+    }
     await uploadFirebaseFileChunk(sessionId, input);
     return;
   }
@@ -275,6 +292,23 @@ export async function uploadFileChunk(
     method: "POST",
     body: input,
   });
+}
+
+export async function uploadFileToStorage(
+  sessionId: string,
+  input: {
+    file: Blob;
+    filename: string;
+    transferId: string;
+    totalBytes: number;
+    fileSha256?: string;
+    onProgress?: (sentBytes: number, totalBytes: number) => void;
+  },
+): Promise<void> {
+  if (!isViewerFirebaseEnabled()) {
+    throw new Error("Storage file upload is only available in Firebase mode.");
+  }
+  await uploadFirebaseFileToStorage(sessionId, input);
 }
 
 export async function fetchFiles(sessionId: string): Promise<TransferredFile[]> {

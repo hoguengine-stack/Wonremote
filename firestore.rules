@@ -14,6 +14,31 @@ service cloud.firestore {
       return signedIn() && deviceDoc(deviceId).data.ownerUid == request.auth.uid;
     }
 
+    function sessionDoc(sessionId) {
+      return get(/databases/$(database)/documents/sessions/$(sessionId));
+    }
+
+    function ownsSession(sessionId) {
+      return signedIn() && sessionDoc(sessionId).data.ownerUid == request.auth.uid;
+    }
+
+    function isOwnSessionCreate(sessionId) {
+      return signedIn()
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.id == sessionId
+        && request.resource.data.deviceId is string
+        && request.resource.data.state == "connected"
+        && deviceDoc(request.resource.data.deviceId).data.ownerUid == request.auth.uid;
+    }
+
+    function isOwnSessionClose(sessionId) {
+      return ownsSession(sessionId)
+        && request.resource.data.ownerUid == resource.data.ownerUid
+        && request.resource.data.deviceId == resource.data.deviceId
+        && request.resource.data.id == resource.data.id
+        && request.resource.data.state == "closed";
+    }
+
     function isOwnDeviceCreate() {
       return signedIn()
         && request.resource.data.ownerUid == request.auth.uid
@@ -23,27 +48,162 @@ service cloud.firestore {
         && request.resource.data.status == "online";
     }
 
-    function isPendingCommandCreate() {
-      return signedIn()
+    function isOwnDeviceUpdate(deviceId) {
+      return ownsDevice(deviceId)
+        && request.resource.data.ownerUid == resource.data.ownerUid
+        && request.resource.data.businessNumber == resource.data.businessNumber
+        && request.resource.data.deviceNumber == resource.data.deviceNumber
+        && request.resource.data.installId == resource.data.installId;
+    }
+
+    function isOwnDeviceCommandCreate(deviceId) {
+      return ownsDevice(deviceId)
         && request.resource.data.action is string
         && request.resource.data.state == "pending";
     }
 
+    function ownsSecureChallenge() {
+      return signedIn() && resource.data.ownerUid == request.auth.uid;
+    }
+
+    function isOwnSecureChallengeCreate() {
+      return signedIn()
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.deviceId is string
+        && deviceDoc(request.resource.data.deviceId).data.ownerUid == request.auth.uid
+        && request.resource.data.challengeId is string
+        && request.resource.data.code is string
+        && request.resource.data.state == "pending";
+    }
+
+    function isOwnSecureChallengeUpdate() {
+      return ownsSecureChallenge()
+        && request.resource.data.ownerUid == resource.data.ownerUid
+        && request.resource.data.deviceId == resource.data.deviceId
+        && request.resource.data.challengeId == resource.data.challengeId
+        && request.resource.data.code == resource.data.code
+        && request.resource.data.state in ["used", "expired"];
+    }
+
+    function isOwnSessionFileCreate(sessionId) {
+      return ownsSession(sessionId)
+        && request.resource.data.sender == "viewer"
+        && request.resource.data.target == "agent"
+        && request.resource.data.filename is string
+        && request.resource.data.transferId is string
+        && request.resource.data.totalBytes is number
+        && request.resource.data.totalBytes <= 500 * 1024 * 1024
+        && (
+          (
+            request.resource.data.keys().hasOnly([
+              "createdAt",
+              "delivery",
+              "fileData",
+              "fileSha256",
+              "filename",
+              "isLast",
+              "sender",
+              "storagePath",
+              "target",
+              "totalBytes",
+              "totalChunks",
+              "transferId"
+            ])
+            &&
+            request.resource.data.delivery == "firebase-storage"
+            && request.resource.data.fileData == ""
+            && request.resource.data.storagePath is string
+            && request.resource.data.isLast == true
+            && request.resource.data.totalChunks == 1
+          ) ||
+          (
+            request.resource.data.keys().hasOnly([
+              "chunkIndex",
+              "chunkSha256",
+              "createdAt",
+              "delivery",
+              "fileData",
+              "fileSha256",
+              "filename",
+              "isLast",
+              "sender",
+              "target",
+              "totalBytes",
+              "totalChunks",
+              "transferId"
+            ])
+            &&
+            request.resource.data.delivery == "firestore-direct"
+            && request.resource.data.fileData is string
+            && request.resource.data.fileData.size() <= 128 * 1024
+          )
+        );
+    }
+
     match /devices/{deviceId} {
-      allow read: if signedIn();
+      allow read: if ownsDevice(deviceId);
       allow create: if isOwnDeviceCreate();
-      allow update: if signedIn() && resource.data.ownerUid == request.auth.uid;
+      allow update: if isOwnDeviceUpdate(deviceId);
       allow delete: if false;
 
       match /commands/{commandId} {
-        allow create: if isPendingCommandCreate();
+        allow create: if isOwnDeviceCommandCreate(deviceId);
         allow read, update: if ownsDevice(deviceId);
         allow delete: if false;
       }
     }
 
     match /sessions/{sessionId} {
-      allow read, create, update: if signedIn();
+      allow read: if ownsSession(sessionId);
+      allow update: if isOwnSessionClose(sessionId);
+      allow create: if isOwnSessionCreate(sessionId);
+      allow delete: if false;
+
+      match /chat/{messageId} {
+        allow read, create, delete: if ownsSession(sessionId);
+        allow update: if false;
+      }
+
+      match /clipboard/{clipboardId} {
+        allow read, create, delete: if ownsSession(sessionId);
+        allow update: if false;
+      }
+
+      match /files/{fileId} {
+        allow read, delete: if ownsSession(sessionId);
+        allow create: if isOwnSessionFileCreate(sessionId);
+        allow update: if false;
+      }
+
+      match /tileFrames/{frameId} {
+        allow read, create, delete: if ownsSession(sessionId);
+        allow update: if false;
+      }
+
+      match /fileReceipts/{transferId} {
+        allow read, create, update: if ownsSession(sessionId);
+        allow delete: if false;
+      }
+
+      match /webrtc/{signalId} {
+        allow read, create, update, delete: if ownsSession(sessionId);
+      }
+
+      match /viewerCandidates/{candidateId} {
+        allow read, create, delete: if ownsSession(sessionId);
+        allow update: if false;
+      }
+
+      match /agentCandidates/{candidateId} {
+        allow read, create, delete: if ownsSession(sessionId);
+        allow update: if false;
+      }
+    }
+
+    match /secureChallenges/{challengeId} {
+      allow create: if isOwnSecureChallengeCreate();
+      allow read: if ownsSecureChallenge();
+      allow update: if isOwnSecureChallengeUpdate();
       allow delete: if false;
     }
   }

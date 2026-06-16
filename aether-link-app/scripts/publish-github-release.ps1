@@ -15,6 +15,15 @@ if (-not $Version) {
   $Version = $PackageJson.version
 }
 
+$ReleaseGateApproved = $env:WONREMOTE_RELEASE_GATE_APPROVED
+if ($ReleaseGateApproved -ne "YES") {
+  throw @"
+WonRemote release gate is locked.
+Set WONREMOTE_RELEASE_GATE_APPROVED=YES only after confirming all P0/P1 requirements are complete except explicitly deferred physical J1800/J1900 validation.
+Do not use this flag for routine E2E update testing; use a local fixture/update server instead.
+"@
+}
+
 $Token = $env:GITHUB_TOKEN
 if (-not $Token) {
   $Token = $env:GH_TOKEN

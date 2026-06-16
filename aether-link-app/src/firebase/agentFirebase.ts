@@ -14,6 +14,7 @@ import {
   where,
   writeBatch,
 } from "firebase/firestore";
+import { getDownloadURL, ref } from "firebase/storage";
 import type {
   AgentCommand,
   AgentCommandPollResult,
@@ -26,7 +27,7 @@ import type {
   FileTransferReceipt,
   TransferredFile,
 } from "../domain/types";
-import { resolveRtcIceServers, shouldUseRelayOnly } from "../domain/rtcTransport";
+import { requireTurnWhenRelayOnly, resolveRtcIceServers, shouldUseRelayOnly } from "../domain/rtcTransport";
 import { resolveFirebaseConfig } from "./firebaseConfig";
 import { buildAgentAuthEmail, buildAgentAuthPassword } from "./firebaseIdentity";
 import { buildFirestoreDevice, mapFirestoreDevice, mergeFirstRunDeviceDocument } from "./firestoreDevice";
@@ -242,10 +243,12 @@ export async function fetchActiveFirebaseSessionsForAgent(
   if (data.installId && data.installId !== input.installId) {
     throwStatusError("Firebase device installId mismatch", 409);
   }
+  const userId = requireCurrentAgentUserId(services.auth.currentUser?.uid);
 
   const sessionsQuery = query(
     collection(services.db, "sessions"),
     where("deviceId", "==", input.deviceId),
+    where("ownerUid", "==", userId),
     limit(10),
   );
   const snapshot = await getDocs(sessionsQuery);
@@ -295,6 +298,7 @@ export async function startAgentWebRtcTransportWithFirebase(
     return null;
   }
 
+  requireTurnWhenRelayOnly(env);
   const peer = new PeerConnectionCtor({
     iceServers: resolveRtcIceServers(env) as any,
     iceTransportPolicy: shouldUseRelayOnly(env) ? "relay" : "all",
@@ -379,7 +383,7 @@ async function loadAgentPeerConnectionCtor(): Promise<any | null> {
     const rtcModule = await import("node-datachannel/polyfill");
     return rtcModule.RTCPeerConnection;
   } catch (error) {
-    console.warn(`[WebRTC] node-datachannel is unavailable; falling back to Firestore tile frames: ${error instanceof Error ? error.message : error}`);
+    console.warn(`[WebRTC] node-datachannel is unavailable; realtime tile channel cannot start: ${error instanceof Error ? error.message : error}`);
     return null;
   }
 }
@@ -413,6 +417,8 @@ export async function fetchSessionDataWithFirebase(
     isLast: typeof data.isLast === "boolean" ? data.isLast : undefined,
     chunkSha256: typeof data.chunkSha256 === "string" ? data.chunkSha256 : undefined,
     fileSha256: typeof data.fileSha256 === "string" ? data.fileSha256 : undefined,
+    delivery: data.delivery === "firebase-storage" ? ("firebase-storage" as const) : ("firestore-direct" as const),
+    storagePath: typeof data.storagePath === "string" ? data.storagePath : undefined,
   }), env);
 
   return {
@@ -420,6 +426,14 @@ export async function fetchSessionDataWithFirebase(
     clipboards,
     files,
   };
+}
+
+export async function resolveFirebaseStorageDownloadUrl(
+  storagePath: string,
+  env: AgentFirebaseEnv = process.env,
+): Promise<string> {
+  const services = getAgentFirebaseServices(env);
+  return getDownloadURL(ref(services.storage, storagePath));
 }
 
 export async function postClipboardWithFirebase(
@@ -456,10 +470,10 @@ export async function postFileTransferReceiptWithFirebase(
   const services = getAgentFirebaseServices(env);
   await setDoc(
     doc(services.db, "sessions", sessionId, "fileReceipts", input.transferId),
-    {
+    stripUndefinedFields({
       ...input,
       updatedAt: serverTimestamp(),
-    },
+    }),
     { merge: true },
   );
 }
@@ -517,6 +531,13 @@ function getAgentFirebaseServices(env: AgentFirebaseEnv) {
     throw new Error("Firebase config is missing. Set WONREMOTE_FIREBASE_* values.");
   }
   return getWonRemoteFirebaseServices(config);
+}
+
+function requireCurrentAgentUserId(userId: string | undefined): string {
+  if (!userId) {
+    throw new Error("Firebase agent is not authenticated.");
+  }
+  return userId;
 }
 
 function coerceCreatedAt(value: unknown): string {

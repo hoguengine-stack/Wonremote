@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  canPostFirestoreTileFallbackFrame,
   nextStreamCaptureBackend,
   nextStreamRestartDelayMs,
   resolveCommandPollIntervalMs,
+  resolveFirestoreTileFallbackPolicy,
   streamErrorSuggestsGdiFallback,
 } from "./agentStreamPolicy";
 
@@ -31,5 +33,27 @@ describe("agent stream policy", () => {
     expect(nextStreamRestartDelayMs(1)).toBe(1000);
     expect(nextStreamRestartDelayMs(4)).toBe(5000);
     expect(nextStreamRestartDelayMs(99)).toBe(5000);
+  });
+
+  it("keeps Firestore tile streaming disabled unless explicitly allowed", () => {
+    expect(resolveFirestoreTileFallbackPolicy({}).enabled).toBe(false);
+    expect(resolveFirestoreTileFallbackPolicy({ WONREMOTE_ALLOW_FIRESTORE_STREAM_FALLBACK: "0" }).enabled).toBe(false);
+    expect(resolveFirestoreTileFallbackPolicy({ WONREMOTE_ALLOW_FIRESTORE_STREAM_FALLBACK: "true" })).toMatchObject({
+      enabled: true,
+      maxFrames: 60,
+      maxDurationMs: 15_000,
+    });
+  });
+
+  it("caps Firestore tile fallback to a short diagnostic budget", () => {
+    const policy = resolveFirestoreTileFallbackPolicy({
+      WONREMOTE_ALLOW_FIRESTORE_STREAM_FALLBACK: "1",
+      WONREMOTE_FIRESTORE_STREAM_FALLBACK_MAX_FRAMES: "2",
+      WONREMOTE_FIRESTORE_STREAM_FALLBACK_MAX_MS: "3000",
+    });
+
+    expect(canPostFirestoreTileFallbackFrame(policy, { postedFrames: 0, startedAtMs: 1000, nowMs: 2000 })).toBe(true);
+    expect(canPostFirestoreTileFallbackFrame(policy, { postedFrames: 2, startedAtMs: 1000, nowMs: 2000 })).toBe(false);
+    expect(canPostFirestoreTileFallbackFrame(policy, { postedFrames: 1, startedAtMs: 1000, nowMs: 4501 })).toBe(false);
   });
 });

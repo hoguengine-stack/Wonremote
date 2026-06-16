@@ -10,7 +10,7 @@ import type {
   DeviceMetadataUpdateResult,
   ManagedDevice,
 } from "./types";
-import { DEFAULT_STORE_NAME } from "./deviceDefaults";
+import { DEFAULT_STORE_NAME, normalizeStoreNameForDisplay } from "./deviceDefaults";
 
 export function authenticateAdmin(username: string, password: string): boolean {
   return username.trim() === "admin" && password === "admin1234";
@@ -42,10 +42,28 @@ export function registerAgentConnection(
   validateAgentInput(cleaned);
 
   const id = `${cleaned.businessNumber}:${cleaned.deviceNumber}`;
+  const existing = devices.find((item) => item.id === id);
+  const normalizedInputStoreName = normalizeStoreNameForDisplay(cleaned.storeName, cleaned.businessNumber);
+  let finalStoreName = normalizedInputStoreName;
+  let finalStoreNameSource = normalizedInputStoreName === DEFAULT_STORE_NAME ? "default" : "user";
+
+  if (existing) {
+    const existingStore = existing.storeName?.trim();
+    if (existingStore) {
+      const isLegacyGenerated = normalizeStoreNameForDisplay(existingStore, cleaned.businessNumber) === DEFAULT_STORE_NAME;
+      const isUserSet = !isLegacyGenerated && (existing.storeNameSource === "user" || !existing.storeNameSource);
+      if (isUserSet) {
+        finalStoreName = existingStore;
+        finalStoreNameSource = "user";
+      }
+    }
+  }
+
   const device: ManagedDevice = {
     id,
     businessNumber: cleaned.businessNumber,
-    storeName: cleaned.storeName,
+    storeName: finalStoreName,
+    storeNameSource: finalStoreNameSource,
     deviceNumber: cleaned.deviceNumber,
     deviceName: cleaned.deviceName,
     desktopName: buildDesktopName(cleaned.businessNumber, cleaned.deviceNumber),
@@ -127,8 +145,13 @@ export function applyAgentHeartbeat(
     throw new Error("Agent 설치 식별자가 일치하지 않습니다.");
   }
 
+  const normalizedStoreName = normalizeStoreNameForDisplay(currentDevice.storeName, currentDevice.businessNumber);
+  const shouldCorrectStoreName =
+    normalizedStoreName === DEFAULT_STORE_NAME && currentDevice.storeName !== DEFAULT_STORE_NAME;
   const device: ManagedDevice = {
     ...currentDevice,
+    storeName: shouldCorrectStoreName ? normalizedStoreName : currentDevice.storeName,
+    storeNameSource: shouldCorrectStoreName ? "default" : currentDevice.storeNameSource,
     lastSeenAt: nowIso,
     status: "online",
     connectionCode: currentDevice.connectionCode ?? generateConnectionCode(),
@@ -213,10 +236,16 @@ export function updateDeviceMetadata(
   }
 
   const currentDevice = devices[index];
-  const nextStoreName =
-    typeof input.storeName === "string" && input.storeName.trim()
-      ? input.storeName.trim()
-      : currentDevice.storeName;
+  const hasStoreNameInput = typeof input.storeName === "string" && input.storeName.trim();
+  const normalizedInputStoreName = hasStoreNameInput
+    ? normalizeStoreNameForDisplay(input.storeName, currentDevice.businessNumber)
+    : currentDevice.storeName;
+  const nextStoreName = normalizedInputStoreName;
+  const nextStoreNameSource = hasStoreNameInput
+    ? normalizedInputStoreName === DEFAULT_STORE_NAME
+      ? "default"
+      : "user"
+    : currentDevice.storeNameSource;
   const nextDeviceName =
     typeof input.deviceName === "string" && input.deviceName.trim()
       ? input.deviceName.trim()
@@ -229,6 +258,7 @@ export function updateDeviceMetadata(
   const device: ManagedDevice = {
     ...currentDevice,
     storeName: nextStoreName,
+    storeNameSource: nextStoreNameSource,
     deviceName: nextDeviceName,
     desktopName: nextDesktopName,
   };

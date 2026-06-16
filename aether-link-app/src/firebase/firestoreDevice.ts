@@ -64,7 +64,7 @@ export function mergeFirstRunDeviceDocument(
   const existingStore = existing.storeName?.trim();
   if (existingStore) {
     const isLegacyGenerated = normalizeStoreNameForDisplay(existingStore, device.businessNumber) === DEFAULT_STORE_NAME;
-    const isUserSet = existing.storeNameSource === "user" || (!existing.storeNameSource && !isLegacyGenerated);
+    const isUserSet = !isLegacyGenerated && (existing.storeNameSource === "user" || !existing.storeNameSource);
 
     if (isUserSet) {
       merged.storeName = existingStore;
@@ -85,9 +85,7 @@ export function mapFirestoreDevice(id: string, data: Partial<FirestoreDeviceDocu
   return {
     id,
     businessNumber: String(data.businessNumber ?? ""),
-    storeName: normalizeStoreNameForDisplay(data.storeName, String(data.businessNumber ?? ""), {
-      preserveLegacyGeneratedName: data.storeNameSource === "user",
-    }),
+    storeName: normalizeStoreNameForDisplay(data.storeName, String(data.businessNumber ?? "")),
     deviceNumber: String(data.deviceNumber ?? ""),
     deviceName: String(data.deviceName ?? ""),
     desktopName: String(data.desktopName ?? ""),

@@ -1,4 +1,4 @@
-[CmdletBinding(DefaultParameterSetName = "NewConversation")]
+﻿[CmdletBinding(DefaultParameterSetName = "NewConversation")]
 param(
   [Parameter(ParameterSetName = "NewConversation", Mandatory = $true)]
   [string]$Prompt,
@@ -22,6 +22,14 @@ param(
 
   [Parameter(ParameterSetName = "NewConversation")]
   [string]$FallbackConversationTitle,
+
+  [switch]$WaitForResponse,
+
+  [int]$WaitTimeoutSeconds = 240,
+
+  [switch]$StrictQuarantineResponse,
+
+  [string]$ResponseMustContain,
 
   [switch]$DryRun
 )
@@ -104,6 +112,8 @@ function Resolve-AntigravityConversationId {
     [System.StringComparer]::OrdinalIgnoreCase
   )
   $knownConversations["Low Latency Remote Desktop Plan"] = "9314a52e-d7de-48b0-a662-8b45e48d08c4"
+  $knownConversations["너는 보조작업자야"] = "210cc7e0-19f1-4764-a88b-e542c6260963"
+  $knownConversations["Gemini Worker"] = "210cc7e0-19f1-4764-a88b-e542c6260963"
 
   if ($knownConversations.ContainsKey($Title)) {
     return $knownConversations[$Title]
@@ -145,6 +155,90 @@ function Resolve-AgentApiAddress {
   throw "Could not find a usable Antigravity agentapi listener for PID $LanguageServerPid."
 }
 
+function Get-ConversationDbPath {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$ConversationId
+  )
+
+  Join-Path $env:USERPROFILE ".gemini\antigravity\conversations\$ConversationId.db"
+}
+
+function Get-LatestAntigravityStepIndex {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$ConversationDbPath
+  )
+
+  if (-not (Test-Path -LiteralPath $ConversationDbPath)) {
+    return 0
+  }
+
+  $script = @"
+import sqlite3
+from pathlib import Path
+p = Path(r'''$ConversationDbPath''')
+con = sqlite3.connect(f'file:{p}?mode=ro', uri=True)
+row = con.execute('select coalesce(max(idx), 0) from steps').fetchone()
+print(row[0] if row else 0)
+"@
+  $value = $script | python -
+  if ($LASTEXITCODE -ne 0) {
+    throw "Could not read latest Antigravity step index from $ConversationDbPath"
+  }
+  [int]($value | Select-Object -Last 1)
+}
+
+function Wait-AntigravityResponse {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$ConversationDbPath,
+
+    [Parameter(Mandatory = $true)]
+    [int]$AfterIndex,
+
+    [Parameter(Mandatory = $true)]
+    [int]$TimeoutSeconds,
+
+    [Parameter(Mandatory = $true)]
+    [bool]$StrictQuarantine
+    ,
+    [string]$MustContain
+  )
+
+  $reader = Join-Path $PSScriptRoot "antigravity_response_reader.py"
+  if (-not (Test-Path -LiteralPath $reader)) {
+    throw "Antigravity response reader not found at $reader"
+  }
+
+  $arguments = @(
+    $reader,
+    "--db", $ConversationDbPath,
+    "--after-idx", "$AfterIndex",
+    "--timeout", "$TimeoutSeconds"
+  )
+  if ($StrictQuarantine) {
+    $arguments += "--strict-quarantine"
+  }
+  if ($MustContain) {
+    $arguments += @("--must-contain", $MustContain)
+  }
+
+  $json = & python @arguments
+  if ($LASTEXITCODE -ne 0) {
+    throw "Antigravity response reader failed."
+  }
+  Write-Output $json
+
+  $response = $json | ConvertFrom-Json
+  if (-not $response.found) {
+    throw "Timed out waiting for Antigravity response after step $AfterIndex."
+  }
+  if ($StrictQuarantine -and -not $response.compliant) {
+    throw "Antigravity response violated Quarantine Mode: $($response.violations -join '; ')"
+  }
+}
+
 $agentApiPath = Get-AgentApiPath
 $languageServer = Get-AntigravityLanguageServer
 $address = Resolve-AgentApiAddress `
@@ -170,6 +264,16 @@ if ($DryRun) {
     }
   }
   exit 0
+}
+
+$responseDbPath = $null
+$responseAfterIndex = 0
+if ($WaitForResponse) {
+  if (-not $RecipientId) {
+    throw "-WaitForResponse requires an existing Antigravity recipient/conversation id."
+  }
+  $responseDbPath = Get-ConversationDbPath -ConversationId $RecipientId
+  $responseAfterIndex = Get-LatestAntigravityStepIndex -ConversationDbPath $responseDbPath
 }
 
 if ($PSCmdlet.ParameterSetName -eq "SendMessage" -or $PSCmdlet.ParameterSetName -eq "SendMessageByTitle") {
@@ -207,4 +311,14 @@ if ($PSCmdlet.ParameterSetName -eq "SendMessage" -or $PSCmdlet.ParameterSetName 
 }
 
 Write-Output $result.Output
+
+if ($WaitForResponse) {
+  Wait-AntigravityResponse `
+    -ConversationDbPath $responseDbPath `
+    -AfterIndex $responseAfterIndex `
+    -TimeoutSeconds $WaitTimeoutSeconds `
+    -StrictQuarantine ([bool]$StrictQuarantineResponse) `
+    -MustContain $ResponseMustContain
+}
+
 exit $result.ExitCode

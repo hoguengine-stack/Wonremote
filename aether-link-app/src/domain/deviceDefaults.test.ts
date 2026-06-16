@@ -7,14 +7,16 @@ describe("device defaults", () => {
     expect(normalizeStoreNameForDisplay("사업자 123-45-67890", "123-45-67890")).toBe(DEFAULT_STORE_NAME);
     expect(normalizeStoreNameForDisplay("??? 123-45-67890", "123-45-67890")).toBe(DEFAULT_STORE_NAME);
     expect(normalizeStoreNameForDisplay("???123-45-67890", "123-45-67890")).toBe(DEFAULT_STORE_NAME);
+    expect(normalizeStoreNameForDisplay("??? 123-45-\n67890", "123-45-67890")).toBe(DEFAULT_STORE_NAME);
+    expect(normalizeStoreNameForDisplay("??? 123 45 67890", "123-45-67890")).toBe(DEFAULT_STORE_NAME);
   });
 
-  it("preserves manually entered store names", () => {
+  it("preserves manually entered store names but never preserves legacy placeholders", () => {
     expect(normalizeStoreNameForDisplay("강남 1호점", "123-45-67890")).toBe("강남 1호점");
     expect(
       normalizeStoreNameForDisplay("사업자 123-45-67890", "123-45-67890", {
         preserveLegacyGeneratedName: true,
       }),
-    ).toBe("사업자 123-45-67890");
+    ).toBe(DEFAULT_STORE_NAME);
   });
 });

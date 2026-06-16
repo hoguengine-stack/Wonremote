@@ -6,8 +6,10 @@ import {
   fetchFirebaseTiles,
   isViewerFirebaseEnabled,
   logoutViewerWithFirebase,
+  uploadFirebaseFileToStorage,
+  uploadFirebaseFileChunk,
 } from "../firebase/viewerFirebase";
-import { fetchDevices, fetchFileTransferReceipts, fetchTiles, logoutAdmin } from "./viewerApi";
+import { fetchDevices, fetchFileTransferReceipts, fetchTiles, logoutAdmin, uploadFileChunk, uploadFileToStorage } from "./viewerApi";
 
 const mockState = vi.hoisted(() => ({
   firebaseEnabled: true,
@@ -37,13 +39,16 @@ vi.mock("../firebase/viewerFirebase", () => ({
   isViewerFirebaseEnabled: vi.fn(() => mockState.firebaseEnabled),
   loginViewerWithFirebase: vi.fn(),
   logoutViewerWithFirebase: vi.fn(),
+  connectFirebaseSecureSession: vi.fn(),
   openFirebaseSession: vi.fn(),
   recordFirebaseInput: vi.fn(),
   registerFirstRunAgentWithFirebase: vi.fn(),
+  requestFirebaseSecureSession: vi.fn(),
   sendFirebaseChatMessage: vi.fn(),
   sendFirebaseClipboardText: vi.fn(),
   updateFirebaseDeviceMetadata: vi.fn(),
   uploadFirebaseFileChunk: vi.fn(),
+  uploadFirebaseFileToStorage: vi.fn(),
 }));
 
 describe("viewer API routing", () => {
@@ -151,6 +156,44 @@ describe("viewer API routing", () => {
       headers: undefined,
       method: "GET",
     });
+  });
+
+  it("rejects oversized Firebase direct file chunks before writing Firestore documents", async () => {
+    await expect(
+      uploadFileChunk("session-device-1", {
+        chunkIndex: 0,
+        fileData: Buffer.from("chunk").toString("base64"),
+        filename: "large.bin",
+        isLast: false,
+        totalBytes: 5 * 1024 * 1024 + 1,
+        totalChunks: 2,
+        transferId: "transfer-large",
+      }),
+    ).rejects.toThrow("Firebase direct file transfer is limited");
+
+    expect(uploadFirebaseFileChunk).not.toHaveBeenCalled();
+  });
+
+  it("routes large Firebase file uploads through Storage instead of direct Firestore chunks", async () => {
+    const onProgress = vi.fn();
+    const file = new Blob(["payload"]);
+
+    await uploadFileToStorage("session-device-1", {
+      file,
+      filename: "payload.bin",
+      onProgress,
+      totalBytes: 500 * 1024 * 1024,
+      transferId: "transfer-storage",
+    });
+
+    expect(uploadFirebaseFileToStorage).toHaveBeenCalledWith("session-device-1", {
+      file,
+      filename: "payload.bin",
+      onProgress,
+      totalBytes: 500 * 1024 * 1024,
+      transferId: "transfer-storage",
+    });
+    expect(uploadFirebaseFileChunk).not.toHaveBeenCalled();
   });
 
   it("does not touch Firebase sign-out when the Viewer logs out in local fallback mode", async () => {

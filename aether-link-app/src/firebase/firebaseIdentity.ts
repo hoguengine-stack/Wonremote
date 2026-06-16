@@ -22,6 +22,21 @@ export function buildAgentAuthPassword(businessNumber: string, password: string)
   return `wonremote-${normalizeBusinessDigits(businessNumber)}-${password}`;
 }
 
+export function buildViewerAuthCredentials(username: string, password: string): { email: string; password: string } {
+  const normalizedUsername = username.trim();
+  const normalizedPassword = password.trim();
+  if (/^\d{3}-?\d{2}-?\d{5}$/.test(normalizedUsername)) {
+    return {
+      email: buildAgentAuthEmail(normalizedUsername),
+      password: buildAgentAuthPassword(normalizedUsername, normalizedPassword),
+    };
+  }
+  return {
+    email: normalizedUsername,
+    password: normalizedPassword,
+  };
+}
+
 export function buildAgentDeviceNumber(installId: string): string {
   const suffix = installId
     .trim()

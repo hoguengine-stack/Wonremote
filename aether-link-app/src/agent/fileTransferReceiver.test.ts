@@ -1,9 +1,10 @@
 import { access, mkdtemp, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
+import { Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { computeSha256 } from "./checksum";
-import { saveTransferredFileChunk } from "./fileTransferReceiver";
+import { saveTransferredFileChunk, saveTransferredFileDownloadStream } from "./fileTransferReceiver";
 
 function base64(value: string): string {
   return Buffer.from(value, "utf8").toString("base64");
@@ -125,6 +126,36 @@ describe("agent file transfer receiver", () => {
 
     await expectPathMissing(path.join(downloadsDir, "report.txt.transfer-1.part"));
     await expectPathMissing(path.join(downloadsDir, "report.txt.transfer-1.part.json"));
+  });
+
+  it("streams Firebase Storage downloads to disk without base64 chunk buffering", async () => {
+    const downloadsDir = await mkdtemp(path.join(tmpdir(), "wonremote-storage-files-"));
+    const body = Readable.from([Buffer.from("storage "), Buffer.from("payload")]);
+
+    const result = await saveTransferredFileDownloadStream(
+      {
+        id: "file-storage-1",
+        filename: "storage.txt",
+        fileData: "",
+        transferId: "transfer-storage",
+        totalBytes: 15,
+        storagePath: "sessions/session-1/files/transfer-storage/storage.txt",
+        delivery: "firebase-storage",
+        fileSha256: computeSha256(Buffer.from("storage payload")),
+      },
+      body,
+      { WONREMOTE_AGENT_DOWNLOADS_DIR: downloadsDir },
+    );
+
+    expect(result).toMatchObject({
+      filename: "storage.txt",
+      receivedBytes: 15,
+      receivedChunks: 1,
+      status: "complete",
+      totalChunks: 1,
+      transferId: "transfer-storage",
+    });
+    await expect(readFile(path.join(downloadsDir, "storage.txt"), "utf8")).resolves.toBe("storage payload");
   });
 });
 

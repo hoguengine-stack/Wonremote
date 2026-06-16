@@ -1,0 +1,21 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function ownsSession(sessionId) {
+      return signedIn()
+        && firestore.get(/databases/(default)/documents/sessions/$(sessionId)).data.ownerUid == request.auth.uid;
+    }
+
+    match /sessions/{sessionId}/files/{transferId}/{fileName} {
+      allow read: if ownsSession(sessionId);
+      allow write: if ownsSession(sessionId)
+        && request.resource.size <= 500 * 1024 * 1024;
+      allow delete: if false;
+    }
+  }
+}

@@ -1,0 +1,84 @@
+import { describe, expect, it } from "vitest";
+import { DEFAULT_VIEWER_UPDATE_RELEASE_API_URL, fetchViewerUpdateMetadata } from "./viewerUpdate";
+
+describe("viewer update metadata", () => {
+  it("checks the CORS-safe GitHub release API instead of the local API server", async () => {
+    const requestedUrls: string[] = [];
+
+    const metadata = await fetchViewerUpdateMetadata(
+      {},
+      async (url) => {
+        requestedUrls.push(String(url));
+        return new Response(
+          JSON.stringify({
+            tag_name: "v0.1.24",
+            assets: [
+              {
+                name: "WonRemote-Viewer-Agent-Setup.exe",
+                browser_download_url:
+                  "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Viewer-Agent-Setup.exe",
+                digest: `sha256:${"a".repeat(64)}`,
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      },
+    );
+
+    expect(requestedUrls[0]).toMatch(
+      /^https:\/\/api\.github\.com\/repos\/hoguengine-stack\/Wonremote\/releases\/latest\?nocache=/,
+    );
+    expect(requestedUrls[0]).not.toContain("127.0.0.1");
+    expect(metadata).toMatchObject({
+      latestVersion: "0.1.24",
+      reloadViewer: false,
+    });
+  });
+
+  it("allows an explicit manifest URL override for controlled deployments", async () => {
+    const requestedUrls: string[] = [];
+
+    await fetchViewerUpdateMetadata(
+      { VITE_WONREMOTE_UPDATE_MANIFEST_URL: "https://updates.example.com/manifest.json?channel=stable" },
+      async (url) => {
+        requestedUrls.push(String(url));
+        return new Response(
+          JSON.stringify({
+            version: "0.1.25",
+            installer: {
+              url: "https://updates.example.com/WonRemote-Setup.exe",
+              sha256: "b".repeat(64),
+            },
+          }),
+          { status: 200 },
+        );
+      },
+    );
+
+    expect(requestedUrls[0]).toMatch(/^https:\/\/updates\.example\.com\/manifest\.json\?channel=stable&nocache=/);
+  });
+
+  it("ignores unsafe or incomplete release manifests", async () => {
+    await expect(
+      fetchViewerUpdateMetadata({}, async () => {
+        return new Response(
+          JSON.stringify({
+            version: "0.1.24",
+            installer: {
+              url: "http://updates.example.com/WonRemote-Setup.exe",
+              sha256: "not-a-sha",
+            },
+          }),
+          { status: 200 },
+        );
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it("keeps the default release API URL stable for latest release assets", () => {
+    expect(DEFAULT_VIEWER_UPDATE_RELEASE_API_URL).toBe(
+      "https://api.github.com/repos/hoguengine-stack/Wonremote/releases/latest",
+    );
+  });
+});

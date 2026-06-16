@@ -7,6 +7,7 @@ export function formatStreamDiagnostics(
   fallbackPollErrors: number,
 ): string[] {
   const lines = [`transport=${transportState}`, `frames=${frameCount}`];
+  appendRealtimeTransportDiagnostics(lines, transportState);
   if (!diagnostics) {
     if (fallbackPollErrors > 0) {
       lines.push(`fallback-errors=${fallbackPollErrors}`);
@@ -34,6 +35,17 @@ export function formatStreamDiagnostics(
     lines.push(`fallback-errors=${fallbackPollErrors}`);
   }
   return lines;
+}
+
+function appendRealtimeTransportDiagnostics(lines: string[], transportState: string): void {
+  if (
+    transportState.startsWith("webrtc-unavailable") ||
+    transportState.startsWith("webrtc-error") ||
+    transportState.startsWith("webrtc-closed")
+  ) {
+    lines.push("webrtc=unavailable");
+    lines.push("turn=check-required");
+  }
 }
 
 export function formatControlDiagnostics(diagnostics: AgentControlDiagnostics | undefined): string[] {

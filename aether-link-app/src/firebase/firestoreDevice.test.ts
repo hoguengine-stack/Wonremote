@@ -141,7 +141,7 @@ describe("firestore device mapping", () => {
     ).toBe("상호명 미설정");
 
     expect(
-      mapFirestoreDevice("device-user-named", {
+      mapFirestoreDevice("device-user-placeholder", {
         businessNumber: "123-45-67890",
         storeName: "사업자 123-45-67890",
         storeNameSource: "user",
@@ -151,7 +151,7 @@ describe("firestore device mapping", () => {
         status: "online",
         lastSeenAt: "2026-06-12T09:00:00.000Z",
       }).storeName,
-    ).toBe("사업자 123-45-67890");
+    ).toBe("상호명 미설정");
   });
 
   it("preserves legacy user-customized store name when storeNameSource is missing", () => {
@@ -189,6 +189,30 @@ describe("firestore device mapping", () => {
     const merged = mergeFirstRunDeviceDocument(nextDevice, {
       businessNumber: "123-45-67890",
       storeName: "??? 123-45-67890",
+      deviceNumber: "AGENT-LOCALENV-425D1CB",
+      status: "online",
+      lastSeenAt: "2026-06-15T00:00:00.000Z",
+    });
+
+    expect(merged).toMatchObject({
+      storeName: "상호명 미설정",
+      storeNameSource: "default",
+    });
+  });
+
+  it("does NOT preserve legacy generated store name even when storeNameSource says user", () => {
+    const nextDevice = buildFirestoreDevice({
+      businessNumber: "1234567890",
+      installId: "agent-localenv-425d1cbe",
+      ownerUid: "uid-1",
+      version: "0.1.21",
+      nowIso: "2026-06-16T06:00:00.000Z",
+    });
+
+    const merged = mergeFirstRunDeviceDocument(nextDevice, {
+      businessNumber: "123-45-67890",
+      storeName: "??? 123-45-67890",
+      storeNameSource: "user",
       deviceNumber: "AGENT-LOCALENV-425D1CB",
       status: "online",
       lastSeenAt: "2026-06-15T00:00:00.000Z",

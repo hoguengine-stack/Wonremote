@@ -31,6 +31,13 @@ interface PollAgentCommandsOptions {
   installId: string;
 }
 
+interface PostAgentSessionApprovalOptions {
+  apiBaseUrl: string;
+  approved: boolean;
+  fetchImpl?: typeof fetch;
+  sessionId: string;
+}
+
 export async function sendAgentHeartbeat({
   apiBaseUrl,
   deviceId,
@@ -119,4 +126,21 @@ export async function pollAgentCommands({
     throw err;
   }
   return payload;
+}
+
+export async function postAgentSessionApproval({
+  apiBaseUrl,
+  approved,
+  fetchImpl = fetch,
+  sessionId,
+}: PostAgentSessionApprovalOptions): Promise<void> {
+  if (isAgentFirebaseEnabled(process.env)) {
+    return;
+  }
+
+  await fetchImpl(`${apiBaseUrl}/api/sessions/${sessionId}/approve`, {
+    body: JSON.stringify({ approved }),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  });
 }

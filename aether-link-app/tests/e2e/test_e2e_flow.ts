@@ -240,10 +240,10 @@ async function main() {
         console.log(`[Agent] ${str.trim()}`);
       }
 
-      if (str.includes("체크섬 오류") && resolveChecksumError) {
+      if (str.includes("[Checksum Error]") && resolveChecksumError) {
         resolveChecksumError();
       }
-      if (str.includes("인스톨러로 전환하며 에이전트를 종료합니다") && resolveUpdateStart) {
+      if (str.includes("Handed off to installer and exiting current Agent") && resolveUpdateStart) {
         resolveUpdateStart();
       }
     });
@@ -253,7 +253,7 @@ async function main() {
       if (shouldPrintAgentLog(str)) {
         console.error(`[Agent ERR] ${str.trim()}`);
       }
-      if (str.includes("체크섬 오류") && resolveChecksumError) {
+      if (str.includes("[Checksum Error]") && resolveChecksumError) {
         resolveChecksumError();
       }
     });

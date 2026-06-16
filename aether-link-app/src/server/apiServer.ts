@@ -1,7 +1,7 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { execFileSync, spawn } from "node:child_process";
 import { writeFileSync, mkdirSync, readFileSync, existsSync, cpSync, rmSync } from "node:fs";
-import { createHash, randomInt } from "node:crypto";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
 import {
@@ -40,6 +40,13 @@ import {
 } from "../domain/updateManifest";
 import { resolveProductionUpdatePublicKey } from "../domain/updateTrust";
 import { nextPatchVersion } from "../domain/versioning";
+import {
+  buildSecureChallengeId,
+  generateSecurityCode,
+  isSecureChallengeExpired,
+  normalizeSecurityCode,
+  secureChallengeExpiresAt,
+} from "../domain/secureSession";
 
 let goodChecksum = "";
 let badBinaryChecksum = "";
@@ -424,9 +431,10 @@ async function routeRequest(
       return;
     }
 
-    const challengeId = `secure-${Date.now()}-${randomInt(1000, 10000)}`;
+    const nowMs = state.now().getTime();
+    const challengeId = buildSecureChallengeId(nowMs);
     const code = generateSecurityCode();
-    const expiresAtMs = state.now().getTime() + 120_000;
+    const expiresAtMs = secureChallengeExpiresAt(nowMs);
     state.secureChallenges.set(challengeId, {
       code,
       deviceId,
@@ -452,7 +460,7 @@ async function routeRequest(
       return;
     }
 
-    if (challenge.expiresAtMs < state.now().getTime()) {
+    if (isSecureChallengeExpired(challenge.expiresAtMs, state.now().getTime())) {
       state.secureChallenges.delete(challengeId);
       writeJson(response, 410, { error: "Secure connection code expired." });
       return;
@@ -1040,15 +1048,6 @@ function enqueueAgentCommand(state: ApiState, deviceId: string, action: string):
       },
     ].slice(-50),
   );
-}
-
-function generateSecurityCode(): string {
-  const code = randomInt(0, 1_000_000).toString().padStart(6, "0");
-  return `${code.slice(0, 3)} ${code.slice(3)}`;
-}
-
-function normalizeSecurityCode(code: string): string {
-  return code.replace(/\D/g, "");
 }
 
 function requireConnectedSession(

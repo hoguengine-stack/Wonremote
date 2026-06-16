@@ -1,6 +1,8 @@
-import { createReadStream } from "node:fs";
+import { createReadStream, createWriteStream } from "node:fs";
 import { appendFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { once } from "node:events";
+import { Readable } from "node:stream";
 import { resolveAgentDownloadDir, resolveSafeDownloadPath } from "./fileSafety";
 import { computeSha256 } from "./checksum";
 import type { TransferredFile } from "../domain/types";
@@ -134,6 +136,61 @@ export async function saveTransferredFileChunk(
   }
 }
 
+export async function saveTransferredFileDownloadStream(
+  file: TransferredFile,
+  body: NodeJS.ReadableStream | ReadableStream<Uint8Array>,
+  env: Record<string, string | undefined> = process.env,
+): Promise<ReceivedFileResult> {
+  const downloadsDir = resolveAgentDownloadDir(env);
+  await mkdir(downloadsDir, { recursive: true });
+  const targetPath = resolveSafeDownloadPath(downloadsDir, String(file.filename ?? ""));
+  const transferId = typeof file.transferId === "string" ? sanitizeTransferId(file.transferId) : "storage";
+  const tmpPath = `${targetPath}.${transferId}.download`;
+  const readable = toNodeReadable(body);
+  const writeStream = createWriteStream(tmpPath, { flags: "w" });
+  const hash = createHash("sha256");
+  let receivedBytes = 0;
+
+  try {
+    for await (const chunk of readable as AsyncIterable<Buffer | Uint8Array | string>) {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      receivedBytes += buffer.length;
+      hash.update(buffer);
+      if (!writeStream.write(buffer)) {
+        await once(writeStream, "drain");
+      }
+    }
+    writeStream.end();
+    await once(writeStream, "finish");
+
+    if (typeof file.totalBytes === "number" && file.totalBytes >= 0 && receivedBytes !== file.totalBytes) {
+      throw new Error(`Downloaded file size mismatch: ${file.filename}`);
+    }
+    if (typeof file.fileSha256 === "string" && file.fileSha256.trim()) {
+      const actualSha256 = hash.digest("hex");
+      if (actualSha256 !== file.fileSha256.trim().toLowerCase()) {
+        throw new Error(`File checksum mismatch: ${file.filename}`);
+      }
+    }
+
+    await rm(targetPath, { force: true });
+    await rename(tmpPath, targetPath);
+    return {
+      filename: file.filename,
+      receivedBytes,
+      receivedChunks: 1,
+      status: "complete",
+      targetPath,
+      totalChunks: 1,
+      transferId: typeof file.transferId === "string" ? file.transferId : undefined,
+    };
+  } catch (error) {
+    writeStream.destroy();
+    await rm(tmpPath, { force: true });
+    throw error;
+  }
+}
+
 function verifyChunkChecksum(file: TransferredFile, buffer: Buffer): void {
   if (typeof file.chunkSha256 !== "string" || !file.chunkSha256.trim()) {
     return;
@@ -167,6 +224,13 @@ async function readPartState(statePath: string, filename: string): Promise<Trans
 
 function sanitizeTransferId(transferId: string): string {
   return transferId.replace(/[^a-zA-Z0-9_.-]/g, "_") || "transfer";
+}
+
+function toNodeReadable(body: NodeJS.ReadableStream | ReadableStream<Uint8Array>): NodeJS.ReadableStream {
+  if (typeof (body as ReadableStream<Uint8Array>).getReader === "function") {
+    return Readable.fromWeb(body as any);
+  }
+  return body as NodeJS.ReadableStream;
 }
 
 async function discardTransferPart(partPath: string, statePath: string): Promise<void> {

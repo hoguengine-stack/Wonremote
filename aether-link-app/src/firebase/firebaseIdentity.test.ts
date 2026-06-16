@@ -3,6 +3,7 @@ import {
   buildAgentAuthEmail,
   buildAgentAuthPassword,
   buildAgentDeviceNumber,
+  buildViewerAuthCredentials,
   buildFirebaseDeviceId,
   formatBusinessNumber,
   normalizeBusinessDigits,
@@ -19,6 +20,20 @@ describe("firebase identity helpers", () => {
     expect(buildAgentAuthPassword("123-45-67890", "1234")).toBe("wonremote-1234567890-1234");
   });
 
+  it("maps Viewer business-number login to the same Firebase account as the Agent", () => {
+    expect(buildViewerAuthCredentials("123-45-67890", "1234")).toEqual({
+      email: "1234567890@agents.wonremote.app",
+      password: "wonremote-1234567890-1234",
+    });
+  });
+
+  it("keeps Viewer email login credentials unchanged", () => {
+    expect(buildViewerAuthCredentials("owner@example.com", "secret123")).toEqual({
+      email: "owner@example.com",
+      password: "secret123",
+    });
+  });
+
   it("builds the same device identity shape used by the existing device table", () => {
     expect(buildAgentDeviceNumber("agent-localenv-425d1cbe")).toBe("AGENT-LOCALENV-425D1CB");
     expect(buildFirebaseDeviceId("1234567890", "agent-localenv-425d1cbe")).toBe(
@@ -32,5 +47,9 @@ describe("firebase identity helpers", () => {
 
   it("rejects non-1234 agent passwords before Firebase calls", () => {
     expect(() => buildAgentAuthPassword("1234567890", "wrong")).toThrow("Agent password is invalid.");
+  });
+
+  it("rejects empty install identifiers with a readable Korean error", () => {
+    expect(() => buildAgentDeviceNumber("agent-***")).toThrow("Agent 설치 식별자를 확인할 수 없습니다.");
   });
 });

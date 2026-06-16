@@ -8,6 +8,7 @@ import {
   registerAgentConnection,
   updateDeviceMetadata,
 } from "./agentRegistry";
+import { DEFAULT_STORE_NAME } from "./deviceDefaults";
 
 describe("agent registry domain", () => {
   it("normalizes Korean business registration numbers", () => {
@@ -35,6 +36,7 @@ describe("agent registry domain", () => {
       id: "123-45-67890:POS-01",
       businessNumber: "123-45-67890",
       storeName: "강남 1호점",
+      storeNameSource: "user",
       deviceNumber: "POS-01",
       deviceName: "카운터",
       desktopName: "DESKTOP-67890-POS-01",
@@ -153,6 +155,28 @@ describe("agent registry domain", () => {
     });
     expect(result.device.id).toBe(registered.device.id);
     expect(result.device.deviceNumber).toBe(registered.device.deviceNumber);
+  });
+
+  it("normalizes legacy placeholder store names during display metadata updates", () => {
+    const registered = registerAgentFirstRun([], {
+      businessNumber: "1234567890",
+      password: "1234",
+      installId: "agent-edit-placeholder",
+    }, "2026-06-10T01:20:00.000Z");
+
+    const result = updateDeviceMetadata(registered.devices, {
+      deviceId: registered.device.id,
+      storeName: "??? 123-45-67890",
+      deviceName: "Main POS",
+      desktopName: "FRONT-DESK-PC",
+    });
+
+    expect(result.device).toMatchObject({
+      storeName: DEFAULT_STORE_NAME,
+      storeNameSource: "default",
+      deviceName: "Main POS",
+      desktopName: "FRONT-DESK-PC",
+    });
   });
 
   describe("agent first-run registration", () => {
@@ -275,5 +299,103 @@ describe("agent registry domain", () => {
       lastError: "DXGI access denied",
       transport: "firestore-fallback",
     });
+  });
+
+  describe("local agent metadata preservation & correction", () => {
+    it("preserves user-defined store name on agent re-registration (first-run)", () => {
+      const step1 = registerAgentFirstRun([], {
+        businessNumber: "1234567890",
+        password: "1234",
+        installId: "agent-local-preserve",
+      });
+      expect(step1.device.storeName).toBe("상호명 미설정");
+      expect(step1.device.storeNameSource).toBe("default");
+
+      const step2 = updateDeviceMetadata(step1.devices, {
+        deviceId: step1.device.id,
+        storeName: "수동 입력 상호명",
+      });
+      expect(step2.device.storeName).toBe("수동 입력 상호명");
+      expect(step2.device.storeNameSource).toBe("user");
+
+      const step3 = registerAgentFirstRun(step2.devices, {
+        businessNumber: "1234567890",
+        password: "1234",
+        installId: "agent-local-preserve",
+      });
+      expect(step3.device.storeName).toBe("수동 입력 상호명");
+      expect(step3.device.storeNameSource).toBe("user");
+    });
+
+    it("corrects legacy auto-generated store names (사업자 / ???) on agent re-registration", () => {
+      const mockLegacyDevice = {
+        id: "123-45-67890:AGENT-LEGACY",
+        businessNumber: "123-45-67890",
+        storeName: "??? 123-45-67890",
+        deviceNumber: "AGENT-LEGACY",
+        deviceName: "Agent AGENT-LEGACY",
+        desktopName: "DESKTOP-LEGACY",
+        status: "online" as const,
+        lastSeenAt: new Date().toISOString(),
+      };
+
+      const result = registerAgentFirstRun([mockLegacyDevice], {
+        businessNumber: "1234567890",
+        password: "1234",
+        installId: "agent-legacy",
+      });
+
+      expect(result.device.storeName).toBe("상호명 미설정");
+      expect(result.device.storeNameSource).toBe("default");
+    });
+  });
+});
+
+describe("agent registry store name legacy correction", () => {
+  it("corrects Korean business-number placeholder store names on first-run re-registration", () => {
+    const legacyBusinessPlaceholderDevice = {
+      id: "123-45-67890:AGENT-BIZPLACE",
+      businessNumber: "123-45-67890",
+      storeName: "사업자 123-45-67890",
+      storeNameSource: "user" as const,
+      deviceNumber: "AGENT-BIZPLACE",
+      deviceName: "Agent AGENT-BIZPLACE",
+      desktopName: "DESKTOP-BIZPLACE",
+      status: "online" as const,
+      lastSeenAt: "2026-06-10T01:20:00.000Z",
+    };
+
+    const result = registerAgentFirstRun([legacyBusinessPlaceholderDevice], {
+      businessNumber: "1234567890",
+      password: "1234",
+      installId: "agent-bizplace",
+    });
+
+    expect(result.device.storeName).toBe(DEFAULT_STORE_NAME);
+    expect(result.device.storeNameSource).toBe("default");
+  });
+});
+
+describe("agent registry heartbeat store name correction", () => {
+  it("corrects Korean business-number placeholder store names during heartbeat updates", () => {
+    const legacyBusinessPlaceholderDevice = {
+      id: "123-45-67890:AGENT-BIZPLACE",
+      businessNumber: "123-45-67890",
+      storeName: "사업자 123-45-67890",
+      storeNameSource: "user" as const,
+      deviceNumber: "AGENT-BIZPLACE",
+      deviceName: "Agent AGENT-BIZPLACE",
+      desktopName: "DESKTOP-BIZPLACE",
+      status: "online" as const,
+      lastSeenAt: "2026-06-10T01:20:00.000Z",
+    };
+
+    const heartbeat = applyAgentHeartbeat([legacyBusinessPlaceholderDevice], {
+      deviceId: "123-45-67890:AGENT-BIZPLACE",
+      installId: "agent-bizplace",
+    });
+
+    expect(heartbeat.device.storeName).toBe(DEFAULT_STORE_NAME);
+    expect(heartbeat.device.storeNameSource).toBe("default");
   });
 });

@@ -12,8 +12,25 @@ npm run release:exes
 Expected local assets:
 
 - `release-exe/WonRemote Viewer_<version>_x64-setup.exe`
-- `release-exe/WonRemote Viewer.exe`
-- `release-exe/WonRemote Agent.exe`
+- `release-exe/WonRemote-Viewer-Setup.exe`
+- `release-exe/WonRemote-Agent-Setup.exe`
+- `release-exe/WonRemote-Viewer-Agent-Setup.exe`
+- `release-exe/WonRemote-Viewer-Agent-Portable.zip`
+- `release-exe/WonRemote-Agent-Portable.zip`
+
+## Publish Release Gate
+
+`release:publish` is locked by default. Do not publish a stable GitHub Release just because build and E2E tests pass.
+
+Before publishing, confirm that all P0/P1 user-facing requirements are complete except explicitly deferred physical J1800/J1900 validation. Then run:
+
+```powershell
+$env:WONREMOTE_RELEASE_GATE_APPROVED="YES"
+npm run release:publish
+Remove-Item Env:\WONREMOTE_RELEASE_GATE_APPROVED -ErrorAction SilentlyContinue
+```
+
+For update/rollback E2E testing, use a local fixture/update server instead of publishing a production GitHub Release.
 
 ## Create Signing Keys
 
@@ -58,13 +75,19 @@ Upload these files to the same GitHub Release tag:
 
 - `WonRemote.Viewer_<version>_x64-setup.exe`
 - `WonRemote-Viewer-Setup.exe`
+- `WonRemote-Agent-Setup.exe`
+- `WonRemote-Viewer-Agent-Setup.exe`
 - `WonRemote-Viewer-Agent-Portable.zip`
+- `WonRemote-Agent-Portable.zip`
 - `wonremote-update-manifest.json`
 
 User-facing Firebase Hosting download links:
 
 - Viewer installer: `https://wonremote-a7fd3.web.app/download/viewer`
+- Agent installer: `https://wonremote-a7fd3.web.app/download/agent`
+- Viewer + Agent installer: `https://wonremote-a7fd3.web.app/download/viewer-agent`
 - Viewer + Agent portable zip: `https://wonremote-a7fd3.web.app/download/portable`
+- Agent portable zip: `https://wonremote-a7fd3.web.app/download/agent-portable`
 
 ## Runtime Verification Key
 

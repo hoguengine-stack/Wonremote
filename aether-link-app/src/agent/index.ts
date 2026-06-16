@@ -8,7 +8,7 @@ import { stdin as input, stdout as output } from "node:process";
 import { bootstrapAgent } from "./agentBootstrap";
 import { parseAgentConfigJson } from "./agentConfigJson";
 import { parseSecurityCodeCommand, resolveInjectActions } from "./agentCommandActions";
-import { pollAgentCommands, sendAgentHeartbeat } from "./agentClient";
+import { pollAgentCommands, postAgentSessionApproval, sendAgentHeartbeat } from "./agentClient";
 import { waitForApiHealth } from "./agentHealth";
 import {
   canRecoverMissingAgentRegistration,
@@ -19,12 +19,14 @@ import { resolveAgentCredentials } from "./agentRuntime";
 import {
   nextStreamCaptureBackend,
   nextStreamRestartDelayMs,
+  canPostFirestoreTileFallbackFrame,
   resolveCommandPollIntervalMs,
+  resolveFirestoreTileFallbackPolicy,
   type StreamCaptureBackend,
 } from "./agentStreamPolicy";
 import { WONREMOTE_APP_VERSION } from "../domain/appVersion";
 import { computeSha256 } from "./checksum";
-import { saveTransferredFileChunk } from "./fileTransferReceiver";
+import { saveTransferredFileChunk, saveTransferredFileDownloadStream } from "./fileTransferReceiver";
 import { isSourceTreeUpdateTarget } from "./updateSafety";
 import {
   downloadInstallerUpdate,
@@ -44,6 +46,7 @@ import {
   postFileTransferReceiptWithFirebase,
   postSessionTilesWithFirebase,
   registerAgentFirstRunWithFirebase,
+  resolveFirebaseStorageDownloadUrl,
   startAgentWebRtcTransportWithFirebase,
 } from "../firebase/agentFirebase";
 import type {
@@ -100,6 +103,7 @@ const API_BASE_URL = process.env.WONREMOTE_API_URL ?? "http://127.0.0.1:8787";
 const HEARTBEAT_INTERVAL_MS = Number(process.env.WONREMOTE_AGENT_HEARTBEAT_MS ?? 10_000);
 const COMMAND_POLL_INTERVAL_MS = resolveCommandPollIntervalMs(process.env);
 const USE_FIREBASE = isAgentFirebaseEnabled(process.env);
+const FIRESTORE_TILE_FALLBACK_POLICY = resolveFirestoreTileFallbackPolicy(process.env);
 
 let streamProcess: any = null;
 let streamDesired = false;
@@ -114,6 +118,9 @@ let streamRestartCount = 0;
 let lastStreamFrameAt: string | undefined;
 let lastStreamError: string | undefined;
 let streamTransport: AgentStreamDiagnostics["transport"] = "none";
+let firestoreTileFallbackStartedAtMs = Date.now();
+let firestoreTileFallbackFrameCount = 0;
+let firestoreTileFallbackLimitLogged = false;
 const pressedKeys = new Set<string>();
 let displayCache: { loadedAtMs: number; displays: DeviceDisplayInfo[] } | null = null;
 
@@ -129,13 +136,17 @@ function startStreaming(
   loopSleepMs = 33,
   backend: StreamCaptureBackend = streamBackend,
 ) {
+  const wasStreaming = streamDesired;
   streamDesired = true;
   streamGeneration += 1;
   const generation = streamGeneration;
   streamBackend = backend;
   currentOutputIndex = outputIndex;
   currentLoopSleepMs = loopSleepMs;
-  streamTransport = USE_FIREBASE ? "firestore-fallback" : "local-api";
+  streamTransport = USE_FIREBASE ? "none" : "local-api";
+  if (!wasStreaming) {
+    resetFirestoreTileFallbackBudget();
+  }
   if (streamRestartTimer) {
     clearTimeout(streamRestartTimer);
     streamRestartTimer = null;
@@ -191,12 +202,24 @@ function startStreaming(
         if (USE_FIREBASE && webRtcTransport?.sendFrame({ tiles: data.tiles, width: data.width, height: data.height })) {
           streamTransport = "webrtc";
         } else if (USE_FIREBASE) {
-          streamTransport = "firestore-fallback";
-          await postSessionTilesWithFirebase(sessionId, {
-            tiles: data.tiles,
-            width: data.width,
-            height: data.height,
-          });
+          if (
+            canPostFirestoreTileFallbackFrame(FIRESTORE_TILE_FALLBACK_POLICY, {
+              postedFrames: firestoreTileFallbackFrameCount,
+              startedAtMs: firestoreTileFallbackStartedAtMs,
+              nowMs: Date.now(),
+            })
+          ) {
+            streamTransport = "firestore-fallback";
+            await postSessionTilesWithFirebase(sessionId, {
+              tiles: data.tiles,
+              width: data.width,
+              height: data.height,
+            });
+            firestoreTileFallbackFrameCount += 1;
+          } else {
+            streamTransport = "none";
+            logFirestoreTileFallbackLimit();
+          }
         } else if (!USE_FIREBASE) {
           streamTransport = "local-api";
           await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/tiles`, {
@@ -216,7 +239,7 @@ function startStreaming(
   const flushStreamLogLine = (line: string) => {
     const trimmed = line.trim();
     if (!trimmed) return;
-    if (/error|failed|denied|HRESULT|실패|거부/i.test(trimmed)) {
+    if (/error|failed|denied|HRESULT|access is denied|permission/i.test(trimmed)) {
       lastStreamError = trimmed.slice(0, 500);
       console.error(`[POC Stream Error] ${trimmed}`);
     } else {
@@ -283,11 +306,31 @@ function stopSessionPolling() {
   void webRtcTransport?.close();
   webRtcTransport = null;
   streamTransport = "none";
+  resetFirestoreTileFallbackBudget();
   isSessionActive = false;
   if (sessionPollIntervalId) {
     clearInterval(sessionPollIntervalId);
     sessionPollIntervalId = null;
   }
+}
+
+function resetFirestoreTileFallbackBudget() {
+  firestoreTileFallbackStartedAtMs = Date.now();
+  firestoreTileFallbackFrameCount = 0;
+  firestoreTileFallbackLimitLogged = false;
+}
+
+function logFirestoreTileFallbackLimit() {
+  if (firestoreTileFallbackLimitLogged) {
+    return;
+  }
+  firestoreTileFallbackLimitLogged = true;
+  const reason = FIRESTORE_TILE_FALLBACK_POLICY.enabled
+    ? `diagnostic budget exceeded (${FIRESTORE_TILE_FALLBACK_POLICY.maxFrames} frames or ${FIRESTORE_TILE_FALLBACK_POLICY.maxDurationMs}ms)`
+    : "disabled by default";
+  lastStreamError =
+    `WebRTC tile channel unavailable; Firestore tile fallback is ${reason}. Configure TURN/WebRTC or set WONREMOTE_ALLOW_FIRESTORE_STREAM_FALLBACK=1 only for short diagnostics.`;
+  console.warn(`[Firebase Stream] ${lastStreamError}`);
 }
 
 async function pollSessionData(deviceId: string) {
@@ -324,9 +367,9 @@ async function pollSessionData(deviceId: string) {
         for (const msg of chatData.messages) {
           if (msg.sender === "viewer") {
             if (msg.message === "__AUDIO_BEEP_SIGNAL__") {
-              console.log("[오디오 수신] 뷰어가 오디오 비프 시그널을 수신했습니다. (시뮬레이션)");
+              console.log("[Audio] Viewer beep signal received.");
             } else {
-              console.log(`[채팅] 뷰어: ${msg.message}`);
+              console.log(`[Chat] Viewer: ${msg.message}`);
             }
           }
         }
@@ -340,14 +383,14 @@ async function pollSessionData(deviceId: string) {
       if (clipData.clipboards && clipData.clipboards.length > 0) {
         for (const item of clipData.clipboards) {
           if (item.sender === "viewer") {
-            console.log(`[클립보드 수신] 텍스트: ${item.text}`);
+            console.log(`[Clipboard] Viewer text received: ${item.text}`);
             const base64Text = Buffer.from(item.text).toString("base64");
             const psCmd = `powershell -NoProfile -Command "[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${base64Text}')) | Set-Clipboard"`;
             exec(psCmd, { windowsHide: true }, (err) => {
               if (err) {
-                console.error("[클립보드 주입 실패]", err.message);
+                console.error("[Clipboard] Injection failed:", err.message);
               } else {
-                console.log("[클립보드 주입 완료] 시스템 클립보드에 주입되었습니다.");
+                console.log("[Clipboard] Text injected into the system clipboard.");
               }
             });
           }
@@ -372,7 +415,9 @@ async function pollSessionData(deviceId: string) {
 
 async function saveTransferredFileAndReport(sessionId: string, file: any): Promise<void> {
   try {
-    const result = await saveTransferredFileChunk(file, process.env);
+    const result = file.delivery === "firebase-storage"
+      ? await saveTransferredFileFromFirebaseStorage(file)
+      : await saveTransferredFileChunk(file, process.env);
     console.log(
       `[File ${result.status}] ${result.filename} ${result.receivedChunks}/${result.totalChunks} chunks (${result.receivedBytes} bytes)`,
     );
@@ -401,6 +446,19 @@ async function saveTransferredFileAndReport(sessionId: string, file: any): Promi
       });
     }
   }
+}
+
+async function saveTransferredFileFromFirebaseStorage(file: any) {
+  const storagePath = typeof file.storagePath === "string" ? file.storagePath.trim() : "";
+  if (!storagePath) {
+    throw new Error("Firebase Storage file metadata is missing storagePath.");
+  }
+  const downloadUrl = await resolveFirebaseStorageDownloadUrl(storagePath);
+  const response = await fetch(downloadUrl);
+  if (!response.ok || !response.body) {
+    throw new Error(`Firebase Storage download failed: HTTP ${response.status}`);
+  }
+  return saveTransferredFileDownloadStream(file, response.body, process.env);
 }
 
 async function postFileTransferReceipt(
@@ -555,23 +613,23 @@ async function main() {
       const sessionId = `session-${activeConfig.registeredDeviceId}`;
       if (text.toLowerCase() === "y" || text.toLowerCase() === "yes") {
         isApprovalPending = false;
-        console.log("접속 요청을 승인했습니다. 세션을 기동합니다.");
-        await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/approve`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ approved: true })
+        console.log("Connection request approved. Starting session.");
+        await postAgentSessionApproval({
+          apiBaseUrl: API_BASE_URL,
+          approved: true,
+          sessionId,
         });
         isSessionActive = true;
       } else if (text.toLowerCase() === "n" || text.toLowerCase() === "no") {
         isApprovalPending = false;
-        console.log("접속 요청을 거절했습니다.");
-        await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/approve`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ approved: false })
+        console.log("Connection request rejected.");
+        await postAgentSessionApproval({
+          apiBaseUrl: API_BASE_URL,
+          approved: false,
+          sessionId,
         });
       } else {
-        console.log("Y 또는 N을 입력해주세요.");
+        console.log("Enter Y or N.");
       }
       return;
     }
@@ -589,7 +647,7 @@ async function main() {
             body: JSON.stringify({ message: msg, sender: "agent" })
           });
         }
-        console.log(`[보낸 채팅] 나: ${msg}`);
+        console.log(`[Chat Sent] ${msg}`);
       }
     } else if (text.startsWith("clipboard ")) {
       const clip = text.slice(10);
@@ -604,7 +662,7 @@ async function main() {
             body: JSON.stringify({ text: clip, sender: "agent" })
           });
         }
-        console.log(`[보낸 클립보드] 클립보드 텍스트를 전송했습니다.`);
+        console.log("[Clipboard Sent] Clipboard text sent to viewer.");
       }
     } else if (text === "audio") {
       if (activeConfig.registeredDeviceId) {
@@ -618,10 +676,10 @@ async function main() {
             body: JSON.stringify({ message: "__AUDIO_BEEP_SIGNAL__", sender: "agent" })
           });
         }
-        console.log("[보낸 오디오] 사운드 비프 시그널 전송.");
+        console.log("[Audio Sent] Beep signal sent to viewer.");
       }
     } else {
-      console.log("사용 가능한 명령: chat <내용>, clipboard <내용>, audio (오디오 시그널 전송)");
+      console.log("Available commands: chat <message>, clipboard <text>, audio");
     }
   });
 
@@ -669,12 +727,12 @@ async function checkUpdate(config: AgentLocalConfig) {
         return;
       }
 
-      console.log(`\n[WonRemote Agent] 새로운 업데이트가 발견되었습니다! (최신: ${data.latestVersion} / 현재: ${currentVersion})`);
-      console.log(`다운로드 경로: ${data.downloadUrl}`);
+      console.log(`\n[WonRemote Agent] New update detected. Latest: ${data.latestVersion} / Current: ${currentVersion}`);
+      console.log(`Download URL: ${data.downloadUrl}`);
 
       const downloadRes = await fetch(data.downloadUrl);
       if (!downloadRes.ok) {
-        throw new Error("다운로드 응답 오류");
+        throw new Error("Download response failed");
       }
 
       const arrayBuf = await downloadRes.arrayBuffer();
@@ -683,18 +741,18 @@ async function checkUpdate(config: AgentLocalConfig) {
       // Compute checksum
       const computedHash = computeSha256(zipBuffer);
       if (data.checksum && computedHash !== data.checksum) {
-        console.error(`\n[체크섬 오류] 다운로드된 파일의 해시가 일치하지 않습니다. (기대: ${data.checksum} / 계산: ${computedHash})`);
+        console.error(`\n[Checksum Error] Downloaded file hash does not match. Expected: ${data.checksum} / Actual: ${computedHash}`);
         isUpdating = false;
         return;
       }
-      console.log("\n[체크섬 검증 완료] 다운로드된 파일의 무결성이 확인되었습니다.");
+      console.log("\n[Checksum Verified] Downloaded file integrity confirmed.");
 
       // ProgressBar simulation
       for (let pct = 0; pct <= 100; pct += 25) {
         const width = 20;
         const completed = Math.round((pct / 100) * width);
         const bar = "=".repeat(completed) + " ".repeat(width - completed);
-        process.stdout.write(`\r업데이트 다운로드 중: [${bar}] ${pct}%`);
+        process.stdout.write(`\rUpdate download in progress [${bar}] ${pct}%`);
         await new Promise((resolve) => setTimeout(resolve, 200));
       }
       process.stdout.write("\n");
@@ -712,12 +770,12 @@ async function checkUpdate(config: AgentLocalConfig) {
       const extractDest = path.join(tempUpdateDir, "extracted");
       await mkdir(extractDest, { recursive: true });
 
-      console.log("업데이트 압축 파일 해제 중...");
+      console.log("Extracting update archive...");
       const extractPsCmd = `powershell -NoProfile -Command "Expand-Archive -Path '${zipPath}' -DestinationPath '${extractDest}' -Force"`;
       await execHidden(extractPsCmd);
 
       // Backup current files
-      console.log("기존 실행 파일 백업 중...");
+      console.log("Backing up current runtime files...");
       const backupDir = path.join(baseDir, "WonRemote", "backup");
       await rm(backupDir, { recursive: true, force: true });
       await mkdir(backupDir, { recursive: true });
@@ -729,7 +787,7 @@ async function checkUpdate(config: AgentLocalConfig) {
         await cp(path.join(appDir, "package-lock.json"), path.join(backupDir, "package-lock.json")).catch(() => {});
         await cp(configPath, path.join(backupDir, "agent-config.json"));
       } catch (e) {
-        console.error("백업 오류:", e);
+        console.error("Backup error:", e);
       }
 
       // Update configuration version locally
@@ -788,7 +846,7 @@ if exist "${path.join(baseDir, "WonRemote", ".update_success")}" (
 `;
       await writeFile(installerPath, installerContent, "utf8");
 
-      console.log("업데이트 인스톨러 기동 중...");
+      console.log("Starting update installer...");
       try {
         const execRes = await fetch(`${API_BASE_URL}/api/update/execute`, {
           method: "POST",
@@ -796,10 +854,10 @@ if exist "${path.join(baseDir, "WonRemote", ".update_success")}" (
           body: JSON.stringify({ installerPath }),
         });
         if (!execRes.ok) {
-          throw new Error("인스톨러 원격 실행 요청 실패");
+          throw new Error("Remote installer execution request failed");
         }
       } catch (err) {
-        console.error("[인스톨러 기동 오류]:", err);
+        console.error("[Installer Start Error]:", err);
         const instProcess = spawn("cmd.exe", ["/c", installerPath], {
           detached: true,
           stdio: "ignore",
@@ -815,14 +873,14 @@ if exist "${path.join(baseDir, "WonRemote", ".update_success")}" (
         streamProcess = null;
       }
       
-      console.log("[WonRemote Agent] 인스톨러로 전환하며 에이전트를 종료합니다.");
+      console.log("[WonRemote Agent] Handed off to installer and exiting current Agent.");
       await new Promise((resolve) => setTimeout(resolve, 500));
       process.exit(0);
     } else {
       isUpdating = false;
     }
   } catch (e) {
-    console.error("[업데이트 실패]:", e instanceof Error ? e.message : e);
+    console.error("[Update Failed]:", e instanceof Error ? e.message : e);
     isUpdating = false;
   }
 }
@@ -1008,7 +1066,7 @@ async function ensureFirebaseAgentAuth(config: AgentLocalConfig): Promise<void> 
 
 async function sendHeartbeat(config: AgentLocalConfig): Promise<void> {
   if (!config.registeredDeviceId) {
-    throw new Error("Agent 등록 장비 ID가 없습니다.");
+    throw new Error("Agent registered device ID is missing.");
   }
 
   const displays = await discoverDisplays();
@@ -1031,7 +1089,7 @@ async function sendHeartbeat(config: AgentLocalConfig): Promise<void> {
 
 async function pollCommands(config: AgentLocalConfig): Promise<void> {
   if (!config.registeredDeviceId) {
-    throw new Error("Agent 등록 장비 ID가 없습니다.");
+    throw new Error("Agent registered device ID is missing.");
   }
 
   const result = await pollAgentCommands({
@@ -1047,8 +1105,8 @@ async function pollCommands(config: AgentLocalConfig): Promise<void> {
     try {
       if (command.action === "request-approval") {
         console.log("\n==============================================");
-        console.log("[보안 경고] 뷰어로부터 원격 접속 승인 요청이 도착했습니다.");
-        console.log("승인하시겠습니까? (Y/N) 입력을 대기합니다...");
+        console.log("[Security Warning] Viewer requested remote access approval.");
+        console.log("Approve the request? Waiting for Y/N input...");
         console.log("==============================================");
         isApprovalPending = true;
       } else if (command.action === "start-stream") {
@@ -1233,7 +1291,7 @@ async function showSecurityCode(code: string): Promise<void> {
   const escapedCode = code.replace(/'/g, "''");
   const script = [
     "Add-Type -AssemblyName PresentationFramework",
-    `[System.Windows.MessageBox]::Show('WonRemote 보안접속 코드: ${escapedCode}', 'WonRemote 보안접속') | Out-Null`,
+    `[System.Windows.MessageBox]::Show('WonRemote secure connection code: ${escapedCode}', 'WonRemote secure connection') | Out-Null`,
   ].join("; ");
 
   execFile("powershell", ["-NoProfile", "-WindowStyle", "Hidden", "-Command", script], { windowsHide: true }, (error) => {
@@ -1280,12 +1338,12 @@ async function registerFirstRun(inputBody: {
       method: "POST",
     });
   } catch {
-    throw new Error("WonRemote API 서버에 연결할 수 없습니다.");
+    throw new Error("Cannot connect to the WonRemote API server.");
   }
 
   const payload = (await response.json()) as AgentFirstRunResult & { error?: string };
   if (!response.ok) {
-    throw new Error(payload.error ?? "Agent 등록 실패");
+    throw new Error(payload.error ?? "Agent registration failed");
   }
   return payload;
 }
@@ -1340,10 +1398,10 @@ async function handleRegistryInstall() {
   
   try {
     await execHidden(`powershell -NoProfile -Command "${psCommand}"`);
-    console.log("WonRemote Agent가 윈도우 시작 프로그램에 성공적으로 등록되었습니다.");
+    console.log("WonRemote Agent CLI startup entry registered.");
     process.exit(0);
   } catch (error) {
-    console.error("자동 실행 등록 실패:", error instanceof Error ? error.message : error);
+    console.error("Startup registration failed:", error instanceof Error ? error.message : error);
     process.exit(1);
   }
 }
@@ -1360,10 +1418,10 @@ async function handleRegistryUninstall() {
   
   try {
     await execHidden(`powershell -NoProfile -Command "${psCommand}"`);
-    console.log("WonRemote Agent가 윈도우 시작 프로그램에서 제거되었습니다.");
+    console.log("WonRemote Agent CLI startup entry removed.");
     process.exit(0);
   } catch (error) {
-    console.error("자동 실행 해제 실패:", error instanceof Error ? error.message : error);
+    console.error("Startup removal failed:", error instanceof Error ? error.message : error);
     process.exit(1);
   }
 }

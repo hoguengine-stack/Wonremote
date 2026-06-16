@@ -44,4 +44,11 @@ describe("session diagnostics", () => {
     expect(shouldWarnAboutControlLimit({ elevated: false, integrityLevel: "Medium" })).toBe(true);
     expect(shouldWarnAboutControlLimit({ elevated: true, integrityLevel: "High" })).toBe(false);
   });
+
+  it("adds an explicit WebRTC/TURN diagnostic when realtime transport is unavailable", () => {
+    expect(formatStreamDiagnostics(undefined, "webrtc-unavailable: timeout", 0, 0)).toContain(
+      "webrtc=unavailable",
+    );
+    expect(formatStreamDiagnostics(undefined, "webrtc-error: ice failed", 0, 0)).toContain("turn=check-required");
+  });
 });

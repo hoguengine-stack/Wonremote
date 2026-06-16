@@ -12,10 +12,6 @@ export function normalizeStoreNameForDisplay(
     return DEFAULT_STORE_NAME;
   }
 
-  if (options.preserveLegacyGeneratedName) {
-    return storeName;
-  }
-
   const legacyGeneratedNames = new Set([
     `사업자 ${normalizedBusinessNumber}`,
     `?ъ뾽??${normalizedBusinessNumber}`,
@@ -29,6 +25,16 @@ export function normalizeStoreNameForDisplay(
 
   if (/^\?+\s*/.test(storeName) && storeName.includes(normalizedBusinessNumber)) {
     return DEFAULT_STORE_NAME;
+  }
+
+  const compactStoreName = storeName.replace(/\s+/g, "").replace(/-/g, "");
+  const compactBusinessNumber = normalizedBusinessNumber.replace(/\s+/g, "").replace(/-/g, "");
+  if (/^\?+/.test(compactStoreName) && compactBusinessNumber && compactStoreName.includes(compactBusinessNumber)) {
+    return DEFAULT_STORE_NAME;
+  }
+
+  if (options.preserveLegacyGeneratedName) {
+    return storeName;
   }
 
   return storeName;

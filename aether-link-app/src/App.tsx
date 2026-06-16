@@ -37,6 +37,7 @@ import {
   fetchClipboardText,
   fetchFileTransferReceipts,
   uploadFileChunk,
+  uploadFileToStorage,
   fetchFiles,
   fetchConnectionHistory,
   fetchTiles,
@@ -44,6 +45,7 @@ import {
   requestSecureSession,
   connectSecureSession,
 } from "./api/viewerApi";
+import { fetchViewerUpdateMetadata } from "./api/viewerUpdate";
 import {
   isViewerFirebaseEnabled,
   startFirebaseViewerWebRtcTransport,
@@ -199,12 +201,12 @@ function ViewerApp() {
 
     const checkViewerUpdate = async () => {
       try {
-        const response = await fetch("http://127.0.0.1:8787/api/update/check");
-        if (!response.ok) return;
-        const data = await response.json();
+        const data = await fetchViewerUpdateMetadata(import.meta.env);
+        if (!data) return;
 
-        if (active && shouldNotifyUpdate(data, currentViewerVersion)) {
-          setUpdateAlert(data.latestVersion);
+        const latestVersion = data.latestVersion;
+        if (active && typeof latestVersion === "string" && shouldNotifyUpdate(data, currentViewerVersion)) {
+          setUpdateAlert(latestVersion);
           if (shouldReloadViewerForUpdate(data, currentViewerVersion)) {
             setTimeout(() => {
               window.location.reload();
@@ -1009,14 +1011,16 @@ function AgentFirstRunApp() {
           <span>Agent</span>
         </div>
         <h1>Agent 최초 실행</h1>
-        <label>
-          서버 주소
-          <input
-            onChange={(event) => setApiUrl(event.target.value)}
-            placeholder="http://127.0.0.1:8787"
-            value={apiUrl}
-          />
-        </label>
+        {!firebaseMode && (
+          <label>
+            서버 주소
+            <input
+              onChange={(event) => setApiUrl(event.target.value)}
+              placeholder="http://127.0.0.1:8787"
+              value={apiUrl}
+            />
+          </label>
+        )}
         <label>
           아이디 <input
             autoComplete="username"
@@ -1270,6 +1274,10 @@ async function sha256Hex(buffer: ArrayBuffer): Promise<string | undefined> {
   }
   const digest = await window.crypto.subtle.digest("SHA-256", buffer);
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function sha256BlobHex(blob: Blob): Promise<string | undefined> {
+  return sha256Hex(await blob.arrayBuffer());
 }
 
 function RemoteSessionPanel({
@@ -1861,8 +1869,42 @@ function RemoteSessionPanel({
 
     const transferId = `transfer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     activeTransferIdRef.current = transferId;
-    const totalChunks = Math.max(1, Math.ceil(file.size / REMOTE_FILE_CHUNK_BYTES));
     const startedAtMs = performance.now();
+
+    if (isViewerFirebaseEnabled()) {
+      try {
+        const fileSha256 = await sha256BlobHex(file);
+        if (!fileSha256) {
+          throw new Error("File checksum is unavailable in this browser runtime.");
+        }
+        await uploadFileToStorage(sessionId, {
+          file,
+          fileSha256,
+          filename: file.name,
+          onProgress: (sentBytes, totalBytes) => {
+            setTransferProgress({
+              fileName: file.name,
+              ...formatTransferStats(sentBytes, totalBytes, startedAtMs, performance.now()),
+            });
+          },
+          totalBytes: file.size,
+          transferId,
+        });
+        setTransferProgress({
+          fileName: file.name,
+          ...formatTransferStats(file.size, file.size, startedAtMs, performance.now()),
+        });
+        window.setTimeout(() => setTransferProgress(null), 2500);
+      } catch (err) {
+        setTransferProgress(null);
+        alert("File transfer failed: " + (err instanceof Error ? err.message : err));
+      } finally {
+        e.target.value = "";
+      }
+      return;
+    }
+
+    const totalChunks = Math.max(1, Math.ceil(file.size / REMOTE_FILE_CHUNK_BYTES));
     let sentBytes = 0;
 
     try {

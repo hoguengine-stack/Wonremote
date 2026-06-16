@@ -152,6 +152,8 @@ export interface TransferredFile {
   isLast?: boolean;
   chunkSha256?: string;
   fileSha256?: string;
+  delivery?: "firestore-direct" | "firebase-storage";
+  storagePath?: string;
 }
 
 export interface FileTransferReceipt {

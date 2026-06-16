@@ -23,6 +23,8 @@ import {
   writeBatch,
   type Unsubscribe,
 } from "firebase/firestore";
+import { httpsCallable } from "firebase/functions";
+import { ref, uploadBytesResumable } from "firebase/storage";
 import type {
   AgentFirstRunInput,
   AgentFirstRunResult,
@@ -35,12 +37,14 @@ import type {
   TransferredFile,
 } from "../domain/types";
 import { sortDevices } from "../domain/agentRegistry";
-import { resolveRtcIceServers, shouldUseRelayOnly } from "../domain/rtcTransport";
+import { DEFAULT_STORE_NAME, normalizeStoreNameForDisplay } from "../domain/deviceDefaults";
+import { requireTurnWhenRelayOnly, resolveRtcIceServers, shouldUseRelayOnly } from "../domain/rtcTransport";
 import { resolveFirebaseConfig } from "./firebaseConfig";
-import { buildAgentAuthEmail, buildAgentAuthPassword } from "./firebaseIdentity";
+import { buildAgentAuthEmail, buildAgentAuthPassword, buildViewerAuthCredentials } from "./firebaseIdentity";
 import { buildFirestoreDevice, mapFirestoreDevice, mergeFirstRunDeviceDocument } from "./firestoreDevice";
 import { getWonRemoteFirebaseServices } from "./firebaseServices";
 import { throwExplainedFirebaseAuthError } from "./firebaseError";
+import { stripUndefinedFields } from "./firestorePayload";
 
 type ViewerFirebaseEnv = ImportMetaEnv;
 
@@ -58,9 +62,10 @@ export async function loginViewerWithFirebase(
   env: ViewerFirebaseEnv = import.meta.env,
 ): Promise<void> {
   const services = getViewerFirebaseServices(env);
+  const credentials = buildViewerAuthCredentials(username, password);
   try {
     await setPersistence(services.auth, browserLocalPersistence);
-    await signInWithEmailAndPassword(services.auth, username.trim(), password);
+    await signInWithEmailAndPassword(services.auth, credentials.email, credentials.password);
   } catch (error) {
     throwExplainedFirebaseAuthError(error);
   }
@@ -90,7 +95,8 @@ export function subscribeFirebaseDevices(
   env: ViewerFirebaseEnv = import.meta.env,
 ): Unsubscribe {
   const services = getViewerFirebaseServices(env);
-  const devicesCollection = collection(services.db, "devices");
+  const userId = requireCurrentUserId(services.auth.currentUser?.uid);
+  const devicesCollection = query(collection(services.db, "devices"), where("ownerUid", "==", userId));
 
   return onSnapshot(
     devicesCollection,
@@ -103,7 +109,8 @@ export function subscribeFirebaseDevices(
 
 export async function fetchFirebaseDevices(env: ViewerFirebaseEnv = import.meta.env): Promise<ManagedDevice[]> {
   const services = getViewerFirebaseServices(env);
-  const snapshot = await getDocs(collection(services.db, "devices"));
+  const userId = requireCurrentUserId(services.auth.currentUser?.uid);
+  const snapshot = await getDocs(query(collection(services.db, "devices"), where("ownerUid", "==", userId)));
   return sortDevices(snapshot.docs.map((deviceDoc) => mapFirestoreDevice(deviceDoc.id, deviceDoc.data())));
 }
 
@@ -114,13 +121,19 @@ export async function updateFirebaseDeviceMetadata(
 ): Promise<ManagedDevice> {
   const services = getViewerFirebaseServices(env);
   const deviceRef = doc(services.db, "devices", deviceId);
+  const currentSnapshot = await getDoc(deviceRef);
+  if (!currentSnapshot.exists()) {
+    throw new Error("Firebase device not found.");
+  }
+  const currentDevice = mapFirestoreDevice(currentSnapshot.id, currentSnapshot.data());
   const update: Record<string, unknown> = {
     updatedAt: serverTimestamp(),
   };
 
   if (typeof input.storeName === "string" && input.storeName.trim()) {
-    update.storeName = input.storeName.trim();
-    update.storeNameSource = "user";
+    const storeName = normalizeStoreNameForDisplay(input.storeName, currentDevice.businessNumber);
+    update.storeName = storeName;
+    update.storeNameSource = storeName === DEFAULT_STORE_NAME ? "default" : "user";
   }
   if (typeof input.deviceName === "string" && input.deviceName.trim()) {
     update.deviceName = input.deviceName.trim();
@@ -197,30 +210,30 @@ export async function openFirebaseSession(
   deviceId: string,
   env: ViewerFirebaseEnv = import.meta.env,
 ): Promise<{ session: RemoteSession; inputLog: string[] }> {
-  const services = getViewerFirebaseServices(env);
-  const startedAt = new Date().toISOString();
-  const session: RemoteSession = {
-    id: firebaseSessionIdForDevice(deviceId),
-    deviceId,
-    state: "connected",
-    startedAt,
-  };
+  return callViewerFunctionWithFirestoreFallback<
+    { deviceId: string },
+    { session: RemoteSession; inputLog: string[] }
+  >("openSession", { deviceId }, env, () => openFirebaseSessionDirect(deviceId, env));
+}
 
-  await setDoc(
-    doc(services.db, "sessions", session.id),
-    {
-      ...session,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    },
-    { merge: true },
-  );
-  await enqueueFirebaseAgentCommand(deviceId, "start-stream", env);
+export async function requestFirebaseSecureSession(
+  deviceId: string,
+  env: ViewerFirebaseEnv = import.meta.env,
+): Promise<{ challengeId: string; expiresAt: string }> {
+  return callViewerFunctionWithFirestoreFallback<
+    { deviceId: string },
+    { challengeId: string; expiresAt: string }
+  >("requestSecureSession", { deviceId }, env, () => requestFirebaseSecureSessionDirect(deviceId, env));
+}
 
-  return {
-    session,
-    inputLog: [`${new Date().toLocaleTimeString()} start-stream queued via Firebase`],
-  };
+export async function connectFirebaseSecureSession(
+  input: { challengeId: string; code: string; deviceId: string },
+  env: ViewerFirebaseEnv = import.meta.env,
+): Promise<{ session: RemoteSession; inputLog: string[] }> {
+  return callViewerFunctionWithFirestoreFallback<
+    { challengeId: string; code: string; deviceId: string },
+    { session: RemoteSession; inputLog: string[] }
+  >("connectSecureSession", input, env, () => connectFirebaseSecureSessionDirect(input, env));
 }
 
 export async function recordFirebaseInput(
@@ -228,23 +241,23 @@ export async function recordFirebaseInput(
   action: string,
   env: ViewerFirebaseEnv = import.meta.env,
 ): Promise<string[]> {
-  const deviceId = deviceIdFromFirebaseSessionId(sessionId);
-  await enqueueFirebaseAgentCommand(deviceId, action, env);
-  return [`${new Date().toLocaleTimeString()} ${action}`];
+  const result = await callViewerFunctionWithFirestoreFallback<
+    { action: string; sessionId: string },
+    { inputLog: string[] }
+  >("enqueueCommand", { action, sessionId }, env, () => recordFirebaseInputDirect(sessionId, action, env));
+  return result.inputLog;
 }
 
 export async function closeFirebaseSession(
   sessionId: string,
   env: ViewerFirebaseEnv = import.meta.env,
 ): Promise<void> {
-  const services = getViewerFirebaseServices(env);
-  const deviceId = deviceIdFromFirebaseSessionId(sessionId);
-  await enqueueFirebaseAgentCommand(deviceId, "stop-stream", env);
-  await updateDoc(doc(services.db, "sessions", sessionId), {
-    closedAt: serverTimestamp(),
-    state: "closed",
-    updatedAt: serverTimestamp(),
-  }).catch(() => undefined);
+  await callViewerFunctionWithFirestoreFallback<{ sessionId: string }, null>(
+    "closeSession",
+    { sessionId },
+    env,
+    () => closeFirebaseSessionDirect(sessionId, env),
+  );
 }
 
 export async function sendFirebaseChatMessage(
@@ -305,12 +318,68 @@ export async function uploadFirebaseFileChunk(
   env: ViewerFirebaseEnv = import.meta.env,
 ): Promise<void> {
   const services = getViewerFirebaseServices(env);
-  await addDoc(collection(services.db, "sessions", sessionId, "files"), {
+  await addDoc(collection(services.db, "sessions", sessionId, "files"), stripUndefinedFields({
     ...input,
+    delivery: "firestore-direct",
     sender: "viewer",
     target: "agent",
     createdAt: serverTimestamp(),
+  }));
+}
+
+export async function uploadFirebaseFileToStorage(
+  sessionId: string,
+  input: {
+    file: Blob;
+    filename: string;
+    transferId: string;
+    totalBytes: number;
+    fileSha256?: string;
+    onProgress?: (sentBytes: number, totalBytes: number) => void;
+  },
+  env: ViewerFirebaseEnv = import.meta.env,
+): Promise<void> {
+  const services = getViewerFirebaseServices(env);
+  const storagePath = [
+    "sessions",
+    safeStorageSegment(sessionId),
+    "files",
+    safeStorageSegment(input.transferId),
+    safeStorageSegment(input.filename),
+  ].join("/");
+  const storageRef = ref(services.storage, storagePath);
+  const uploadTask = uploadBytesResumable(storageRef, input.file, {
+    contentType: input.file.type || "application/octet-stream",
+    customMetadata: {
+      filename: input.filename,
+      sessionId,
+      transferId: input.transferId,
+    },
   });
+
+  await new Promise<void>((resolve, reject) => {
+    uploadTask.on(
+      "state_changed",
+      (snapshot) => input.onProgress?.(snapshot.bytesTransferred, snapshot.totalBytes),
+      reject,
+      resolve,
+    );
+  });
+
+  await addDoc(collection(services.db, "sessions", sessionId, "files"), stripUndefinedFields({
+    delivery: "firebase-storage",
+    fileData: "",
+    fileSha256: input.fileSha256,
+    filename: input.filename,
+    isLast: true,
+    sender: "viewer",
+    storagePath: uploadTask.snapshot.ref.fullPath,
+    target: "agent",
+    totalBytes: input.totalBytes,
+    totalChunks: 1,
+    transferId: input.transferId,
+    createdAt: serverTimestamp(),
+  }));
 }
 
 export async function fetchFirebaseFiles(
@@ -328,6 +397,8 @@ export async function fetchFirebaseFiles(
     isLast: typeof data.isLast === "boolean" ? data.isLast : undefined,
     chunkSha256: typeof data.chunkSha256 === "string" ? data.chunkSha256 : undefined,
     fileSha256: typeof data.fileSha256 === "string" ? data.fileSha256 : undefined,
+    delivery: data.delivery === "firebase-storage" ? "firebase-storage" : "firestore-direct",
+    storagePath: typeof data.storagePath === "string" ? data.storagePath : undefined,
   }), env);
 }
 
@@ -382,6 +453,7 @@ export async function startFirebaseViewerWebRtcTransport(
   env: ViewerFirebaseEnv = import.meta.env,
 ): Promise<ViewerWebRtcTransport> {
   const services = getViewerFirebaseServices(env);
+  requireTurnWhenRelayOnly(env);
   const peer = new RTCPeerConnection({
     iceServers: resolveRtcIceServers(env),
     iceTransportPolicy: shouldUseRelayOnly(env) ? "relay" : "all",
@@ -528,10 +600,217 @@ function oppositeSessionSender(sender: "viewer" | "agent"): "viewer" | "agent" {
   return sender === "viewer" ? "agent" : "viewer";
 }
 
-export async function enqueueFirebaseAgentCommand(
+function getViewerFirebaseServices(env: ViewerFirebaseEnv) {
+  const config = resolveFirebaseConfig(env);
+  if (!config) {
+    throw new Error("Firebase config is missing. Set VITE_WONREMOTE_FIREBASE_* values.");
+  }
+  return getWonRemoteFirebaseServices(config);
+}
+
+async function callViewerFunction<TInput extends object, TOutput>(
+  name: string,
+  input: TInput,
+  env: ViewerFirebaseEnv,
+): Promise<TOutput> {
+  const services = getViewerFirebaseServices(env);
+  const callable = httpsCallable<TInput, TOutput>(services.functions, name);
+  const result = await callable(input);
+  return result.data;
+}
+
+async function callViewerFunctionWithFirestoreFallback<TInput extends object, TOutput>(
+  name: string,
+  input: TInput,
+  env: ViewerFirebaseEnv,
+  fallback: () => Promise<TOutput>,
+): Promise<TOutput> {
+  try {
+    return await callViewerFunction<TInput, TOutput>(name, input, env);
+  } catch (error) {
+    if (!shouldUseFirestoreFallback(error)) {
+      throw error;
+    }
+    console.warn(`[Firebase] Cloud Function ${name} unavailable; using Firestore direct fallback.`);
+    return fallback();
+  }
+}
+
+async function openFirebaseSessionDirect(
+  deviceId: string,
+  env: ViewerFirebaseEnv,
+): Promise<{ session: RemoteSession; inputLog: string[] }> {
+  const services = getViewerFirebaseServices(env);
+  const userId = requireCurrentUserId(services.auth.currentUser?.uid);
+  const deviceSnapshot = await getDoc(doc(services.db, "devices", deviceId));
+  if (!deviceSnapshot.exists()) {
+    throw new Error("Firebase device not found.");
+  }
+  const device = deviceSnapshot.data() as { ownerUid?: unknown; status?: unknown };
+  if (device.ownerUid !== userId) {
+    throw new Error("Device is not owned by this Firebase account.");
+  }
+  if (device.status !== "online") {
+    throw new Error("Only online agents can accept connections.");
+  }
+
+  const session = buildConnectedSession(deviceId);
+  await setDoc(
+    doc(services.db, "sessions", session.id),
+    {
+      ...session,
+      ownerUid: userId,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true },
+  );
+  await enqueueFirebaseDeviceCommandDirect(deviceId, "start-stream", env);
+  return {
+    inputLog: [`${new Date().toLocaleTimeString()} start-stream queued via Firestore fallback`],
+    session,
+  };
+}
+
+async function requestFirebaseSecureSessionDirect(
+  deviceId: string,
+  env: ViewerFirebaseEnv,
+): Promise<{ challengeId: string; expiresAt: string }> {
+  const services = getViewerFirebaseServices(env);
+  const userId = requireCurrentUserId(services.auth.currentUser?.uid);
+  const deviceSnapshot = await getDoc(doc(services.db, "devices", deviceId));
+  if (!deviceSnapshot.exists()) {
+    throw new Error("Firebase device not found.");
+  }
+  const device = deviceSnapshot.data() as { ownerUid?: unknown; status?: unknown };
+  if (device.ownerUid !== userId) {
+    throw new Error("Device is not owned by this Firebase account.");
+  }
+  if (device.status !== "online") {
+    throw new Error("Only online agents can accept secure connections.");
+  }
+
+  const nowMs = Date.now();
+  const challengeId = `secure-${nowMs}-${Math.random().toString(36).slice(2, 10)}`;
+  const code = generateSecurityCode();
+  const expiresAtMs = nowMs + 120_000;
+  const expiresAt = new Date(expiresAtMs).toISOString();
+
+  await setDoc(doc(services.db, "secureChallenges", challengeId), {
+    challengeId,
+    code,
+    createdAt: serverTimestamp(),
+    deviceId,
+    expiresAt,
+    expiresAtMs,
+    ownerUid: userId,
+    state: "pending",
+    updatedAt: serverTimestamp(),
+  });
+  await enqueueFirebaseDeviceCommandDirect(deviceId, `security-code ${challengeId} ${code}`, env);
+
+  return { challengeId, expiresAt };
+}
+
+async function connectFirebaseSecureSessionDirect(
+  input: { challengeId: string; code: string; deviceId: string },
+  env: ViewerFirebaseEnv,
+): Promise<{ session: RemoteSession; inputLog: string[] }> {
+  const services = getViewerFirebaseServices(env);
+  const userId = requireCurrentUserId(services.auth.currentUser?.uid);
+  const challengeRef = doc(services.db, "secureChallenges", input.challengeId);
+  const challengeSnapshot = await getDoc(challengeRef);
+  if (!challengeSnapshot.exists()) {
+    throw new Error("Invalid secure connection code.");
+  }
+  const challenge = challengeSnapshot.data() as {
+    code?: unknown;
+    deviceId?: unknown;
+    expiresAtMs?: unknown;
+    ownerUid?: unknown;
+    state?: unknown;
+  };
+  if (challenge.ownerUid !== userId || challenge.deviceId !== input.deviceId || challenge.state !== "pending") {
+    throw new Error("Invalid secure connection code.");
+  }
+  if (typeof challenge.expiresAtMs !== "number" || challenge.expiresAtMs <= Date.now()) {
+    await updateDoc(challengeRef, {
+      state: "expired",
+      updatedAt: serverTimestamp(),
+    });
+    throw new Error("Secure connection code expired.");
+  }
+  if (normalizeSecurityCode(String(challenge.code ?? "")) !== normalizeSecurityCode(input.code)) {
+    throw new Error("Invalid secure connection code.");
+  }
+
+  await updateDoc(challengeRef, {
+    state: "used",
+    updatedAt: serverTimestamp(),
+    usedAt: serverTimestamp(),
+  });
+  return openFirebaseSessionDirect(input.deviceId, env);
+}
+
+async function recordFirebaseInputDirect(
+  sessionId: string,
+  action: string,
+  env: ViewerFirebaseEnv,
+): Promise<{ inputLog: string[] }> {
+  const session = await readOwnedConnectedFirebaseSession(sessionId, env);
+  await enqueueFirebaseDeviceCommandDirect(session.deviceId, action, env);
+  return {
+    inputLog: [`${new Date().toLocaleTimeString()} ${action}`],
+  };
+}
+
+async function closeFirebaseSessionDirect(sessionId: string, env: ViewerFirebaseEnv): Promise<null> {
+  const services = getViewerFirebaseServices(env);
+  const session = await readOwnedFirebaseSession(sessionId, env);
+  await updateDoc(doc(services.db, "sessions", sessionId), {
+    closedAt: serverTimestamp(),
+    state: "closed",
+    updatedAt: serverTimestamp(),
+  });
+  await enqueueFirebaseDeviceCommandDirect(session.deviceId, "stop-stream", env);
+  return null;
+}
+
+async function readOwnedConnectedFirebaseSession(
+  sessionId: string,
+  env: ViewerFirebaseEnv,
+): Promise<{ deviceId: string }> {
+  const session = await readOwnedFirebaseSession(sessionId, env);
+  if (session.state !== "connected") {
+    throw new Error("Only connected sessions can send remote input.");
+  }
+  return session;
+}
+
+async function readOwnedFirebaseSession(
+  sessionId: string,
+  env: ViewerFirebaseEnv,
+): Promise<{ deviceId: string; state: string }> {
+  const services = getViewerFirebaseServices(env);
+  const userId = requireCurrentUserId(services.auth.currentUser?.uid);
+  const sessionSnapshot = await getDoc(doc(services.db, "sessions", sessionId));
+  if (!sessionSnapshot.exists()) {
+    throw new Error("Firebase session not found.");
+  }
+  const session = sessionSnapshot.data() as { deviceId?: unknown; ownerUid?: unknown; state?: unknown };
+  if (session.ownerUid !== userId || typeof session.deviceId !== "string") {
+    throw new Error("Session is not owned by this Firebase account.");
+  }
+  return {
+    deviceId: session.deviceId,
+    state: String(session.state ?? ""),
+  };
+}
+
+async function enqueueFirebaseDeviceCommandDirect(
   deviceId: string,
   action: string,
-  env: ViewerFirebaseEnv = import.meta.env,
+  env: ViewerFirebaseEnv,
 ): Promise<void> {
   const services = getViewerFirebaseServices(env);
   await addDoc(collection(services.db, "devices", deviceId, "commands"), {
@@ -541,12 +820,56 @@ export async function enqueueFirebaseAgentCommand(
   });
 }
 
-function getViewerFirebaseServices(env: ViewerFirebaseEnv) {
-  const config = resolveFirebaseConfig(env);
-  if (!config) {
-    throw new Error("Firebase 설정이 없습니다. VITE_WONREMOTE_FIREBASE_* 값을 설정해야 합니다.");
+function buildConnectedSession(deviceId: string): RemoteSession {
+  const startedAt = new Date().toISOString();
+  return {
+    deviceId,
+    id: firebaseSessionIdForDevice(deviceId),
+    startedAt,
+    state: "connected",
+  };
+}
+
+function firebaseSessionIdForDevice(deviceId: string): string {
+  return `session-${deviceId}`;
+}
+
+function shouldUseFirestoreFallback(error: unknown): boolean {
+  const code = typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code)
+    : "";
+  const message = error instanceof Error ? error.message : String(error);
+  return [
+    "functions/not-found",
+    "functions/unimplemented",
+    "functions/unavailable",
+    "functions/internal",
+  ].includes(code) || /function.*not.*found|not found|not available|unavailable|internal/i.test(message);
+}
+
+function generateSecurityCode(): string {
+  const value = Math.floor(Math.random() * 1_000_000).toString().padStart(6, "0");
+  return `${value.slice(0, 3)} ${value.slice(3)}`;
+}
+
+function normalizeSecurityCode(value: string): string {
+  return value.replace(/\D/g, "");
+}
+
+function safeStorageSegment(value: string): string {
+  return value
+    .trim()
+    .replace(/[\\/]+/g, "_")
+    .replace(/\s+/g, "_")
+    .replace(/[^\p{L}\p{N}._-]/gu, "_")
+    .slice(0, 160) || "item";
+}
+
+function requireCurrentUserId(userId: string | undefined): string {
+  if (!userId) {
+    throw new Error("Firebase viewer is not authenticated.");
   }
-  return getWonRemoteFirebaseServices(config);
+  return userId;
 }
 
 function isFirebaseAuthCode(error: unknown, code: string): boolean {
@@ -566,15 +889,4 @@ function coerceCreatedAt(value: unknown): string {
     return value.toDate().toISOString();
   }
   return new Date().toISOString();
-}
-
-function firebaseSessionIdForDevice(deviceId: string): string {
-  return `session-${deviceId}`;
-}
-
-function deviceIdFromFirebaseSessionId(sessionId: string): string {
-  if (!sessionId.startsWith("session-")) {
-    throw new Error("Invalid Firebase session id.");
-  }
-  return sessionId.slice("session-".length);
 }
