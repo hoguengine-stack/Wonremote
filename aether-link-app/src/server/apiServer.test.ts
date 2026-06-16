@@ -327,6 +327,57 @@ describe("WonRemote local API server", () => {
     expect(await empty.json()).toEqual({ files: [] });
   });
 
+  it("stores local file transfer receipts for viewer progress polling", async () => {
+    const registered = await postJson("/api/agent/first-run", {
+      businessNumber: "4445566666",
+      password: "1234",
+      installId: "agent-file-receipts",
+    });
+    const registeredBody = await registered.json();
+    const session = await postJson("/api/sessions", {
+      deviceId: registeredBody.device.id,
+    });
+    const sessionBody = await session.json();
+    const encodedSessionId = encodeURIComponent(sessionBody.session.id);
+
+    const partial = await postJson(`/api/sessions/${encodedSessionId}/file-receipts`, {
+      transferId: "transfer-1",
+      filename: "chunked.txt",
+      status: "partial",
+      receivedChunks: 1,
+      totalChunks: 2,
+      receivedBytes: 6,
+    });
+    expect(partial.status).toBe(200);
+
+    const received = await postJson(`/api/sessions/${encodedSessionId}/file-receipts`, {
+      transferId: "transfer-1",
+      filename: "chunked.txt",
+      status: "received",
+      receivedChunks: 2,
+      totalChunks: 2,
+      receivedBytes: 11,
+      savedPath: "C:\\Users\\tester\\Desktop\\chunked.txt",
+    });
+    expect(received.status).toBe(200);
+
+    const fetched = await fetch(`${baseUrl}/api/sessions/${encodedSessionId}/file-receipts`);
+    expect(await fetched.json()).toMatchObject({
+      receipts: [
+        {
+          transferId: "transfer-1",
+          filename: "chunked.txt",
+          status: "received",
+          receivedChunks: 2,
+          totalChunks: 2,
+          receivedBytes: 11,
+          savedPath: "C:\\Users\\tester\\Desktop\\chunked.txt",
+          updatedAt: expect.any(String),
+        },
+      ],
+    });
+  });
+
   it("rejects file transfers whose declared total size exceeds 500MB", async () => {
     const registered = await postJson("/api/agent/first-run", {
       businessNumber: "4445577777",

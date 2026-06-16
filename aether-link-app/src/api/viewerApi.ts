@@ -288,7 +288,10 @@ export async function fetchFileTransferReceipts(sessionId: string): Promise<File
     return fetchFirebaseFileTransferReceipts(sessionId);
   }
 
-  return [];
+  const body = await request<{ receipts: FileTransferReceipt[] }>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/file-receipts`,
+  );
+  return body.receipts;
 }
 
 export async function fetchTiles(sessionId: string): Promise<{ tiles: any[]; width: number; height: number }> {

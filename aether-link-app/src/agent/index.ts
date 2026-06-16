@@ -51,7 +51,7 @@ import type {
   AgentCredentials,
   AgentLocalConfig,
 } from "./agentBootstrap";
-import type { AgentControlDiagnostics, AgentFirstRunResult, DeviceDisplayInfo } from "../domain/types";
+import type { AgentControlDiagnostics, AgentFirstRunResult, DeviceDisplayInfo, FileTransferReceipt } from "../domain/types";
 import { spawn, execFile, exec } from "node:child_process";
 import { promisify } from "node:util";
 import readline from "node:readline";
@@ -351,8 +351,8 @@ async function saveTransferredFileAndReport(sessionId: string, file: any): Promi
     console.log(
       `[File ${result.status}] ${result.filename} ${result.receivedChunks}/${result.totalChunks} chunks (${result.receivedBytes} bytes)`,
     );
-    if (USE_FIREBASE && result.transferId) {
-      await postFileTransferReceiptWithFirebase(sessionId, {
+    if (result.transferId) {
+      await postFileTransferReceipt(sessionId, {
         transferId: result.transferId,
         filename: result.filename,
         status: result.status === "complete" ? "received" : "partial",
@@ -365,8 +365,8 @@ async function saveTransferredFileAndReport(sessionId: string, file: any): Promi
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[File Transfer Failed] ${String(file?.filename ?? "unknown")}: ${message}`);
-    if (USE_FIREBASE && typeof file?.transferId === "string") {
-      await postFileTransferReceiptWithFirebase(sessionId, {
+    if (typeof file?.transferId === "string") {
+      await postFileTransferReceipt(sessionId, {
         transferId: file.transferId,
         filename: String(file.filename ?? ""),
         status: "failed",
@@ -376,6 +376,22 @@ async function saveTransferredFileAndReport(sessionId: string, file: any): Promi
       });
     }
   }
+}
+
+async function postFileTransferReceipt(
+  sessionId: string,
+  receipt: Omit<FileTransferReceipt, "updatedAt">,
+): Promise<void> {
+  if (USE_FIREBASE) {
+    await postFileTransferReceiptWithFirebase(sessionId, receipt);
+    return;
+  }
+
+  await fetch(`${API_BASE_URL}/api/sessions/${encodeURIComponent(sessionId)}/file-receipts`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(receipt),
+  });
 }
 
 

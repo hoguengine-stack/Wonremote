@@ -32,9 +32,9 @@ export async function saveTransferredFileChunk(
   await mkdir(downloadsDir, { recursive: true });
   const targetPath = resolveSafeDownloadPath(downloadsDir, String(file.filename ?? ""));
   const buffer = Buffer.from(String(file.fileData ?? ""), "base64");
-  verifyChunkChecksum(file, buffer);
 
   if (typeof file.transferId !== "string" || !Number.isInteger(file.chunkIndex)) {
+    verifyChunkChecksum(file, buffer);
     await writeFile(targetPath, buffer);
     return {
       filename: file.filename,
@@ -52,79 +52,86 @@ export async function saveTransferredFileChunk(
   const partPath = `${targetPath}.${transferId}.part`;
   const statePath = `${partPath}.json`;
 
-  let nextState: TransferPartState;
-  if (chunkIndex === 0) {
-    await writeFile(partPath, buffer);
-    nextState = {
-      filename: file.filename,
-      nextChunkIndex: 1,
-      receivedBytes: buffer.length,
-      totalChunks,
-    };
-  } else {
-    const state = await readPartState(statePath, file.filename);
-    if (chunkIndex < state.nextChunkIndex) {
+  try {
+    verifyChunkChecksum(file, buffer);
+
+    let nextState: TransferPartState;
+    if (chunkIndex === 0) {
+      await writeFile(partPath, buffer);
+      nextState = {
+        filename: file.filename,
+        nextChunkIndex: 1,
+        receivedBytes: buffer.length,
+        totalChunks,
+      };
+    } else {
+      const state = await readPartState(statePath, file.filename);
+      if (chunkIndex < state.nextChunkIndex) {
+        return {
+          filename: file.filename,
+          receivedBytes: state.receivedBytes,
+          receivedChunks: state.nextChunkIndex,
+          status: "duplicate",
+          targetPath,
+          totalChunks: state.totalChunks,
+          transferId,
+        };
+      }
+      if (chunkIndex > state.nextChunkIndex) {
+        throw new Error(
+          `Missing file chunk for ${file.filename}: expected ${state.nextChunkIndex}, got ${chunkIndex}`,
+        );
+      }
+
+      await appendFile(partPath, buffer);
+      nextState = {
+        filename: state.filename,
+        nextChunkIndex: state.nextChunkIndex + 1,
+        receivedBytes: state.receivedBytes + buffer.length,
+        totalChunks: state.totalChunks || totalChunks,
+      };
+    }
+
+    const receivedChunks = nextState.nextChunkIndex;
+    await writeFile(statePath, JSON.stringify(nextState, null, 2), "utf8");
+
+    if (file.isLast) {
+      if (receivedChunks < totalChunks) {
+        throw new Error(`Incomplete file transfer for ${file.filename}: ${receivedChunks}/${totalChunks} chunks`);
+      }
+      if (typeof file.fileSha256 === "string" && file.fileSha256.trim()) {
+        const actualSha256 = await hashFileSha256(partPath);
+        if (actualSha256 !== file.fileSha256.trim().toLowerCase()) {
+          throw new Error(`File checksum mismatch: ${file.filename}`);
+        }
+      }
+      await rm(targetPath, { force: true });
+      await rename(partPath, targetPath);
+      await rm(statePath, { force: true });
       return {
         filename: file.filename,
-        receivedBytes: state.receivedBytes,
-        receivedChunks: state.nextChunkIndex,
-        status: "duplicate",
+        receivedBytes: nextState.receivedBytes,
+        receivedChunks,
+        status: "complete",
         targetPath,
-        totalChunks: state.totalChunks,
+        totalChunks,
         transferId,
       };
     }
-    if (chunkIndex > state.nextChunkIndex) {
-      throw new Error(
-        `Missing file chunk for ${file.filename}: expected ${state.nextChunkIndex}, got ${chunkIndex}`,
-      );
-    }
 
-    await appendFile(partPath, buffer);
-    nextState = {
-      filename: state.filename,
-      nextChunkIndex: state.nextChunkIndex + 1,
-      receivedBytes: state.receivedBytes + buffer.length,
-      totalChunks: state.totalChunks || totalChunks,
-    };
-  }
-
-  const receivedChunks = nextState.nextChunkIndex;
-  await writeFile(statePath, JSON.stringify(nextState, null, 2), "utf8");
-
-  if (file.isLast) {
-    if (receivedChunks < totalChunks) {
-      throw new Error(`Incomplete file transfer for ${file.filename}: ${receivedChunks}/${totalChunks} chunks`);
-    }
-    if (typeof file.fileSha256 === "string" && file.fileSha256.trim()) {
-      const actualSha256 = await hashFileSha256(partPath);
-      if (actualSha256 !== file.fileSha256.trim().toLowerCase()) {
-        throw new Error(`File checksum mismatch: ${file.filename}`);
-      }
-    }
-    await rm(targetPath, { force: true });
-    await rename(partPath, targetPath);
-    await rm(statePath, { force: true });
     return {
       filename: file.filename,
       receivedBytes: nextState.receivedBytes,
       receivedChunks,
-      status: "complete",
+      status: "partial",
       targetPath,
       totalChunks,
       transferId,
     };
+  } catch (error) {
+    await discardTransferPart(partPath, statePath);
+    throw error;
   }
-
-  return {
-    filename: file.filename,
-    receivedBytes: nextState.receivedBytes,
-    receivedChunks,
-    status: "partial",
-    targetPath,
-    totalChunks,
-    transferId,
-  };
 }
 
 function verifyChunkChecksum(file: TransferredFile, buffer: Buffer): void {
@@ -160,6 +167,13 @@ async function readPartState(statePath: string, filename: string): Promise<Trans
 
 function sanitizeTransferId(transferId: string): string {
   return transferId.replace(/[^a-zA-Z0-9_.-]/g, "_") || "transfer";
+}
+
+async function discardTransferPart(partPath: string, statePath: string): Promise<void> {
+  await Promise.all([
+    rm(partPath, { force: true }),
+    rm(statePath, { force: true }),
+  ]);
 }
 
 function hashFileSha256(filePath: string): Promise<string> {

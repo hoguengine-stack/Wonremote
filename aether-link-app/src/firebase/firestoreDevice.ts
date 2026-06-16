@@ -51,6 +51,29 @@ export function buildFirestoreDevice(input: BuildFirestoreDeviceInput): ManagedD
   };
 }
 
+export function mergeFirstRunDeviceDocument(
+  device: ManagedDevice & { ownerUid: string },
+  existing: Partial<FirestoreDeviceDocument> | undefined,
+): ManagedDevice & { ownerUid: string } {
+  const merged = { ...device };
+  if (!existing) {
+    return merged;
+  }
+
+  if (existing.storeNameSource === "user" && typeof existing.storeName === "string" && existing.storeName.trim()) {
+    merged.storeName = existing.storeName.trim();
+    merged.storeNameSource = "user";
+  }
+  if (typeof existing.deviceName === "string" && existing.deviceName.trim()) {
+    merged.deviceName = existing.deviceName.trim();
+  }
+  if (typeof existing.desktopName === "string" && existing.desktopName.trim()) {
+    merged.desktopName = existing.desktopName.trim();
+  }
+
+  return merged;
+}
+
 export function mapFirestoreDevice(id: string, data: Partial<FirestoreDeviceDocument>): ManagedDevice {
   return {
     id,

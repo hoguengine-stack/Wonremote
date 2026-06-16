@@ -38,7 +38,7 @@ import { sortDevices } from "../domain/agentRegistry";
 import { resolveRtcIceServers, shouldUseRelayOnly } from "../domain/rtcTransport";
 import { resolveFirebaseConfig } from "./firebaseConfig";
 import { buildAgentAuthEmail, buildAgentAuthPassword } from "./firebaseIdentity";
-import { buildFirestoreDevice, mapFirestoreDevice } from "./firestoreDevice";
+import { buildFirestoreDevice, mapFirestoreDevice, mergeFirstRunDeviceDocument } from "./firestoreDevice";
 import { getWonRemoteFirebaseServices } from "./firebaseServices";
 import { throwExplainedFirebaseAuthError } from "./firebaseError";
 
@@ -169,20 +169,27 @@ export async function registerFirstRunAgentWithFirebase(
     ownerUid: credential.user.uid,
     version: input.version,
   });
+  const deviceRef = doc(services.db, "devices", device.id);
+  const existingSnapshot = await getDoc(deviceRef);
+  const deviceDocument = mergeFirstRunDeviceDocument(
+    device,
+    existingSnapshot.exists() ? existingSnapshot.data() : undefined,
+  );
 
   await setDoc(
-    doc(services.db, "devices", device.id),
+    deviceRef,
     {
-      ...device,
+      ...deviceDocument,
       installId: input.installId,
       ownerUid: credential.user.uid,
     },
     { merge: true },
   );
 
+  const resultDevice = mapFirestoreDevice(device.id, deviceDocument);
   return {
-    devices: [device],
-    device,
+    devices: [resultDevice],
+    device: resultDevice,
   };
 }
 

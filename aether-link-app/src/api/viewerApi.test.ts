@@ -2,11 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ManagedDevice } from "../domain/types";
 import {
   fetchFirebaseDevices,
+  fetchFirebaseFileTransferReceipts,
   fetchFirebaseTiles,
   isViewerFirebaseEnabled,
   logoutViewerWithFirebase,
 } from "../firebase/viewerFirebase";
-import { fetchDevices, fetchTiles, logoutAdmin } from "./viewerApi";
+import { fetchDevices, fetchFileTransferReceipts, fetchTiles, logoutAdmin } from "./viewerApi";
 
 const mockState = vi.hoisted(() => ({
   firebaseEnabled: true,
@@ -29,6 +30,7 @@ vi.mock("../firebase/viewerFirebase", () => ({
   fetchFirebaseChatMessages: vi.fn(async () => []),
   fetchFirebaseDevices: vi.fn(async () => mockState.firebaseDevices),
   fetchFirebaseClipboardText: vi.fn(async () => []),
+  fetchFirebaseFileTransferReceipts: vi.fn(async () => []),
   fetchFirebaseFiles: vi.fn(async () => []),
   fetchFirebaseSessionStatus: vi.fn(),
   fetchFirebaseTiles: vi.fn(async () => ({ tiles: [{ x: 0, y: 0, w: 32, h: 32, data: "tile" }], width: 32, height: 32 })),
@@ -106,6 +108,49 @@ describe("viewer API routing", () => {
     expect(isViewerFirebaseEnabled).toHaveBeenCalled();
     expect(fetchFirebaseTiles).toHaveBeenCalledWith("session-device-1");
     expect(localFetch).not.toHaveBeenCalled();
+  });
+
+  it("reads file transfer receipts from the local API when Firebase is disabled", async () => {
+    mockState.firebaseEnabled = false;
+    const localFetch = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          receipts: [
+            {
+              transferId: "transfer-1",
+              filename: "chunked.txt",
+              status: "received",
+              receivedChunks: 2,
+              totalChunks: 2,
+              updatedAt: "2026-06-16T06:00:00.000Z",
+            },
+          ],
+        }),
+        {
+          headers: { "content-type": "application/json" },
+          status: 200,
+        },
+      );
+    });
+    vi.stubGlobal("fetch", localFetch);
+
+    await expect(fetchFileTransferReceipts("session-device-1")).resolves.toEqual([
+      {
+        transferId: "transfer-1",
+        filename: "chunked.txt",
+        status: "received",
+        receivedChunks: 2,
+        totalChunks: 2,
+        updatedAt: "2026-06-16T06:00:00.000Z",
+      },
+    ]);
+
+    expect(fetchFirebaseFileTransferReceipts).not.toHaveBeenCalled();
+    expect(localFetch).toHaveBeenCalledWith("http://127.0.0.1:8787/api/sessions/session-device-1/file-receipts", {
+      body: undefined,
+      headers: undefined,
+      method: "GET",
+    });
   });
 
   it("does not touch Firebase sign-out when the Viewer logs out in local fallback mode", async () => {

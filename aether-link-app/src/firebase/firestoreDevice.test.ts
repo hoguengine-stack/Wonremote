@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildFirestoreDevice, mapFirestoreDevice } from "./firestoreDevice";
+import { buildFirestoreDevice, mapFirestoreDevice, mergeFirstRunDeviceDocument } from "./firestoreDevice";
 
 describe("firestore device mapping", () => {
   it("builds a Firestore device document from first-run agent data", () => {
@@ -59,6 +59,37 @@ describe("firestore device mapping", () => {
         { index: 0, name: "DISPLAY1", width: 1024, height: 768, primary: true },
         { index: 1, name: "DISPLAY2", width: 1600, height: 900, primary: false },
       ],
+    });
+  });
+
+  it("preserves user-edited display fields when first-run registration repeats", () => {
+    const nextDevice = buildFirestoreDevice({
+      businessNumber: "1234567890",
+      installId: "agent-localenv-425d1cbe",
+      ownerUid: "uid-1",
+      version: "0.1.21",
+      nowIso: "2026-06-16T06:00:00.000Z",
+    });
+
+    const merged = mergeFirstRunDeviceDocument(nextDevice, {
+      businessNumber: "123-45-67890",
+      storeName: "Won Chicken Gangnam",
+      storeNameSource: "user",
+      deviceName: "Kitchen POS",
+      desktopName: "KITCHEN-PC",
+      deviceNumber: "AGENT-LOCALENV-425D1CB",
+      status: "online",
+      lastSeenAt: "2026-06-15T00:00:00.000Z",
+    });
+
+    expect(merged).toMatchObject({
+      storeName: "Won Chicken Gangnam",
+      storeNameSource: "user",
+      deviceName: "Kitchen POS",
+      desktopName: "KITCHEN-PC",
+      status: "online",
+      lastSeenAt: "2026-06-16T06:00:00.000Z",
+      version: "0.1.21",
     });
   });
 

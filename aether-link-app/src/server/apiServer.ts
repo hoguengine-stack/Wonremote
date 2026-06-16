@@ -24,6 +24,7 @@ import type {
   ChatMessage,
   ClipboardData,
   TransferredFile,
+  FileTransferReceipt,
   ConnectionHistoryEntry,
   DeviceMetadataUpdateInput,
 } from "../domain/types";
@@ -188,6 +189,7 @@ interface ApiState {
   sessionChats: Map<string, ChatMessage[]>;
   sessionClipboards: Map<string, ClipboardData[]>;
   sessionFiles: Map<string, TransferredFile[]>;
+  sessionFileReceipts: Map<string, FileTransferReceipt[]>;
   secureChallenges: Map<string, SecureSessionChallenge>;
 }
 
@@ -228,6 +230,7 @@ export function createApiServer(options: CreateApiServerOptions | ManagedDevice[
     sessionChats: new Map(),
     sessionClipboards: new Map(),
     sessionFiles: new Map(),
+    sessionFileReceipts: new Map(),
     secureChallenges: new Map(),
   };
 
@@ -893,6 +896,53 @@ async function routeRequest(
       const files = state.sessionFiles.get(sessionId) ?? [];
       state.sessionFiles.set(sessionId, []); // 큐 비우기
       writeJson(response, 200, { files });
+      return;
+    }
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/sessions/")) {
+    const match = url.pathname.match(/^\/api\/sessions\/(.+)\/file-receipts$/);
+    if (match) {
+      const sessionId = decodeURIComponent(match[1]);
+      if (!requireConnectedSession(state, response, sessionId)) {
+        return;
+      }
+      const body = await readJson<Partial<FileTransferReceipt>>(request);
+      const transferId = String(body.transferId ?? "").trim();
+      const filename = String(body.filename ?? "").trim();
+      if (!transferId || !filename) {
+        writeJson(response, 400, { error: "transferId and filename are required." });
+        return;
+      }
+      const receipt: FileTransferReceipt = {
+        transferId,
+        filename,
+        status: body.status === "failed" ? "failed" : body.status === "received" ? "received" : "partial",
+        receivedChunks: Number.isFinite(Number(body.receivedChunks)) ? Math.max(0, Math.trunc(Number(body.receivedChunks))) : 0,
+        totalChunks: Number.isFinite(Number(body.totalChunks)) ? Math.max(0, Math.trunc(Number(body.totalChunks))) : 0,
+        receivedBytes: Number.isFinite(Number(body.receivedBytes)) ? Math.max(0, Math.trunc(Number(body.receivedBytes))) : undefined,
+        savedPath: typeof body.savedPath === "string" && body.savedPath.trim() ? body.savedPath.trim() : undefined,
+        error: typeof body.error === "string" && body.error.trim() ? body.error.trim() : undefined,
+        updatedAt: nowIso(state),
+      };
+      const receipts = state.sessionFileReceipts.get(sessionId) ?? [];
+      state.sessionFileReceipts.set(sessionId, [
+        ...receipts.filter((existing) => existing.transferId !== receipt.transferId),
+        receipt,
+      ]);
+      writeJson(response, 200, { ok: true, receipt });
+      return;
+    }
+  }
+
+  if (request.method === "GET" && url.pathname.startsWith("/api/sessions/")) {
+    const match = url.pathname.match(/^\/api\/sessions\/(.+)\/file-receipts$/);
+    if (match) {
+      const sessionId = decodeURIComponent(match[1]);
+      if (!requireConnectedSession(state, response, sessionId)) {
+        return;
+      }
+      writeJson(response, 200, { receipts: state.sessionFileReceipts.get(sessionId) ?? [] });
       return;
     }
   }

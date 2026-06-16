@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, stat } from "node:fs/promises";
+import { access, mkdtemp, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
@@ -89,4 +89,45 @@ describe("agent file transfer receiver", () => {
     const partStat = await stat(path.join(downloadsDir, "report.txt.transfer-1.part"));
     expect(partStat.size).toBe(6);
   });
+
+  it("removes part files when final checksum verification fails", async () => {
+    const downloadsDir = await mkdtemp(path.join(tmpdir(), "wonremote-files-"));
+    const env = { WONREMOTE_AGENT_DOWNLOADS_DIR: downloadsDir };
+
+    await saveTransferredFileChunk(
+      {
+        id: "file-1",
+        filename: "report.txt",
+        fileData: base64("hello "),
+        transferId: "transfer-1",
+        chunkIndex: 0,
+        totalChunks: 2,
+        isLast: false,
+      },
+      env,
+    );
+
+    await expect(
+      saveTransferredFileChunk(
+        {
+          id: "file-2",
+          filename: "report.txt",
+          fileData: base64("world"),
+          transferId: "transfer-1",
+          chunkIndex: 1,
+          totalChunks: 2,
+          isLast: true,
+          fileSha256: "0".repeat(64),
+        },
+        env,
+      ),
+    ).rejects.toThrow("File checksum mismatch");
+
+    await expectPathMissing(path.join(downloadsDir, "report.txt.transfer-1.part"));
+    await expectPathMissing(path.join(downloadsDir, "report.txt.transfer-1.part.json"));
+  });
 });
+
+async function expectPathMissing(filePath: string): Promise<void> {
+  await expect(access(filePath)).rejects.toThrow();
+}
