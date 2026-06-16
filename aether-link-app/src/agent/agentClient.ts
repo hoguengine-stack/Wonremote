@@ -12,6 +12,7 @@ interface SendAgentHeartbeatOptions {
   fetchImpl?: typeof fetch;
   installId: string;
   activeDisplayIndex?: number;
+  macAddresses?: string[];
   version?: string;
 }
 
@@ -29,6 +30,7 @@ export async function sendAgentHeartbeat({
   fetchImpl = fetch,
   installId,
   activeDisplayIndex,
+  macAddresses,
   version,
 }: SendAgentHeartbeatOptions): Promise<AgentHeartbeatResult> {
   if (isAgentFirebaseEnabled(process.env)) {
@@ -37,6 +39,7 @@ export async function sendAgentHeartbeat({
       displays,
       installId,
       activeDisplayIndex,
+      macAddresses,
       version,
     });
   }
@@ -50,6 +53,7 @@ export async function sendAgentHeartbeat({
         version,
         displays,
         activeDisplayIndex,
+        macAddresses,
       }),
       headers: { "content-type": "application/json" },
       method: "POST",

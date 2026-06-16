@@ -148,6 +148,12 @@ input:focus {
   padding: 0 12px;
 }
 
+.secondary-button.active {
+  background: #176d62;
+  border-color: #176d62;
+  color: #ffffff;
+}
+
 .error-text {
   color: #b42318;
   font-size: 13px;
@@ -459,6 +465,12 @@ input:focus {
 
 .connect-button.edit {
   min-width: 48px;
+}
+
+.connect-button.wake {
+  background: #fff7ed;
+  border-color: #fed7aa;
+  color: #9a3412;
 }
 
 .device-actions {

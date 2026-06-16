@@ -842,6 +842,8 @@ async function routeRequest(
         totalChunks?: number;
         totalBytes?: number;
         isLast?: boolean;
+        chunkSha256?: string;
+        fileSha256?: string;
       }>(request);
       const filename = String(body.filename ?? "").trim();
       const fileData = String(body.fileData ?? "");
@@ -872,6 +874,8 @@ async function routeRequest(
         totalChunks: typeof body.totalChunks === "number" ? Math.max(1, Math.trunc(body.totalChunks)) : undefined,
         totalBytes: declaredTotalBytes,
         isLast: typeof body.isLast === "boolean" ? body.isLast : undefined,
+        chunkSha256: typeof body.chunkSha256 === "string" ? body.chunkSha256 : undefined,
+        fileSha256: typeof body.fileSha256 === "string" ? body.fileSha256 : undefined,
       };
       state.sessionFiles.set(sessionId, [...files, newFile]);
       writeJson(response, 200, { ok: true, file: { id: newFile.id, filename: newFile.filename } });

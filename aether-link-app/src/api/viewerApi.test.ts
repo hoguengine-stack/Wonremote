@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ManagedDevice } from "../domain/types";
-import { fetchFirebaseDevices, isViewerFirebaseEnabled, logoutViewerWithFirebase } from "../firebase/viewerFirebase";
-import { fetchDevices, logoutAdmin } from "./viewerApi";
+import {
+  fetchFirebaseDevices,
+  fetchFirebaseTiles,
+  isViewerFirebaseEnabled,
+  logoutViewerWithFirebase,
+} from "../firebase/viewerFirebase";
+import { fetchDevices, fetchTiles, logoutAdmin } from "./viewerApi";
 
 const mockState = vi.hoisted(() => ({
   firebaseEnabled: true,
@@ -21,15 +26,22 @@ const mockState = vi.hoisted(() => ({
 
 vi.mock("../firebase/viewerFirebase", () => ({
   closeFirebaseSession: vi.fn(),
+  fetchFirebaseChatMessages: vi.fn(async () => []),
   fetchFirebaseDevices: vi.fn(async () => mockState.firebaseDevices),
+  fetchFirebaseClipboardText: vi.fn(async () => []),
+  fetchFirebaseFiles: vi.fn(async () => []),
   fetchFirebaseSessionStatus: vi.fn(),
+  fetchFirebaseTiles: vi.fn(async () => ({ tiles: [{ x: 0, y: 0, w: 32, h: 32, data: "tile" }], width: 32, height: 32 })),
   isViewerFirebaseEnabled: vi.fn(() => mockState.firebaseEnabled),
   loginViewerWithFirebase: vi.fn(),
   logoutViewerWithFirebase: vi.fn(),
   openFirebaseSession: vi.fn(),
   recordFirebaseInput: vi.fn(),
   registerFirstRunAgentWithFirebase: vi.fn(),
+  sendFirebaseChatMessage: vi.fn(),
+  sendFirebaseClipboardText: vi.fn(),
   updateFirebaseDeviceMetadata: vi.fn(),
+  uploadFirebaseFileChunk: vi.fn(),
 }));
 
 describe("viewer API routing", () => {
@@ -81,6 +93,19 @@ describe("viewer API routing", () => {
 
     expect(isViewerFirebaseEnabled).toHaveBeenCalled();
     expect(logoutViewerWithFirebase).toHaveBeenCalled();
+  });
+
+  it("reads stream tiles from Firestore instead of the local API when Firebase is enabled", async () => {
+    const localFetch = vi.fn(async () => {
+      throw new Error("local API must not be called");
+    });
+    vi.stubGlobal("fetch", localFetch);
+
+    await expect(fetchTiles("session-device-1")).resolves.toMatchObject({ width: 32, height: 32 });
+
+    expect(isViewerFirebaseEnabled).toHaveBeenCalled();
+    expect(fetchFirebaseTiles).toHaveBeenCalledWith("session-device-1");
+    expect(localFetch).not.toHaveBeenCalled();
   });
 
   it("does not touch Firebase sign-out when the Viewer logs out in local fallback mode", async () => {

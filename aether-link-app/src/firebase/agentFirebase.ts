@@ -1,10 +1,12 @@
 import { createUserWithEmailAndPassword, signInWithEmailAndPassword } from "firebase/auth";
 import {
+  addDoc,
   collection,
   doc,
   getDoc,
   getDocs,
   limit,
+  orderBy,
   query,
   serverTimestamp,
   setDoc,
@@ -19,6 +21,9 @@ import type {
   AgentFirstRunResult,
   AgentHeartbeatInput,
   AgentHeartbeatResult,
+  ChatMessage,
+  ClipboardData,
+  TransferredFile,
 } from "../domain/types";
 import { resolveFirebaseConfig } from "./firebaseConfig";
 import { buildAgentAuthEmail, buildAgentAuthPassword } from "./firebaseIdentity";
@@ -120,6 +125,7 @@ export async function sendAgentHeartbeatWithFirebase(
     displays: input.displays ?? [],
     installId: input.installId,
     lastSeenAt: nowIso,
+    macAddresses: input.macAddresses ?? [],
     status: "online",
     updatedAt: serverTimestamp(),
     version: input.version,
@@ -133,6 +139,7 @@ export async function sendAgentHeartbeatWithFirebase(
     version: input.version,
     activeDisplayIndex: input.activeDisplayIndex,
     displays: input.displays ?? [],
+    macAddresses: input.macAddresses ?? [],
   });
 
   return {
@@ -194,6 +201,120 @@ export async function pollAgentCommandsWithFirebase(
   }
 
   return { commands };
+}
+
+export async function postSessionTilesWithFirebase(
+  sessionId: string,
+  input: { tiles: any[]; width: number; height: number },
+  env: AgentFirebaseEnv = process.env,
+): Promise<void> {
+  const serialized = JSON.stringify(input);
+  if (serialized.length > 850_000) {
+    console.warn(`[Firebase Stream] Dropping oversized tile frame (${serialized.length} bytes).`);
+    return;
+  }
+  const services = getAgentFirebaseServices(env);
+  await addDoc(collection(services.db, "sessions", sessionId, "tileFrames"), {
+    tiles: input.tiles,
+    width: input.width,
+    height: input.height,
+    createdAt: serverTimestamp(),
+  });
+}
+
+export async function fetchSessionDataWithFirebase(
+  sessionId: string,
+  env: AgentFirebaseEnv = process.env,
+): Promise<{
+  messages: ChatMessage[];
+  clipboards: ClipboardData[];
+  files: TransferredFile[];
+}> {
+  const messages = await drainFirebaseSessionQueue(sessionId, "chat", 100, "agent", (id, data) => ({
+    id,
+    message: String(data.message ?? ""),
+    sender: (data.sender === "agent" ? "agent" : "viewer") as "agent" | "viewer",
+    createdAt: coerceCreatedAt(data.createdAt),
+  }), env);
+  const clipboards = await drainFirebaseSessionQueue(sessionId, "clipboard", 100, "agent", (_id, data) => ({
+    text: String(data.text ?? ""),
+    sender: (data.sender === "agent" ? "agent" : "viewer") as "agent" | "viewer",
+  }), env);
+  const files = await drainFirebaseSessionQueue(sessionId, "files", 200, "agent", (id, data) => ({
+    id,
+    filename: String(data.filename ?? ""),
+    fileData: String(data.fileData ?? ""),
+    transferId: typeof data.transferId === "string" ? data.transferId : undefined,
+    chunkIndex: typeof data.chunkIndex === "number" ? data.chunkIndex : undefined,
+    totalChunks: typeof data.totalChunks === "number" ? data.totalChunks : undefined,
+    totalBytes: typeof data.totalBytes === "number" ? data.totalBytes : undefined,
+    isLast: typeof data.isLast === "boolean" ? data.isLast : undefined,
+    chunkSha256: typeof data.chunkSha256 === "string" ? data.chunkSha256 : undefined,
+    fileSha256: typeof data.fileSha256 === "string" ? data.fileSha256 : undefined,
+  }), env);
+
+  return {
+    messages,
+    clipboards,
+    files,
+  };
+}
+
+export async function postClipboardWithFirebase(
+  sessionId: string,
+  input: ClipboardData,
+  env: AgentFirebaseEnv = process.env,
+): Promise<void> {
+  const services = getAgentFirebaseServices(env);
+  await addDoc(collection(services.db, "sessions", sessionId, "clipboard"), {
+    ...input,
+    target: oppositeSessionSender(input.sender),
+    createdAt: serverTimestamp(),
+  });
+}
+
+export async function postChatWithFirebase(
+  sessionId: string,
+  input: Omit<ChatMessage, "id" | "createdAt">,
+  env: AgentFirebaseEnv = process.env,
+): Promise<void> {
+  const services = getAgentFirebaseServices(env);
+  await addDoc(collection(services.db, "sessions", sessionId, "chat"), {
+    ...input,
+    target: oppositeSessionSender(input.sender),
+    createdAt: serverTimestamp(),
+  });
+}
+
+async function drainFirebaseSessionQueue<T>(
+  sessionId: string,
+  queueName: string,
+  queueLimit: number,
+  target: "viewer" | "agent" | undefined,
+  mapItem: (id: string, data: Record<string, unknown>) => T,
+  env: AgentFirebaseEnv,
+): Promise<T[]> {
+  const services = getAgentFirebaseServices(env);
+  const queueCollection = collection(services.db, "sessions", sessionId, queueName);
+  const queueQuery = target
+    ? query(queueCollection, where("target", "==", target), limit(queueLimit))
+    : query(queueCollection, orderBy("createdAt", "asc"), limit(queueLimit));
+  const snapshot = await getDocs(queueQuery);
+  if (snapshot.empty) {
+    return [];
+  }
+
+  const batch = writeBatch(services.db);
+  const items = snapshot.docs.map((item) => {
+    batch.delete(item.ref);
+    return mapItem(item.id, item.data());
+  });
+  await batch.commit();
+  return items;
+}
+
+function oppositeSessionSender(sender: "viewer" | "agent"): "viewer" | "agent" {
+  return sender === "viewer" ? "agent" : "viewer";
 }
 
 function getAgentFirebaseServices(env: AgentFirebaseEnv) {

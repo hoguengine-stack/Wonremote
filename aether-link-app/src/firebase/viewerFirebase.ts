@@ -12,18 +12,26 @@ import {
   doc,
   getDoc,
   getDocs,
+  limit,
   onSnapshot,
+  orderBy,
+  query,
   serverTimestamp,
   setDoc,
   updateDoc,
+  where,
+  writeBatch,
   type Unsubscribe,
 } from "firebase/firestore";
 import type {
   AgentFirstRunInput,
   AgentFirstRunResult,
+  ChatMessage,
+  ClipboardData,
   DeviceMetadataUpdateInput,
   ManagedDevice,
   RemoteSession,
+  TransferredFile,
 } from "../domain/types";
 import { sortDevices } from "../domain/agentRegistry";
 import { resolveFirebaseConfig } from "./firebaseConfig";
@@ -226,6 +234,109 @@ export async function closeFirebaseSession(
   }).catch(() => undefined);
 }
 
+export async function sendFirebaseChatMessage(
+  sessionId: string,
+  message: string,
+  sender: "viewer" | "agent",
+  env: ViewerFirebaseEnv = import.meta.env,
+): Promise<void> {
+  const services = getViewerFirebaseServices(env);
+  await addDoc(collection(services.db, "sessions", sessionId, "chat"), {
+    message,
+    sender,
+    target: oppositeSessionSender(sender),
+    createdAt: serverTimestamp(),
+  });
+}
+
+export async function fetchFirebaseChatMessages(
+  sessionId: string,
+  env: ViewerFirebaseEnv = import.meta.env,
+): Promise<ChatMessage[]> {
+  return drainFirebaseSessionQueue(sessionId, "chat", 100, "viewer", (id, data) => ({
+    id,
+    message: String(data.message ?? ""),
+    sender: data.sender === "agent" ? "agent" : "viewer",
+    createdAt: coerceCreatedAt(data.createdAt),
+  }), env);
+}
+
+export async function sendFirebaseClipboardText(
+  sessionId: string,
+  text: string,
+  sender: "viewer" | "agent",
+  env: ViewerFirebaseEnv = import.meta.env,
+): Promise<void> {
+  const services = getViewerFirebaseServices(env);
+  await addDoc(collection(services.db, "sessions", sessionId, "clipboard"), {
+    text,
+    sender,
+    target: oppositeSessionSender(sender),
+    createdAt: serverTimestamp(),
+  });
+}
+
+export async function fetchFirebaseClipboardText(
+  sessionId: string,
+  env: ViewerFirebaseEnv = import.meta.env,
+): Promise<ClipboardData[]> {
+  return drainFirebaseSessionQueue(sessionId, "clipboard", 100, "viewer", (_id, data) => ({
+    text: String(data.text ?? ""),
+    sender: data.sender === "agent" ? "agent" : "viewer",
+  }), env);
+}
+
+export async function uploadFirebaseFileChunk(
+  sessionId: string,
+  input: Omit<TransferredFile, "id">,
+  env: ViewerFirebaseEnv = import.meta.env,
+): Promise<void> {
+  const services = getViewerFirebaseServices(env);
+  await addDoc(collection(services.db, "sessions", sessionId, "files"), {
+    ...input,
+    sender: "viewer",
+    target: "agent",
+    createdAt: serverTimestamp(),
+  });
+}
+
+export async function fetchFirebaseFiles(
+  sessionId: string,
+  env: ViewerFirebaseEnv = import.meta.env,
+): Promise<TransferredFile[]> {
+  return drainFirebaseSessionQueue(sessionId, "files", 200, "viewer", (id, data) => ({
+    id,
+    filename: String(data.filename ?? ""),
+    fileData: String(data.fileData ?? ""),
+    transferId: typeof data.transferId === "string" ? data.transferId : undefined,
+    chunkIndex: typeof data.chunkIndex === "number" ? data.chunkIndex : undefined,
+    totalChunks: typeof data.totalChunks === "number" ? data.totalChunks : undefined,
+    totalBytes: typeof data.totalBytes === "number" ? data.totalBytes : undefined,
+    isLast: typeof data.isLast === "boolean" ? data.isLast : undefined,
+    chunkSha256: typeof data.chunkSha256 === "string" ? data.chunkSha256 : undefined,
+    fileSha256: typeof data.fileSha256 === "string" ? data.fileSha256 : undefined,
+  }), env);
+}
+
+export async function fetchFirebaseTiles(
+  sessionId: string,
+  env: ViewerFirebaseEnv = import.meta.env,
+): Promise<{ tiles: any[]; width: number; height: number }> {
+  const frames = await drainFirebaseSessionQueue(sessionId, "tileFrames", 3, undefined, (_id, data) => ({
+    tiles: Array.isArray(data.tiles) ? data.tiles : [],
+    width: Number(data.width ?? 0),
+    height: Number(data.height ?? 0),
+  }), env);
+  return frames.reduce(
+    (merged, frame) => ({
+      tiles: [...merged.tiles, ...frame.tiles],
+      width: frame.width || merged.width,
+      height: frame.height || merged.height,
+    }),
+    { tiles: [] as any[], width: 0, height: 0 },
+  );
+}
+
 export async function fetchFirebaseSessionStatus(
   sessionId: string,
   env: ViewerFirebaseEnv = import.meta.env,
@@ -236,6 +347,37 @@ export async function fetchFirebaseSessionStatus(
     throw new Error("Firebase session not found.");
   }
   return snapshot.data().state === "pending" ? "pending" : "connected";
+}
+
+async function drainFirebaseSessionQueue<T>(
+  sessionId: string,
+  queueName: string,
+  queueLimit: number,
+  target: "viewer" | "agent" | undefined,
+  mapItem: (id: string, data: Record<string, unknown>) => T,
+  env: ViewerFirebaseEnv,
+): Promise<T[]> {
+  const services = getViewerFirebaseServices(env);
+  const queueCollection = collection(services.db, "sessions", sessionId, queueName);
+  const queueQuery = target
+    ? query(queueCollection, where("target", "==", target), limit(queueLimit))
+    : query(queueCollection, orderBy("createdAt", "asc"), limit(queueLimit));
+  const snapshot = await getDocs(queueQuery);
+  if (snapshot.empty) {
+    return [];
+  }
+
+  const batch = writeBatch(services.db);
+  const items = snapshot.docs.map((item) => {
+    batch.delete(item.ref);
+    return mapItem(item.id, item.data());
+  });
+  await batch.commit();
+  return items;
+}
+
+function oppositeSessionSender(sender: "viewer" | "agent"): "viewer" | "agent" {
+  return sender === "viewer" ? "agent" : "viewer";
 }
 
 export async function enqueueFirebaseAgentCommand(
@@ -266,6 +408,16 @@ function isFirebaseAuthCode(error: unknown, code: string): boolean {
     "code" in error &&
     (error as { code?: unknown }).code === code
   );
+}
+
+function coerceCreatedAt(value: unknown): string {
+  if (typeof value === "string" && value.trim()) {
+    return value;
+  }
+  if (value && typeof value === "object" && "toDate" in value && typeof value.toDate === "function") {
+    return value.toDate().toISOString();
+  }
+  return new Date().toISOString();
 }
 
 function firebaseSessionIdForDevice(deviceId: string): string {

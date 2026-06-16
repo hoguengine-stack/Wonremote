@@ -138,6 +138,7 @@ export function applyAgentHeartbeat(
       typeof input.activeDisplayIndex === "number"
         ? Math.max(0, Math.trunc(input.activeDisplayIndex))
         : currentDevice.activeDisplayIndex,
+    macAddresses: sanitizeMacAddresses(input.macAddresses) ?? currentDevice.macAddresses,
   };
   const nextDevices = devices.map((item, itemIndex) => (itemIndex === index ? device : item));
 
@@ -314,6 +315,21 @@ function sanitizeDisplays(displays: AgentHeartbeatInput["displays"]): ManagedDev
       primary: Boolean(display.primary),
     }))
     .sort((left, right) => left.index - right.index);
+}
+
+function sanitizeMacAddresses(macAddresses: AgentHeartbeatInput["macAddresses"]): string[] | undefined {
+  if (!Array.isArray(macAddresses)) {
+    return undefined;
+  }
+  const normalized = Array.from(
+    new Set(
+      macAddresses
+        .map((value) => String(value ?? "").trim().toUpperCase().replace(/-/g, ":"))
+        .filter((value) => /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(value))
+        .filter((value) => value !== "00:00:00:00:00:00"),
+    ),
+  );
+  return normalized.length > 0 ? normalized : undefined;
 }
 
 function generateConnectionCode(): string {

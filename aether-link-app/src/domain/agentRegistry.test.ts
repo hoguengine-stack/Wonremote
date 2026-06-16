@@ -219,4 +219,25 @@ describe("agent registry domain", () => {
     ]);
     expect(heartbeat.device.activeDisplayIndex).toBe(1);
   });
+
+  it("stores sanitized MAC addresses from heartbeat for Wake-on-LAN", () => {
+    const registered = registerAgentFirstRun([], {
+      businessNumber: "1234567890",
+      password: "1234",
+      installId: "agent-woltest",
+    });
+
+    const heartbeat = applyAgentHeartbeat(registered.devices, {
+      deviceId: registered.device.id,
+      installId: "agent-woltest",
+      macAddresses: [
+        "01-23-45-67-89-ab",
+        "01:23:45:67:89:AB",
+        "00:00:00:00:00:00",
+        "not-a-mac",
+      ],
+    });
+
+    expect(heartbeat.device.macAddresses).toEqual(["01:23:45:67:89:AB"]);
+  });
 });

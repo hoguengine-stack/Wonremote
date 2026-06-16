@@ -13,15 +13,22 @@ import type {
 } from "../domain/types";
 import {
   closeFirebaseSession,
+  fetchFirebaseChatMessages,
   fetchFirebaseDevices,
+  fetchFirebaseClipboardText,
+  fetchFirebaseFiles,
   fetchFirebaseSessionStatus,
+  fetchFirebaseTiles,
   isViewerFirebaseEnabled,
   loginViewerWithFirebase,
   logoutViewerWithFirebase,
   openFirebaseSession,
   recordFirebaseInput,
   registerFirstRunAgentWithFirebase,
+  sendFirebaseChatMessage,
+  sendFirebaseClipboardText,
   updateFirebaseDeviceMetadata,
+  uploadFirebaseFileChunk,
 } from "../firebase/viewerFirebase";
 
 const API_BASE_URL = import.meta.env.VITE_WONREMOTE_API_URL ?? "http://127.0.0.1:8787";
@@ -199,6 +206,11 @@ export async function approveSession(sessionId: string, approved: boolean): Prom
 }
 
 export async function sendChatMessage(sessionId: string, message: string, sender: "viewer" | "agent"): Promise<void> {
+  if (isViewerFirebaseEnabled()) {
+    await sendFirebaseChatMessage(sessionId, message, sender);
+    return;
+  }
+
   await request(`/api/sessions/${encodeURIComponent(sessionId)}/chat`, {
     method: "POST",
     body: { message, sender },
@@ -206,11 +218,20 @@ export async function sendChatMessage(sessionId: string, message: string, sender
 }
 
 export async function fetchChatMessages(sessionId: string): Promise<ChatMessage[]> {
+  if (isViewerFirebaseEnabled()) {
+    return fetchFirebaseChatMessages(sessionId);
+  }
+
   const body = await request<{ messages: ChatMessage[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/chat`);
   return body.messages;
 }
 
 export async function sendClipboardText(sessionId: string, text: string, sender: "viewer" | "agent"): Promise<void> {
+  if (isViewerFirebaseEnabled()) {
+    await sendFirebaseClipboardText(sessionId, text, sender);
+    return;
+  }
+
   await request(`/api/sessions/${encodeURIComponent(sessionId)}/clipboard`, {
     method: "POST",
     body: { text, sender },
@@ -218,6 +239,10 @@ export async function sendClipboardText(sessionId: string, text: string, sender:
 }
 
 export async function fetchClipboardText(sessionId: string): Promise<ClipboardData[]> {
+  if (isViewerFirebaseEnabled()) {
+    return fetchFirebaseClipboardText(sessionId);
+  }
+
   const body = await request<{ clipboards: ClipboardData[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/clipboard`);
   return body.clipboards;
 }
@@ -232,8 +257,15 @@ export async function uploadFileChunk(
     totalChunks: number;
     totalBytes: number;
     isLast: boolean;
+    chunkSha256?: string;
+    fileSha256?: string;
   },
 ): Promise<void> {
+  if (isViewerFirebaseEnabled()) {
+    await uploadFirebaseFileChunk(sessionId, input);
+    return;
+  }
+
   await request(`/api/sessions/${encodeURIComponent(sessionId)}/files`, {
     method: "POST",
     body: input,
@@ -241,8 +273,24 @@ export async function uploadFileChunk(
 }
 
 export async function fetchFiles(sessionId: string): Promise<TransferredFile[]> {
+  if (isViewerFirebaseEnabled()) {
+    return fetchFirebaseFiles(sessionId);
+  }
+
   const body = await request<{ files: TransferredFile[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/files`);
   return body.files;
+}
+
+export async function fetchTiles(sessionId: string): Promise<{ tiles: any[]; width: number; height: number }> {
+  if (isViewerFirebaseEnabled()) {
+    return fetchFirebaseTiles(sessionId);
+  }
+
+  const response = await fetch(`${API_BASE_URL}/api/sessions/${encodeURIComponent(sessionId)}/tiles`);
+  if (!response.ok) {
+    return { tiles: [], width: 0, height: 0 };
+  }
+  return response.json();
 }
 
 export async function fetchConnectionHistory(): Promise<ConnectionHistoryEntry[]> {

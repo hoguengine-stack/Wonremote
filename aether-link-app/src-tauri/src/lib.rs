@@ -1,7 +1,7 @@
 use std::os::windows::io::AsRawHandle;
 use std::{
     env, io, mem,
-    net::{SocketAddr, TcpStream},
+    net::{SocketAddr, TcpStream, UdpSocket},
     path::{Path, PathBuf},
     process::Command,
     ptr, thread,
@@ -398,6 +398,50 @@ fn get_agent_config() -> Option<GetConfigOutput> {
     })
 }
 
+#[tauri::command]
+fn wake_device(
+    mac_address: String,
+    broadcast: Option<String>,
+    port: Option<u16>,
+) -> Result<(), String> {
+    let packet = build_magic_packet(&mac_address)?;
+    let broadcast_addr = broadcast.unwrap_or_else(|| "255.255.255.255".to_string());
+    let target = format!("{}:{}", broadcast_addr, port.unwrap_or(9));
+    let socket = UdpSocket::bind("0.0.0.0:0").map_err(|e| e.to_string())?;
+    socket.set_broadcast(true).map_err(|e| e.to_string())?;
+    socket
+        .send_to(&packet, target)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+fn build_magic_packet(mac_address: &str) -> Result<[u8; 102], String> {
+    let mac = parse_mac_address(mac_address)?;
+    let mut packet = [0xff_u8; 102];
+    for chunk in packet[6..].chunks_exact_mut(6) {
+        chunk.copy_from_slice(&mac);
+    }
+    Ok(packet)
+}
+
+fn parse_mac_address(mac_address: &str) -> Result<[u8; 6], String> {
+    let hex: String = mac_address
+        .chars()
+        .filter(|ch| *ch != ':' && *ch != '-' && *ch != '.')
+        .collect();
+    if hex.len() != 12 || !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err("Invalid MAC address.".to_string());
+    }
+
+    let mut bytes = [0_u8; 6];
+    for index in 0..6 {
+        let start = index * 2;
+        bytes[index] = u8::from_str_radix(&hex[start..start + 2], 16)
+            .map_err(|_| "Invalid MAC address.".to_string())?;
+    }
+    Ok(bytes)
+}
+
 fn add_no_window(command: &mut Command) {
     #[cfg(windows)]
     {
@@ -765,7 +809,8 @@ pub fn run() {
             get_app_mode,
             save_agent_config,
             get_agent_config,
-            restart_agent_process
+            restart_agent_process,
+            wake_device
         ])
         .setup(move |app| {
             let job = Job::new()?;
@@ -1102,6 +1147,24 @@ mod registry_tests {
             Some("project-id".to_string()),
             None,
         ));
+    }
+
+    #[test]
+    fn test_magic_packet_accepts_common_mac_formats() {
+        let packet = build_magic_packet("01:23:45:67:89:ab").expect("valid mac");
+
+        assert_eq!(&packet[0..6], &[0xff; 6]);
+        assert_eq!(&packet[6..12], &[0x01, 0x23, 0x45, 0x67, 0x89, 0xab]);
+        assert_eq!(&packet[96..102], &[0x01, 0x23, 0x45, 0x67, 0x89, 0xab]);
+
+        let hyphen_packet = build_magic_packet("01-23-45-67-89-AB").expect("valid mac");
+        assert_eq!(packet, hyphen_packet);
+    }
+
+    #[test]
+    fn test_magic_packet_rejects_invalid_mac() {
+        assert!(build_magic_packet("01:23:45").is_err());
+        assert!(build_magic_packet("not-a-mac").is_err());
     }
 
     #[test]

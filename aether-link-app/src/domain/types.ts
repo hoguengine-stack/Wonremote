@@ -14,6 +14,7 @@ export interface ManagedDevice {
   version?: string;
   displays?: DeviceDisplayInfo[];
   activeDisplayIndex?: number;
+  macAddresses?: string[];
 }
 
 export interface DeviceDisplayInfo {
@@ -46,6 +47,7 @@ export interface AgentHeartbeatInput {
   version?: string;
   displays?: DeviceDisplayInfo[];
   activeDisplayIndex?: number;
+  macAddresses?: string[];
 }
 
 export interface AgentCommand {
@@ -125,6 +127,8 @@ export interface TransferredFile {
   totalChunks?: number;
   totalBytes?: number;
   isLast?: boolean;
+  chunkSha256?: string;
+  fileSha256?: string;
 }
 
 export interface ConnectionHistoryEntry {

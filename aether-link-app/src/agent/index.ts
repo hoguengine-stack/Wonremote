@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, readFile, writeFile, rm, cp, access } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile, rm, cp, access, rename } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { networkInterfaces } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { bootstrapAgent } from "./agentBootstrap";
@@ -15,6 +16,12 @@ import {
 } from "./agentRegistrationRecovery";
 import { resolveAgentAppDir, resolveAgentPocPath } from "./agentPaths";
 import { resolveAgentCredentials } from "./agentRuntime";
+import {
+  nextStreamCaptureBackend,
+  nextStreamRestartDelayMs,
+  resolveCommandPollIntervalMs,
+  type StreamCaptureBackend,
+} from "./agentStreamPolicy";
 import { computeSha256 } from "./checksum";
 import { WONREMOTE_APP_VERSION } from "../domain/appVersion";
 import { resolveAgentDownloadDir, resolveSafeDownloadPath } from "./fileSafety";
@@ -28,7 +35,11 @@ import {
 import { loadProductionInstallerUpdateMetadata } from "./productionUpdateMetadata";
 import {
   authenticateAgentWithFirebase,
+  fetchSessionDataWithFirebase,
   isAgentFirebaseEnabled,
+  postChatWithFirebase,
+  postClipboardWithFirebase,
+  postSessionTilesWithFirebase,
   registerAgentFirstRunWithFirebase,
 } from "../firebase/agentFirebase";
 import type {
@@ -77,9 +88,15 @@ const POC_PATH = resolveAgentPocPath(process.env, AGENT_APP_DIR);
 
 const API_BASE_URL = process.env.WONREMOTE_API_URL ?? "http://127.0.0.1:8787";
 const HEARTBEAT_INTERVAL_MS = Number(process.env.WONREMOTE_AGENT_HEARTBEAT_MS ?? 10_000);
+const COMMAND_POLL_INTERVAL_MS = resolveCommandPollIntervalMs(process.env);
 const USE_FIREBASE = isAgentFirebaseEnabled(process.env);
 
 let streamProcess: any = null;
+let streamDesired = false;
+let streamRestartTimer: any = null;
+let streamFailureCount = 0;
+let streamBackend: StreamCaptureBackend = "dxgi";
+let streamGeneration = 0;
 let currentOutputIndex = 0;
 let currentLoopSleepMs = 33;
 const pressedKeys = new Set<string>();
@@ -88,9 +105,23 @@ let displayCache: { loadedAtMs: number; displays: DeviceDisplayInfo[] } | null =
 let isApprovalPending = false;
 let isSessionActive = false;
 let sessionPollIntervalId: any = null;
+let isCommandPollInFlight = false;
 
 
-function startStreaming(deviceId: string, outputIndex = 0, loopSleepMs = 33) {
+function startStreaming(
+  deviceId: string,
+  outputIndex = 0,
+  loopSleepMs = 33,
+  backend: StreamCaptureBackend = streamBackend,
+) {
+  streamDesired = true;
+  streamGeneration += 1;
+  const generation = streamGeneration;
+  streamBackend = backend;
+  if (streamRestartTimer) {
+    clearTimeout(streamRestartTimer);
+    streamRestartTimer = null;
+  }
   if (streamProcess) {
     streamProcess.kill();
   }
@@ -100,8 +131,13 @@ function startStreaming(deviceId: string, outputIndex = 0, loopSleepMs = 33) {
 
   const pocPath = POC_PATH;
   
-  console.log(`Starting capture stream from: ${pocPath} (monitor: ${outputIndex}, sleep: ${loopSleepMs}ms)`);
+  const env = {
+    ...process.env,
+    ...(backend === "gdi" ? { WONREMOTE_CAPTURE_BACKEND: "gdi" } : {}),
+  };
+  console.log(`Starting capture stream from: ${pocPath} (monitor: ${outputIndex}, sleep: ${loopSleepMs}ms, backend: ${backend})`);
   const child = spawn(pocPath, ["--mode", "stream", "--loop-sleep-ms", String(loopSleepMs), "--output-index", String(outputIndex)], {
+    env,
     windowsHide: true,
   });
   streamProcess = child;
@@ -115,12 +151,21 @@ function startStreaming(deviceId: string, outputIndex = 0, loopSleepMs = 33) {
     try {
       const data = JSON.parse(line);
       if (data.type === "frame") {
+        streamFailureCount = 0;
         const sessionId = `session-${deviceId}`;
-        await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/tiles`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ tiles: data.tiles, width: data.width, height: data.height }),
-        });
+        if (USE_FIREBASE) {
+          await postSessionTilesWithFirebase(sessionId, {
+            tiles: data.tiles,
+            width: data.width,
+            height: data.height,
+          });
+        } else {
+          await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/tiles`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ tiles: data.tiles, width: data.width, height: data.height }),
+          });
+        }
       }
     } catch (e) {
       // ignore
@@ -128,6 +173,7 @@ function startStreaming(deviceId: string, outputIndex = 0, loopSleepMs = 33) {
   });
 
   let streamStderrBuffer = "";
+  let streamStderrText = "";
   const flushStreamLogLine = (line: string) => {
     const trimmed = line.trim();
     if (!trimmed) return;
@@ -139,7 +185,9 @@ function startStreaming(deviceId: string, outputIndex = 0, loopSleepMs = 33) {
   };
 
   child.stderr.on("data", (data: any) => {
-    streamStderrBuffer += data.toString();
+    const chunk = data.toString();
+    streamStderrText += chunk;
+    streamStderrBuffer += chunk;
     const lines = streamStderrBuffer.split(/\r?\n/);
     streamStderrBuffer = lines.pop() ?? "";
     for (const line of lines) {
@@ -148,11 +196,24 @@ function startStreaming(deviceId: string, outputIndex = 0, loopSleepMs = 33) {
   });
 
   child.on("close", (code: number) => {
+    const finalStderr = streamStderrText + streamStderrBuffer;
     flushStreamLogLine(streamStderrBuffer);
     streamStderrBuffer = "";
     console.log(`Capture stream process exited with code ${code}`);
     if (streamProcess === child) {
       streamProcess = null;
+    }
+    if (streamDesired && generation === streamGeneration) {
+      const nextBackend = nextStreamCaptureBackend(streamBackend, finalStderr);
+      const nextSleep = nextBackend === "gdi" ? Math.max(loopSleepMs, 125) : loopSleepMs;
+      const delayMs = nextStreamRestartDelayMs(streamFailureCount);
+      streamFailureCount += 1;
+      streamBackend = nextBackend;
+      console.log(`Capture stream will restart in ${delayMs}ms (backend: ${nextBackend}, sleep: ${nextSleep}ms).`);
+      streamRestartTimer = setTimeout(() => {
+        streamRestartTimer = null;
+        startStreaming(deviceId, outputIndex, nextSleep, nextBackend);
+      }, delayMs);
     }
   });
 }
@@ -168,6 +229,13 @@ function startSessionPolling(deviceId: string) {
 }
 
 function stopSessionPolling() {
+  streamDesired = false;
+  streamGeneration += 1;
+  streamFailureCount = 0;
+  if (streamRestartTimer) {
+    clearTimeout(streamRestartTimer);
+    streamRestartTimer = null;
+  }
   isSessionActive = false;
   if (sessionPollIntervalId) {
     clearInterval(sessionPollIntervalId);
@@ -178,6 +246,29 @@ function stopSessionPolling() {
 async function pollSessionData(deviceId: string) {
   const sessionId = `session-${deviceId}`;
   try {
+    if (USE_FIREBASE) {
+      const sessionData = await fetchSessionDataWithFirebase(sessionId);
+      for (const msg of sessionData.messages) {
+        if (msg.sender === "viewer") {
+          if (msg.message === "__AUDIO_BEEP_SIGNAL__") {
+            console.log("[Audio] Viewer beep signal received.");
+          } else {
+            console.log(`[Chat] Viewer: ${msg.message}`);
+          }
+        }
+      }
+      for (const item of sessionData.clipboards) {
+        if (item.sender === "viewer") {
+          await setClipboardText(item.text);
+          console.log("[Clipboard] Viewer text injected into the agent clipboard.");
+        }
+      }
+      for (const file of sessionData.files) {
+        await saveTransferredFile(file);
+      }
+      return;
+    }
+
     // 1. Chat Polling
     const chatRes = await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/chat`);
     if (chatRes.ok) {
@@ -228,15 +319,30 @@ async function pollSessionData(deviceId: string) {
           await mkdir(downloadsDir, { recursive: true });
           const targetPath = resolveSafeDownloadPath(downloadsDir, String(file.filename ?? ""));
           const buffer = Buffer.from(file.fileData, "base64");
+          if (typeof file.chunkSha256 === "string" && file.chunkSha256.trim()) {
+            const computedChunkSha256 = computeSha256(buffer);
+            if (computedChunkSha256 !== file.chunkSha256.trim().toLowerCase()) {
+              throw new Error(
+                `File chunk checksum mismatch: ${file.filename} #${file.chunkIndex ?? 0}`,
+              );
+            }
+          }
           if (typeof file.transferId === "string" && Number.isInteger(file.chunkIndex)) {
+            const safeTransferId = file.transferId.replace(/[^a-zA-Z0-9_.-]/g, "_");
+            const partPath = `${targetPath}.${safeTransferId}.part`;
             if (file.chunkIndex === 0) {
-              await writeFile(targetPath, buffer);
+              await writeFile(partPath, buffer);
             } else {
-              await appendFile(targetPath, buffer);
+              await appendFile(partPath, buffer);
             }
             const chunkNumber = Number(file.chunkIndex) + 1;
             const totalChunks = Number(file.totalChunks ?? chunkNumber);
             console.log(`[File Chunk Saved] ${chunkNumber}/${totalChunks}: ${targetPath}`);
+            if (file.isLast) {
+              await rm(targetPath, { force: true });
+              await rename(partPath, targetPath);
+              console.log(`[File Transfer Complete] ${targetPath}`);
+            }
           } else {
             await writeFile(targetPath, buffer);
           }
@@ -246,6 +352,40 @@ async function pollSessionData(deviceId: string) {
     }
   } catch (error) {
     // Session 404 ignore
+  }
+}
+
+async function saveTransferredFile(file: any): Promise<void> {
+  console.log(`[File Received] ${file.filename} (${Math.round(String(file.fileData ?? "").length * 0.75)} bytes)`);
+  const downloadsDir = resolveAgentDownloadDir(process.env);
+  await mkdir(downloadsDir, { recursive: true });
+  const targetPath = resolveSafeDownloadPath(downloadsDir, String(file.filename ?? ""));
+  const buffer = Buffer.from(String(file.fileData ?? ""), "base64");
+  if (typeof file.chunkSha256 === "string" && file.chunkSha256.trim()) {
+    const computedChunkSha256 = computeSha256(buffer);
+    if (computedChunkSha256 !== file.chunkSha256.trim().toLowerCase()) {
+      throw new Error(`File chunk checksum mismatch: ${file.filename} #${file.chunkIndex ?? 0}`);
+    }
+  }
+  if (typeof file.transferId === "string" && Number.isInteger(file.chunkIndex)) {
+    const safeTransferId = file.transferId.replace(/[^a-zA-Z0-9_.-]/g, "_");
+    const partPath = `${targetPath}.${safeTransferId}.part`;
+    if (file.chunkIndex === 0) {
+      await writeFile(partPath, buffer);
+    } else {
+      await appendFile(partPath, buffer);
+    }
+    const chunkNumber = Number(file.chunkIndex) + 1;
+    const totalChunks = Number(file.totalChunks ?? chunkNumber);
+    console.log(`[File Chunk Saved] ${chunkNumber}/${totalChunks}: ${targetPath}`);
+    if (file.isLast) {
+      await rm(targetPath, { force: true });
+      await rename(partPath, targetPath);
+      console.log(`[File Transfer Complete] ${targetPath}`);
+    }
+  } else {
+    await writeFile(targetPath, buffer);
+    console.log(`[File Saved] ${targetPath}`);
   }
 }
 
@@ -409,32 +549,44 @@ async function main() {
       const msg = text.slice(5).trim();
       if (msg && activeConfig.registeredDeviceId) {
         const sessionId = `session-${activeConfig.registeredDeviceId}`;
-        await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/chat`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ message: msg, sender: "agent" })
-        });
+        if (USE_FIREBASE) {
+          await postChatWithFirebase(sessionId, { message: msg, sender: "agent" });
+        } else {
+          await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/chat`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ message: msg, sender: "agent" })
+          });
+        }
         console.log(`[보낸 채팅] 나: ${msg}`);
       }
     } else if (text.startsWith("clipboard ")) {
       const clip = text.slice(10);
       if (activeConfig.registeredDeviceId) {
         const sessionId = `session-${activeConfig.registeredDeviceId}`;
-        await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/clipboard`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ text: clip, sender: "agent" })
-        });
+        if (USE_FIREBASE) {
+          await postClipboardWithFirebase(sessionId, { text: clip, sender: "agent" });
+        } else {
+          await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/clipboard`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ text: clip, sender: "agent" })
+          });
+        }
         console.log(`[보낸 클립보드] 클립보드 텍스트를 전송했습니다.`);
       }
     } else if (text === "audio") {
       if (activeConfig.registeredDeviceId) {
         const sessionId = `session-${activeConfig.registeredDeviceId}`;
-        await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/chat`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ message: "__AUDIO_BEEP_SIGNAL__", sender: "agent" })
-        });
+        if (USE_FIREBASE) {
+          await postChatWithFirebase(sessionId, { message: "__AUDIO_BEEP_SIGNAL__", sender: "agent" });
+        } else {
+          await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/chat`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ message: "__AUDIO_BEEP_SIGNAL__", sender: "agent" })
+          });
+        }
         console.log("[보낸 오디오] 사운드 비프 시그널 전송.");
       }
     } else {
@@ -444,11 +596,17 @@ async function main() {
 
   if (process.argv.includes("--watch")) {
     console.log(`Heartbeat interval: ${HEARTBEAT_INTERVAL_MS}ms`);
+    console.log(`Command poll interval: ${COMMAND_POLL_INTERVAL_MS}ms`);
     setInterval(() => {
       void runAgentTick(activeConfig).then((nextConfig) => {
         activeConfig = nextConfig;
       });
     }, HEARTBEAT_INTERVAL_MS);
+    setInterval(() => {
+      void runCommandPollTick(activeConfig).then((nextConfig) => {
+        activeConfig = nextConfig;
+      });
+    }, COMMAND_POLL_INTERVAL_MS);
   }
 }
 
@@ -728,6 +886,31 @@ async function runAgentTick(config: AgentLocalConfig): Promise<AgentLocalConfig>
   return activeConfig;
 }
 
+async function runCommandPollTick(config: AgentLocalConfig): Promise<AgentLocalConfig> {
+  if (isCommandPollInFlight) {
+    return config;
+  }
+  isCommandPollInFlight = true;
+  try {
+    await pollCommands(config);
+    return config;
+  } catch (error: any) {
+    if (error.status === 404) {
+      const recoveredConfig = await recoverConfigAfterMissingDevice(config);
+      if (!recoveredConfig) {
+        await handleUnregisteredDevice();
+        return config;
+      }
+      return recoveredConfig;
+    } else {
+      console.error(error instanceof Error ? error.message : error);
+      return config;
+    }
+  } finally {
+    isCommandPollInFlight = false;
+  }
+}
+
 
 async function sendHeartbeatWithRecovery(config: AgentLocalConfig): Promise<AgentLocalConfig> {
   try {
@@ -779,6 +962,7 @@ async function sendHeartbeat(config: AgentLocalConfig): Promise<void> {
   }
 
   const displays = await discoverDisplays();
+  const macAddresses = discoverMacAddresses();
   const result = await sendAgentHeartbeat({
     apiBaseUrl: API_BASE_URL,
     deviceId: config.registeredDeviceId,
@@ -786,6 +970,7 @@ async function sendHeartbeat(config: AgentLocalConfig): Promise<void> {
     version: config.version,
     displays,
     activeDisplayIndex: currentOutputIndex,
+    macAddresses,
   });
   console.log(`Heartbeat accepted: ${result.device.id}`);
 }
@@ -816,12 +1001,12 @@ async function pollCommands(config: AgentLocalConfig): Promise<void> {
         console.log("Starting capture stream due to start-stream command");
         startStreaming(config.registeredDeviceId!, currentOutputIndex, currentLoopSleepMs);
       } else if (command.action === "stop-stream") {
+        stopSessionPolling();
         if (streamProcess) {
           console.log("Stopping capture stream due to stop-stream command");
           streamProcess.kill();
           streamProcess = null;
         }
-        stopSessionPolling();
       } else if (command.action.startsWith("switch-monitor ")) {
         const parts = command.action.split(" ");
         const nextIndex = parseInt(parts[1], 10);
@@ -841,11 +1026,15 @@ async function pollCommands(config: AgentLocalConfig): Promise<void> {
       } else if (command.action === "clipboard-request") {
         const text = await getClipboardText();
         const sessionId = `session-${config.registeredDeviceId}`;
-        await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/clipboard`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ text, sender: "agent" }),
-        });
+        if (USE_FIREBASE) {
+          await postClipboardWithFirebase(sessionId, { text, sender: "agent" });
+        } else {
+          await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/clipboard`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ text, sender: "agent" }),
+          });
+        }
         console.log("[Clipboard] Current agent clipboard sent to viewer");
       } else if (command.action.startsWith("security-code ")) {
         const securityCode = parseSecurityCodeCommand(command.action);
@@ -925,6 +1114,19 @@ async function discoverDisplays(): Promise<DeviceDisplayInfo[] | undefined> {
     console.warn(`[Agent] Display inventory unavailable: ${error instanceof Error ? error.message : error}`);
     return displayCache?.displays;
   }
+}
+
+function discoverMacAddresses(): string[] | undefined {
+  const macAddresses = Array.from(
+    new Set(
+      Object.values(networkInterfaces())
+        .flatMap((items) => items ?? [])
+        .map((item) => item.mac.trim().toUpperCase().replace(/-/g, ":"))
+        .filter((mac) => /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(mac))
+        .filter((mac) => mac !== "00:00:00:00:00:00"),
+    ),
+  );
+  return macAddresses.length > 0 ? macAddresses : undefined;
 }
 
 async function setClipboardText(text: string): Promise<void> {

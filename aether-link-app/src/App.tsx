@@ -38,6 +38,7 @@ import {
   uploadFileChunk,
   fetchFiles,
   fetchConnectionHistory,
+  fetchTiles,
   updateDeviceMetadata,
   requestSecureSession,
   connectSecureSession,
@@ -445,6 +446,29 @@ function ViewerApp() {
     }
   }
 
+  async function handleWakeDevice(device: ManagedDevice) {
+    const macAddress = device.macAddresses?.[0];
+    if (!macAddress) {
+      setApiError("Wake-on-LAN을 보낼 MAC 주소가 아직 없습니다. Agent가 한 번 이상 온라인 heartbeat를 보내야 합니다.");
+      return;
+    }
+    if (!(window as any).__TAURI_INTERNALS__) {
+      setApiError("Wake-on-LAN은 설치형 Viewer에서만 사용할 수 있습니다.");
+      return;
+    }
+
+    try {
+      await invoke("wake_device", {
+        macAddress,
+        broadcast: "255.255.255.255",
+        port: 9,
+      });
+      setApiError(`Wake-on-LAN 전송 완료: ${macAddress}`);
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : "Wake-on-LAN 전송 실패");
+    }
+  }
+
   async function handleSaveDeviceMetadata(input: Omit<DeviceMetadataUpdateInput, "deviceId">) {
     if (!editTarget || editTarget.devices.length === 0) {
       return;
@@ -590,6 +614,7 @@ function ViewerApp() {
               onConnect={handleConnectDevice}
               onEdit={(device) => setEditTarget({ mode: "device", devices: [device] })}
               onSecureConnect={handleSecureConnectRequest}
+              onWake={handleWakeDevice}
             />
             <ConnectionHistorySection />
           </section>
@@ -1092,12 +1117,14 @@ function DeviceTable({
   onConnect,
   onEdit,
   onSecureConnect,
+  onWake,
 }: {
   activeDeviceId: string;
   devices: ManagedDevice[];
   onConnect: (device: ManagedDevice) => void | Promise<void>;
   onEdit: (device: ManagedDevice) => void;
   onSecureConnect: (device: ManagedDevice) => void | Promise<void>;
+  onWake: (device: ManagedDevice) => void | Promise<void>;
 }) {
   return (
     <section className="device-section">
@@ -1169,6 +1196,20 @@ function DeviceTable({
                 >
                   수정
                 </button>
+                <button
+                  className="connect-button wake"
+                  disabled={isOnline || !device.macAddresses?.length}
+                  type="button"
+                  title={
+                    device.macAddresses?.length
+                      ? "Wake-on-LAN"
+                      : "Agent heartbeat에 MAC 주소가 아직 없습니다"
+                  }
+                  onClick={() => onWake(device)}
+                >
+                  <Power size={16} />
+                  <span>Wake</span>
+                </button>
               </span>
             </div>
           );
@@ -1207,6 +1248,14 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
     binary += String.fromCharCode(...chunk);
   }
   return btoa(binary);
+}
+
+async function sha256Hex(buffer: ArrayBuffer): Promise<string | undefined> {
+  if (!window.crypto?.subtle) {
+    return undefined;
+  }
+  const digest = await window.crypto.subtle.digest("SHA-256", buffer);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function RemoteSessionPanel({
@@ -1369,9 +1418,7 @@ function RemoteSessionPanel({
     let active = true;
     const pollTiles = async () => {
       try {
-        const response = await fetch(`http://127.0.0.1:8787/api/sessions/${sessionId}/tiles`);
-        if (!response.ok) return;
-        const data = await response.json();
+        const data = await fetchTiles(sessionId);
 
         if (!active) return;
 
@@ -1728,7 +1775,9 @@ function RemoteSessionPanel({
         const start = chunkIndex * REMOTE_FILE_CHUNK_BYTES;
         const end = Math.min(file.size, start + REMOTE_FILE_CHUNK_BYTES);
         const chunk = file.slice(start, end);
-        const fileData = arrayBufferToBase64(await chunk.arrayBuffer());
+        const chunkBuffer = await chunk.arrayBuffer();
+        const fileData = arrayBufferToBase64(chunkBuffer);
+        const chunkSha256 = await sha256Hex(chunkBuffer);
         await uploadFileChunk(sessionId, {
           filename: file.name,
           fileData,
@@ -1737,6 +1786,7 @@ function RemoteSessionPanel({
           totalChunks,
           totalBytes: file.size,
           isLast: chunkIndex === totalChunks - 1,
+          chunkSha256,
         });
         sentBytes = end;
         setTransferProgress({
@@ -1959,14 +2009,21 @@ function RemoteSessionPanel({
           <Keyboard size={17} />
           <span>키 입력 A</span>
         </button>
-        <button className="secondary-button" type="button" onClick={() => onInputEvent("switch-monitor 0")} title="0번 모니터로 화면 전환">
-          <Monitor size={17} />
-          <span>모니터 0</span>
-        </button>
-        <button className="secondary-button" type="button" onClick={() => onInputEvent("switch-monitor 1")} title="1번 모니터로 화면 전환">
-          <Monitor size={17} />
-          <span>모니터 1</span>
-        </button>
+        {(device.displays?.length ? device.displays : [
+          { index: 0, name: "Fallback", width: 0, height: 0, primary: true },
+          { index: 1, name: "Fallback", width: 0, height: 0, primary: false },
+        ]).map((display) => (
+          <button
+            className={selectedDisplayIndex === display.index ? "secondary-button active" : "secondary-button"}
+            key={`display-button-${display.index}`}
+            type="button"
+            onClick={() => handleSwitchDisplay(display.index)}
+            title={display.width > 0 ? `${display.width}x${display.height} ${display.name}` : `Monitor ${display.index + 1}`}
+          >
+            <Monitor size={17} />
+            <span>{display.primary ? "Primary" : `Monitor ${display.index + 1}`}</span>
+          </button>
+        ))}
 
         {/* 3단계 기능들 */}
         {[

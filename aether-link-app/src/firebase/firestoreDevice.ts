@@ -21,6 +21,7 @@ export interface FirestoreDeviceDocument {
   version?: string;
   activeDisplayIndex?: number;
   displays?: unknown;
+  macAddresses?: unknown;
 }
 
 interface BuildFirestoreDeviceInput {
@@ -65,6 +66,7 @@ export function mapFirestoreDevice(id: string, data: Partial<FirestoreDeviceDocu
     version: data.version,
     activeDisplayIndex: Number.isFinite(Number(data.activeDisplayIndex)) ? Number(data.activeDisplayIndex) : undefined,
     displays: sanitizeDisplays(data.displays),
+    macAddresses: sanitizeMacAddresses(data.macAddresses),
   };
 }
 
@@ -93,6 +95,21 @@ function sanitizeDisplays(value: unknown): DeviceDisplayInfo[] | undefined {
         display.height > 0,
     );
   return displays.length > 0 ? displays : undefined;
+}
+
+function sanitizeMacAddresses(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const macAddresses = Array.from(
+    new Set(
+      value
+        .map((item) => String(item ?? "").trim().toUpperCase().replace(/-/g, ":"))
+        .filter((item) => /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(item))
+        .filter((item) => item !== "00:00:00:00:00:00"),
+    ),
+  );
+  return macAddresses.length > 0 ? macAddresses : undefined;
 }
 
 function coerceTimestamp(value: unknown): string {
