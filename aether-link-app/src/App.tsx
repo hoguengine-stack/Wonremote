@@ -54,6 +54,11 @@ import { groupDevicesByStore } from "./domain/agentRegistry";
 import {
   scheduleVisualPingPresentedMeasurement,
 } from "./domain/visualPing";
+import {
+  formatControlDiagnostics,
+  formatStreamDiagnostics,
+  shouldWarnAboutControlLimit,
+} from "./domain/sessionDiagnostics";
 import { getViewerVersion } from "./domain/versioning";
 import { shouldNotifyUpdate, shouldReloadViewerForUpdate } from "./domain/updatePolicy";
 import {
@@ -1290,11 +1295,16 @@ function RemoteSessionPanel({
   const moveFrameRef = React.useRef<number | null>(null);
   const pendingMoveRef = React.useRef<{ dx: number; dy: number } | null>(null);
   const lastClipboardTextRef = React.useRef<string>("");
+  const pingStateRef = React.useRef<{ start: number } | null>(null);
   const activeTransferIdRef = React.useRef<string>("");
   const dangerConfirmUntilRef = React.useRef<Record<string, number>>({});
   const [latencyReport, setLatencyReport] = useState<string>("");
   const [pingState, setPingState] = useState<{ start: number } | null>(null);
   const [zoom, setZoom] = useState(1);
+  const [streamTransportState, setStreamTransportState] = useState("idle");
+  const [streamFrameCount, setStreamFrameCount] = useState(0);
+  const [streamLastFrameAt, setStreamLastFrameAt] = useState("");
+  const [fallbackPollErrors, setFallbackPollErrors] = useState(0);
   const [selectedDisplayIndex, setSelectedDisplayIndex] = useState(0);
   const [transferProgress, setTransferProgress] = useState<{
     fileName: string;
@@ -1324,6 +1334,16 @@ function RemoteSessionPanel({
       device.displays[0];
     setSelectedDisplayIndex(activeDisplay.index);
   }, [device?.id, device?.activeDisplayIndex, device?.displays]);
+
+  useEffect(() => {
+    if (session?.state === "connected") {
+      panelRef.current?.focus();
+    }
+  }, [session?.id, session?.state]);
+
+  useEffect(() => {
+    pingStateRef.current = pingState;
+  }, [pingState]);
 
   // Chat/Clipboard/Files polling
   useEffect(() => {
@@ -1414,7 +1434,7 @@ function RemoteSessionPanel({
       active = false;
       clearInterval(intervalId);
     };
-  }, [device, sessionId, session, isClipboardSyncOn]);
+  }, [device?.id, sessionId, session?.id, session?.state, isClipboardSyncOn]);
 
   useEffect(() => {
     if (!isClipboardSyncOn || !sessionId || !session || session.state !== "connected") {
@@ -1449,6 +1469,10 @@ function RemoteSessionPanel({
       return;
     }
 
+    setStreamTransportState("starting");
+    setStreamFrameCount(0);
+    setStreamLastFrameAt("");
+    setFallbackPollErrors(0);
     let active = true;
     let webRtcTransport: { close: () => void } | null = null;
     const drawTileFrame = (data: { tiles?: any[]; width?: number; height?: number }) => {
@@ -1469,6 +1493,9 @@ function RemoteSessionPanel({
       }
 
       if (data.tiles && data.tiles.length > 0) {
+        const frameRenderedAt = new Date().toLocaleTimeString();
+        setStreamFrameCount((value) => value + 1);
+        setStreamLastFrameAt(frameRenderedAt);
         let loadedCount = 0;
         for (const tile of data.tiles) {
           const img = new Image();
@@ -1478,7 +1505,8 @@ function RemoteSessionPanel({
             }
             loadedCount++;
 
-            if (loadedCount === data.tiles!.length && pingState) {
+            const activePingState = pingStateRef.current;
+            if (loadedCount === data.tiles!.length && activePingState) {
               scheduleVisualPingPresentedMeasurement({
                 requestAnimationFrame: (callback) =>
                   requestAnimationFrame(() => {
@@ -1486,7 +1514,7 @@ function RemoteSessionPanel({
                       callback();
                     }
                   }),
-                startedAtMs: pingState.start,
+                startedAtMs: activePingState.start,
                 readPixel: () => {
                   const imgData = ctx.getImageData(5, 5, 1, 1).data;
                   return { r: imgData[0], g: imgData[1], b: imgData[2] };
@@ -1513,8 +1541,14 @@ function RemoteSessionPanel({
     if (isViewerFirebaseEnabled()) {
       void startFirebaseViewerWebRtcTransport(sessionId, {
         onFrame: drawTileFrame,
-        onState: (state) => setLatencyReport(state.replace(/^webrtc-/, "WebRTC: ")),
-        onError: (error) => console.warn("[WebRTC Viewer]", error.message),
+        onState: (state) => {
+          setStreamTransportState(state);
+          setLatencyReport(state.replace(/^webrtc-/, "WebRTC: "));
+        },
+        onError: (error) => {
+          setStreamTransportState(`webrtc-error: ${error.message}`);
+          console.warn("[WebRTC Viewer]", error.message);
+        },
       }).then((transport) => {
         if (!active) {
           transport.close();
@@ -1522,15 +1556,23 @@ function RemoteSessionPanel({
         }
         webRtcTransport = transport;
       }).catch((error) => {
+        setStreamTransportState(`webrtc-unavailable: ${error instanceof Error ? error.message : String(error)}`);
         console.warn("[WebRTC Viewer] transport unavailable:", error instanceof Error ? error.message : error);
       });
     }
 
     const pollTiles = async () => {
       try {
-        drawTileFrame(await fetchTiles(sessionId));
+        const tileData = await fetchTiles(sessionId);
+        if (tileData.tiles?.length) {
+          setStreamTransportState((state) =>
+            state.startsWith("webrtc-connected") ? state : "fallback-polling",
+          );
+        }
+        drawTileFrame(tileData);
+        setFallbackPollErrors(0);
       } catch (e) {
-        // ignore
+        setFallbackPollErrors((value) => value + 1);
       }
     };
 
@@ -1545,7 +1587,7 @@ function RemoteSessionPanel({
       webRtcTransport?.close();
       clearInterval(intervalId);
     };
-  }, [device, sessionId, pingState, session]);
+  }, [device?.id, sessionId, session?.id, session?.state]);
 
   const releaseAllInputs = () => {
     if (pressedKeysRef.current.size > 0) {
@@ -1936,6 +1978,15 @@ function RemoteSessionPanel({
     );
   }
 
+  const streamDiagnosticLines = formatStreamDiagnostics(
+    device.streamDiagnostics,
+    streamTransportState,
+    streamFrameCount,
+    fallbackPollErrors,
+  );
+  const controlDiagnosticLines = formatControlDiagnostics(device.controlDiagnostics);
+  const controlLimited = shouldWarnAboutControlLimit(device.controlDiagnostics);
+
   return (
     <section
       ref={panelRef}
@@ -1957,8 +2008,24 @@ function RemoteSessionPanel({
           <div className="remote-titlebar">
             <span>{device.deviceName}</span>
             <span>{device.businessNumber}</span>
+            <span className="status-pill" style={{ marginLeft: "auto", background: "rgba(14, 165, 233, 0.16)", color: "#38bdf8" }}>
+              {streamTransportState}
+            </span>
+            <span className="status-pill" style={{ background: "rgba(15, 23, 42, 0.45)", color: "#cbd5e1" }}>
+              frames {streamFrameCount}
+            </span>
+            {streamLastFrameAt && (
+              <span className="status-pill" style={{ background: "rgba(15, 23, 42, 0.45)", color: "#cbd5e1" }}>
+                last {streamLastFrameAt}
+              </span>
+            )}
+            {controlLimited && (
+              <span className="status-pill" style={{ background: "rgba(239, 68, 68, 0.16)", color: "#fca5a5" }}>
+                input limited
+              </span>
+            )}
             {latencyReport && (
-              <span className="status-pill" style={{ marginLeft: "auto", background: "rgba(99, 102, 241, 0.2)", color: "#818cf8" }}>
+              <span className="status-pill" style={{ background: "rgba(99, 102, 241, 0.2)", color: "#818cf8" }}>
                 {latencyReport}
               </span>
             )}
@@ -1980,6 +2047,13 @@ function RemoteSessionPanel({
                 transformOrigin: "center center",
               }}
             />
+          </div>
+          <div className="session-diagnostics">
+            {[...streamDiagnosticLines, ...controlDiagnosticLines].map((line, index) => (
+              <span key={`${index}-${line}`} className={line.includes("error") || line.includes("win32=") ? "diagnostic-pill warning" : "diagnostic-pill"}>
+                {line}
+              </span>
+            ))}
           </div>
         </div>
 

@@ -47,6 +47,59 @@ describe("agent client", () => {
     });
   });
 
+  it("sends stream diagnostics with heartbeat payloads", async () => {
+    const fetchImpl = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          device: {
+            id: "123-45-67890:AGENT-ABC123",
+            status: "online",
+          },
+        }),
+        {
+          headers: { "content-type": "application/json" },
+          status: 200,
+        },
+      );
+    });
+
+    await sendAgentHeartbeat({
+      apiBaseUrl: "http://127.0.0.1:8787",
+      deviceId: "123-45-67890:AGENT-ABC123",
+      fetchImpl,
+      installId: "agent-abc123",
+      streamDiagnostics: {
+        backend: "gdi",
+        desired: true,
+        running: false,
+        restartCount: 2,
+        loopSleepMs: 125,
+        outputIndex: 1,
+        lastError: "DXGI access denied",
+        transport: "firestore-fallback",
+      },
+    } as any);
+
+    expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:8787/api/agent/heartbeat", {
+      body: JSON.stringify({
+        deviceId: "123-45-67890:AGENT-ABC123",
+        installId: "agent-abc123",
+        streamDiagnostics: {
+          backend: "gdi",
+          desired: true,
+          running: false,
+          restartCount: 2,
+          loopSleepMs: 125,
+          outputIndex: 1,
+          lastError: "DXGI access denied",
+          transport: "firestore-fallback",
+        },
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+  });
+
   it("polls queued viewer commands for the registered agent", async () => {
     const fetchImpl = vi.fn(async () => {
       return new Response(

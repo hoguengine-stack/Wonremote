@@ -41,6 +41,17 @@ describe("firestore device mapping", () => {
         { index: 0, name: "DISPLAY1", width: 1024, height: 768, primary: true },
         { index: 1, name: "DISPLAY2", width: 1600, height: 900, primary: false },
       ],
+      streamDiagnostics: {
+        backend: "gdi",
+        desired: true,
+        running: false,
+        restartCount: 2.9,
+        loopSleepMs: 125.7,
+        outputIndex: 1.8,
+        lastFrameAt: "2026-06-16T06:30:00.000Z",
+        lastError: `  ${"DXGI access denied ".repeat(40)}`,
+        transport: "firestore-fallback",
+      },
     });
 
     expect(managed).toEqual({
@@ -59,6 +70,17 @@ describe("firestore device mapping", () => {
         { index: 0, name: "DISPLAY1", width: 1024, height: 768, primary: true },
         { index: 1, name: "DISPLAY2", width: 1600, height: 900, primary: false },
       ],
+      streamDiagnostics: {
+        backend: "gdi",
+        desired: true,
+        running: false,
+        restartCount: 2,
+        loopSleepMs: 125,
+        outputIndex: 1,
+        lastFrameAt: "2026-06-16T06:30:00.000Z",
+        lastError: "DXGI access denied ".repeat(40).trim().slice(0, 500),
+        transport: "firestore-fallback",
+      },
     });
   });
 
@@ -130,5 +152,51 @@ describe("firestore device mapping", () => {
         lastSeenAt: "2026-06-12T09:00:00.000Z",
       }).storeName,
     ).toBe("사업자 123-45-67890");
+  });
+
+  it("preserves legacy user-customized store name when storeNameSource is missing", () => {
+    const nextDevice = buildFirestoreDevice({
+      businessNumber: "1234567890",
+      installId: "agent-localenv-425d1cbe",
+      ownerUid: "uid-1",
+      version: "0.1.21",
+      nowIso: "2026-06-16T06:00:00.000Z",
+    });
+
+    const merged = mergeFirstRunDeviceDocument(nextDevice, {
+      businessNumber: "123-45-67890",
+      storeName: "대박치킨",
+      deviceNumber: "AGENT-LOCALENV-425D1CB",
+      status: "online",
+      lastSeenAt: "2026-06-15T00:00:00.000Z",
+    });
+
+    expect(merged).toMatchObject({
+      storeName: "대박치킨",
+      storeNameSource: "user",
+    });
+  });
+
+  it("does NOT preserve legacy generated store name when storeNameSource is missing", () => {
+    const nextDevice = buildFirestoreDevice({
+      businessNumber: "1234567890",
+      installId: "agent-localenv-425d1cbe",
+      ownerUid: "uid-1",
+      version: "0.1.21",
+      nowIso: "2026-06-16T06:00:00.000Z",
+    });
+
+    const merged = mergeFirstRunDeviceDocument(nextDevice, {
+      businessNumber: "123-45-67890",
+      storeName: "??? 123-45-67890",
+      deviceNumber: "AGENT-LOCALENV-425D1CB",
+      status: "online",
+      lastSeenAt: "2026-06-15T00:00:00.000Z",
+    });
+
+    expect(merged).toMatchObject({
+      storeName: "상호명 미설정",
+      storeNameSource: "default",
+    });
   });
 });

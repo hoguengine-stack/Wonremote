@@ -562,10 +562,12 @@ input:focus {
   align-items: center;
   background: #202938;
   display: flex;
+  flex-wrap: wrap;
   font-size: 12px;
+  gap: 6px;
   justify-content: space-between;
   min-height: 34px;
-  padding: 0 12px;
+  padding: 6px 12px;
 }
 
 .remote-preview {
@@ -573,6 +575,34 @@ input:focus {
   display: flex;
   height: calc(100% - 34px);
   justify-content: center;
+}
+
+.session-diagnostics {
+  align-items: center;
+  background: rgba(11, 16, 24, 0.92);
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 7px 10px;
+}
+
+.diagnostic-pill {
+  background: rgba(37, 161, 142, 0.15);
+  border: 1px solid rgba(37, 161, 142, 0.22);
+  border-radius: 6px;
+  color: #b7f4e7;
+  font-size: 11px;
+  line-height: 1.35;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  padding: 3px 6px;
+}
+
+.diagnostic-pill.warning {
+  background: rgba(239, 68, 68, 0.14);
+  border-color: rgba(239, 68, 68, 0.28);
+  color: #fecaca;
 }
 
 .remote-focus-mode {

@@ -16,6 +16,7 @@ export interface ManagedDevice {
   activeDisplayIndex?: number;
   macAddresses?: string[];
   controlDiagnostics?: AgentControlDiagnostics;
+  streamDiagnostics?: AgentStreamDiagnostics;
 }
 
 export interface AgentControlDiagnostics {
@@ -23,6 +24,18 @@ export interface AgentControlDiagnostics {
   integrityLevel?: string;
   win32ErrorCode?: number;
   win32ErrorMessage?: string;
+}
+
+export interface AgentStreamDiagnostics {
+  backend?: "dxgi" | "gdi";
+  desired?: boolean;
+  running?: boolean;
+  restartCount?: number;
+  loopSleepMs?: number;
+  outputIndex?: number;
+  lastFrameAt?: string;
+  lastError?: string;
+  transport?: "webrtc" | "firestore-fallback" | "local-api" | "none";
 }
 
 export interface DeviceDisplayInfo {
@@ -57,6 +70,7 @@ export interface AgentHeartbeatInput {
   activeDisplayIndex?: number;
   macAddresses?: string[];
   controlDiagnostics?: AgentControlDiagnostics;
+  streamDiagnostics?: AgentStreamDiagnostics;
 }
 
 export interface AgentCommand {

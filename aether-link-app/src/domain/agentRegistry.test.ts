@@ -240,4 +240,40 @@ describe("agent registry domain", () => {
 
     expect(heartbeat.device.macAddresses).toEqual(["01:23:45:67:89:AB"]);
   });
+
+  it("stores sanitized stream diagnostics from heartbeat", () => {
+    const registered = registerAgentFirstRun([], {
+      businessNumber: "1234567890",
+      password: "1234",
+      installId: "agent-streamdiag",
+    });
+
+    const heartbeat = applyAgentHeartbeat(registered.devices, {
+      deviceId: registered.device.id,
+      installId: "agent-streamdiag",
+      streamDiagnostics: {
+        backend: "gdi",
+        desired: true,
+        running: false,
+        restartCount: 3.8,
+        loopSleepMs: 125.9,
+        outputIndex: 1.2,
+        lastFrameAt: "2026-06-16T06:30:00.000Z",
+        lastError: "DXGI access denied",
+        transport: "firestore-fallback",
+      },
+    });
+
+    expect(heartbeat.device.streamDiagnostics).toEqual({
+      backend: "gdi",
+      desired: true,
+      running: false,
+      restartCount: 3,
+      loopSleepMs: 125,
+      outputIndex: 1,
+      lastFrameAt: "2026-06-16T06:30:00.000Z",
+      lastError: "DXGI access denied",
+      transport: "firestore-fallback",
+    });
+  });
 });

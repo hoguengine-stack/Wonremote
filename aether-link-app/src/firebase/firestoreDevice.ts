@@ -23,6 +23,7 @@ export interface FirestoreDeviceDocument {
   displays?: unknown;
   macAddresses?: unknown;
   controlDiagnostics?: unknown;
+  streamDiagnostics?: unknown;
 }
 
 interface BuildFirestoreDeviceInput {
@@ -60,9 +61,15 @@ export function mergeFirstRunDeviceDocument(
     return merged;
   }
 
-  if (existing.storeNameSource === "user" && typeof existing.storeName === "string" && existing.storeName.trim()) {
-    merged.storeName = existing.storeName.trim();
-    merged.storeNameSource = "user";
+  const existingStore = existing.storeName?.trim();
+  if (existingStore) {
+    const isLegacyGenerated = normalizeStoreNameForDisplay(existingStore, device.businessNumber) === DEFAULT_STORE_NAME;
+    const isUserSet = existing.storeNameSource === "user" || (!existing.storeNameSource && !isLegacyGenerated);
+
+    if (isUserSet) {
+      merged.storeName = existingStore;
+      merged.storeNameSource = "user";
+    }
   }
   if (typeof existing.deviceName === "string" && existing.deviceName.trim()) {
     merged.deviceName = existing.deviceName.trim();
@@ -92,6 +99,7 @@ export function mapFirestoreDevice(id: string, data: Partial<FirestoreDeviceDocu
     displays: sanitizeDisplays(data.displays),
     macAddresses: sanitizeMacAddresses(data.macAddresses),
     controlDiagnostics: sanitizeControlDiagnostics(data.controlDiagnostics),
+    streamDiagnostics: sanitizeStreamDiagnostics(data.streamDiagnostics),
   };
 }
 
@@ -147,6 +155,43 @@ function sanitizeControlDiagnostics(value: unknown): ManagedDevice["controlDiagn
     integrityLevel: typeof raw.integrityLevel === "string" ? raw.integrityLevel : undefined,
     win32ErrorCode: typeof raw.win32ErrorCode === "number" ? raw.win32ErrorCode : undefined,
     win32ErrorMessage: typeof raw.win32ErrorMessage === "string" ? raw.win32ErrorMessage : undefined,
+  };
+}
+
+function sanitizeStreamDiagnostics(value: unknown): ManagedDevice["streamDiagnostics"] | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const raw = value as Record<string, unknown>;
+  const backend = raw.backend === "gdi" || raw.backend === "dxgi" ? raw.backend : undefined;
+  const transport =
+    raw.transport === "webrtc" ||
+    raw.transport === "firestore-fallback" ||
+    raw.transport === "local-api" ||
+    raw.transport === "none"
+      ? raw.transport
+      : undefined;
+  return {
+    backend,
+    desired: typeof raw.desired === "boolean" ? raw.desired : undefined,
+    running: typeof raw.running === "boolean" ? raw.running : undefined,
+    restartCount:
+      typeof raw.restartCount === "number" && Number.isFinite(raw.restartCount)
+        ? Math.max(0, Math.trunc(raw.restartCount))
+        : undefined,
+    loopSleepMs:
+      typeof raw.loopSleepMs === "number" && Number.isFinite(raw.loopSleepMs)
+        ? Math.max(0, Math.trunc(raw.loopSleepMs))
+        : undefined,
+    outputIndex:
+      typeof raw.outputIndex === "number" && Number.isFinite(raw.outputIndex)
+        ? Math.max(0, Math.trunc(raw.outputIndex))
+        : undefined,
+    lastFrameAt:
+      typeof raw.lastFrameAt === "string" && raw.lastFrameAt.trim() ? raw.lastFrameAt.trim() : undefined,
+    lastError:
+      typeof raw.lastError === "string" && raw.lastError.trim() ? raw.lastError.trim().slice(0, 500) : undefined,
+    transport,
   };
 }
 

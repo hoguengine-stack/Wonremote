@@ -140,6 +140,7 @@ export function applyAgentHeartbeat(
         : currentDevice.activeDisplayIndex,
     macAddresses: sanitizeMacAddresses(input.macAddresses) ?? currentDevice.macAddresses,
     controlDiagnostics: sanitizeControlDiagnostics(input.controlDiagnostics) ?? currentDevice.controlDiagnostics,
+    streamDiagnostics: sanitizeStreamDiagnostics(input.streamDiagnostics) ?? currentDevice.streamDiagnostics,
   };
   const nextDevices = devices.map((item, itemIndex) => (itemIndex === index ? device : item));
 
@@ -353,6 +354,48 @@ function sanitizeControlDiagnostics(
       typeof diagnostics.win32ErrorMessage === "string" && diagnostics.win32ErrorMessage.trim()
         ? diagnostics.win32ErrorMessage.trim()
         : undefined,
+  };
+}
+
+function sanitizeStreamDiagnostics(
+  diagnostics: AgentHeartbeatInput["streamDiagnostics"],
+): ManagedDevice["streamDiagnostics"] | undefined {
+  if (!diagnostics || typeof diagnostics !== "object") {
+    return undefined;
+  }
+  const backend = diagnostics.backend === "gdi" || diagnostics.backend === "dxgi" ? diagnostics.backend : undefined;
+  const transport =
+    diagnostics.transport === "webrtc" ||
+    diagnostics.transport === "firestore-fallback" ||
+    diagnostics.transport === "local-api" ||
+    diagnostics.transport === "none"
+      ? diagnostics.transport
+      : undefined;
+  return {
+    backend,
+    desired: typeof diagnostics.desired === "boolean" ? diagnostics.desired : undefined,
+    running: typeof diagnostics.running === "boolean" ? diagnostics.running : undefined,
+    restartCount:
+      typeof diagnostics.restartCount === "number" && Number.isFinite(diagnostics.restartCount)
+        ? Math.max(0, Math.trunc(diagnostics.restartCount))
+        : undefined,
+    loopSleepMs:
+      typeof diagnostics.loopSleepMs === "number" && Number.isFinite(diagnostics.loopSleepMs)
+        ? Math.max(0, Math.trunc(diagnostics.loopSleepMs))
+        : undefined,
+    outputIndex:
+      typeof diagnostics.outputIndex === "number" && Number.isFinite(diagnostics.outputIndex)
+        ? Math.max(0, Math.trunc(diagnostics.outputIndex))
+        : undefined,
+    lastFrameAt:
+      typeof diagnostics.lastFrameAt === "string" && diagnostics.lastFrameAt.trim()
+        ? diagnostics.lastFrameAt.trim()
+        : undefined,
+    lastError:
+      typeof diagnostics.lastError === "string" && diagnostics.lastError.trim()
+        ? diagnostics.lastError.trim().slice(0, 500)
+        : undefined,
+    transport,
   };
 }
 

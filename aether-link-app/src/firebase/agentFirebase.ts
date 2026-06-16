@@ -30,6 +30,7 @@ import { resolveRtcIceServers, shouldUseRelayOnly } from "../domain/rtcTransport
 import { resolveFirebaseConfig } from "./firebaseConfig";
 import { buildAgentAuthEmail, buildAgentAuthPassword } from "./firebaseIdentity";
 import { buildFirestoreDevice, mapFirestoreDevice, mergeFirstRunDeviceDocument } from "./firestoreDevice";
+import { stripUndefinedFields } from "./firestorePayload";
 import { getWonRemoteFirebaseServices } from "./firebaseServices";
 import { throwExplainedFirebaseAuthError } from "./firebaseError";
 
@@ -139,17 +140,18 @@ export async function sendAgentHeartbeatWithFirebase(
   }
 
   const nowIso = new Date().toISOString();
-  await updateDoc(deviceRef, {
+  await updateDoc(deviceRef, stripUndefinedFields({
     activeDisplayIndex: input.activeDisplayIndex,
     displays: input.displays ?? [],
     installId: input.installId,
     lastSeenAt: nowIso,
     macAddresses: input.macAddresses ?? [],
     controlDiagnostics: input.controlDiagnostics ?? null,
+    streamDiagnostics: input.streamDiagnostics ?? null,
     status: "online",
     updatedAt: serverTimestamp(),
     version: input.version,
-  });
+  }));
 
   const updatedSnapshot = await getDoc(deviceRef);
   const device = mapFirestoreDevice(input.deviceId, {
@@ -161,6 +163,7 @@ export async function sendAgentHeartbeatWithFirebase(
     displays: input.displays ?? [],
     macAddresses: input.macAddresses ?? [],
     controlDiagnostics: input.controlDiagnostics,
+    streamDiagnostics: input.streamDiagnostics,
   });
 
   return {

@@ -51,7 +51,13 @@ import type {
   AgentCredentials,
   AgentLocalConfig,
 } from "./agentBootstrap";
-import type { AgentControlDiagnostics, AgentFirstRunResult, DeviceDisplayInfo, FileTransferReceipt } from "../domain/types";
+import type {
+  AgentControlDiagnostics,
+  AgentFirstRunResult,
+  AgentStreamDiagnostics,
+  DeviceDisplayInfo,
+  FileTransferReceipt,
+} from "../domain/types";
 import { spawn, execFile, exec } from "node:child_process";
 import { promisify } from "node:util";
 import readline from "node:readline";
@@ -104,6 +110,10 @@ let streamGeneration = 0;
 let webRtcTransport: AgentWebRtcTransport | null = null;
 let currentOutputIndex = 0;
 let currentLoopSleepMs = 33;
+let streamRestartCount = 0;
+let lastStreamFrameAt: string | undefined;
+let lastStreamError: string | undefined;
+let streamTransport: AgentStreamDiagnostics["transport"] = "none";
 const pressedKeys = new Set<string>();
 let displayCache: { loadedAtMs: number; displays: DeviceDisplayInfo[] } | null = null;
 
@@ -123,6 +133,9 @@ function startStreaming(
   streamGeneration += 1;
   const generation = streamGeneration;
   streamBackend = backend;
+  currentOutputIndex = outputIndex;
+  currentLoopSleepMs = loopSleepMs;
+  streamTransport = USE_FIREBASE ? "firestore-fallback" : "local-api";
   if (streamRestartTimer) {
     clearTimeout(streamRestartTimer);
     streamRestartTimer = null;
@@ -173,13 +186,19 @@ function startStreaming(
       const data = JSON.parse(line);
       if (data.type === "frame") {
         streamFailureCount = 0;
-        if (USE_FIREBASE && !webRtcTransport?.sendFrame({ tiles: data.tiles, width: data.width, height: data.height })) {
+        lastStreamFrameAt = new Date().toISOString();
+        lastStreamError = undefined;
+        if (USE_FIREBASE && webRtcTransport?.sendFrame({ tiles: data.tiles, width: data.width, height: data.height })) {
+          streamTransport = "webrtc";
+        } else if (USE_FIREBASE) {
+          streamTransport = "firestore-fallback";
           await postSessionTilesWithFirebase(sessionId, {
             tiles: data.tiles,
             width: data.width,
             height: data.height,
           });
         } else if (!USE_FIREBASE) {
+          streamTransport = "local-api";
           await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/tiles`, {
             method: "POST",
             headers: { "content-type": "application/json" },
@@ -198,6 +217,7 @@ function startStreaming(
     const trimmed = line.trim();
     if (!trimmed) return;
     if (/error|failed|denied|HRESULT|실패|거부/i.test(trimmed)) {
+      lastStreamError = trimmed.slice(0, 500);
       console.error(`[POC Stream Error] ${trimmed}`);
     } else {
       console.log(`[POC Stream] ${trimmed}`);
@@ -228,7 +248,11 @@ function startStreaming(
       const nextSleep = nextBackend === "gdi" ? Math.max(loopSleepMs, 125) : loopSleepMs;
       const delayMs = nextStreamRestartDelayMs(streamFailureCount);
       streamFailureCount += 1;
+      streamRestartCount += 1;
       streamBackend = nextBackend;
+      if (!lastStreamError && finalStderr.trim()) {
+        lastStreamError = finalStderr.trim().slice(0, 500);
+      }
       console.log(`Capture stream will restart in ${delayMs}ms (backend: ${nextBackend}, sleep: ${nextSleep}ms).`);
       streamRestartTimer = setTimeout(() => {
         streamRestartTimer = null;
@@ -258,6 +282,7 @@ function stopSessionPolling() {
   }
   void webRtcTransport?.close();
   webRtcTransport = null;
+  streamTransport = "none";
   isSessionActive = false;
   if (sessionPollIntervalId) {
     clearInterval(sessionPollIntervalId);
@@ -719,13 +744,15 @@ async function checkUpdate(config: AgentLocalConfig) {
       const agentPassword = process.env.WONREMOTE_AGENT_PASSWORD ?? "1234";
       const heartbeatMs = process.env.WONREMOTE_AGENT_HEARTBEAT_MS ?? "1000";
 
-      const installerContent = `@echo off
+const installerContent = `@echo off
+set "APPDATA=${baseDir}"
 set "WONREMOTE_API_URL=${API_BASE_URL}"
 set "WONREMOTE_AGENT_ID=${agentId}"
 set "WONREMOTE_AGENT_PASSWORD=${agentPassword}"
 set "WONREMOTE_AGENT_HEARTBEAT_MS=${heartbeatMs}"
 set "WONREMOTE_APP_DIR=${appDir}"
 set "WONREMOTE_POC_PATH=${POC_PATH}"
+set "WONREMOTE_AGENT_CONFIG=${configPath}"
 
 echo [Installer] Starting installation log... > "${logFilePath}"
 echo [Installer] Waiting for Agent CLI to terminate... >> "${logFilePath}"
@@ -739,7 +766,7 @@ del "${path.join(baseDir, "WonRemote", ".update_success")}" /f /q >> "${logFileP
 
 echo [Installer] Starting new Agent version... >> "${logFilePath}"
 cd /d "${appDir}"
-start cmd /c "npm run agent:watch"
+start "" cmd /c "npm run agent:watch"
 
 echo [Installer] Waiting 10 seconds to verify boot... >> "${logFilePath}"
 ping -n 11 127.0.0.1 > nul
@@ -754,7 +781,7 @@ if exist "${path.join(baseDir, "WonRemote", ".update_success")}" (
     xcopy /y /e /s "${backupDir}\\*" "${appDir}" >> "${logFilePath}" 2>&1
     copy /y "${path.join(backupDir, "agent-config.json")}" "${configPath}" >> "${logFilePath}" 2>&1
     echo [Installer] Restarting backup version... >> "${logFilePath}"
-    start cmd /c "npm run agent:watch"
+    start "" cmd /c "npm run agent:watch"
     rd /s /q "${tempUpdateDir}" >> "${logFilePath}" 2>&1
     exit /b 1
 )
@@ -987,6 +1014,7 @@ async function sendHeartbeat(config: AgentLocalConfig): Promise<void> {
   const displays = await discoverDisplays();
   const macAddresses = discoverMacAddresses();
   const controlDiagnostics = await discoverControlDiagnostics();
+  const streamDiagnostics = buildStreamDiagnostics();
   const result = await sendAgentHeartbeat({
     apiBaseUrl: API_BASE_URL,
     deviceId: config.registeredDeviceId,
@@ -996,6 +1024,7 @@ async function sendHeartbeat(config: AgentLocalConfig): Promise<void> {
     activeDisplayIndex: currentOutputIndex,
     macAddresses,
     controlDiagnostics,
+    streamDiagnostics,
   });
   console.log(`Heartbeat accepted: ${result.device.id}`);
 }
@@ -1173,6 +1202,20 @@ async function discoverControlDiagnostics(): Promise<AgentControlDiagnostics | u
     console.warn(`[Agent] Control diagnostics unavailable: ${error instanceof Error ? error.message : error}`);
     return undefined;
   }
+}
+
+function buildStreamDiagnostics(): AgentStreamDiagnostics {
+  return {
+    backend: streamBackend,
+    desired: streamDesired,
+    running: Boolean(streamProcess),
+    restartCount: streamRestartCount,
+    loopSleepMs: currentLoopSleepMs,
+    outputIndex: currentOutputIndex,
+    lastFrameAt: lastStreamFrameAt,
+    lastError: lastStreamError,
+    transport: streamTransport,
+  };
 }
 
 async function setClipboardText(text: string): Promise<void> {
