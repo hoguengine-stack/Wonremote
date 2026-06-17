@@ -112,6 +112,8 @@ describe("production installer update", () => {
       expect(script).not.toContain("taskkill");
       expect(script).toContain("Start-WonRemoteAgent");
       expect(script).toContain("Join-Path $root \"wonremote-viewer.exe\"");
+      expect(script).toContain("Test-WonRemoteAgentRunning");
+      expect(script).toContain("WonRemote Agent is already running after installer exit; skipping fallback start.");
       expect(script).toContain("Start-Process -FilePath $candidate -ArgumentList @('--agent') -WindowStyle Hidden");
     } finally {
       await rm(baseDir, { recursive: true, force: true });

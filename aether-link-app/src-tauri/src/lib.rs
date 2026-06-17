@@ -1067,7 +1067,10 @@ pub fn run() {
     let _single_instance_guard = match try_acquire_single_instance(is_agent) {
         Ok(Some(guard)) => guard,
         Ok(None) => {
-            append_runtime_log("startup", "single-instance guard already held; exiting");
+            append_runtime_log(
+                "startup",
+                "duplicate instance ignored; existing instance is already running",
+            );
             return;
         }
         Err(error) => {

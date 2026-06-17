@@ -118,13 +118,19 @@ describe("desktop packaging scaffold", () => {
     expect(agentIndex).not.toContain("spawn(installerPath, installerArgs");
   });
 
-  it("restarts the Agent in background after the Agent installer finishes", () => {
+  it("starts the Agent in background after install without treating duplicate launches as failures", () => {
     const viewerHook = readFileSync(path.join(projectRoot, "src-tauri", "windows", "viewer-install-hooks.nsh"), "utf8");
     const agentHook = readFileSync(path.join(projectRoot, "src-tauri", "windows", "agent-install-hooks.nsh"), "utf8");
+    const agentHookX86 = readFileSync(path.join(projectRoot, "src-tauri", "windows", "agent-install-hooks-x86.nsh"), "utf8");
+    const tauriLib = readFileSync(path.join(projectRoot, "src-tauri", "src", "lib.rs"), "utf8");
 
     expect(agentHook).toContain("NSIS_HOOK_POSTINSTALL");
     expect(agentHook).toContain('Exec \'"$INSTDIR\\wonremote-viewer.exe" --agent\'');
+    expect(agentHookX86).toContain("NSIS_HOOK_POSTINSTALL");
+    expect(agentHookX86).toContain('Exec \'"$INSTDIR\\wonremote-viewer.exe" --agent\'');
     expect(viewerHook).not.toContain("NSIS_HOOK_POSTINSTALL");
+    expect(tauriLib).toContain("duplicate instance ignored; existing instance is already running");
+    expect(tauriLib).not.toContain("single-instance guard already held; exiting");
   });
 
   it("exposes desktop packaging npm scripts", () => {

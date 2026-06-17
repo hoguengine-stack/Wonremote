@@ -194,6 +194,14 @@ function Stop-WonRemoteProcesses {
   Start-Sleep -Milliseconds 1500
 }
 
+function Test-WonRemoteAgentRunning([string[]]$Roots) {
+  $target = Get-CimInstance Win32_Process | Where-Object {
+    ($_.Name -ieq "wonremote-viewer.exe" -or $_.Name -ieq "WonRemote Agent.exe") -and
+    (Test-UnderPath $_.ExecutablePath $Roots)
+  } | Select-Object -First 1
+  return $null -ne $target
+}
+
 function Start-WonRemoteAgent {
   $roots = @(
     $explicitInstallRoots,
@@ -202,6 +210,10 @@ function Start-WonRemoteAgent {
     "$env:LOCALAPPDATA\\WonRemote\\Agent",
     "$env:LOCALAPPDATA\\WonRemote\\Viewer"
   ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+  if (Test-WonRemoteAgentRunning $roots) {
+    Write-HandoffLog "WonRemote Agent is already running after installer exit; skipping fallback start."
+    return
+  }
   $candidates = @()
   foreach ($root in $roots) {
     $candidates += Join-Path $root "wonremote-viewer.exe"
