@@ -101,6 +101,18 @@ describe("production installer update", () => {
       expect(script).toContain("Installer exit code");
       expect(script).toContain("WonRemote-Viewer-Agent-Setup.exe");
       expect(script).toContain("/D=C:\\Users\\Tester\\WonRemote Agent");
+      expect(script).toContain("$explicitInstallRoots = @('C:\\Users\\Tester\\WonRemote Agent')");
+      expect(script).toContain("Get-CimInstance Win32_Process");
+      expect(script).toContain("Test-UnderPath $_.ExecutablePath $roots");
+      expect(script).toContain("Normalize-PathForCompare");
+      expect(script).toContain("$candidatePath.Equals($rootPath, [System.StringComparison]::OrdinalIgnoreCase)");
+      expect(script).toContain("$rootPrefix = \"$rootPath$([System.IO.Path]::DirectorySeparatorChar)\"");
+      expect(script).toContain("Stop-Process -Id $target.ProcessId -Force");
+      expect(script).not.toContain("Get-Process node");
+      expect(script).not.toContain("taskkill");
+      expect(script).toContain("Start-WonRemoteAgent");
+      expect(script).toContain("Join-Path $root \"wonremote-viewer.exe\"");
+      expect(script).toContain("Start-Process -FilePath $candidate -ArgumentList @('--agent') -WindowStyle Hidden");
     } finally {
       await rm(baseDir, { recursive: true, force: true });
     }

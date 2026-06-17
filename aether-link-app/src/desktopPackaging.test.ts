@@ -134,6 +134,7 @@ describe("desktop packaging scaffold", () => {
       "firebase:deploy": "powershell -ExecutionPolicy Bypass -File scripts/deploy-firebase.ps1",
       "firebase:deploy:spark": "powershell -ExecutionPolicy Bypass -File scripts/deploy-firebase.ps1 -SparkOnly",
       "firebase:deploy:spark:no-storage": "powershell -ExecutionPolicy Bypass -File scripts/deploy-firebase.ps1 -SparkOnly -SkipStorage",
+      "firebase:verify": "node scripts/verify-firebase-deploy-readiness.js",
       "release:exes": "node scripts/package-release-exes.js",
       "release:manifest": "node scripts/create-update-manifest.js",
       "release:keypair": "node scripts/generate-update-keypair.js",

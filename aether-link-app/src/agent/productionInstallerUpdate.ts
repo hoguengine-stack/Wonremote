@@ -133,22 +133,103 @@ function buildInstallerHandoffScript(input: {
   logPath: string;
 }): string {
   const quotedArgs = input.installerArgs.map((arg) => `'${escapePowerShellSingleQuoted(arg)}'`).join(", ");
+  const quotedExplicitInstallRoots = installerInstallRootsForHandoff(input.installerArgs)
+    .map((root) => `'${escapePowerShellSingleQuoted(root)}'`)
+    .join(", ");
 
   return `$ErrorActionPreference = 'Stop'
 $LogPath = '${escapePowerShellSingleQuoted(input.logPath)}'
+$explicitInstallRoots = @(${quotedExplicitInstallRoots})
 function Write-HandoffLog([string]$Message) {
   $stamp = Get-Date -Format o
   Add-Content -LiteralPath $LogPath -Encoding UTF8 -Value "[$stamp] $Message"
 }
 
+function Normalize-PathForCompare([string]$Value) {
+  if ([string]::IsNullOrWhiteSpace($Value)) { return "" }
+  try {
+    return [System.IO.Path]::GetFullPath($Value).TrimEnd(
+      [System.IO.Path]::DirectorySeparatorChar,
+      [System.IO.Path]::AltDirectorySeparatorChar
+    )
+  } catch {
+    return $Value.TrimEnd("\\", "/")
+  }
+}
+
+function Test-UnderPath([string]$Candidate, [string[]]$Roots) {
+  if ([string]::IsNullOrWhiteSpace($Candidate)) { return $false }
+  $candidatePath = Normalize-PathForCompare $Candidate
+  foreach ($root in $Roots) {
+    $rootPath = Normalize-PathForCompare $root
+    if ([string]::IsNullOrWhiteSpace($rootPath)) { continue }
+    if ($candidatePath.Equals($rootPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+      return $true
+    }
+    $rootPrefix = "$rootPath$([System.IO.Path]::DirectorySeparatorChar)"
+    if ($candidatePath.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+      return $true
+    }
+  }
+  return $false
+}
+
+function Stop-WonRemoteProcesses {
+  $roots = @(
+    "$env:LOCALAPPDATA\\WonRemote Viewer",
+    "$env:LOCALAPPDATA\\WonRemote Agent",
+    "$env:LOCALAPPDATA\\WonRemote\\Viewer",
+    "$env:LOCALAPPDATA\\WonRemote\\Agent"
+  )
+  $roots = @($roots + $explicitInstallRoots) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+  $targets = Get-CimInstance Win32_Process | Where-Object {
+    Test-UnderPath $_.ExecutablePath $roots
+  }
+  foreach ($target in $targets) {
+    if ($target.ProcessId -ne $PID) {
+      Write-HandoffLog "Stopping WonRemote process $($target.ProcessId): $($target.ExecutablePath)"
+      Stop-Process -Id $target.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+  }
+  Start-Sleep -Milliseconds 1500
+}
+
+function Start-WonRemoteAgent {
+  $roots = @(
+    $explicitInstallRoots,
+    "$env:LOCALAPPDATA\\WonRemote Agent",
+    "$env:LOCALAPPDATA\\WonRemote Viewer",
+    "$env:LOCALAPPDATA\\WonRemote\\Agent",
+    "$env:LOCALAPPDATA\\WonRemote\\Viewer"
+  ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+  $candidates = @()
+  foreach ($root in $roots) {
+    $candidates += Join-Path $root "wonremote-viewer.exe"
+    $candidates += Join-Path $root "WonRemote Agent.exe"
+    $candidates += Join-Path $root "WonRemote Viewer.exe"
+  }
+  foreach ($candidate in $candidates) {
+    if (Test-Path -LiteralPath $candidate) {
+      Write-HandoffLog "Starting WonRemote Agent: $candidate --agent"
+      Start-Process -FilePath $candidate -ArgumentList @('--agent') -WindowStyle Hidden
+      return
+    }
+  }
+  Write-HandoffLog "No installed WonRemote Agent executable was found after installer exit."
+}
+
 try {
   $installerPath = '${escapePowerShellSingleQuoted(input.installerPath)}'
   $installerArgs = @(${quotedArgs})
+  Stop-WonRemoteProcesses
   Write-HandoffLog "Starting installer update: $installerPath $($installerArgs -join ' ')"
   $process = Start-Process -FilePath $installerPath -ArgumentList $installerArgs -WindowStyle Hidden -PassThru
   Write-HandoffLog "Installer PID: $($process.Id)"
   $process.WaitForExit()
   Write-HandoffLog "Installer exit code: $($process.ExitCode)"
+  if ($process.ExitCode -eq 0) {
+    Start-WonRemoteAgent
+  }
   exit $process.ExitCode
 } catch {
   Write-HandoffLog "Installer handoff failed: $($_.Exception.Message)"
@@ -159,6 +240,15 @@ try {
 
 function escapePowerShellSingleQuoted(value: string): string {
   return value.replace(/'/g, "''");
+}
+
+function installerInstallRootsForHandoff(args: string[]): string[] {
+  const roots = args
+    .map((arg) => arg.trim())
+    .filter((arg) => /^\/D=/i.test(arg))
+    .map((arg) => arg.slice(3).trim())
+    .filter(Boolean);
+  return [...new Set(roots)];
 }
 
 function safeInstallerName(metadata: InstallerUpdateMetadata): string {

@@ -25,6 +25,11 @@ import type {
   TransferredFile,
 } from "../domain/types";
 import { requireTurnWhenRelayOnly, resolveRtcIceServers, shouldUseRelayOnly } from "../domain/rtcTransport";
+import {
+  formatWebRtcConnectionFailure,
+  isTerminalWebRtcConnectionState,
+  resolveWebRtcConnectTimeoutMs,
+} from "../domain/webrtcStability";
 import { resolveFirebaseConfig } from "./firebaseConfig";
 import { buildAgentAuthEmail, buildAgentAuthPassword } from "./firebaseIdentity";
 import { buildFirestoreDevice, mapFirestoreDevice, mergeFirstRunDeviceDocument } from "./firestoreDevice";
@@ -286,13 +291,19 @@ export async function startAgentWebRtcTransportWithFirebase(
 ): Promise<AgentWebRtcTransport | null> {
   const services = getAgentFirebaseServices(env);
   const signalRef = doc(services.db, "sessions", sessionId, "webrtc", "signal");
-  const signalSnapshot = await waitForWebRtcOffer(signalRef);
+  const connectTimeoutMs = resolveWebRtcConnectTimeoutMs(env);
+  const signalSnapshot = await waitForWebRtcOffer(signalRef, connectTimeoutMs);
   if (!signalSnapshot) {
+    handlers.onState?.(
+      "error",
+      formatWebRtcConnectionFailure("timeout", `${connectTimeoutMs}ms without a Viewer offer`),
+    );
     return null;
   }
 
   const offer = signalSnapshot.offer;
   if (offer?.type !== "offer" || typeof offer.sdp !== "string") {
+    handlers.onState?.("error", formatWebRtcConnectionFailure("invalid-offer"));
     return null;
   }
 
@@ -307,6 +318,23 @@ export async function startAgentWebRtcTransportWithFirebase(
   const viewerCandidates = collection(services.db, "sessions", sessionId, "viewerCandidates");
   const appliedViewerCandidates = new Set<string>();
   let tileChannel: { readyState?: string; send?: (data: string) => void; close?: () => void } | null = null;
+  let channelOpened = false;
+  let closedByCaller = false;
+  let connectWatchdog: ReturnType<typeof setTimeout> | null = null;
+
+  const clearConnectWatchdog = () => {
+    if (connectWatchdog) {
+      clearTimeout(connectWatchdog);
+      connectWatchdog = null;
+    }
+  };
+
+  const reportTransportError = (reason: string, detail?: string) => {
+    if (closedByCaller) {
+      return;
+    }
+    handlers.onState?.("error", formatWebRtcConnectionFailure(reason, detail));
+  };
 
   peer.onicecandidate = (event: any) => {
     if (!event.candidate) {
@@ -315,13 +343,43 @@ export async function startAgentWebRtcTransportWithFirebase(
     void safeAddDoc(agentCandidates, {
       candidate: event.candidate.toJSON(),
       createdAt: serverTimestamp(),
+    }).catch((error) => {
+      reportTransportError(
+        "agent-candidate-write-failed",
+        error instanceof Error ? error.message : String(error),
+      );
     });
   };
 
   peer.ondatachannel = (event: any) => {
     tileChannel = event.channel;
-    bindAgentDataChannelStatus(event.channel, handlers);
+    bindAgentDataChannelStatus(event.channel, {
+      onState: (state, error) => {
+        if (state === "open") {
+          channelOpened = true;
+          clearConnectWatchdog();
+          handlers.onState?.("open");
+          return;
+        }
+        if (state === "closed") {
+          reportTransportError("closed");
+          handlers.onState?.("closed");
+          return;
+        }
+        clearConnectWatchdog();
+        handlers.onState?.("error", error);
+      },
+    });
   };
+
+  if ("onconnectionstatechange" in peer) {
+    peer.onconnectionstatechange = () => {
+      const state = String(peer.connectionState ?? "");
+      if (isTerminalWebRtcConnectionState(state)) {
+        reportTransportError(state);
+      }
+    };
+  }
 
   await peer.setRemoteDescription({ type: "offer", sdp: offer.sdp } as any);
   const answer = await peer.createAnswer();
@@ -338,26 +396,37 @@ export async function startAgentWebRtcTransportWithFirebase(
     },
     { merge: true },
   );
+  if (!channelOpened) {
+    connectWatchdog = setTimeout(() => {
+      reportTransportError("timeout", `${connectTimeoutMs}ms without an open Agent data channel`);
+    }, connectTimeoutMs);
+  }
 
   const candidatePoll = setInterval(() => {
-    void getDocs(viewerCandidates).then((snapshot) => {
-      snapshot.docs.forEach((candidateDoc) => {
-        if (appliedViewerCandidates.has(candidateDoc.id)) {
-          return;
-        }
-        appliedViewerCandidates.add(candidateDoc.id);
-        const candidate = candidateDoc.data().candidate;
-        if (candidate) {
-          void peer.addIceCandidate(candidate as any).catch((error: unknown) => {
-            console.warn(`[WebRTC] Failed to add Viewer ICE candidate: ${error instanceof Error ? error.message : error}`);
-          });
-        }
+    void getDocs(viewerCandidates)
+      .then((snapshot) => {
+        snapshot.docs.forEach((candidateDoc) => {
+          if (appliedViewerCandidates.has(candidateDoc.id)) {
+            return;
+          }
+          appliedViewerCandidates.add(candidateDoc.id);
+          const candidate = candidateDoc.data().candidate;
+          if (candidate) {
+            void peer.addIceCandidate(candidate as any).catch((error: unknown) => {
+              console.warn(`[WebRTC] Failed to add Viewer ICE candidate: ${error instanceof Error ? error.message : error}`);
+            });
+          }
+        });
+      })
+      .catch((error) => {
+        reportTransportError("viewer-candidate-poll-failed", error instanceof Error ? error.message : String(error));
       });
-    });
   }, 750);
 
   return {
     close: async () => {
+      closedByCaller = true;
+      clearConnectWatchdog();
       clearInterval(candidatePoll);
       tileChannel?.close?.();
       peer.close();

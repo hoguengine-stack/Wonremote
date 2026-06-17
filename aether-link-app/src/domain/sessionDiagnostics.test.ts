@@ -51,6 +51,8 @@ describe("session diagnostics", () => {
       "webrtc=unavailable",
     );
     expect(formatStreamDiagnostics(undefined, "webrtc-error: ice failed", 0, 0)).toContain("turn=check-required");
+    expect(formatStreamDiagnostics(undefined, "webrtc-failed", 0, 0)).toContain("webrtc=unavailable");
+    expect(formatStreamDiagnostics(undefined, "webrtc-disconnected", 0, 0)).toContain("turn=check-required");
   });
 
   it("formats agent-reported WebRTC unavailable reasons", () => {

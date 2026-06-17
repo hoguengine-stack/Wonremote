@@ -36,6 +36,11 @@ import type {
 import { sortDevices } from "../domain/agentRegistry";
 import { DEFAULT_STORE_NAME, normalizeStoreNameForDisplay } from "../domain/deviceDefaults";
 import { requireTurnWhenRelayOnly, resolveRtcIceServers, shouldUseRelayOnly } from "../domain/rtcTransport";
+import {
+  formatWebRtcConnectionFailure,
+  isTerminalWebRtcConnectionState,
+  resolveWebRtcConnectTimeoutMs,
+} from "../domain/webrtcStability";
 import { resolveFirebaseConfig } from "./firebaseConfig";
 import { buildAgentAuthEmail, buildAgentAuthPassword, buildViewerAuthCredentials } from "./firebaseIdentity";
 import { buildFirestoreDevice, mapFirestoreDevice, mergeFirstRunDeviceDocument } from "./firestoreDevice";
@@ -460,14 +465,65 @@ export async function startFirebaseViewerWebRtcTransport(
   const agentCandidates = collection(services.db, "sessions", sessionId, "agentCandidates");
   const appliedCandidateIds = new Set<string>();
   let answerApplied = false;
+  let channelOpened = false;
+  let closedByCaller = false;
+  let resourcesClosed = false;
+  let unsubscribeSignal: Unsubscribe | null = null;
+  let unsubscribeAgentCandidates: Unsubscribe | null = null;
+  let connectWatchdog: ReturnType<typeof setTimeout> | null = null;
+
+  const clearConnectWatchdog = () => {
+    if (connectWatchdog) {
+      clearTimeout(connectWatchdog);
+      connectWatchdog = null;
+    }
+  };
+
+  const closeResources = () => {
+    if (resourcesClosed) {
+      return;
+    }
+    resourcesClosed = true;
+    clearConnectWatchdog();
+    unsubscribeSignal?.();
+    unsubscribeAgentCandidates?.();
+    try {
+      channel.close();
+    } catch {
+      // best effort cleanup
+    }
+    peer.close();
+  };
+
+  const reportUnavailable = (reason: string, detail?: string) => {
+    if (resourcesClosed || closedByCaller) {
+      return;
+    }
+    const message = formatWebRtcConnectionFailure(reason, detail);
+    handlers.onState?.(`webrtc-unavailable: ${message}`);
+    handlers.onError?.(new Error(message));
+    closeResources();
+  };
 
   const channel = peer.createDataChannel("wonremote-tiles", {
     ordered: false,
     maxRetransmits: 0,
   });
-  channel.onopen = () => handlers.onState?.("webrtc-open");
-  channel.onclose = () => handlers.onState?.("webrtc-closed");
-  channel.onerror = () => handlers.onError?.(new Error("Viewer WebRTC data channel failed."));
+  channel.onopen = () => {
+    channelOpened = true;
+    clearConnectWatchdog();
+    handlers.onState?.("webrtc-open");
+  };
+  channel.onclose = () => {
+    if (closedByCaller || resourcesClosed) {
+      return;
+    }
+    handlers.onState?.("webrtc-closed");
+    if (!channelOpened) {
+      reportUnavailable("closed-before-open");
+    }
+  };
+  channel.onerror = () => reportUnavailable("data-channel-error", "Viewer WebRTC data channel failed.");
   channel.onmessage = (event) => {
     try {
       const frame = JSON.parse(String(event.data)) as { tiles?: unknown; width?: unknown; height?: unknown };
@@ -483,7 +539,16 @@ export async function startFirebaseViewerWebRtcTransport(
     }
   };
 
-  peer.onconnectionstatechange = () => handlers.onState?.(`webrtc-${peer.connectionState}`);
+  peer.onconnectionstatechange = () => {
+    if (closedByCaller || resourcesClosed) {
+      return;
+    }
+    const state = peer.connectionState;
+    handlers.onState?.(`webrtc-${state}`);
+    if (isTerminalWebRtcConnectionState(state)) {
+      reportUnavailable(state);
+    }
+  };
   peer.onicecandidate = (event) => {
     if (!event.candidate) {
       return;
@@ -494,7 +559,7 @@ export async function startFirebaseViewerWebRtcTransport(
     }).catch((error) => handlers.onError?.(error instanceof Error ? error : new Error(String(error))));
   };
 
-  const unsubscribeSignal = onSnapshot(
+  unsubscribeSignal = onSnapshot(
     signalRef,
     (snapshot) => {
       const answer = snapshot.data()?.answer as { type?: unknown; sdp?: unknown } | undefined;
@@ -509,7 +574,7 @@ export async function startFirebaseViewerWebRtcTransport(
     (error) => handlers.onError?.(error),
   );
 
-  const unsubscribeAgentCandidates = onSnapshot(
+  unsubscribeAgentCandidates = onSnapshot(
     agentCandidates,
     (snapshot) => {
       snapshot.docs.forEach((candidateDoc) => {
@@ -543,13 +608,14 @@ export async function startFirebaseViewerWebRtcTransport(
     { merge: true },
   );
   handlers.onState?.("webrtc-offer-sent");
+  connectWatchdog = setTimeout(() => {
+    reportUnavailable("timeout", `${resolveWebRtcConnectTimeoutMs(env)}ms without an open data channel`);
+  }, resolveWebRtcConnectTimeoutMs(env));
 
   return {
     close: () => {
-      unsubscribeSignal();
-      unsubscribeAgentCandidates();
-      channel.close();
-      peer.close();
+      closedByCaller = true;
+      closeResources();
     },
   };
 }

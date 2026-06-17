@@ -53,7 +53,9 @@ function appendRealtimeTransportDiagnostics(lines: string[], transportState: str
   if (
     transportState.startsWith("webrtc-unavailable") ||
     transportState.startsWith("webrtc-error") ||
-    transportState.startsWith("webrtc-closed")
+    transportState.startsWith("webrtc-closed") ||
+    transportState.startsWith("webrtc-failed") ||
+    transportState.startsWith("webrtc-disconnected")
   ) {
     lines.push("webrtc=unavailable");
     lines.push("turn=check-required");
