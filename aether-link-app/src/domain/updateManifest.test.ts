@@ -32,6 +32,34 @@ describe("production update manifest", () => {
     });
   });
 
+  it("selects the x86 Windows installer when requested", () => {
+    expect(
+      parseProductionUpdateManifest(
+        {
+          version: "0.1.8",
+          windows: {
+            x64: {
+              name: "WonRemote-Viewer-Agent-Setup.exe",
+              url: "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Viewer-Agent-Setup.exe",
+              sha256: "a".repeat(64),
+            },
+            x86: {
+              name: "WonRemote-Viewer-Agent-Setup-x86.exe",
+              url: "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Viewer-Agent-Setup-x86.exe",
+              sha256: "b".repeat(64),
+            },
+          },
+        },
+        { arch: "x86" },
+      ),
+    ).toMatchObject({
+      assetName: "WonRemote-Viewer-Agent-Setup-x86.exe",
+      checksum: "b".repeat(64),
+      downloadUrl:
+        "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Viewer-Agent-Setup-x86.exe",
+    });
+  });
+
   it("rejects manifests without an HTTPS installer URL and SHA-256 checksum", () => {
     expect(() =>
       parseProductionUpdateManifest({

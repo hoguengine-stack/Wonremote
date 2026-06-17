@@ -1,0 +1,9 @@
+{
+  "bundle": {
+    "windows": {
+      "nsis": {
+        "installerHooks": "./windows/viewer-install-hooks-x86.nsh"
+      }
+    }
+  }
+}

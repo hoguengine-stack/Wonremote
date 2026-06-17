@@ -3,7 +3,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const repoRoot = path.resolve(appRoot, "..");
 
 async function run() {
   const pkgDir = path.join(appRoot, "dist-agent-pkg");
@@ -25,7 +24,7 @@ async function run() {
   const agentMapSrc = path.join(appRoot, "dist-agent", "index.mjs.map");
   const agentMapDest = path.join(pkgDir, "agent.mjs.map");
 
-  const pocSrc = path.join(repoRoot, "aether-link-poc", "target", "release", "wonremote-poc.exe");
+  const pocSrc = path.join(appRoot, "dist-poc", "wonremote-poc.exe");
   const pocDest = path.join(binDir, "wonremote-poc.exe");
 
   console.log("Copying bundled Node runtime...");

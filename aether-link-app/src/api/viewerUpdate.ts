@@ -14,6 +14,7 @@ export async function fetchViewerUpdateMetadata(
   fetchImpl: typeof fetch = fetch,
 ): Promise<UpdateCheckResult | null> {
   const manifestUrl = readEnvString(env, "VITE_WONREMOTE_UPDATE_MANIFEST_URL") || DEFAULT_VIEWER_UPDATE_RELEASE_API_URL;
+  const arch = readViewerBuildArch(env);
   const separator = manifestUrl.includes("?") ? "&" : "?";
   const response = await fetchImpl(`${manifestUrl}${separator}nocache=${Date.now()}`);
 
@@ -22,13 +23,13 @@ export async function fetchViewerUpdateMetadata(
   }
 
   try {
-    return parseViewerUpdateManifest(await response.json());
+    return parseViewerUpdateManifest(await response.json(), arch);
   } catch {
     return null;
   }
 }
 
-function parseViewerUpdateManifest(input: unknown): UpdateCheckResult | null {
+function parseViewerUpdateManifest(input: unknown, arch: "x64" | "x86"): UpdateCheckResult | null {
   if (!isRecord(input)) {
     return null;
   }
@@ -38,7 +39,7 @@ function parseViewerUpdateManifest(input: unknown): UpdateCheckResult | null {
     return null;
   }
 
-  const asset = selectWindowsX64Asset(input);
+  const asset = selectWindowsAsset(input, arch);
   if (!asset) {
     return null;
   }
@@ -55,14 +56,19 @@ function parseViewerUpdateManifest(input: unknown): UpdateCheckResult | null {
   };
 }
 
-function selectWindowsX64Asset(input: Record<string, unknown>): ManifestAsset | null {
+function selectWindowsAsset(input: Record<string, unknown>, arch: "x64" | "x86"): ManifestAsset | null {
   if (Array.isArray(input.assets)) {
     const installerAsset = input.assets.find((asset): asset is Record<string, unknown> => {
       if (!isRecord(asset)) {
         return false;
       }
       const name = typeof asset.name === "string" ? asset.name : "";
-      return /\.exe$/i.test(name);
+      if (!/\.exe$/i.test(name)) {
+        return false;
+      }
+      return arch === "x86"
+        ? /x86|32/i.test(name)
+        : !/x86|32/i.test(name);
     });
     if (installerAsset) {
       return {
@@ -74,10 +80,10 @@ function selectWindowsX64Asset(input: Record<string, unknown>): ManifestAsset | 
   }
 
   const windows = input.windows;
-  if (isRecord(windows) && isRecord(windows.x64)) {
-    return windows.x64 as ManifestAsset;
+  if (isRecord(windows) && isRecord(windows[arch])) {
+    return windows[arch] as ManifestAsset;
   }
-  if (isRecord(input.installer)) {
+  if (arch === "x64" && isRecord(input.installer)) {
     return input.installer as ManifestAsset;
   }
   return null;
@@ -119,4 +125,9 @@ function readEnvString(env: unknown, key: string): string | undefined {
   }
   const value = env[key];
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function readViewerBuildArch(env: unknown): "x64" | "x86" {
+  const value = readEnvString(env, "VITE_WONREMOTE_BUILD_ARCH")?.toLowerCase();
+  return value === "ia32" || value === "x86" ? "x86" : "x64";
 }

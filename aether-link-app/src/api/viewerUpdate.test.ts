@@ -59,6 +59,38 @@ describe("viewer update metadata", () => {
     expect(requestedUrls[0]).toMatch(/^https:\/\/updates\.example\.com\/manifest\.json\?channel=stable&nocache=/);
   });
 
+  it("selects x86 update metadata for x86 Viewer builds", async () => {
+    const metadata = await fetchViewerUpdateMetadata(
+      {
+        VITE_WONREMOTE_BUILD_ARCH: "ia32",
+        VITE_WONREMOTE_UPDATE_MANIFEST_URL: "https://updates.example.com/manifest.json",
+      },
+      async () => {
+        return new Response(
+          JSON.stringify({
+            version: "0.1.26",
+            windows: {
+              x64: {
+                url: "http://updates.example.com/WonRemote-Viewer-Agent-Setup.exe",
+                sha256: "a".repeat(64),
+              },
+              x86: {
+                url: "https://updates.example.com/WonRemote-Viewer-Agent-Setup-x86.exe",
+                sha256: "b".repeat(64),
+              },
+            },
+          }),
+          { status: 200 },
+        );
+      },
+    );
+
+    expect(metadata).toMatchObject({
+      latestVersion: "0.1.26",
+      reloadViewer: false,
+    });
+  });
+
   it("ignores unsafe or incomplete release manifests", async () => {
     await expect(
       fetchViewerUpdateMetadata({}, async () => {

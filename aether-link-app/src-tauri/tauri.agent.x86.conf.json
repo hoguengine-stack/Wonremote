@@ -1,0 +1,28 @@
+{
+  "productName": "WonRemote Agent",
+  "identifier": "com.wonremote.agent",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "WonRemote Agent",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 1024,
+        "minHeight": 720,
+        "resizable": true,
+        "center": true,
+        "visible": false
+      }
+    ]
+  },
+  "bundle": {
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerHooks": "./windows/agent-install-hooks-x86.nsh",
+        "startMenuFolder": "WonRemote"
+      }
+    }
+  }
+}

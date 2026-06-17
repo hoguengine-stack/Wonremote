@@ -12,6 +12,7 @@ export type ProductionUpdateMetadata = {
 };
 
 export type ProductionUpdateManifestOptions = {
+  arch?: "x64" | "x86";
   publicKeyPem?: string;
 };
 
@@ -31,9 +32,10 @@ export function parseProductionUpdateManifest(
   }
 
   const latestVersion = readRequiredString(input.version, "version");
-  const asset = selectWindowsX64Asset(input);
-  const downloadUrl = readRequiredString(asset.url, "windows.x64.url");
-  const checksum = readRequiredString(asset.sha256, "windows.x64.sha256").toLowerCase();
+  const arch = options.arch ?? "x64";
+  const asset = selectWindowsAsset(input, arch);
+  const downloadUrl = readRequiredString(asset.url, `windows.${arch}.url`);
+  const checksum = readRequiredString(asset.sha256, `windows.${arch}.sha256`).toLowerCase();
 
   if (!isHttpsUrl(downloadUrl)) {
     throw new Error("Production update manifest must include a valid HTTPS installer URL.");
@@ -92,15 +94,15 @@ function verifyProductionUpdateSignature(metadata: ProductionUpdateMetadata, pub
   }
 }
 
-function selectWindowsX64Asset(input: Record<string, unknown>): ManifestAsset {
+function selectWindowsAsset(input: Record<string, unknown>, arch: "x64" | "x86"): ManifestAsset {
   const windows = input.windows;
-  if (isRecord(windows) && isRecord(windows.x64)) {
-    return windows.x64 as ManifestAsset;
+  if (isRecord(windows) && isRecord(windows[arch])) {
+    return windows[arch] as ManifestAsset;
   }
-  if (isRecord(input.installer)) {
+  if (arch === "x64" && isRecord(input.installer)) {
     return input.installer as ManifestAsset;
   }
-  throw new Error("Production update manifest must include windows.x64 installer metadata.");
+  throw new Error(`Production update manifest must include windows.${arch} installer metadata.`);
 }
 
 function readRequiredString(value: unknown, fieldName: string): string {

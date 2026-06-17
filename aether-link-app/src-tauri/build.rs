@@ -16,8 +16,28 @@ fn main() {
             println!("cargo:rustc-env=WONREMOTE_DEFAULT_APP_MODE={}", default_mode.trim());
         }
     }
+    ensure_dist_poc_resource_exists_for_cargo_metadata();
     export_public_firebase_env_from_dotenv();
     tauri_build::build()
+}
+
+fn ensure_dist_poc_resource_exists_for_cargo_metadata() {
+    let dist_poc_path = Path::new("../dist-poc/wonremote-poc.exe");
+    println!("cargo:rerun-if-changed={}", dist_poc_path.display());
+    if dist_poc_path.exists() {
+        return;
+    }
+
+    if let Some(parent) = dist_poc_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    let existing_release_poc = Path::new("../../aether-link-poc/target/release/wonremote-poc.exe");
+    if existing_release_poc.exists() {
+        let _ = fs::copy(existing_release_poc, dist_poc_path);
+    } else {
+        let _ = fs::write(dist_poc_path, []);
+    }
 }
 
 fn export_public_firebase_env_from_dotenv() {

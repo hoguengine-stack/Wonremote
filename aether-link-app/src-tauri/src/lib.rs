@@ -1,4 +1,5 @@
-use std::os::windows::io::AsRawHandle;
+use std::ffi::OsStr;
+use std::os::windows::{ffi::OsStrExt, io::AsRawHandle};
 use std::{
     env, io, mem,
     net::{SocketAddr, TcpStream, UdpSocket},
@@ -20,12 +21,13 @@ use tauri::{
 use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
 use winreg::RegKey;
 
-use windows_sys::Win32::Foundation::HANDLE;
+use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, ERROR_ALREADY_EXISTS};
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
     SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
+use windows_sys::Win32::System::Threading::CreateMutexW;
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const STARTUP_REGISTRY_PATH: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
@@ -47,6 +49,21 @@ const PUBLIC_FIREBASE_PROJECT_ID: &str = "wonremote-a7fd3";
 const PUBLIC_FIREBASE_APP_ID: &str = "1:52940136204:web:b4b4ff3e57c215e5dc3329";
 const PUBLIC_FIREBASE_STORAGE_BUCKET: &str = "wonremote-a7fd3.appspot.com";
 const PUBLIC_FIREBASE_MESSAGING_SENDER_ID: &str = "52940136204";
+
+struct SingleInstanceGuard {
+    handle: HANDLE,
+}
+
+unsafe impl Send for SingleInstanceGuard {}
+unsafe impl Sync for SingleInstanceGuard {}
+
+impl Drop for SingleInstanceGuard {
+    fn drop(&mut self) {
+        unsafe {
+            CloseHandle(self.handle);
+        }
+    }
+}
 
 pub struct Job {
     handle: HANDLE,
@@ -99,7 +116,40 @@ impl Job {
 impl Drop for Job {
     fn drop(&mut self) {
         unsafe {
-            windows_sys::Win32::Foundation::CloseHandle(self.handle);
+            CloseHandle(self.handle);
+        }
+    }
+}
+
+fn single_instance_mutex_name(is_agent: bool) -> &'static str {
+    if is_agent {
+        r"Local\WonRemote.Agent.SingleInstance"
+    } else {
+        r"Local\WonRemote.Viewer.SingleInstance"
+    }
+}
+
+fn to_wide_null(value: &str) -> Vec<u16> {
+    OsStr::new(value).encode_wide().chain(Some(0)).collect()
+}
+
+fn try_acquire_single_instance(is_agent: bool) -> Result<Option<SingleInstanceGuard>, io::Error> {
+    try_acquire_single_instance_named(single_instance_mutex_name(is_agent))
+}
+
+fn try_acquire_single_instance_named(name: &str) -> Result<Option<SingleInstanceGuard>, io::Error> {
+    let name_w = to_wide_null(name);
+    unsafe {
+        let handle = CreateMutexW(ptr::null_mut(), 0, name_w.as_ptr());
+        if handle.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            CloseHandle(handle);
+            Ok(None)
+        } else {
+            Ok(Some(SingleInstanceGuard { handle }))
         }
     }
 }
@@ -802,6 +852,14 @@ fn is_startup_registered(is_agent: bool) -> bool {
 
 pub fn run() {
     let is_agent = launched_as_agent();
+    let _single_instance_guard = match try_acquire_single_instance(is_agent) {
+        Ok(Some(guard)) => guard,
+        Ok(None) => return,
+        Err(error) => {
+            eprintln!("Failed to acquire WonRemote single-instance guard: {error}");
+            return;
+        }
+    };
 
     tauri::Builder::default()
         .manage(AgentState::new())
@@ -1118,6 +1176,37 @@ mod registry_tests {
         assert!(mode_value_requests_agent(Some("AGENT")));
         assert!(!mode_value_requests_agent(Some("viewer")));
         assert!(!mode_value_requests_agent(None));
+    }
+
+    #[test]
+    fn test_single_instance_mutex_names_are_mode_scoped() {
+        assert_ne!(
+            single_instance_mutex_name(false),
+            single_instance_mutex_name(true)
+        );
+        assert!(single_instance_mutex_name(false).contains("Viewer"));
+        assert!(single_instance_mutex_name(true).contains("Agent"));
+    }
+
+    #[test]
+    fn test_single_instance_guard_rejects_duplicate_same_mode() {
+        let mutex_name = format!(
+            "Local\\WonRemote.Test.SingleInstance.{}",
+            std::process::id()
+        );
+        let first = try_acquire_single_instance_named(&mutex_name)
+            .expect("first mutex acquisition should not error");
+        assert!(first.is_some());
+
+        let second = try_acquire_single_instance_named(&mutex_name)
+            .expect("second mutex acquisition should not error");
+        assert!(second.is_none());
+
+        drop(first);
+
+        let third = try_acquire_single_instance_named(&mutex_name)
+            .expect("mutex should be acquirable after guard drop");
+        assert!(third.is_some());
     }
 
     #[test]
