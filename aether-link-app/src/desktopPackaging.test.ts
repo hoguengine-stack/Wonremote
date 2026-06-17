@@ -205,6 +205,15 @@ describe("desktop packaging scaffold", () => {
     expect(agentSource).toContain("Control diagnostics unavailable");
   });
 
+  it("reports the running Agent binary version instead of stale local config versions", () => {
+    const agentSource = readFileSync(path.join(projectRoot, "src", "agent", "index.ts"), "utf8");
+
+    expect(agentSource).toContain("const currentVersion = WONREMOTE_APP_VERSION");
+    expect(agentSource).toContain("version: WONREMOTE_APP_VERSION");
+    expect(agentSource).not.toContain("version: config.version,");
+    expect(agentSource).not.toContain("const currentVersion = config.version ?? WONREMOTE_APP_VERSION");
+  });
+
   it("hashes Firebase Storage uploads before creating file metadata", () => {
     const appSource = readFileSync(path.join(projectRoot, "src", "App.tsx"), "utf8");
 

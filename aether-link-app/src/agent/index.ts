@@ -738,7 +738,7 @@ let isUpdating = false;
 async function checkUpdate(config: AgentLocalConfig) {
   if (isUpdating) return;
   isUpdating = true;
-  const currentVersion = config.version ?? WONREMOTE_APP_VERSION;
+  const currentVersion = WONREMOTE_APP_VERSION;
   try {
     const data = await loadUpdateCheckData();
     if (!data) {
@@ -1111,7 +1111,7 @@ async function sendHeartbeat(config: AgentLocalConfig): Promise<void> {
     apiBaseUrl: API_BASE_URL,
     deviceId: config.registeredDeviceId,
     installId: config.installId,
-    version: config.version,
+    version: WONREMOTE_APP_VERSION,
     displays,
     activeDisplayIndex: currentOutputIndex,
     macAddresses,

@@ -1055,8 +1055,9 @@ pub fn run() {
     append_runtime_log(
         "startup",
         &format!(
-            "run start mode={} arch={} exe={}",
+            "run start mode={} version={} arch={} exe={}",
             if is_agent { "agent" } else { "viewer" },
+            env!("CARGO_PKG_VERSION"),
             env::consts::ARCH,
             env::current_exe()
                 .map(|path| path.display().to_string())
