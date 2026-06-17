@@ -193,6 +193,18 @@ describe("desktop packaging scaffold", () => {
     expect(agentSource).not.toContain("file.downloadUrl");
   });
 
+  it("keeps Agent diagnostics failures detailed but throttled for low-spec x86 hosts", () => {
+    const agentSource = readFileSync(path.join(projectRoot, "src", "agent", "index.ts"), "utf8");
+
+    expect(agentSource).toContain("formatExecFileFailure");
+    expect(agentSource).toContain("warnDiagnosticFailureOnce");
+    expect(agentSource).toContain("diagnosticFailureCache");
+    expect(agentSource).toContain("stdout=");
+    expect(agentSource).toContain("stderr=");
+    expect(agentSource).toContain("Display inventory unavailable");
+    expect(agentSource).toContain("Control diagnostics unavailable");
+  });
+
   it("hashes Firebase Storage uploads before creating file metadata", () => {
     const appSource = readFileSync(path.join(projectRoot, "src", "App.tsx"), "utf8");
 

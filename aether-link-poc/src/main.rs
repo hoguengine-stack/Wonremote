@@ -8,7 +8,10 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 use turbojpeg::{Compressor, Decompressor, Image, PixelFormat, Subsamp};
-use windows::Win32::Foundation::{CloseHandle, HANDLE};
+use windows::Win32::Foundation::{CloseHandle, BOOL, HANDLE, LPARAM, RECT};
+use windows::Win32::Graphics::Gdi::{
+    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
+};
 use windows::Win32::Security::{
     GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TokenElevation,
     TokenIntegrityLevel, TOKEN_ELEVATION, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
@@ -284,7 +287,8 @@ mod tests {
 
     #[test]
     fn parse_config_accepts_list_displays_mode() {
-        let config = parse_benchmark_config(["aether-link-poc", "--mode", "list-displays"]).unwrap();
+        let config =
+            parse_benchmark_config(["aether-link-poc", "--mode", "list-displays"]).unwrap();
 
         assert!(matches!(config.run_mode, RunMode::ListDisplays));
     }
@@ -294,6 +298,33 @@ mod tests {
         let config = parse_benchmark_config(["wonremote-poc", "--mode", "diagnostics"]).unwrap();
 
         assert!(matches!(config.run_mode, RunMode::Diagnostics));
+    }
+
+    #[test]
+    fn gdi_fallback_output_info_preserves_geometry_and_primary_flag() {
+        let rect = windows::Win32::Foundation::RECT {
+            left: -1024,
+            top: 0,
+            right: 0,
+            bottom: 768,
+        };
+
+        let display = display_output_from_rect(
+            1,
+            "\\\\.\\DISPLAY2".to_string(),
+            "GDI monitor fallback".to_string(),
+            rect,
+            true,
+        );
+
+        assert_eq!(display.index, 1);
+        assert_eq!(display.name, "\\\\.\\DISPLAY2");
+        assert_eq!(display.adapter_name, "GDI monitor fallback");
+        assert_eq!(display.x, -1024);
+        assert_eq!(display.y, 0);
+        assert_eq!(display.width, 1024);
+        assert_eq!(display.height, 768);
+        assert!(display.primary);
     }
 
     #[test]
@@ -483,15 +514,27 @@ mod tests {
     #[test]
     fn mouse_button_from_token_rejects_unknown_buttons() {
         assert_eq!(mouse_button_from_token("left").unwrap(), MouseButton::Left);
-        assert_eq!(mouse_button_from_token("middle").unwrap(), MouseButton::Middle);
-        assert_eq!(mouse_button_from_token("right").unwrap(), MouseButton::Right);
+        assert_eq!(
+            mouse_button_from_token("middle").unwrap(),
+            MouseButton::Middle
+        );
+        assert_eq!(
+            mouse_button_from_token("right").unwrap(),
+            MouseButton::Right
+        );
         assert!(mouse_button_from_token("side").is_err());
     }
 
     #[test]
     fn system_command_args_are_whitelisted() {
-        assert_eq!(system_command_args("taskmgr").unwrap(), vec!["/c", "start", "taskmgr"]);
-        assert_eq!(system_command_args("lock").unwrap(), vec!["/c", "rundll32.exe", "user32.dll,LockWorkStation"]);
+        assert_eq!(
+            system_command_args("taskmgr").unwrap(),
+            vec!["/c", "start", "taskmgr"]
+        );
+        assert_eq!(
+            system_command_args("lock").unwrap(),
+            vec!["/c", "rundll32.exe", "user32.dll,LockWorkStation"]
+        );
         assert!(system_command_args("calc && format").is_err());
     }
 }
@@ -622,6 +665,96 @@ fn list_dxgi_outputs() -> std::result::Result<Vec<DxgiOutputInfo>, String> {
         }
 
         Ok(outputs)
+    }
+}
+
+fn list_display_outputs() -> std::result::Result<Vec<DxgiOutputInfo>, String> {
+    match list_dxgi_outputs() {
+        Ok(outputs) if !outputs.is_empty() => Ok(outputs),
+        Ok(_) => list_gdi_outputs().map_err(|gdi_error| {
+            format!(
+                "DXGI returned no outputs; GDI fallback failed: {}",
+                gdi_error
+            )
+        }),
+        Err(dxgi_error) => list_gdi_outputs().map_err(|gdi_error| {
+            format!(
+                "DXGI display enumeration failed: {}; GDI fallback failed: {}",
+                dxgi_error, gdi_error
+            )
+        }),
+    }
+}
+
+fn list_gdi_outputs() -> std::result::Result<Vec<DxgiOutputInfo>, String> {
+    let mut outputs: Vec<DxgiOutputInfo> = Vec::new();
+    let ok = unsafe {
+        EnumDisplayMonitors(
+            HDC(0),
+            None,
+            Some(enum_display_monitor_proc),
+            LPARAM((&mut outputs as *mut Vec<DxgiOutputInfo>) as isize),
+        )
+    };
+
+    if !ok.as_bool() {
+        return Err("EnumDisplayMonitors failed".to_string());
+    }
+    if outputs.is_empty() {
+        return Err("EnumDisplayMonitors returned no monitors".to_string());
+    }
+    Ok(outputs)
+}
+
+unsafe extern "system" fn enum_display_monitor_proc(
+    monitor: HMONITOR,
+    _hdc: HDC,
+    _rect: *mut RECT,
+    lparam: LPARAM,
+) -> BOOL {
+    let outputs = &mut *(lparam.0 as *mut Vec<DxgiOutputInfo>);
+    let mut monitor_info = MONITORINFOEXW::default();
+    monitor_info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+
+    let ok = GetMonitorInfoW(
+        monitor,
+        &mut monitor_info as *mut MONITORINFOEXW as *mut MONITORINFO,
+    );
+    if ok.as_bool() {
+        let device_name = utf16_buffer_to_string(&monitor_info.szDevice);
+        let primary = (monitor_info.monitorInfo.dwFlags & 0x1) != 0;
+        outputs.push(display_output_from_rect(
+            outputs.len() as u32,
+            if device_name.is_empty() {
+                format!("GDI Display {}", outputs.len() + 1)
+            } else {
+                device_name
+            },
+            "GDI monitor fallback".to_string(),
+            monitor_info.monitorInfo.rcMonitor,
+            primary,
+        ));
+    }
+
+    BOOL(1)
+}
+
+fn display_output_from_rect(
+    index: u32,
+    name: String,
+    adapter_name: String,
+    rect: RECT,
+    primary: bool,
+) -> DxgiOutputInfo {
+    DxgiOutputInfo {
+        index,
+        name,
+        adapter_name,
+        x: rect.left,
+        y: rect.top,
+        width: (rect.right - rect.left).max(0) as u32,
+        height: (rect.bottom - rect.top).max(0) as u32,
+        primary,
     }
 }
 
@@ -1098,98 +1231,113 @@ fn inject_input(action: &str) -> std::result::Result<(), String> {
     }
 
     match parts[0] {
-            "click" | "move" => {
-                if parts.len() < 3 {
-                    return Err("Usage: click/move <dx> <dy>".to_string());
-                }
-                let dx = parts[1].parse::<i32>().map_err(|_| "Invalid dx")?;
-                let dy = parts[2].parse::<i32>().map_err(|_| "Invalid dy")?;
+        "click" | "move" => {
+            if parts.len() < 3 {
+                return Err("Usage: click/move <dx> <dy>".to_string());
+            }
+            let dx = parts[1].parse::<i32>().map_err(|_| "Invalid dx")?;
+            let dy = parts[2].parse::<i32>().map_err(|_| "Invalid dy")?;
 
-                let is_click = parts[0] == "click";
-                if is_click {
-                    let inputs = [
-                        mouse_input(dx, dy, 0, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTDOWN),
-                        mouse_input(dx, dy, 0, MOUSEEVENTF_LEFTUP),
-                    ];
-                    send_inputs(&inputs)?;
-                } else {
-                    let inputs = [mouse_input(dx, dy, 0, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE)];
-                    send_inputs(&inputs)?;
-                }
-            }
-            "mouse-down" | "mouse-up" => {
-                if parts.len() < 4 {
-                    return Err("Usage: mouse-down/mouse-up <dx> <dy> <left|middle|right>".to_string());
-                }
-                let dx = parts[1].parse::<i32>().map_err(|_| "Invalid dx")?;
-                let dy = parts[2].parse::<i32>().map_err(|_| "Invalid dy")?;
-                let button = mouse_button_from_token(parts[3])?;
-                let flag = mouse_button_flag(button, parts[0] == "mouse-down");
-                let inputs = [mouse_input(dx, dy, 0, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | flag)];
-                send_inputs(&inputs)?;
-            }
-            "mouse-wheel" => {
-                if parts.len() < 4 {
-                    return Err("Usage: mouse-wheel <dx> <dy> <delta>".to_string());
-                }
-                let dx = parts[1].parse::<i32>().map_err(|_| "Invalid dx")?;
-                let dy = parts[2].parse::<i32>().map_err(|_| "Invalid dy")?;
-                let delta = parts[3].parse::<i32>().map_err(|_| "Invalid wheel delta")?;
+            let is_click = parts[0] == "click";
+            if is_click {
                 let inputs = [
-                    mouse_input(dx, dy, 0, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE),
-                    mouse_input(0, 0, delta, MOUSEEVENTF_WHEEL),
+                    mouse_input(
+                        dx,
+                        dy,
+                        0,
+                        MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTDOWN,
+                    ),
+                    mouse_input(dx, dy, 0, MOUSEEVENTF_LEFTUP),
                 ];
                 send_inputs(&inputs)?;
-            }
-            "keypress" => {
-                if parts.len() < 2 {
-                    return Err("Usage: keypress <key_char_or_vk>".to_string());
-                }
-                let vk = virtual_key_from_token(parts[1])?;
-                let inputs = [keyboard_input(vk, false), keyboard_input(vk, true)];
+            } else {
+                let inputs = [mouse_input(
+                    dx,
+                    dy,
+                    0,
+                    MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE,
+                )];
                 send_inputs(&inputs)?;
             }
-            "key-down" | "key-up" => {
-                if parts.len() < 2 {
-                    return Err("Usage: key-down/key-up <key>".to_string());
-                }
-                let vk = virtual_key_from_token(parts[1])?;
-                let inputs = [keyboard_input(vk, parts[0] == "key-up")];
-                send_inputs(&inputs)?;
+        }
+        "mouse-down" | "mouse-up" => {
+            if parts.len() < 4 {
+                return Err("Usage: mouse-down/mouse-up <dx> <dy> <left|middle|right>".to_string());
             }
-            "paste" => {
-                let ctrl = virtual_key_from_token("Ctrl")?;
-                let v = virtual_key_from_token("V")?;
-                let inputs = [
-                    keyboard_input(ctrl, false),
-                    keyboard_input(v, false),
-                    keyboard_input(v, true),
-                    keyboard_input(ctrl, true),
-                ];
-                send_inputs(&inputs)?;
+            let dx = parts[1].parse::<i32>().map_err(|_| "Invalid dx")?;
+            let dy = parts[2].parse::<i32>().map_err(|_| "Invalid dy")?;
+            let button = mouse_button_from_token(parts[3])?;
+            let flag = mouse_button_flag(button, parts[0] == "mouse-down");
+            let inputs = [mouse_input(
+                dx,
+                dy,
+                0,
+                MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | flag,
+            )];
+            send_inputs(&inputs)?;
+        }
+        "mouse-wheel" => {
+            if parts.len() < 4 {
+                return Err("Usage: mouse-wheel <dx> <dy> <delta>".to_string());
             }
-            "key-release-all" | "key_release_all" => {
-                // The persistent Agent process expands this command using its pressed-key set.
-                // Keep direct CLI execution as a safe no-op for diagnostics.
+            let dx = parts[1].parse::<i32>().map_err(|_| "Invalid dx")?;
+            let dy = parts[2].parse::<i32>().map_err(|_| "Invalid dy")?;
+            let delta = parts[3].parse::<i32>().map_err(|_| "Invalid wheel delta")?;
+            let inputs = [
+                mouse_input(dx, dy, 0, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE),
+                mouse_input(0, 0, delta, MOUSEEVENTF_WHEEL),
+            ];
+            send_inputs(&inputs)?;
+        }
+        "keypress" => {
+            if parts.len() < 2 {
+                return Err("Usage: keypress <key_char_or_vk>".to_string());
             }
-            "system" => {
-                if parts.len() < 2 {
-                    return Err("Usage: system <command>".to_string());
-                }
-                let args = system_command_args(parts[1])?;
-                Command::new("cmd")
-                    .args(args)
-                    .spawn()
-                    .map_err(|error| format!("system command failed: {}", error))?;
+            let vk = virtual_key_from_token(parts[1])?;
+            let inputs = [keyboard_input(vk, false), keyboard_input(vk, true)];
+            send_inputs(&inputs)?;
+        }
+        "key-down" | "key-up" => {
+            if parts.len() < 2 {
+                return Err("Usage: key-down/key-up <key>".to_string());
             }
-            "ping-color-change" => {
-                let inputs = [
-                    keyboard_input(VIRTUAL_KEY(0x10), false),
-                    keyboard_input(VIRTUAL_KEY(0x10), true),
-                ];
-                send_inputs(&inputs)?;
+            let vk = virtual_key_from_token(parts[1])?;
+            let inputs = [keyboard_input(vk, parts[0] == "key-up")];
+            send_inputs(&inputs)?;
+        }
+        "paste" => {
+            let ctrl = virtual_key_from_token("Ctrl")?;
+            let v = virtual_key_from_token("V")?;
+            let inputs = [
+                keyboard_input(ctrl, false),
+                keyboard_input(v, false),
+                keyboard_input(v, true),
+                keyboard_input(ctrl, true),
+            ];
+            send_inputs(&inputs)?;
+        }
+        "key-release-all" | "key_release_all" => {
+            // The persistent Agent process expands this command using its pressed-key set.
+            // Keep direct CLI execution as a safe no-op for diagnostics.
+        }
+        "system" => {
+            if parts.len() < 2 {
+                return Err("Usage: system <command>".to_string());
             }
-            _ => return Err(format!("Unknown action: {}", parts[0])),
+            let args = system_command_args(parts[1])?;
+            Command::new("cmd")
+                .args(args)
+                .spawn()
+                .map_err(|error| format!("system command failed: {}", error))?;
+        }
+        "ping-color-change" => {
+            let inputs = [
+                keyboard_input(VIRTUAL_KEY(0x10), false),
+                keyboard_input(VIRTUAL_KEY(0x10), true),
+            ];
+            send_inputs(&inputs)?;
+        }
+        _ => return Err(format!("Unknown action: {}", parts[0])),
     }
     Ok(())
 }
@@ -1251,7 +1399,10 @@ fn mouse_button_from_token(token: &str) -> std::result::Result<MouseButton, Stri
     }
 }
 
-fn mouse_button_flag(button: MouseButton, down: bool) -> windows::Win32::UI::Input::KeyboardAndMouse::MOUSE_EVENT_FLAGS {
+fn mouse_button_flag(
+    button: MouseButton,
+    down: bool,
+) -> windows::Win32::UI::Input::KeyboardAndMouse::MOUSE_EVENT_FLAGS {
     match (button, down) {
         (MouseButton::Left, true) => MOUSEEVENTF_LEFTDOWN,
         (MouseButton::Left, false) => MOUSEEVENTF_LEFTUP,
@@ -1280,7 +1431,11 @@ fn system_command_args(command: &str) -> std::result::Result<Vec<&'static str>, 
 fn keyboard_input(vk: VIRTUAL_KEY, key_up: bool) -> INPUT {
     let scan = unsafe { MapVirtualKeyW(vk.0 as u32, MAPVK_VK_TO_VSC_EX) };
     let use_scancode = scan != 0;
-    let mut flags = if key_up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) };
+    let mut flags = if key_up {
+        KEYEVENTF_KEYUP
+    } else {
+        KEYBD_EVENT_FLAGS(0)
+    };
     if use_scancode {
         flags |= KEYEVENTF_SCANCODE;
         if scan & 0xE000 != 0 || is_extended_virtual_key(vk) {
@@ -1293,7 +1448,11 @@ fn keyboard_input(vk: VIRTUAL_KEY, key_up: bool) -> INPUT {
         Anonymous: INPUT_0 {
             ki: KEYBDINPUT {
                 wVk: if use_scancode { VIRTUAL_KEY(0) } else { vk },
-                wScan: if use_scancode { (scan & 0xFF) as u16 } else { 0 },
+                wScan: if use_scancode {
+                    (scan & 0xFF) as u16
+                } else {
+                    0
+                },
                 dwFlags: flags,
                 time: 0,
                 dwExtraInfo: 0,
@@ -1331,12 +1490,7 @@ fn mouse_input(
 }
 
 fn send_inputs(inputs: &[INPUT]) -> std::result::Result<(), String> {
-    let sent = unsafe {
-        SendInput(
-            inputs,
-            std::mem::size_of::<INPUT>() as i32,
-        )
-    };
+    let sent = unsafe { SendInput(inputs, std::mem::size_of::<INPUT>() as i32) };
     if sent != inputs.len() as u32 {
         let diagnostics = collect_input_diagnostics();
         return Err(format_send_input_failure(sent, inputs.len(), &diagnostics));
@@ -1349,10 +1503,7 @@ fn format_send_input_failure(sent: u32, expected: usize, diagnostics: &InputDiag
         .elevated
         .map(|value| value.to_string())
         .unwrap_or_else(|| "unknown".to_string());
-    let integrity = diagnostics
-        .integrity_level
-        .as_deref()
-        .unwrap_or("unknown");
+    let integrity = diagnostics.integrity_level.as_deref().unwrap_or("unknown");
 
     format!(
         "SendInput failed. Sent {} of {} events. win32_error={} ({}) elevated={} integrity={}. \
@@ -1505,7 +1656,10 @@ async fn run_streaming_loop(config: BenchmarkConfig) {
 
     let (width, height) = capturer.get_dimensions();
     let (adapter_name, output_name) = capturer.get_selection_names();
-    eprintln!("Capture backend: {} / {} ({}x{})", adapter_name, output_name, width, height);
+    eprintln!(
+        "Capture backend: {} / {} ({}x{})",
+        adapter_name, output_name, width, height
+    );
     let min_loop_sleep_ms = capturer.recommended_min_loop_sleep_ms();
     if min_loop_sleep_ms > 0 && config.loop_sleep_ms < min_loop_sleep_ms {
         eprintln!(
@@ -1720,7 +1874,7 @@ async fn main() {
             return;
         }
         RunMode::ListDisplays => {
-            match list_dxgi_outputs() {
+            match list_display_outputs() {
                 Ok(outputs) => {
                     println!(
                         "{}",

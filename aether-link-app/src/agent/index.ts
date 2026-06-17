@@ -125,6 +125,9 @@ let firestoreTileFallbackFrameCount = 0;
 let firestoreTileFallbackLimitLogged = false;
 const pressedKeys = new Set<string>();
 let displayCache: { loadedAtMs: number; displays: DeviceDisplayInfo[] } | null = null;
+let controlDiagnosticsCache: { loadedAtMs: number; diagnostics: AgentControlDiagnostics | undefined } | null = null;
+const DIAGNOSTIC_FAILURE_RETRY_MS = 5 * 60_000;
+const diagnosticFailureCache = new Map<string, { loggedAtMs: number; message: string }>();
 
 let isApprovalPending = false;
 let isSessionActive = false;
@@ -1254,8 +1257,10 @@ async function discoverDisplays(): Promise<DeviceDisplayInfo[] | undefined> {
     displayCache = { loadedAtMs: now, displays };
     return displays;
   } catch (error) {
-    console.warn(`[Agent] Display inventory unavailable: ${error instanceof Error ? error.message : error}`);
-    return displayCache?.displays;
+    warnDiagnosticFailureOnce("display-inventory", "Display inventory unavailable", error);
+    const displays = displayCache?.displays ?? [];
+    displayCache = { loadedAtMs: now, displays };
+    return displays.length > 0 ? displays : undefined;
   }
 }
 
@@ -1273,6 +1278,11 @@ function discoverMacAddresses(): string[] | undefined {
 }
 
 async function discoverControlDiagnostics(): Promise<AgentControlDiagnostics | undefined> {
+  const now = Date.now();
+  if (controlDiagnosticsCache && now - controlDiagnosticsCache.loadedAtMs < 60_000) {
+    return controlDiagnosticsCache.diagnostics;
+  }
+
   try {
     const { stdout } = await execFileHidden(POC_PATH, ["--mode", "diagnostics"]);
     const parsed = JSON.parse(stdout) as {
@@ -1281,16 +1291,65 @@ async function discoverControlDiagnostics(): Promise<AgentControlDiagnostics | u
       win32_error_code?: unknown;
       win32_error_message?: unknown;
     };
-    return {
+    const diagnostics = {
       elevated: typeof parsed.elevated === "boolean" ? parsed.elevated : undefined,
       integrityLevel: typeof parsed.integrity_level === "string" ? parsed.integrity_level : undefined,
       win32ErrorCode: typeof parsed.win32_error_code === "number" ? parsed.win32_error_code : undefined,
       win32ErrorMessage: typeof parsed.win32_error_message === "string" ? parsed.win32_error_message : undefined,
     };
+    controlDiagnosticsCache = { loadedAtMs: now, diagnostics };
+    return diagnostics;
   } catch (error) {
-    console.warn(`[Agent] Control diagnostics unavailable: ${error instanceof Error ? error.message : error}`);
-    return undefined;
+    warnDiagnosticFailureOnce("control-diagnostics", "Control diagnostics unavailable", error);
+    controlDiagnosticsCache = {
+      loadedAtMs: now,
+      diagnostics: controlDiagnosticsCache?.diagnostics,
+    };
+    return controlDiagnosticsCache.diagnostics;
   }
+}
+
+function warnDiagnosticFailureOnce(key: string, label: string, error: unknown): void {
+  const now = Date.now();
+  const message = formatExecFileFailure(error);
+  const previous = diagnosticFailureCache.get(key);
+  if (previous && previous.message === message && now - previous.loggedAtMs < DIAGNOSTIC_FAILURE_RETRY_MS) {
+    return;
+  }
+
+  diagnosticFailureCache.set(key, { loggedAtMs: now, message });
+  console.warn(`[Agent] ${label}: ${message}`);
+}
+
+function formatExecFileFailure(error: unknown): string {
+  const details = error as {
+    code?: unknown;
+    signal?: unknown;
+    stdout?: unknown;
+    stderr?: unknown;
+    message?: unknown;
+  };
+  const parts = [error instanceof Error ? error.message : String(error)];
+  if (details.code !== undefined) {
+    parts.push(`code=${String(details.code)}`);
+  }
+  if (details.signal !== undefined) {
+    parts.push(`signal=${String(details.signal)}`);
+  }
+
+  const stdout = String(details.stdout ?? "").trim();
+  const stderr = String(details.stderr ?? "").trim();
+  if (stdout) {
+    parts.push(`stdout=${truncateDiagnosticText(stdout)}`);
+  }
+  if (stderr) {
+    parts.push(`stderr=${truncateDiagnosticText(stderr)}`);
+  }
+  return parts.join("; ");
+}
+
+function truncateDiagnosticText(value: string): string {
+  return value.replace(/\s+/g, " ").slice(0, 500);
 }
 
 function buildStreamDiagnostics(): AgentStreamDiagnostics {
