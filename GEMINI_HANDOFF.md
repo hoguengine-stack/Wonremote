@@ -1,4 +1,9 @@
+> CURRENT AUTHORITATIVE WORKER RULES: `C:\Users\qpalz\Documents\remote\WORKER_OPERATING_RULES.md`.
+> The worker is not limited to short verification tasks. Split small, medium, and large work by file/module ownership and keep the worker non-idle.
+
 # Gemini Handoff Commands
+
+> 작업 시작 전 필수: 먼저 `C:\Users\qpalz\Documents\remote\WORKER_OPERATING_RULES.md`를 읽고 따른다. 보조작업자는 짧은 검증 전용이 아니며, 작은 작업부터 큰 파일/모듈 단위 작업까지 소유 범위를 나눠 맡긴다.
 
 이 파일은 Gemini에게 맡길 작업을 줄 때 그대로 붙여 넣기 위한 명령서다. Gemini는 구현을 독단으로 크게 바꾸지 말고, 검증 자료 정리와 누락 체크에 집중한다.
 
