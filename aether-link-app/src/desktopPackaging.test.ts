@@ -130,6 +130,7 @@ describe("desktop packaging scaffold", () => {
     expect(agentHookX86).toContain('Exec \'"$INSTDIR\\wonremote-viewer.exe" --agent\'');
     expect(viewerHook).not.toContain("NSIS_HOOK_POSTINSTALL");
     expect(tauriLib).toContain("duplicate instance ignored; existing instance is already running");
+    expect(tauriLib).toContain("std::process::exit(0);");
     expect(tauriLib).not.toContain("single-instance guard already held; exiting");
   });
 

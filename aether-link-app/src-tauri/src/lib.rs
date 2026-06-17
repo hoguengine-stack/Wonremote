@@ -130,6 +130,10 @@ fn single_instance_mutex_name(is_agent: bool) -> &'static str {
     }
 }
 
+fn agent_tray_interactions_enabled() -> bool {
+    !cfg!(target_arch = "x86")
+}
+
 fn to_wide_null(value: &str) -> Vec<u16> {
     OsStr::new(value).encode_wide().chain(Some(0)).collect()
 }
@@ -1071,7 +1075,7 @@ pub fn run() {
                 "startup",
                 "duplicate instance ignored; existing instance is already running",
             );
-            return;
+            std::process::exit(0);
         }
         Err(error) => {
             append_runtime_log(
@@ -1130,120 +1134,130 @@ pub fn run() {
                     show_main_window_with_log(app.handle(), "agent-registration-required");
                 }
 
-                // System Tray Menu Setup for Agent
-                let status_i = MenuItemBuilder::new("Status: Connecting")
-                    .id("status")
-                    .enabled(false)
-                    .build(app)?;
-                {
-                    let mut item_guard = agent_state.status_menu_item.lock().unwrap();
-                    *item_guard = Some(status_i.clone());
-                }
-                let open_i = MenuItemBuilder::new("Open Status").id("open").build(app)?;
-                let restart_i = MenuItemBuilder::new("Restart Agent")
-                    .id("restart")
-                    .build(app)?;
-                let startup_i = CheckMenuItemBuilder::new("Run at Startup")
-                    .id("toggle_startup")
-                    .checked(is_startup_registered(true))
-                    .build(app)?;
-                let quit_i = MenuItemBuilder::new("Exit").id("quit").build(app)?;
-
-                let menu = MenuBuilder::new(app)
-                    .items(&[&status_i, &open_i, &restart_i, &startup_i, &quit_i])
-                    .build()?;
-
-                let startup_i_clone = startup_i.clone();
-
                 if let Some(icon) = app.default_window_icon().cloned() {
-                    let _tray = TrayIconBuilder::with_id("agent_tray")
-                        .icon(icon)
-                        .menu(&menu)
-                        .on_menu_event(move |app, event| match event.id().as_ref() {
-                            "quit" => {
-                                app.exit(0);
-                            }
-                            "open" => {
-                                run_logged_action("tray-menu", "agent-open", || {
-                                    show_main_window_with_log(app, "agent-menu-open");
-                                });
-                            }
-                            "restart" => {
-                                append_runtime_log("tray-menu", "agent-restart requested");
-                                let agent_state = app.state::<AgentState>();
-                                let job = app.state::<Job>();
-                                let resource_dir = if cfg!(debug_assertions) {
-                                    app_root_from_manifest()
-                                } else {
-                                    app.path().resource_dir().unwrap()
-                                };
+                    if agent_tray_interactions_enabled() {
+                        // System Tray Menu Setup for Agent
+                        let status_i = MenuItemBuilder::new("Status: Connecting")
+                            .id("status")
+                            .enabled(false)
+                            .build(app)?;
+                        {
+                            let mut item_guard = agent_state.status_menu_item.lock().unwrap();
+                            *item_guard = Some(status_i.clone());
+                        }
+                        let open_i = MenuItemBuilder::new("Open Status").id("open").build(app)?;
+                        let restart_i = MenuItemBuilder::new("Restart Agent")
+                            .id("restart")
+                            .build(app)?;
+                        let startup_i = CheckMenuItemBuilder::new("Run at Startup")
+                            .id("toggle_startup")
+                            .checked(is_startup_registered(true))
+                            .build(app)?;
+                        let quit_i = MenuItemBuilder::new("Exit").id("quit").build(app)?;
 
-                                if let Err(e) = start_local_api_server_for_mode(&job, &resource_dir)
-                                {
-                                    append_runtime_log(
-                                        "tray-menu",
-                                        &format!("agent-restart local api failed: {e}"),
-                                    );
-                                    eprintln!("Failed to ensure local API server: {}", e);
-                                    return;
+                        let menu = MenuBuilder::new(app)
+                            .items(&[&status_i, &open_i, &restart_i, &startup_i, &quit_i])
+                            .build()?;
+
+                        let startup_i_clone = startup_i.clone();
+
+                        let _tray = TrayIconBuilder::with_id("agent_tray")
+                            .icon(icon)
+                            .menu(&menu)
+                            .on_menu_event(move |app, event| match event.id().as_ref() {
+                                "quit" => {
+                                    app.exit(0);
                                 }
+                                "open" => {
+                                    run_logged_action("tray-menu", "agent-open", || {
+                                        show_main_window_with_log(app, "agent-menu-open");
+                                    });
+                                }
+                                "restart" => {
+                                    append_runtime_log("tray-menu", "agent-restart requested");
+                                    let agent_state = app.state::<AgentState>();
+                                    let job = app.state::<Job>();
+                                    let resource_dir = if cfg!(debug_assertions) {
+                                        app_root_from_manifest()
+                                    } else {
+                                        app.path().resource_dir().unwrap()
+                                    };
 
-                                let mut api_url = None;
-                                if let Some(config_path) = default_agent_config_path() {
-                                    if let Ok(content) = std::fs::read_to_string(&config_path) {
-                                        if let Ok(json) = parse_json_config(&content) {
-                                            if let Some(url) =
-                                                json.get("apiUrl").and_then(|v| v.as_str())
-                                            {
-                                                api_url = Some(url.to_string());
+                                    if let Err(e) =
+                                        start_local_api_server_for_mode(&job, &resource_dir)
+                                    {
+                                        append_runtime_log(
+                                            "tray-menu",
+                                            &format!("agent-restart local api failed: {e}"),
+                                        );
+                                        eprintln!("Failed to ensure local API server: {}", e);
+                                        return;
+                                    }
+
+                                    let mut api_url = None;
+                                    if let Some(config_path) = default_agent_config_path() {
+                                        if let Ok(content) = std::fs::read_to_string(&config_path) {
+                                            if let Ok(json) = parse_json_config(&content) {
+                                                if let Some(url) =
+                                                    json.get("apiUrl").and_then(|v| v.as_str())
+                                                {
+                                                    api_url = Some(url.to_string());
+                                                }
                                             }
                                         }
                                     }
+                                    if let Err(error) = spawn_agent_only_process(
+                                        app.clone(),
+                                        &agent_state,
+                                        &job,
+                                        &resource_dir,
+                                        api_url.as_deref(),
+                                    ) {
+                                        append_runtime_log(
+                                            "tray-menu",
+                                            &format!("agent-restart spawn failed: {error}"),
+                                        );
+                                    }
                                 }
-                                if let Err(error) = spawn_agent_only_process(
-                                    app.clone(),
-                                    &agent_state,
-                                    &job,
-                                    &resource_dir,
-                                    api_url.as_deref(),
-                                ) {
-                                    append_runtime_log(
-                                        "tray-menu",
-                                        &format!("agent-restart spawn failed: {error}"),
-                                    );
+                                "toggle_startup" => {
+                                    let is_checked =
+                                        startup_i_clone.is_checked().unwrap_or(false);
+                                    let next_checked = !is_checked;
+                                    if let Err(e) = set_startup_registry(next_checked, true) {
+                                        append_runtime_log(
+                                            "tray-menu",
+                                            &format!("agent-startup toggle failed: {e}"),
+                                        );
+                                        eprintln!("Failed to set startup registry: {}", e);
+                                        return;
+                                    }
+                                    if let Err(e) = startup_i_clone.set_checked(next_checked) {
+                                        eprintln!("Failed to set menu checked: {}", e);
+                                    }
                                 }
-                            }
-                            "toggle_startup" => {
-                                let is_checked = startup_i_clone.is_checked().unwrap_or(false);
-                                let next_checked = !is_checked;
-                                if let Err(e) = set_startup_registry(next_checked, true) {
-                                    append_runtime_log(
-                                        "tray-menu",
-                                        &format!("agent-startup toggle failed: {e}"),
-                                    );
-                                    eprintln!("Failed to set startup registry: {}", e);
-                                    return;
+                                _ => {}
+                            })
+                            .on_tray_icon_event(|tray, event| {
+                                if let TrayIconEvent::Click {
+                                    button: MouseButton::Left,
+                                    button_state: MouseButtonState::Up,
+                                    ..
+                                } = event
+                                {
+                                    let app = tray.app_handle();
+                                    run_logged_action("tray-click", "agent-left-click", || {
+                                        show_main_window_with_log(app, "agent-tray-left-click");
+                                    });
                                 }
-                                if let Err(e) = startup_i_clone.set_checked(next_checked) {
-                                    eprintln!("Failed to set menu checked: {}", e);
-                                }
-                            }
-                            _ => {}
-                        })
-                        .on_tray_icon_event(|tray, event| {
-                            if let TrayIconEvent::Click {
-                                button: MouseButton::Left,
-                                button_state: MouseButtonState::Up,
-                                ..
-                            } = event
-                            {
-                                let app = tray.app_handle();
-                                run_logged_action("tray-click", "agent-left-click", || {
-                                    show_main_window_with_log(app, "agent-tray-left-click");
-                                });
-                            }
-                        })
-                        .build(app)?;
+                            })
+                            .build(app)?;
+                    } else {
+                        append_runtime_log(
+                            "tray",
+                            "agent x86 tray interactions disabled; icon-only mode",
+                        );
+                        let _tray = TrayIconBuilder::with_id("agent_tray").icon(icon).build(app)?;
+                    }
                 }
             } else {
                 // Viewer Mode Setup
@@ -1438,6 +1452,11 @@ mod registry_tests {
         let third = try_acquire_single_instance_named(&mutex_name)
             .expect("mutex should be acquirable after guard drop");
         assert!(third.is_some());
+    }
+
+    #[test]
+    fn test_agent_tray_interactions_are_disabled_on_x86_builds() {
+        assert_eq!(agent_tray_interactions_enabled(), !cfg!(target_arch = "x86"));
     }
 
     #[test]
