@@ -48,6 +48,25 @@ describe("desktop packaging scaffold", () => {
     expect(packageReleaseScript).toContain("tauri.agent.conf.json");
   });
 
+  it("resets the NSIS output path after overriding split install folders", () => {
+    const viewerHook = readFileSync(path.join(projectRoot, "src-tauri", "windows", "viewer-install-hooks.nsh"), "utf8");
+    const agentHook = readFileSync(path.join(projectRoot, "src-tauri", "windows", "agent-install-hooks.nsh"), "utf8");
+    const viewerInstallDir = 'StrCpy $INSTDIR "$LOCALAPPDATA\\WonRemote\\Viewer"';
+    const agentInstallDir = 'StrCpy $INSTDIR "$LOCALAPPDATA\\WonRemote\\Agent"';
+
+    const viewerInstallDirIndex = viewerHook.indexOf(viewerInstallDir);
+    const agentInstallDirIndex = agentHook.indexOf(agentInstallDir);
+
+    expect(viewerInstallDirIndex).toBeGreaterThan(-1);
+    expect(agentInstallDirIndex).toBeGreaterThan(-1);
+    expect(viewerHook.indexOf('CreateDirectory "$INSTDIR"', viewerInstallDirIndex)).toBeGreaterThan(
+      viewerInstallDirIndex,
+    );
+    expect(agentHook.indexOf('CreateDirectory "$INSTDIR"', agentInstallDirIndex)).toBeGreaterThan(agentInstallDirIndex);
+    expect(viewerHook.indexOf("SetOutPath $INSTDIR", viewerInstallDirIndex)).toBeGreaterThan(viewerInstallDirIndex);
+    expect(agentHook.indexOf("SetOutPath $INSTDIR", agentInstallDirIndex)).toBeGreaterThan(agentInstallDirIndex);
+  });
+
   it("stops running WonRemote processes before installer overwrite", () => {
     const viewerHook = readFileSync(path.join(projectRoot, "src-tauri", "windows", "viewer-install-hooks.nsh"), "utf8");
     const agentHook = readFileSync(path.join(projectRoot, "src-tauri", "windows", "agent-install-hooks.nsh"), "utf8");
@@ -61,6 +80,7 @@ describe("desktop packaging scaffold", () => {
       expect(hook).toContain("wonremote-poc");
       expect(hook).toContain("node");
       expect(hook).toContain("*\\WonRemote\\*");
+      expect(hook).toContain("*WonRemote Agent*");
       expect(hook).not.toContain("Get-CimInstance");
       expect(hook).not.toContain("taskkill /F /IM node.exe");
     }

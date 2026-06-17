@@ -214,7 +214,7 @@ describe("agent client", () => {
       deviceId: "123-45-67890:AGENT-ABC123",
       fetchImpl,
       installId: "agent-abc123",
-      version: "0.1.24",
+      version: "0.1.25",
     });
 
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -222,7 +222,7 @@ describe("agent client", () => {
       expect.objectContaining({
         deviceId: "123-45-67890:AGENT-ABC123",
         installId: "agent-abc123",
-        version: "0.1.24",
+        version: "0.1.25",
       }),
     );
     expect(result.device).toMatchObject({
