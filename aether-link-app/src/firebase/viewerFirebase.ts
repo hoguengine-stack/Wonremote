@@ -7,7 +7,6 @@ import {
   signOut,
 } from "firebase/auth";
 import {
-  addDoc,
   collection,
   doc,
   getDoc,
@@ -17,8 +16,6 @@ import {
   orderBy,
   query,
   serverTimestamp,
-  setDoc,
-  updateDoc,
   where,
   writeBatch,
   type Unsubscribe,
@@ -44,7 +41,7 @@ import { buildAgentAuthEmail, buildAgentAuthPassword, buildViewerAuthCredentials
 import { buildFirestoreDevice, mapFirestoreDevice, mergeFirstRunDeviceDocument } from "./firestoreDevice";
 import { getWonRemoteFirebaseServices } from "./firebaseServices";
 import { throwExplainedFirebaseAuthError } from "./firebaseError";
-import { stripUndefinedFields } from "./firestorePayload";
+import { safeAddDoc, safeBatchUpdate, safeSetDoc, safeUpdateDoc } from "./firestoreWrite";
 
 type ViewerFirebaseEnv = ImportMetaEnv;
 
@@ -142,7 +139,7 @@ export async function updateFirebaseDeviceMetadata(
     update.desktopName = input.desktopName.trim();
   }
 
-  await updateDoc(deviceRef, update);
+  await safeUpdateDoc(deviceRef, update);
   const snapshot = await getDoc(deviceRef);
   if (!snapshot.exists()) {
     throw new Error("Firebase device not found.");
@@ -189,13 +186,13 @@ export async function registerFirstRunAgentWithFirebase(
     existingSnapshot.exists() ? existingSnapshot.data() : undefined,
   );
 
-  await setDoc(
+  await safeSetDoc(
     deviceRef,
-    stripUndefinedFields({
+    {
       ...deviceDocument,
       installId: input.installId,
       ownerUid: credential.user.uid,
-    }),
+    },
     { merge: true },
   );
 
@@ -267,7 +264,7 @@ export async function sendFirebaseChatMessage(
   env: ViewerFirebaseEnv = import.meta.env,
 ): Promise<void> {
   const services = getViewerFirebaseServices(env);
-  await addDoc(collection(services.db, "sessions", sessionId, "chat"), {
+  await safeAddDoc(collection(services.db, "sessions", sessionId, "chat"), {
     message,
     sender,
     target: oppositeSessionSender(sender),
@@ -294,7 +291,7 @@ export async function sendFirebaseClipboardText(
   env: ViewerFirebaseEnv = import.meta.env,
 ): Promise<void> {
   const services = getViewerFirebaseServices(env);
-  await addDoc(collection(services.db, "sessions", sessionId, "clipboard"), {
+  await safeAddDoc(collection(services.db, "sessions", sessionId, "clipboard"), {
     text,
     sender,
     target: oppositeSessionSender(sender),
@@ -318,13 +315,13 @@ export async function uploadFirebaseFileChunk(
   env: ViewerFirebaseEnv = import.meta.env,
 ): Promise<void> {
   const services = getViewerFirebaseServices(env);
-  await addDoc(collection(services.db, "sessions", sessionId, "files"), stripUndefinedFields({
+  await safeAddDoc(collection(services.db, "sessions", sessionId, "files"), {
     ...input,
     delivery: "firestore-direct",
     sender: "viewer",
     target: "agent",
     createdAt: serverTimestamp(),
-  }));
+  });
 }
 
 export async function uploadFirebaseFileToStorage(
@@ -366,7 +363,7 @@ export async function uploadFirebaseFileToStorage(
     );
   });
 
-  await addDoc(collection(services.db, "sessions", sessionId, "files"), stripUndefinedFields({
+  await safeAddDoc(collection(services.db, "sessions", sessionId, "files"), {
     delivery: "firebase-storage",
     fileData: "",
     fileSha256: input.fileSha256,
@@ -379,7 +376,7 @@ export async function uploadFirebaseFileToStorage(
     totalChunks: 1,
     transferId: input.transferId,
     createdAt: serverTimestamp(),
-  }));
+  });
 }
 
 export async function fetchFirebaseFiles(
@@ -491,7 +488,7 @@ export async function startFirebaseViewerWebRtcTransport(
     if (!event.candidate) {
       return;
     }
-    void addDoc(viewerCandidates, {
+    void safeAddDoc(viewerCandidates, {
       candidate: event.candidate.toJSON(),
       createdAt: serverTimestamp(),
     }).catch((error) => handlers.onError?.(error instanceof Error ? error : new Error(String(error))));
@@ -533,7 +530,7 @@ export async function startFirebaseViewerWebRtcTransport(
 
   const offer = await peer.createOffer();
   await peer.setLocalDescription(offer);
-  await setDoc(
+  await safeSetDoc(
     signalRef,
     {
       offer: {
@@ -655,7 +652,7 @@ async function openFirebaseSessionDirect(
   }
 
   const session = buildConnectedSession(deviceId);
-  await setDoc(
+  await safeSetDoc(
     doc(services.db, "sessions", session.id),
     {
       ...session,
@@ -696,7 +693,7 @@ async function requestFirebaseSecureSessionDirect(
   const expiresAtMs = nowMs + 120_000;
   const expiresAt = new Date(expiresAtMs).toISOString();
 
-  await setDoc(doc(services.db, "secureChallenges", challengeId), {
+  await safeSetDoc(doc(services.db, "secureChallenges", challengeId), {
     challengeId,
     code,
     createdAt: serverTimestamp(),
@@ -734,7 +731,7 @@ async function connectFirebaseSecureSessionDirect(
     throw new Error("Invalid secure connection code.");
   }
   if (typeof challenge.expiresAtMs !== "number" || challenge.expiresAtMs <= Date.now()) {
-    await updateDoc(challengeRef, {
+    await safeUpdateDoc(challengeRef, {
       state: "expired",
       updatedAt: serverTimestamp(),
     });
@@ -744,7 +741,7 @@ async function connectFirebaseSecureSessionDirect(
     throw new Error("Invalid secure connection code.");
   }
 
-  await updateDoc(challengeRef, {
+  await safeUpdateDoc(challengeRef, {
     state: "used",
     updatedAt: serverTimestamp(),
     usedAt: serverTimestamp(),
@@ -767,7 +764,7 @@ async function recordFirebaseInputDirect(
 async function closeFirebaseSessionDirect(sessionId: string, env: ViewerFirebaseEnv): Promise<null> {
   const services = getViewerFirebaseServices(env);
   const session = await readOwnedFirebaseSession(sessionId, env);
-  await updateDoc(doc(services.db, "sessions", sessionId), {
+  await safeUpdateDoc(doc(services.db, "sessions", sessionId), {
     closedAt: serverTimestamp(),
     state: "closed",
     updatedAt: serverTimestamp(),
@@ -813,7 +810,7 @@ async function enqueueFirebaseDeviceCommandDirect(
   env: ViewerFirebaseEnv,
 ): Promise<void> {
   const services = getViewerFirebaseServices(env);
-  await addDoc(collection(services.db, "devices", deviceId, "commands"), {
+  await safeAddDoc(collection(services.db, "devices", deviceId, "commands"), {
     action,
     createdAt: serverTimestamp(),
     state: "pending",

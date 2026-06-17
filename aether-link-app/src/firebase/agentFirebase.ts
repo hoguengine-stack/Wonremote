@@ -1,6 +1,5 @@
 import { createUserWithEmailAndPassword, signInWithEmailAndPassword } from "firebase/auth";
 import {
-  addDoc,
   collection,
   doc,
   getDoc,
@@ -9,8 +8,6 @@ import {
   orderBy,
   query,
   serverTimestamp,
-  setDoc,
-  updateDoc,
   where,
   writeBatch,
 } from "firebase/firestore";
@@ -31,10 +28,10 @@ import { requireTurnWhenRelayOnly, resolveRtcIceServers, shouldUseRelayOnly } fr
 import { resolveFirebaseConfig } from "./firebaseConfig";
 import { buildAgentAuthEmail, buildAgentAuthPassword } from "./firebaseIdentity";
 import { buildFirestoreDevice, mapFirestoreDevice, mergeFirstRunDeviceDocument } from "./firestoreDevice";
-import { stripUndefinedFields } from "./firestorePayload";
 import { getWonRemoteFirebaseServices } from "./firebaseServices";
 import { throwExplainedFirebaseAuthError } from "./firebaseError";
 import { bindAgentDataChannelStatus, formatNodeDataChannelUnavailableError } from "./agentWebRtcStatus";
+import { safeAddDoc, safeBatchUpdate, safeSetDoc, safeUpdateDoc } from "./firestoreWrite";
 
 type AgentFirebaseEnv = Record<string, string | undefined>;
 
@@ -111,14 +108,14 @@ export async function registerAgentFirstRunWithFirebase(
     existingSnapshot.exists() ? existingSnapshot.data() : undefined,
   );
 
-  await setDoc(
+  await safeSetDoc(
     deviceRef,
-    stripUndefinedFields({
+    {
       ...deviceDocument,
       installId: input.installId,
       ownerUid: credential.user.uid,
       updatedAt: serverTimestamp(),
-    }),
+    },
     { merge: true },
   );
 
@@ -146,7 +143,7 @@ export async function sendAgentHeartbeatWithFirebase(
   }
 
   const nowIso = new Date().toISOString();
-  await updateDoc(deviceRef, stripUndefinedFields({
+  await safeUpdateDoc(deviceRef, {
     activeDisplayIndex: input.activeDisplayIndex,
     displays: input.displays ?? [],
     installId: input.installId,
@@ -157,7 +154,7 @@ export async function sendAgentHeartbeatWithFirebase(
     status: "online",
     updatedAt: serverTimestamp(),
     version: input.version,
-  }));
+  });
 
   const updatedSnapshot = await getDoc(deviceRef);
   const device = mapFirestoreDevice(input.deviceId, {
@@ -207,7 +204,7 @@ export async function pollAgentCommandsWithFirebase(
     const command = commandDoc.data() as { action?: unknown; createdAt?: unknown };
     const action = typeof command.action === "string" ? command.action : "";
     if (!action) {
-      batch.update(commandDoc.ref, {
+      safeBatchUpdate(batch, commandDoc.ref, {
         state: "ignored",
         deliveredAt: serverTimestamp(),
       });
@@ -220,7 +217,7 @@ export async function pollAgentCommandsWithFirebase(
       createdAt: coerceCreatedAt(command.createdAt),
       deviceId: input.deviceId,
     });
-    batch.update(commandDoc.ref, {
+    safeBatchUpdate(batch, commandDoc.ref, {
       state: "delivered",
       deliveredAt: serverTimestamp(),
     });
@@ -274,7 +271,7 @@ export async function postSessionTilesWithFirebase(
     return;
   }
   const services = getAgentFirebaseServices(env);
-  await addDoc(collection(services.db, "sessions", sessionId, "tileFrames"), {
+  await safeAddDoc(collection(services.db, "sessions", sessionId, "tileFrames"), {
     tiles: input.tiles,
     width: input.width,
     height: input.height,
@@ -315,7 +312,7 @@ export async function startAgentWebRtcTransportWithFirebase(
     if (!event.candidate) {
       return;
     }
-    void addDoc(agentCandidates, {
+    void safeAddDoc(agentCandidates, {
       candidate: event.candidate.toJSON(),
       createdAt: serverTimestamp(),
     });
@@ -329,7 +326,7 @@ export async function startAgentWebRtcTransportWithFirebase(
   await peer.setRemoteDescription({ type: "offer", sdp: offer.sdp } as any);
   const answer = await peer.createAnswer();
   await peer.setLocalDescription(answer);
-  await setDoc(
+  await safeSetDoc(
     signalRef,
     {
       answer: {
@@ -442,7 +439,7 @@ export async function postClipboardWithFirebase(
   env: AgentFirebaseEnv = process.env,
 ): Promise<void> {
   const services = getAgentFirebaseServices(env);
-  await addDoc(collection(services.db, "sessions", sessionId, "clipboard"), {
+  await safeAddDoc(collection(services.db, "sessions", sessionId, "clipboard"), {
     ...input,
     target: oppositeSessionSender(input.sender),
     createdAt: serverTimestamp(),
@@ -455,7 +452,7 @@ export async function postChatWithFirebase(
   env: AgentFirebaseEnv = process.env,
 ): Promise<void> {
   const services = getAgentFirebaseServices(env);
-  await addDoc(collection(services.db, "sessions", sessionId, "chat"), {
+  await safeAddDoc(collection(services.db, "sessions", sessionId, "chat"), {
     ...input,
     target: oppositeSessionSender(input.sender),
     createdAt: serverTimestamp(),
@@ -468,12 +465,12 @@ export async function postFileTransferReceiptWithFirebase(
   env: AgentFirebaseEnv = process.env,
 ): Promise<void> {
   const services = getAgentFirebaseServices(env);
-  await setDoc(
+  await safeSetDoc(
     doc(services.db, "sessions", sessionId, "fileReceipts", input.transferId),
-    stripUndefinedFields({
+    {
       ...input,
       updatedAt: serverTimestamp(),
-    }),
+    },
     { merge: true },
   );
 }
