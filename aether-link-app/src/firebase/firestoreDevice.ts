@@ -37,7 +37,7 @@ interface BuildFirestoreDeviceInput {
 export function buildFirestoreDevice(input: BuildFirestoreDeviceInput): ManagedDevice & { ownerUid: string } {
   const businessNumber = formatBusinessNumber(input.businessNumber);
   const deviceNumber = buildAgentDeviceNumber(input.installId);
-  return {
+  const device: ManagedDevice & { ownerUid: string } = {
     id: buildFirebaseDeviceId(businessNumber, input.installId),
     businessNumber,
     storeName: DEFAULT_STORE_NAME,
@@ -47,9 +47,12 @@ export function buildFirestoreDevice(input: BuildFirestoreDeviceInput): ManagedD
     status: "online",
     lastSeenAt: input.nowIso,
     storeNameSource: "default",
-    version: input.version,
     ownerUid: input.ownerUid,
   };
+  if (typeof input.version === "string" && input.version.trim()) {
+    device.version = input.version.trim();
+  }
+  return device;
 }
 
 export function mergeFirstRunDeviceDocument(

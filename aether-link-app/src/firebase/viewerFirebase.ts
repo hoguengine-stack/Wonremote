@@ -191,11 +191,11 @@ export async function registerFirstRunAgentWithFirebase(
 
   await setDoc(
     deviceRef,
-    {
+    stripUndefinedFields({
       ...deviceDocument,
       installId: input.installId,
       ownerUid: credential.user.uid,
-    },
+    }),
     { merge: true },
   );
 

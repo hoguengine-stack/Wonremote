@@ -927,6 +927,7 @@ function AgentFirstRunApp() {
         businessNumber,
         password,
         installId,
+        version: getViewerVersion(import.meta.env),
         apiUrl: firebaseMode ? undefined : apiUrl,
       });
       setRegisteredDevice(result.device);
