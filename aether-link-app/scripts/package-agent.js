@@ -26,6 +26,8 @@ async function run() {
 
   const pocSrc = path.join(appRoot, "dist-poc", "wonremote-poc.exe");
   const pocDest = path.join(binDir, "wonremote-poc.exe");
+  const pocRuntimeSrc = path.join(appRoot, "dist-poc", "vcruntime140.dll");
+  const pocRuntimeDest = path.join(binDir, "vcruntime140.dll");
 
   console.log("Copying bundled Node runtime...");
   fs.copyFileSync(nodeSrc, nodeDest);
@@ -38,10 +40,14 @@ async function run() {
 
   console.log("Copying Rust PoC capture binary...");
   fs.copyFileSync(pocSrc, pocDest);
+  if (fs.existsSync(pocRuntimeSrc)) {
+    console.log("Copying Rust PoC VC runtime dependency...");
+    fs.copyFileSync(pocRuntimeSrc, pocRuntimeDest);
+  }
 
   console.log("Copying native WebRTC runtime...");
   fs.cpSync(
-    path.join(appRoot, "node_modules", "node-datachannel"),
+    path.join(appRoot, "dist-native", "node-datachannel"),
     path.join(nodeModulesDir, "node-datachannel"),
     { recursive: true },
   );

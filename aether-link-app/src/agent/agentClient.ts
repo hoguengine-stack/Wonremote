@@ -51,16 +51,18 @@ export async function sendAgentHeartbeat({
   version,
 }: SendAgentHeartbeatOptions): Promise<AgentHeartbeatResult> {
   if (isAgentFirebaseEnabled(process.env)) {
-    return sendAgentHeartbeatWithFirebase({
-      deviceId,
-      displays,
-      installId,
-      activeDisplayIndex,
-      macAddresses,
-      controlDiagnostics,
-      streamDiagnostics,
-      version,
-    });
+    return withAgentOperationContext("firebase heartbeat", () =>
+      sendAgentHeartbeatWithFirebase({
+        deviceId,
+        displays,
+        installId,
+        activeDisplayIndex,
+        macAddresses,
+        controlDiagnostics,
+        streamDiagnostics,
+        version,
+      }),
+    );
   }
 
   let response: Response;
@@ -99,10 +101,12 @@ export async function pollAgentCommands({
   installId,
 }: PollAgentCommandsOptions): Promise<AgentCommandPollResult> {
   if (isAgentFirebaseEnabled(process.env)) {
-    return pollAgentCommandsWithFirebase({
-      deviceId,
-      installId,
-    });
+    return withAgentOperationContext("firebase command poll", () =>
+      pollAgentCommandsWithFirebase({
+        deviceId,
+        installId,
+      }),
+    );
   }
 
   let response: Response;
@@ -143,4 +147,16 @@ export async function postAgentSessionApproval({
     headers: { "content-type": "application/json" },
     method: "POST",
   });
+}
+
+async function withAgentOperationContext<T>(operation: string, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    const source = error instanceof Error ? error : new Error(String(error));
+    const wrapped = new Error(`[Agent ${operation}] ${source.message}`);
+    (wrapped as any).status = (source as any).status;
+    (wrapped as any).code = (source as any).code;
+    throw wrapped;
+  }
 }

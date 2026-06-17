@@ -40,6 +40,107 @@ function assertPeMachine(filePath, expectedMachine, label) {
   }
 }
 
+function readPeImports(filePath) {
+  const bytes = fs.readFileSync(filePath);
+  const peOffset = bytes.readUInt32LE(0x3c);
+  const sectionCount = bytes.readUInt16LE(peOffset + 6);
+  const optionalHeaderSize = bytes.readUInt16LE(peOffset + 20);
+  const optionalHeaderOffset = peOffset + 24;
+  const magic = bytes.readUInt16LE(optionalHeaderOffset);
+  const dataDirectoryOffset = optionalHeaderOffset + (magic === 0x20b ? 112 : 96);
+  const importDirectoryRva = bytes.readUInt32LE(dataDirectoryOffset + 8);
+  if (!importDirectoryRva) {
+    return [];
+  }
+
+  const sectionHeaderOffset = optionalHeaderOffset + optionalHeaderSize;
+  const sections = [];
+  for (let index = 0; index < sectionCount; index += 1) {
+    const offset = sectionHeaderOffset + index * 40;
+    sections.push({
+      virtualAddress: bytes.readUInt32LE(offset + 12),
+      virtualSize: bytes.readUInt32LE(offset + 8),
+      rawAddress: bytes.readUInt32LE(offset + 20),
+      rawSize: bytes.readUInt32LE(offset + 16),
+    });
+  }
+
+  function rvaToOffset(rva) {
+    const section = sections.find((candidate) => {
+      const size = Math.max(candidate.virtualSize, candidate.rawSize);
+      return rva >= candidate.virtualAddress && rva < candidate.virtualAddress + size;
+    });
+    if (!section) {
+      throw new Error(`Cannot map PE RVA 0x${rva.toString(16)} in ${filePath}`);
+    }
+    return section.rawAddress + (rva - section.virtualAddress);
+  }
+
+  const imports = [];
+  let descriptorOffset = rvaToOffset(importDirectoryRva);
+  while (descriptorOffset + 20 <= bytes.length) {
+    const originalFirstThunk = bytes.readUInt32LE(descriptorOffset);
+    const timeDateStamp = bytes.readUInt32LE(descriptorOffset + 4);
+    const forwarderChain = bytes.readUInt32LE(descriptorOffset + 8);
+    const nameRva = bytes.readUInt32LE(descriptorOffset + 12);
+    const firstThunk = bytes.readUInt32LE(descriptorOffset + 16);
+    if (!originalFirstThunk && !timeDateStamp && !forwarderChain && !nameRva && !firstThunk) {
+      break;
+    }
+
+    const nameOffset = rvaToOffset(nameRva);
+    let nameEnd = nameOffset;
+    while (nameEnd < bytes.length && bytes[nameEnd] !== 0) {
+      nameEnd += 1;
+    }
+    imports.push(bytes.toString("ascii", nameOffset, nameEnd));
+    descriptorOffset += 20;
+  }
+  return imports;
+}
+
+function resolveVcRuntimeDll(targetArch) {
+  const overridePath = process.env.WONREMOTE_VCRUNTIME140_PATH;
+  if (overridePath) {
+    return path.resolve(overridePath);
+  }
+
+  const programFilesX86 = process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)";
+  const redistRoot = path.join(programFilesX86, "Microsoft Visual Studio", "2022", "BuildTools", "VC", "Redist", "MSVC");
+  const redistArch = targetArch === "ia32" ? "x86" : "x64";
+  if (fs.existsSync(redistRoot)) {
+    const candidates = fs.readdirSync(redistRoot)
+      .map((version) => path.join(redistRoot, version, redistArch, "Microsoft.VC143.CRT", "vcruntime140.dll"))
+      .filter((candidate) => fs.existsSync(candidate))
+      .sort()
+      .reverse();
+    if (candidates[0]) {
+      return candidates[0];
+    }
+  }
+
+  const systemFallback = path.join(
+    process.env.SystemRoot ?? "C:\\Windows",
+    targetArch === "ia32" ? "SysWOW64" : "System32",
+    "vcruntime140.dll",
+  );
+  if (fs.existsSync(systemFallback)) {
+    return systemFallback;
+  }
+
+  throw new Error(`vcruntime140.dll was not found for ${targetArch}. Install Visual Studio Build Tools or set WONREMOTE_VCRUNTIME140_PATH.`);
+}
+
+function bundlePocRuntimeDlls(pocExe, distPocDir) {
+  const imports = readPeImports(pocExe).map((name) => name.toLowerCase());
+  const runtimeSource = resolveVcRuntimeDll(buildArch);
+  const runtimeDestination = path.join(distPocDir, "vcruntime140.dll");
+  fs.copyFileSync(runtimeSource, runtimeDestination);
+  assertPeMachine(runtimeDestination, buildArch === "ia32" ? 0x14c : 0x8664, "bundled VC runtime");
+  const importReason = imports.includes("vcruntime140.dll") ? "required by PoC import table" : "app-local compatibility";
+  console.log(`Bundled ${buildArch} VC runtime at ${path.relative(appRoot, runtimeDestination)} (${importReason})`);
+}
+
 function downloadFile(url, destination) {
   return new Promise((resolve, reject) => {
     fs.mkdirSync(path.dirname(destination), { recursive: true });
@@ -171,6 +272,67 @@ async function prepareBundledNodeRuntime() {
   console.log(`Bundled ${buildArch} Node runtime at ${path.relative(appRoot, nodeDestination)}`);
 }
 
+function prepareNativeNodeDatachannelRuntime() {
+  const nativeDir = path.join(appRoot, "dist-native", "node-datachannel");
+  fs.rmSync(nativeDir, { recursive: true, force: true });
+  fs.mkdirSync(nativeDir, { recursive: true });
+
+  if (buildArch === "ia32") {
+    fs.writeFileSync(
+      path.join(nativeDir, "package.json"),
+      JSON.stringify(
+        {
+          name: "node-datachannel",
+          version: "0.0.0-wonremote-ia32-stub",
+          type: "module",
+          exports: {
+            ".": "./unavailable.mjs",
+            "./polyfill": "./unavailable.mjs",
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    fs.writeFileSync(
+      path.join(nativeDir, "unavailable.mjs"),
+      [
+        "throw new Error(",
+        "  '32-bit WebRTC native module unavailable; ia32 node-datachannel runtime is not bundled.'",
+        ");",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    console.log(`Created ${buildArch} node-datachannel stub at ${path.relative(appRoot, nativeDir)}`);
+    return;
+  }
+
+  const sourceDir = path.join(appRoot, "node_modules", "node-datachannel");
+  if (!fs.existsSync(sourceDir)) {
+    throw new Error(`node-datachannel dependency is missing: ${sourceDir}`);
+  }
+  fs.cpSync(sourceDir, nativeDir, { recursive: true });
+  assertNativeAddonMachines(nativeDir, 0x8664, "node-datachannel");
+  console.log(`Bundled ${buildArch} node-datachannel runtime at ${path.relative(appRoot, nativeDir)}`);
+}
+
+function assertNativeAddonMachines(rootDir, expectedMachine, label) {
+  const stack = [rootDir];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const fullPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(fullPath);
+      } else if (entry.isFile() && entry.name.endsWith(".node")) {
+        assertPeMachine(fullPath, expectedMachine, `${label} native addon ${path.relative(rootDir, fullPath)}`);
+      }
+    }
+  }
+}
+
 async function buildRustPocRelease() {
   const pocDir = path.join(repoRoot, "aether-link-poc");
   const rustTarget = buildArch === "ia32" ? "i686-pc-windows-msvc" : undefined;
@@ -194,6 +356,7 @@ async function buildRustPocRelease() {
   fs.mkdirSync(distPocDir, { recursive: true });
   fs.copyFileSync(pocExe, distPocExe);
   assertPeMachine(distPocExe, buildArch === "ia32" ? 0x14c : 0x8664, "bundled Rust PoC");
+  bundlePocRuntimeDlls(distPocExe, distPocDir);
 }
 
 async function build() {
@@ -201,6 +364,7 @@ async function build() {
   fs.mkdirSync(path.join(appRoot, "dist-agent"), { recursive: true });
   await prepareBundledNodeRuntime();
   await buildRustPocRelease();
+  prepareNativeNodeDatachannelRuntime();
 
   console.log("Building API Server to dist-server/index.mjs...");
   await esbuild.build({

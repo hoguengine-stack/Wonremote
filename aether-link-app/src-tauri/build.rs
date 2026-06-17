@@ -17,6 +17,8 @@ fn main() {
         }
     }
     ensure_dist_poc_resource_exists_for_cargo_metadata();
+    ensure_dist_poc_vc_runtime_exists_for_cargo_metadata();
+    ensure_dist_native_node_datachannel_exists_for_cargo_metadata();
     export_public_firebase_env_from_dotenv();
     tauri_build::build()
 }
@@ -38,6 +40,52 @@ fn ensure_dist_poc_resource_exists_for_cargo_metadata() {
     } else {
         let _ = fs::write(dist_poc_path, []);
     }
+}
+
+fn ensure_dist_poc_vc_runtime_exists_for_cargo_metadata() {
+    let dist_runtime_path = Path::new("../dist-poc/vcruntime140.dll");
+    println!("cargo:rerun-if-changed={}", dist_runtime_path.display());
+    if dist_runtime_path.exists() {
+        return;
+    }
+
+    if let Some(parent) = dist_runtime_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
+    let target = std::env::var("TARGET").unwrap_or_default();
+    let system_runtime = if target.starts_with("i686-") {
+        Path::new(&system_root).join("SysWOW64").join("vcruntime140.dll")
+    } else {
+        Path::new(&system_root).join("System32").join("vcruntime140.dll")
+    };
+
+    if system_runtime.exists() {
+        let _ = fs::copy(system_runtime, dist_runtime_path);
+    } else {
+        let _ = fs::write(dist_runtime_path, []);
+    }
+}
+
+fn ensure_dist_native_node_datachannel_exists_for_cargo_metadata() {
+    let native_dir = Path::new("../dist-native/node-datachannel");
+    println!("cargo:rerun-if-changed={}", native_dir.display());
+    if native_dir.exists() {
+        return;
+    }
+
+    let _ = fs::create_dir_all(native_dir);
+    let package_json = native_dir.join("package.json");
+    let unavailable_module = native_dir.join("unavailable.mjs");
+    let _ = fs::write(
+        package_json,
+        r#"{"name":"node-datachannel","version":"0.0.0-wonremote-placeholder","type":"module","exports":{".":"./unavailable.mjs","./polyfill":"./unavailable.mjs"}}"#,
+    );
+    let _ = fs::write(
+        unavailable_module,
+        "throw new Error('node-datachannel placeholder created for cargo metadata only. Run npm run build before packaging.');\n",
+    );
 }
 
 fn export_public_firebase_env_from_dotenv() {

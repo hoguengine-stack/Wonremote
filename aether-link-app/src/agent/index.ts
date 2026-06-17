@@ -133,6 +133,7 @@ let isApprovalPending = false;
 let isSessionActive = false;
 let sessionPollIntervalId: any = null;
 let isCommandPollInFlight = false;
+let lastSessionPollError = "";
 
 
 function startStreaming(
@@ -443,7 +444,11 @@ async function pollSessionData(deviceId: string) {
       }
     }
   } catch (error) {
-    // Session 404 ignore
+    const message = error instanceof Error ? error.message : String(error);
+    if (message !== lastSessionPollError) {
+      lastSessionPollError = message;
+      console.error(`[Agent session poll] ${message}`);
+    }
   }
 }
 
@@ -1042,15 +1047,29 @@ async function ensureActiveFirebaseSessionRecovery(config: AgentLocalConfig): Pr
   if (!USE_FIREBASE || !config.registeredDeviceId || streamDesired) {
     return;
   }
-  const sessions = await fetchActiveFirebaseSessionsForAgent({
-    deviceId: config.registeredDeviceId,
-    installId: config.installId,
-  });
+  const sessions = await withAgentOperationContext("firebase active session recovery", () =>
+    fetchActiveFirebaseSessionsForAgent({
+      deviceId: config.registeredDeviceId!,
+      installId: config.installId,
+    }),
+  );
   if (sessions.length === 0) {
     return;
   }
   console.log(`[Agent] Recovering active remote session after restart: ${sessions[0].id}`);
   startStreaming(config.registeredDeviceId, currentOutputIndex, currentLoopSleepMs);
+}
+
+async function withAgentOperationContext<T>(operation: string, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    const source = error instanceof Error ? error : new Error(String(error));
+    const wrapped = new Error(`[Agent ${operation}] ${source.message}`);
+    (wrapped as any).status = (source as any).status;
+    (wrapped as any).code = (source as any).code;
+    throw wrapped;
+  }
 }
 
 

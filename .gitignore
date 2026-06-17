@@ -13,6 +13,7 @@ dist-agent-pkg/
 aether-link-app/dist-runtime/
 aether-link-app/dist-server/
 aether-link-app/dist-poc/
+aether-link-app/dist-native/
 aether-link-app/release-exe/
 aether-link-app/src-tauri/gen/schemas/
 aether-link-poc/target/

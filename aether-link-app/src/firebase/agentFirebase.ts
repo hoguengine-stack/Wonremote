@@ -446,6 +446,9 @@ export async function startAgentWebRtcTransportWithFirebase(
 }
 
 async function loadAgentPeerConnectionCtor(): Promise<any> {
+  if (process.arch === "ia32") {
+    throw new Error(formatNodeDataChannelUnavailableError(new Error("ia32 node-datachannel runtime is not bundled"), "ia32"));
+  }
   try {
     const rtcModule = await import("node-datachannel/polyfill");
     return rtcModule.RTCPeerConnection;
