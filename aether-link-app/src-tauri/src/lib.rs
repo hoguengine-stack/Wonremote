@@ -6,11 +6,11 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     ptr, thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Once};
 
 use tauri::{
     menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder},
@@ -21,11 +21,11 @@ use tauri::{
 use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
 use winreg::RegKey;
 
-use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, ERROR_ALREADY_EXISTS};
+use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE};
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-    SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-    JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows_sys::Win32::System::Threading::CreateMutexW;
 
@@ -49,6 +49,7 @@ const PUBLIC_FIREBASE_PROJECT_ID: &str = "wonremote-a7fd3";
 const PUBLIC_FIREBASE_APP_ID: &str = "1:52940136204:web:b4b4ff3e57c215e5dc3329";
 const PUBLIC_FIREBASE_STORAGE_BUCKET: &str = "wonremote-a7fd3.appspot.com";
 const PUBLIC_FIREBASE_MESSAGING_SENDER_ID: &str = "52940136204";
+static PANIC_LOGGER: Once = Once::new();
 
 struct SingleInstanceGuard {
     handle: HANDLE,
@@ -197,6 +198,112 @@ fn parse_json_config(content: &str) -> Result<serde_json::Value, serde_json::Err
     serde_json::from_str(content.trim_start_matches('\u{feff}'))
 }
 
+fn runtime_log_file_from_appdata(appdata: &Path) -> PathBuf {
+    appdata
+        .join("WonRemote")
+        .join("logs")
+        .join("wonremote-tauri.log")
+}
+
+fn runtime_log_path() -> Option<PathBuf> {
+    env::var_os("APPDATA").map(|appdata| runtime_log_file_from_appdata(&PathBuf::from(appdata)))
+}
+
+fn append_runtime_log_entry(log_path: &Path, component: &str, message: &str) -> io::Result<()> {
+    if let Some(parent) = log_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)?;
+    let sanitized_message = message.replace(['\r', '\n'], " ");
+    writeln!(
+        file,
+        "{} [{}] {}",
+        runtime_log_timestamp(),
+        component,
+        sanitized_message
+    )
+}
+
+fn append_runtime_log(component: &str, message: &str) {
+    if let Some(log_path) = runtime_log_path() {
+        let _ = append_runtime_log_entry(&log_path, component, message);
+    }
+}
+
+fn runtime_log_timestamp() -> String {
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => format!("epoch_ms={}", duration.as_millis()),
+        Err(_) => "epoch_ms=unknown".to_string(),
+    }
+}
+
+fn panic_payload_to_string(info: &std::panic::PanicHookInfo<'_>) -> String {
+    let payload = if let Some(value) = info.payload().downcast_ref::<&str>() {
+        (*value).to_string()
+    } else if let Some(value) = info.payload().downcast_ref::<String>() {
+        value.clone()
+    } else {
+        "non-string panic payload".to_string()
+    };
+    let location = info
+        .location()
+        .map(|location| {
+            format!(
+                "{}:{}:{}",
+                location.file(),
+                location.line(),
+                location.column()
+            )
+        })
+        .unwrap_or_else(|| "unknown location".to_string());
+
+    format!("panic at {location}: {payload}")
+}
+
+fn install_panic_logger() {
+    PANIC_LOGGER.call_once(|| {
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            append_runtime_log("panic", &panic_payload_to_string(info));
+            default_hook(info);
+        }));
+    });
+}
+
+fn run_logged_action<F>(component: &str, action: &str, operation: F)
+where
+    F: FnOnce(),
+{
+    append_runtime_log(component, &format!("{action}: start"));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation));
+    if result.is_err() {
+        append_runtime_log(component, &format!("{action}: panic caught"));
+    } else {
+        append_runtime_log(component, &format!("{action}: done"));
+    }
+}
+
+fn show_main_window_with_log(app: &tauri::AppHandle, reason: &str) {
+    append_runtime_log("window", &format!("{reason}: show requested"));
+    let Some(window) = app.get_webview_window("main") else {
+        append_runtime_log("window", &format!("{reason}: main window not found"));
+        return;
+    };
+
+    match window.show() {
+        Ok(_) => append_runtime_log("window", &format!("{reason}: show ok")),
+        Err(error) => append_runtime_log("window", &format!("{reason}: show failed: {error}")),
+    }
+    match window.set_focus() {
+        Ok(_) => append_runtime_log("window", &format!("{reason}: focus ok")),
+        Err(error) => append_runtime_log("window", &format!("{reason}: focus failed: {error}")),
+    }
+}
+
 fn spawn_agent_only_process(
     app_handle: tauri::AppHandle,
     agent_state: &AgentState,
@@ -204,9 +311,21 @@ fn spawn_agent_only_process(
     resource_dir: &Path,
     api_url: Option<&str>,
 ) -> Result<(), io::Error> {
+    append_runtime_log(
+        "agent-process",
+        &format!(
+            "spawn requested resource_dir={} api_url={}",
+            resource_dir.display(),
+            api_url.unwrap_or("http://127.0.0.1:8787")
+        ),
+    );
     {
         let mut child_guard = agent_state.child_process.lock().unwrap();
         if let Some(mut child) = child_guard.take() {
+            append_runtime_log(
+                "agent-process",
+                "stopping existing agent child before restart",
+            );
             let _ = child.kill();
         }
     }
@@ -227,6 +346,15 @@ fn spawn_agent_only_process(
         let node_path = bundled_node_path(resource_dir);
         let agent_path = resource_dir.join("agent").join("index.mjs");
         let poc_path = resource_dir.join("bin").join("wonremote-poc.exe");
+        append_runtime_log(
+            "agent-process",
+            &format!(
+                "production resources node={} agent={} poc={}",
+                node_path.display(),
+                agent_path.display(),
+                poc_path.display()
+            ),
+        );
 
         ensure_resource_exists(&node_path, "bundled Node runtime")?;
         ensure_resource_exists(&agent_path, "bundled Agent")?;
@@ -251,54 +379,90 @@ fn spawn_agent_only_process(
     add_no_window(&mut command);
 
     command.stdout(std::process::Stdio::piped());
+    command.stderr(std::process::Stdio::piped());
 
-    let mut child = command.spawn()?;
-    let stdout = child.stdout.take().expect("Failed to open stdout");
+    append_runtime_log("agent-process", "spawning agent child");
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            append_runtime_log("agent-process", &format!("spawn failed: {error}"));
+            return Err(error);
+        }
+    };
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
 
-    job.assign(&child)?;
+    if let Err(error) = job.assign(&child) {
+        append_runtime_log("agent-process", &format!("job assign failed: {error}"));
+        return Err(error);
+    }
 
     {
         let mut child_guard = agent_state.child_process.lock().unwrap();
         *child_guard = Some(child);
     }
 
-    let status_clone = agent_state.status.clone();
-    let status_menu_item_clone = agent_state.status_menu_item.clone();
-    let app_handle_clone = app_handle.clone();
-    std::thread::spawn(move || {
-        let reader = BufReader::new(stdout);
-        let mut unregistered_detected = false;
-        for line in reader.lines() {
-            if let Ok(line_str) = line {
-                println!("[Agent Output] {}", line_str);
-                if line_str.contains("[Error] Agent unregistered") {
-                    unregistered_detected = true;
-                }
-                let new_status = if line_str.contains("[Status] Connecting") {
-                    Some("Connecting")
-                } else if line_str.contains("[Status] Online") {
-                    Some("Online")
-                } else if line_str.contains("[Status] Offline") {
-                    Some("Offline")
-                } else {
-                    None
-                };
-
-                if let Some(status_str) = new_status {
-                    *status_clone.lock().unwrap() = status_str.to_string();
-                    if let Some(menu_item) = &*status_menu_item_clone.lock().unwrap() {
-                        let _ = menu_item.set_text(format!("Status: {status_str}"));
+    if let Some(stderr) = stderr {
+        std::thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines() {
+                match line {
+                    Ok(line_str) => {
+                        eprintln!("[Agent Error] {}", line_str);
+                        append_runtime_log("agent-stderr", &line_str);
+                    }
+                    Err(error) => {
+                        append_runtime_log("agent-stderr", &format!("read failed: {error}"));
+                        break;
                     }
                 }
             }
-        }
-        if unregistered_detected {
-            if let Some(window) = app_handle_clone.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
+            append_runtime_log("agent-stderr", "reader ended");
+        });
+    } else {
+        append_runtime_log("agent-stderr", "stderr pipe unavailable");
+    }
+
+    if let Some(stdout) = stdout {
+        let status_clone = agent_state.status.clone();
+        let status_menu_item_clone = agent_state.status_menu_item.clone();
+        let app_handle_clone = app_handle.clone();
+        std::thread::spawn(move || {
+            let reader = BufReader::new(stdout);
+            let mut unregistered_detected = false;
+            for line in reader.lines() {
+                if let Ok(line_str) = line {
+                    println!("[Agent Output] {}", line_str);
+                    append_runtime_log("agent-stdout", &line_str);
+                    if line_str.contains("[Error] Agent unregistered") {
+                        unregistered_detected = true;
+                    }
+                    let new_status = if line_str.contains("[Status] Connecting") {
+                        Some("Connecting")
+                    } else if line_str.contains("[Status] Online") {
+                        Some("Online")
+                    } else if line_str.contains("[Status] Offline") {
+                        Some("Offline")
+                    } else {
+                        None
+                    };
+
+                    if let Some(status_str) = new_status {
+                        *status_clone.lock().unwrap() = status_str.to_string();
+                        if let Some(menu_item) = &*status_menu_item_clone.lock().unwrap() {
+                            let _ = menu_item.set_text(format!("Status: {status_str}"));
+                        }
+                    }
+                }
             }
-        }
-    });
+            append_runtime_log("agent-stdout", "reader ended");
+            if unregistered_detected {
+                show_main_window_with_log(&app_handle_clone, "agent-unregistered");
+            }
+        });
+    } else {
+        append_runtime_log("agent-stdout", "stdout pipe unavailable");
+    }
 
     Ok(())
 }
@@ -501,18 +665,25 @@ fn add_no_window(command: &mut Command) {
 }
 
 fn spawn_managed(job: &Job, command: &mut Command, label: &str) -> Result<(), io::Error> {
-    let mut child = command
-        .spawn()
-        .map_err(|err| io::Error::new(err.kind(), format!("failed to spawn {label}: {err}")))?;
+    append_runtime_log("process", &format!("spawning {label}"));
+    let mut child = command.spawn().map_err(|err| {
+        append_runtime_log("process", &format!("failed to spawn {label}: {err}"));
+        io::Error::new(err.kind(), format!("failed to spawn {label}: {err}"))
+    })?;
 
     if let Err(err) = job.assign(&child) {
         let _ = child.kill();
+        append_runtime_log(
+            "process",
+            &format!("failed to assign {label} to cleanup job: {err}"),
+        );
         return Err(io::Error::new(
             err.kind(),
             format!("failed to assign {label} to cleanup job: {err}"),
         ));
     }
 
+    append_runtime_log("process", &format!("{label} spawned and assigned"));
     Ok(())
 }
 
@@ -589,15 +760,27 @@ fn firebase_config_value(
     env::var(runtime_key)
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| build_value.map(str::to_string).filter(|value| !value.trim().is_empty()))
+        .or_else(|| {
+            build_value
+                .map(str::to_string)
+                .filter(|value| !value.trim().is_empty())
+        })
         .or_else(|| Some(public_value.to_string()))
 }
 
 fn firebase_disabled() -> bool {
-    ["WONREMOTE_DISABLE_FIREBASE", "VITE_WONREMOTE_DISABLE_FIREBASE"]
-        .iter()
-        .filter_map(|key| env::var(key).ok())
-        .any(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+    [
+        "WONREMOTE_DISABLE_FIREBASE",
+        "VITE_WONREMOTE_DISABLE_FIREBASE",
+    ]
+    .iter()
+    .filter_map(|key| env::var(key).ok())
+    .any(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
 }
 
 fn firebase_mode_configured() -> bool {
@@ -606,7 +789,11 @@ fn firebase_mode_configured() -> bool {
     }
 
     has_required_firebase_values(
-        firebase_config_value("WONREMOTE_FIREBASE_API_KEY", FIREBASE_API_KEY, PUBLIC_FIREBASE_API_KEY),
+        firebase_config_value(
+            "WONREMOTE_FIREBASE_API_KEY",
+            FIREBASE_API_KEY,
+            PUBLIC_FIREBASE_API_KEY,
+        ),
         firebase_config_value(
             "WONREMOTE_FIREBASE_AUTH_DOMAIN",
             FIREBASE_AUTH_DOMAIN,
@@ -617,7 +804,11 @@ fn firebase_mode_configured() -> bool {
             FIREBASE_PROJECT_ID,
             PUBLIC_FIREBASE_PROJECT_ID,
         ),
-        firebase_config_value("WONREMOTE_FIREBASE_APP_ID", FIREBASE_APP_ID, PUBLIC_FIREBASE_APP_ID),
+        firebase_config_value(
+            "WONREMOTE_FIREBASE_APP_ID",
+            FIREBASE_APP_ID,
+            PUBLIC_FIREBASE_APP_ID,
+        ),
     )
 }
 
@@ -638,7 +829,11 @@ fn apply_firebase_env(command: &mut Command) {
     let values = [
         (
             "WONREMOTE_FIREBASE_API_KEY",
-            firebase_config_value("WONREMOTE_FIREBASE_API_KEY", FIREBASE_API_KEY, PUBLIC_FIREBASE_API_KEY),
+            firebase_config_value(
+                "WONREMOTE_FIREBASE_API_KEY",
+                FIREBASE_API_KEY,
+                PUBLIC_FIREBASE_API_KEY,
+            ),
         ),
         (
             "WONREMOTE_FIREBASE_AUTH_DOMAIN",
@@ -658,7 +853,11 @@ fn apply_firebase_env(command: &mut Command) {
         ),
         (
             "WONREMOTE_FIREBASE_APP_ID",
-            firebase_config_value("WONREMOTE_FIREBASE_APP_ID", FIREBASE_APP_ID, PUBLIC_FIREBASE_APP_ID),
+            firebase_config_value(
+                "WONREMOTE_FIREBASE_APP_ID",
+                FIREBASE_APP_ID,
+                PUBLIC_FIREBASE_APP_ID,
+            ),
         ),
         (
             "WONREMOTE_FIREBASE_STORAGE_BUCKET",
@@ -851,11 +1050,30 @@ fn is_startup_registered(is_agent: bool) -> bool {
 }
 
 pub fn run() {
+    install_panic_logger();
     let is_agent = launched_as_agent();
+    append_runtime_log(
+        "startup",
+        &format!(
+            "run start mode={} arch={} exe={}",
+            if is_agent { "agent" } else { "viewer" },
+            env::consts::ARCH,
+            env::current_exe()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|error| format!("unknown ({error})"))
+        ),
+    );
     let _single_instance_guard = match try_acquire_single_instance(is_agent) {
         Ok(Some(guard)) => guard,
-        Ok(None) => return,
+        Ok(None) => {
+            append_runtime_log("startup", "single-instance guard already held; exiting");
+            return;
+        }
         Err(error) => {
+            append_runtime_log(
+                "startup",
+                &format!("failed to acquire single-instance guard: {error}"),
+            );
             eprintln!("Failed to acquire WonRemote single-instance guard: {error}");
             return;
         }
@@ -905,10 +1123,7 @@ pub fn run() {
                     )?;
                 } else {
                     // Show window to register
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                    }
+                    show_main_window_with_log(app.handle(), "agent-registration-required");
                 }
 
                 // System Tray Menu Setup for Agent
@@ -945,12 +1160,12 @@ pub fn run() {
                                 app.exit(0);
                             }
                             "open" => {
-                                if let Some(window) = app.get_webview_window("main") {
-                                    let _ = window.show();
-                                    let _ = window.set_focus();
-                                }
+                                run_logged_action("tray-menu", "agent-open", || {
+                                    show_main_window_with_log(app, "agent-menu-open");
+                                });
                             }
                             "restart" => {
+                                append_runtime_log("tray-menu", "agent-restart requested");
                                 let agent_state = app.state::<AgentState>();
                                 let job = app.state::<Job>();
                                 let resource_dir = if cfg!(debug_assertions) {
@@ -961,6 +1176,10 @@ pub fn run() {
 
                                 if let Err(e) = start_local_api_server_for_mode(&job, &resource_dir)
                                 {
+                                    append_runtime_log(
+                                        "tray-menu",
+                                        &format!("agent-restart local api failed: {e}"),
+                                    );
                                     eprintln!("Failed to ensure local API server: {}", e);
                                     return;
                                 }
@@ -968,9 +1187,7 @@ pub fn run() {
                                 let mut api_url = None;
                                 if let Some(config_path) = default_agent_config_path() {
                                     if let Ok(content) = std::fs::read_to_string(&config_path) {
-                                        if let Ok(json) =
-                                            parse_json_config(&content)
-                                        {
+                                        if let Ok(json) = parse_json_config(&content) {
                                             if let Some(url) =
                                                 json.get("apiUrl").and_then(|v| v.as_str())
                                             {
@@ -979,18 +1196,27 @@ pub fn run() {
                                         }
                                     }
                                 }
-                                let _ = spawn_agent_only_process(
+                                if let Err(error) = spawn_agent_only_process(
                                     app.clone(),
                                     &agent_state,
                                     &job,
                                     &resource_dir,
                                     api_url.as_deref(),
-                                );
+                                ) {
+                                    append_runtime_log(
+                                        "tray-menu",
+                                        &format!("agent-restart spawn failed: {error}"),
+                                    );
+                                }
                             }
                             "toggle_startup" => {
                                 let is_checked = startup_i_clone.is_checked().unwrap_or(false);
                                 let next_checked = !is_checked;
                                 if let Err(e) = set_startup_registry(next_checked, true) {
+                                    append_runtime_log(
+                                        "tray-menu",
+                                        &format!("agent-startup toggle failed: {e}"),
+                                    );
                                     eprintln!("Failed to set startup registry: {}", e);
                                     return;
                                 }
@@ -1008,10 +1234,9 @@ pub fn run() {
                             } = event
                             {
                                 let app = tray.app_handle();
-                                if let Some(window) = app.get_webview_window("main") {
-                                    let _ = window.show();
-                                    let _ = window.set_focus();
-                                }
+                                run_logged_action("tray-click", "agent-left-click", || {
+                                    show_main_window_with_log(app, "agent-tray-left-click");
+                                });
                             }
                         })
                         .build(app)?;
@@ -1026,10 +1251,7 @@ pub fn run() {
                 start_local_api_server_for_mode(&job, &resource_dir)?;
 
                 // Show window for Viewer
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
+                show_main_window_with_log(app.handle(), "viewer-startup");
 
                 // System Tray Menu Setup for Viewer
                 let quit_i = MenuItemBuilder::new("Exit").id("quit").build(app)?;
@@ -1054,15 +1276,18 @@ pub fn run() {
                                 app.exit(0);
                             }
                             "open" => {
-                                if let Some(window) = app.get_webview_window("main") {
-                                    let _ = window.show();
-                                    let _ = window.set_focus();
-                                }
+                                run_logged_action("tray-menu", "viewer-open", || {
+                                    show_main_window_with_log(app, "viewer-menu-open");
+                                });
                             }
                             "toggle_startup" => {
                                 let is_checked = startup_i_clone.is_checked().unwrap_or(false);
                                 let next_checked = !is_checked;
                                 if let Err(e) = set_startup_registry(next_checked, false) {
+                                    append_runtime_log(
+                                        "tray-menu",
+                                        &format!("viewer-startup toggle failed: {e}"),
+                                    );
                                     eprintln!("Failed to set startup registry: {}", e);
                                     return;
                                 }
@@ -1080,10 +1305,9 @@ pub fn run() {
                             } = event
                             {
                                 let app = tray.app_handle();
-                                if let Some(window) = app.get_webview_window("main") {
-                                    let _ = window.show();
-                                    let _ = window.set_focus();
-                                }
+                                run_logged_action("tray-click", "viewer-left-click", || {
+                                    show_main_window_with_log(app, "viewer-tray-left-click");
+                                });
                             }
                         })
                         .build(app)?;
@@ -1095,8 +1319,11 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
+                append_runtime_log("window", "close requested; hiding window");
                 api.prevent_close();
-                let _ = window.hide();
+                if let Err(error) = window.hide() {
+                    append_runtime_log("window", &format!("hide failed: {error}"));
+                }
             }
         })
         .run(tauri::generate_context!())
@@ -1289,10 +1516,8 @@ mod registry_tests {
 
     #[test]
     fn test_config_registration_accepts_utf8_bom_json() {
-        let config_path = std::env::temp_dir().join(format!(
-            "wonremote-bom-config-{}.json",
-            std::process::id()
-        ));
+        let config_path =
+            std::env::temp_dir().join(format!("wonremote-bom-config-{}.json", std::process::id()));
         std::fs::write(
             &config_path,
             "\u{feff}{\"installId\":\"agent-test\",\"registeredDeviceId\":\"123-45-67890:AGENT-TEST\"}",
@@ -1302,5 +1527,33 @@ mod registry_tests {
         assert!(config_has_registered_device_id(&config_path));
 
         let _ = std::fs::remove_file(config_path);
+    }
+
+    #[test]
+    fn test_runtime_log_path_uses_appdata_wonremote_logs() {
+        let appdata = PathBuf::from(r"C:\Users\Test\AppData\Roaming");
+
+        assert_eq!(
+            runtime_log_file_from_appdata(&appdata),
+            PathBuf::from(r"C:\Users\Test\AppData\Roaming\WonRemote\logs\wonremote-tauri.log"),
+        );
+    }
+
+    #[test]
+    fn test_runtime_log_append_creates_directory_and_file() {
+        let root =
+            std::env::temp_dir().join(format!("wonremote-runtime-log-test-{}", std::process::id()));
+        let log_path = runtime_log_file_from_appdata(&root);
+        let _ = std::fs::remove_dir_all(root.join("WonRemote"));
+
+        append_runtime_log_entry(&log_path, "test", "double-click failure probe")
+            .expect("runtime log append should create parent directory and file");
+
+        let content = std::fs::read_to_string(&log_path)
+            .expect("runtime log file should be readable after append");
+        assert!(content.contains("[test]"));
+        assert!(content.contains("double-click failure probe"));
+
+        let _ = std::fs::remove_dir_all(root.join("WonRemote"));
     }
 }
