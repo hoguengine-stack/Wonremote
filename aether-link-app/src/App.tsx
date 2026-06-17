@@ -63,6 +63,7 @@ import {
 } from "./domain/sessionDiagnostics";
 import { getViewerVersion } from "./domain/versioning";
 import { shouldNotifyUpdate, shouldReloadViewerForUpdate } from "./domain/updatePolicy";
+import { shouldPollViewerTileFallback } from "./domain/realtimeTransportPolicy";
 import {
   buildKeyboardCommand,
   buildMouseCommand,
@@ -1546,7 +1547,8 @@ function RemoteSessionPanel({
       }
     };
 
-    if (isViewerFirebaseEnabled()) {
+    const firebaseEnabled = isViewerFirebaseEnabled();
+    if (firebaseEnabled) {
       void startFirebaseViewerWebRtcTransport(sessionId, {
         onFrame: drawTileFrame,
         onState: (state) => {
@@ -1569,12 +1571,20 @@ function RemoteSessionPanel({
       });
     }
 
+    const shouldPollTiles = shouldPollViewerTileFallback({
+      firebaseEnabled,
+      env: import.meta.env,
+    });
+
     const pollTiles = async () => {
+      if (!shouldPollTiles) {
+        return;
+      }
       try {
         const tileData = await fetchTiles(sessionId);
         if (tileData.tiles?.length) {
           setStreamTransportState((state) =>
-            state.startsWith("webrtc-connected") ? state : "fallback-polling",
+            state.startsWith("webrtc-connected") ? state : "diagnostic-fallback-polling",
           );
         }
         drawTileFrame(tileData);
@@ -1584,16 +1594,22 @@ function RemoteSessionPanel({
       }
     };
 
-    void pollTiles();
-
-    const intervalId = setInterval(() => {
+    if (shouldPollTiles) {
       void pollTiles();
-    }, 100);
+    }
+
+    const intervalId = shouldPollTiles
+      ? setInterval(() => {
+          void pollTiles();
+        }, 100)
+      : null;
 
     return () => {
       active = false;
       webRtcTransport?.close();
-      clearInterval(intervalId);
+      if (intervalId) {
+        clearInterval(intervalId);
+      }
     };
   }, [device?.id, sessionId, session?.id, session?.state]);
 

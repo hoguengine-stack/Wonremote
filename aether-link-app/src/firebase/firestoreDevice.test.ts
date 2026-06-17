@@ -51,6 +51,8 @@ describe("firestore device mapping", () => {
         lastFrameAt: "2026-06-16T06:30:00.000Z",
         lastError: `  ${"DXGI access denied ".repeat(40)}`,
         transport: "firestore-fallback",
+        rtcState: "unavailable",
+        rtcError: `  ${"node-datachannel unavailable ".repeat(40)}`,
       },
     });
 
@@ -80,6 +82,8 @@ describe("firestore device mapping", () => {
         lastFrameAt: "2026-06-16T06:30:00.000Z",
         lastError: "DXGI access denied ".repeat(40).trim().slice(0, 500),
         transport: "firestore-fallback",
+        rtcState: "unavailable",
+        rtcError: "node-datachannel unavailable ".repeat(40).trim().slice(0, 500),
       },
     });
   });

@@ -95,6 +95,15 @@ describe("viewer API routing", () => {
     });
   });
 
+  it("explains local API failures as a configuration/runtime problem", async () => {
+    mockState.firebaseEnabled = false;
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw new Error("connection refused");
+    }));
+
+    await expect(fetchDevices()).rejects.toThrow("Firebase 설정 또는 내장 API 실행 상태를 확인");
+  });
+
   it("signs out of Firebase when the Viewer logs out in Firebase mode", async () => {
     await logoutAdmin();
 
@@ -102,7 +111,7 @@ describe("viewer API routing", () => {
     expect(logoutViewerWithFirebase).toHaveBeenCalled();
   });
 
-  it("reads stream tiles from Firestore instead of the local API when Firebase is enabled", async () => {
+  it("keeps the diagnostic Firestore tile fallback routed away from the local API", async () => {
     const localFetch = vi.fn(async () => {
       throw new Error("local API must not be called");
     });

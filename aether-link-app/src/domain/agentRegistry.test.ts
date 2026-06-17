@@ -285,6 +285,8 @@ describe("agent registry domain", () => {
         lastFrameAt: "2026-06-16T06:30:00.000Z",
         lastError: "DXGI access denied",
         transport: "firestore-fallback",
+        rtcState: "unavailable",
+        rtcError: "node-datachannel unavailable",
       },
     });
 
@@ -298,6 +300,8 @@ describe("agent registry domain", () => {
       lastFrameAt: "2026-06-16T06:30:00.000Z",
       lastError: "DXGI access denied",
       transport: "firestore-fallback",
+      rtcState: "unavailable",
+      rtcError: "node-datachannel unavailable",
     });
   });
 

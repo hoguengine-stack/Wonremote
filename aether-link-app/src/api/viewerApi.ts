@@ -42,6 +42,8 @@ import {
 } from "../firebase/viewerFirebase";
 
 const API_BASE_URL = import.meta.env.VITE_WONREMOTE_API_URL ?? "http://127.0.0.1:8787";
+const LOCAL_API_CONNECTION_ERROR =
+  "WonRemote 연결에 실패했습니다. Firebase 설정 또는 내장 API 실행 상태를 확인해 주세요.";
 
 export async function loginAdmin(username: string, password: string): Promise<void> {
   if (isViewerFirebaseEnabled()) {
@@ -116,7 +118,7 @@ export async function registerFirstRunAgent(input: AgentFirstRunInput & { apiUrl
         }),
       });
     } catch {
-      throw new Error("WonRemote API 서버에 연결할 수 없습니다.");
+      throw new Error(LOCAL_API_CONNECTION_ERROR);
     }
 
     const payload = (await response.json()) as AgentFirstRunResult & { error?: string };
@@ -367,7 +369,7 @@ async function request<T>(path: string, options: { method?: string; body?: unkno
       body: options.body ? JSON.stringify(options.body) : undefined,
     });
   } catch {
-    throw new Error("로컬 API 서버에 연결할 수 없습니다.");
+    throw new Error(LOCAL_API_CONNECTION_ERROR);
   }
 
   const payload = (await response.json()) as T & { error?: string };

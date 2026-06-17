@@ -34,12 +34,17 @@ import { buildFirestoreDevice, mapFirestoreDevice, mergeFirstRunDeviceDocument }
 import { stripUndefinedFields } from "./firestorePayload";
 import { getWonRemoteFirebaseServices } from "./firebaseServices";
 import { throwExplainedFirebaseAuthError } from "./firebaseError";
+import { bindAgentDataChannelStatus, formatNodeDataChannelUnavailableError } from "./agentWebRtcStatus";
 
 type AgentFirebaseEnv = Record<string, string | undefined>;
 
 export interface AgentWebRtcTransport {
   close: () => Promise<void>;
   sendFrame: (frame: { tiles: any[]; width: number; height: number }) => boolean;
+}
+
+export interface AgentWebRtcTransportHandlers {
+  onState?: (state: "open" | "closed" | "error", error?: string) => void;
 }
 
 export interface ActiveFirebaseSession {
@@ -279,6 +284,7 @@ export async function postSessionTilesWithFirebase(
 
 export async function startAgentWebRtcTransportWithFirebase(
   sessionId: string,
+  handlers: AgentWebRtcTransportHandlers = {},
   env: AgentFirebaseEnv = process.env,
 ): Promise<AgentWebRtcTransport | null> {
   const services = getAgentFirebaseServices(env);
@@ -294,9 +300,6 @@ export async function startAgentWebRtcTransportWithFirebase(
   }
 
   const PeerConnectionCtor = await loadAgentPeerConnectionCtor();
-  if (!PeerConnectionCtor) {
-    return null;
-  }
 
   requireTurnWhenRelayOnly(env);
   const peer = new PeerConnectionCtor({
@@ -320,9 +323,7 @@ export async function startAgentWebRtcTransportWithFirebase(
 
   peer.ondatachannel = (event: any) => {
     tileChannel = event.channel;
-    event.channel.onopen = () => console.log("[WebRTC] Agent data channel state: open");
-    event.channel.onclose = () => console.log("[WebRTC] Agent data channel state: closed");
-    event.channel.onerror = () => console.warn("[WebRTC] Agent data channel error.");
+    bindAgentDataChannelStatus(event.channel, handlers);
   };
 
   await peer.setRemoteDescription({ type: "offer", sdp: offer.sdp } as any);
@@ -378,13 +379,12 @@ export async function startAgentWebRtcTransportWithFirebase(
   };
 }
 
-async function loadAgentPeerConnectionCtor(): Promise<any | null> {
+async function loadAgentPeerConnectionCtor(): Promise<any> {
   try {
     const rtcModule = await import("node-datachannel/polyfill");
     return rtcModule.RTCPeerConnection;
   } catch (error) {
-    console.warn(`[WebRTC] node-datachannel is unavailable; realtime tile channel cannot start: ${error instanceof Error ? error.message : error}`);
-    return null;
+    throw new Error(formatNodeDataChannelUnavailableError(error));
   }
 }
 

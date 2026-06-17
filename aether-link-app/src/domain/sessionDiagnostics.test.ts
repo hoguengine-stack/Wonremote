@@ -18,7 +18,7 @@ describe("session diagnostics", () => {
         lastError: "DXGI access denied",
         transport: "firestore-fallback",
       },
-      "fallback-polling",
+      "diagnostic-fallback-polling",
       12,
       2,
     );
@@ -30,6 +30,7 @@ describe("session diagnostics", () => {
     expect(lines).toContain("display=#2");
     expect(lines).toContain("stream-error=DXGI access denied");
     expect(lines).toContain("fallback-errors=2");
+    expect(lines).toContain("viewer=diagnostic-fallback-polling");
   });
 
   it("warns when the agent is not elevated", () => {
@@ -50,5 +51,40 @@ describe("session diagnostics", () => {
       "webrtc=unavailable",
     );
     expect(formatStreamDiagnostics(undefined, "webrtc-error: ice failed", 0, 0)).toContain("turn=check-required");
+  });
+
+  it("formats agent-reported WebRTC unavailable reasons", () => {
+    const lines = formatStreamDiagnostics(
+      {
+        desired: true,
+        running: true,
+        transport: "none",
+        rtcState: "unavailable",
+        rtcError: "node-datachannel unavailable",
+      },
+      "webrtc-waiting",
+      0,
+      0,
+    );
+
+    expect(lines).toContain("webrtc=unavailable");
+    expect(lines).toContain("webrtc-error=node-datachannel unavailable");
+    expect(lines).toContain("tile-path=none");
+  });
+
+  it("does not show WebRTC noise when the agent reports no realtime transport attempt", () => {
+    const lines = formatStreamDiagnostics(
+      {
+        desired: false,
+        running: false,
+        transport: "none",
+        rtcState: "none",
+      },
+      "idle",
+      0,
+      0,
+    );
+
+    expect(lines).not.toContain("webrtc=none");
   });
 });

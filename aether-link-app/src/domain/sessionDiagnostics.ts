@@ -19,6 +19,15 @@ export function formatStreamDiagnostics(
   lines.push(`stream=${diagnostics.running ? "running" : diagnostics.desired ? "recovering" : "stopped"}`);
   lines.push(`restart=${diagnostics.restartCount ?? 0}`);
   lines.push(`tile-path=${diagnostics.transport ?? "unknown"}`);
+  if (diagnostics.rtcState && diagnostics.rtcState !== "none") {
+    lines.push(`webrtc=${diagnostics.rtcState === "ready" ? "ready" : diagnostics.rtcState}`);
+    if (diagnostics.rtcState === "unavailable") {
+      lines.push("turn=check-required");
+    }
+  }
+  if (diagnostics.rtcError) {
+    lines.push(`webrtc-error=${diagnostics.rtcError}`);
+  }
   if (diagnostics.loopSleepMs) {
     lines.push(`sleep=${diagnostics.loopSleepMs}ms`);
   }
@@ -38,6 +47,9 @@ export function formatStreamDiagnostics(
 }
 
 function appendRealtimeTransportDiagnostics(lines: string[], transportState: string): void {
+  if (transportState === "diagnostic-fallback-polling") {
+    lines.push("viewer=diagnostic-fallback-polling");
+  }
   if (
     transportState.startsWith("webrtc-unavailable") ||
     transportState.startsWith("webrtc-error") ||

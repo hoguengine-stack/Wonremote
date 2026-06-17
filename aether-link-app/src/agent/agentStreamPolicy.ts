@@ -2,6 +2,7 @@ export type StreamCaptureBackend = "dxgi" | "gdi";
 
 export interface FirestoreTileFallbackPolicy {
   enabled: boolean;
+  diagnosticOnly: boolean;
   maxFrames: number;
   maxDurationMs: number;
 }
@@ -38,7 +39,8 @@ export function resolveFirestoreTileFallbackPolicy(
 ): FirestoreTileFallbackPolicy {
   const allowValue = env.WONREMOTE_ALLOW_FIRESTORE_STREAM_FALLBACK?.trim().toLowerCase();
   return {
-    enabled: allowValue === "1" || allowValue === "true" || allowValue === "yes",
+    enabled: allowValue === "diagnostic",
+    diagnosticOnly: true,
     maxFrames: parseBoundedInteger(env.WONREMOTE_FIRESTORE_STREAM_FALLBACK_MAX_FRAMES, 60, 1, 300),
     maxDurationMs: parseBoundedInteger(env.WONREMOTE_FIRESTORE_STREAM_FALLBACK_MAX_MS, 15_000, 1_000, 60_000),
   };

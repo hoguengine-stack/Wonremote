@@ -36,6 +36,8 @@ export interface AgentStreamDiagnostics {
   lastFrameAt?: string;
   lastError?: string;
   transport?: "webrtc" | "firestore-fallback" | "local-api" | "none";
+  rtcState?: "none" | "starting" | "ready" | "unavailable";
+  rtcError?: string;
 }
 
 export interface DeviceDisplayInfo {

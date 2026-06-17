@@ -118,6 +118,8 @@ let streamRestartCount = 0;
 let lastStreamFrameAt: string | undefined;
 let lastStreamError: string | undefined;
 let streamTransport: AgentStreamDiagnostics["transport"] = "none";
+let rtcState: AgentStreamDiagnostics["rtcState"] = "none";
+let rtcError: string | undefined;
 let firestoreTileFallbackStartedAtMs = Date.now();
 let firestoreTileFallbackFrameCount = 0;
 let firestoreTileFallbackLimitLogged = false;
@@ -161,18 +163,38 @@ function startStreaming(
   const pocPath = POC_PATH;
   const sessionId = `session-${deviceId}`;
   if (USE_FIREBASE) {
-    void startAgentWebRtcTransportWithFirebase(sessionId)
+    rtcState = "starting";
+    rtcError = undefined;
+    void startAgentWebRtcTransportWithFirebase(sessionId, {
+      onState: (state, error) => {
+        if (state === "open") {
+          rtcState = "ready";
+          rtcError = undefined;
+          return;
+        }
+        if (state === "closed") {
+          markWebRtcUnavailable("WebRTC data channel closed.");
+          return;
+        }
+        markWebRtcUnavailable(error ?? "WebRTC data channel failed.");
+      },
+    })
       .then(async (transport) => {
         if (!transport || generation !== streamGeneration) {
           await transport?.close();
+          if (generation === streamGeneration) {
+            markWebRtcUnavailable("WebRTC offer or native realtime channel was unavailable.");
+          }
           return;
         }
         await webRtcTransport?.close();
         webRtcTransport = transport;
+        rtcState = "ready";
+        rtcError = undefined;
         console.log("[WebRTC] Agent tile data channel transport is ready.");
       })
       .catch((error) => {
-        console.warn(`[WebRTC] Agent transport unavailable: ${error instanceof Error ? error.message : error}`);
+        markWebRtcUnavailable(error instanceof Error ? error.message : String(error));
       });
   }
   
@@ -306,12 +328,21 @@ function stopSessionPolling() {
   void webRtcTransport?.close();
   webRtcTransport = null;
   streamTransport = "none";
+  rtcState = "none";
+  rtcError = undefined;
   resetFirestoreTileFallbackBudget();
   isSessionActive = false;
   if (sessionPollIntervalId) {
     clearInterval(sessionPollIntervalId);
     sessionPollIntervalId = null;
   }
+}
+
+function markWebRtcUnavailable(reason: string) {
+  rtcState = "unavailable";
+  rtcError = reason.slice(0, 500);
+  lastStreamError = `WebRTC realtime tile channel unavailable: ${rtcError}`;
+  console.warn(`[WebRTC] Agent transport unavailable: ${rtcError}`);
 }
 
 function resetFirestoreTileFallbackBudget() {
@@ -327,9 +358,9 @@ function logFirestoreTileFallbackLimit() {
   firestoreTileFallbackLimitLogged = true;
   const reason = FIRESTORE_TILE_FALLBACK_POLICY.enabled
     ? `diagnostic budget exceeded (${FIRESTORE_TILE_FALLBACK_POLICY.maxFrames} frames or ${FIRESTORE_TILE_FALLBACK_POLICY.maxDurationMs}ms)`
-    : "disabled by default";
+    : "disabled for production; set WONREMOTE_ALLOW_FIRESTORE_STREAM_FALLBACK=diagnostic only for short diagnostics";
   lastStreamError =
-    `WebRTC tile channel unavailable; Firestore tile fallback is ${reason}. Configure TURN/WebRTC or set WONREMOTE_ALLOW_FIRESTORE_STREAM_FALLBACK=1 only for short diagnostics.`;
+    `WebRTC tile channel unavailable; Firestore tile fallback is ${reason}. Configure TURN/WebRTC for production traffic.`;
   console.warn(`[Firebase Stream] ${lastStreamError}`);
 }
 
@@ -1273,6 +1304,8 @@ function buildStreamDiagnostics(): AgentStreamDiagnostics {
     lastFrameAt: lastStreamFrameAt,
     lastError: lastStreamError,
     transport: streamTransport,
+    rtcState,
+    rtcError,
   };
 }
 

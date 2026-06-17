@@ -35,11 +35,19 @@ describe("agent stream policy", () => {
     expect(nextStreamRestartDelayMs(99)).toBe(5000);
   });
 
-  it("keeps Firestore tile streaming disabled unless explicitly allowed", () => {
+  it("keeps Firestore tile streaming disabled for production even when legacy flags are set", () => {
     expect(resolveFirestoreTileFallbackPolicy({}).enabled).toBe(false);
     expect(resolveFirestoreTileFallbackPolicy({ WONREMOTE_ALLOW_FIRESTORE_STREAM_FALLBACK: "0" }).enabled).toBe(false);
     expect(resolveFirestoreTileFallbackPolicy({ WONREMOTE_ALLOW_FIRESTORE_STREAM_FALLBACK: "true" })).toMatchObject({
+      enabled: false,
+      diagnosticOnly: true,
+    });
+  });
+
+  it("allows Firestore tile streaming only as an explicit diagnostic path", () => {
+    expect(resolveFirestoreTileFallbackPolicy({ WONREMOTE_ALLOW_FIRESTORE_STREAM_FALLBACK: "diagnostic" })).toMatchObject({
       enabled: true,
+      diagnosticOnly: true,
       maxFrames: 60,
       maxDurationMs: 15_000,
     });
@@ -47,7 +55,7 @@ describe("agent stream policy", () => {
 
   it("caps Firestore tile fallback to a short diagnostic budget", () => {
     const policy = resolveFirestoreTileFallbackPolicy({
-      WONREMOTE_ALLOW_FIRESTORE_STREAM_FALLBACK: "1",
+      WONREMOTE_ALLOW_FIRESTORE_STREAM_FALLBACK: "diagnostic",
       WONREMOTE_FIRESTORE_STREAM_FALLBACK_MAX_FRAMES: "2",
       WONREMOTE_FIRESTORE_STREAM_FALLBACK_MAX_MS: "3000",
     });

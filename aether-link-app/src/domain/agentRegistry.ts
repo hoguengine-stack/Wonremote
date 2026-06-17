@@ -401,6 +401,13 @@ function sanitizeStreamDiagnostics(
     diagnostics.transport === "none"
       ? diagnostics.transport
       : undefined;
+  const rtcState =
+    diagnostics.rtcState === "none" ||
+    diagnostics.rtcState === "starting" ||
+    diagnostics.rtcState === "ready" ||
+    diagnostics.rtcState === "unavailable"
+      ? diagnostics.rtcState
+      : undefined;
   return {
     backend,
     desired: typeof diagnostics.desired === "boolean" ? diagnostics.desired : undefined,
@@ -426,6 +433,11 @@ function sanitizeStreamDiagnostics(
         ? diagnostics.lastError.trim().slice(0, 500)
         : undefined,
     transport,
+    rtcState,
+    rtcError:
+      typeof diagnostics.rtcError === "string" && diagnostics.rtcError.trim()
+        ? diagnostics.rtcError.trim().slice(0, 500)
+        : undefined,
   };
 }
 

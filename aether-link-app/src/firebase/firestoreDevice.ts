@@ -169,6 +169,13 @@ function sanitizeStreamDiagnostics(value: unknown): ManagedDevice["streamDiagnos
     raw.transport === "none"
       ? raw.transport
       : undefined;
+  const rtcState =
+    raw.rtcState === "none" ||
+    raw.rtcState === "starting" ||
+    raw.rtcState === "ready" ||
+    raw.rtcState === "unavailable"
+      ? raw.rtcState
+      : undefined;
   return {
     backend,
     desired: typeof raw.desired === "boolean" ? raw.desired : undefined,
@@ -190,6 +197,9 @@ function sanitizeStreamDiagnostics(value: unknown): ManagedDevice["streamDiagnos
     lastError:
       typeof raw.lastError === "string" && raw.lastError.trim() ? raw.lastError.trim().slice(0, 500) : undefined,
     transport,
+    rtcState,
+    rtcError:
+      typeof raw.rtcError === "string" && raw.rtcError.trim() ? raw.rtcError.trim().slice(0, 500) : undefined,
   };
 }
 
