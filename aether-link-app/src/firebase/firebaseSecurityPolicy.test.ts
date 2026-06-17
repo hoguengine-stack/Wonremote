@@ -41,7 +41,7 @@ describe("Firebase security deployment policy", () => {
     expect(rules).toContain("function isOwnSessionCreate(sessionId)");
     expect(rules).toContain("function isOwnSessionClose(sessionId)");
     expect(rules).toContain("match /sessions/{sessionId}");
-    expect(rules).toContain("allow read: if ownsSession(sessionId);");
+    expect(rules).toContain("allow read: if signedIn() && resource.data.ownerUid == request.auth.uid;");
     expect(rules).toContain("allow create: if isOwnSessionCreate(sessionId);");
     expect(rules).toContain("allow update: if isOwnSessionClose(sessionId);");
     expect(rules).not.toContain("allow read, update: if ownsSession(sessionId);");
@@ -110,17 +110,17 @@ describe("Firebase security deployment policy", () => {
     expect(enqueueCommandBlock).not.toContain("request.data?.deviceId");
   });
 
-  it("keeps Agent session polling constrained by ownerUid for Firestore rules compatibility", () => {
-    const source = readFileSync(resolve(repoRoot, "aether-link-app/src/firebase/agentFirebase.ts"), "utf8");
-    const start = source.indexOf("export async function fetchActiveFirebaseSessionsForAgent");
-    const end = source.indexOf("export async function postSessionTilesWithFirebase");
-    const block = source.slice(start, end);
+  it("lets Agent recovery query owned sessions without making recovery failures fatal", () => {
+    const agentEntry = readFileSync(resolve(repoRoot, "aether-link-app/src/agent/index.ts"), "utf8");
+    const agentFirebase = readFileSync(resolve(repoRoot, "aether-link-app/src/firebase/agentFirebase.ts"), "utf8");
 
-    expect(start).toBeGreaterThanOrEqual(0);
-    expect(end).toBeGreaterThan(start);
-    expect(block).toContain("requireCurrentAgentUserId");
-    expect(block).toContain('where("deviceId", "==", input.deviceId)');
-    expect(block).toContain('where("ownerUid", "==", userId)');
+    expect(agentEntry).toContain("ensureActiveFirebaseSessionRecovery");
+    expect(agentEntry).toContain("activeSessionRecoveryPermissionBlocked");
+    expect(agentEntry).toContain("warnActiveSessionRecoveryOnce");
+    expect(agentEntry).not.toContain("withAgentOperationContext(\"firebase active session recovery\"");
+    expect(agentFirebase).toContain("fetchActiveFirebaseSessionsForAgent");
+    expect(agentFirebase).toContain('where("deviceId", "==", input.deviceId)');
+    expect(agentFirebase).toContain('where("ownerUid", "==", userId)');
   });
 
   it("normalizes Firebase device metadata store names before writing to Firestore", () => {

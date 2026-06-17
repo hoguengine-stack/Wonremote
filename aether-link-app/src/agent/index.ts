@@ -134,6 +134,8 @@ let isSessionActive = false;
 let sessionPollIntervalId: any = null;
 let isCommandPollInFlight = false;
 let lastSessionPollError = "";
+let activeSessionRecoveryPermissionBlocked = false;
+let lastActiveSessionRecoveryWarning = "";
 
 
 function startStreaming(
@@ -1044,34 +1046,43 @@ async function runCommandPollTick(config: AgentLocalConfig): Promise<AgentLocalC
 }
 
 async function ensureActiveFirebaseSessionRecovery(config: AgentLocalConfig): Promise<void> {
-  if (!USE_FIREBASE || !config.registeredDeviceId || streamDesired) {
+  if (!USE_FIREBASE || !config.registeredDeviceId || streamDesired || activeSessionRecoveryPermissionBlocked) {
     return;
   }
-  const sessions = await withAgentOperationContext("firebase active session recovery", () =>
-    fetchActiveFirebaseSessionsForAgent({
-      deviceId: config.registeredDeviceId!,
-      installId: config.installId,
-    }),
-  );
-  if (sessions.length === 0) {
-    return;
-  }
-  console.log(`[Agent] Recovering active remote session after restart: ${sessions[0].id}`);
-  startStreaming(config.registeredDeviceId, currentOutputIndex, currentLoopSleepMs);
-}
 
-async function withAgentOperationContext<T>(operation: string, run: () => Promise<T>): Promise<T> {
   try {
-    return await run();
+    const sessions = await fetchActiveFirebaseSessionsForAgent({
+      deviceId: config.registeredDeviceId,
+      installId: config.installId,
+    });
+    if (sessions.length === 0) {
+      return;
+    }
+    console.log(`[Agent] Recovering active remote session after restart: ${sessions[0].id}`);
+    startStreaming(config.registeredDeviceId, currentOutputIndex, currentLoopSleepMs);
   } catch (error) {
-    const source = error instanceof Error ? error : new Error(String(error));
-    const wrapped = new Error(`[Agent ${operation}] ${source.message}`);
-    (wrapped as any).status = (source as any).status;
-    (wrapped as any).code = (source as any).code;
-    throw wrapped;
+    const message = error instanceof Error ? error.message : String(error);
+    if (isFirebasePermissionDenied(message, error)) {
+      activeSessionRecoveryPermissionBlocked = true;
+    }
+    warnActiveSessionRecoveryOnce(message);
   }
 }
 
+function warnActiveSessionRecoveryOnce(message: string): void {
+  if (message === lastActiveSessionRecoveryWarning) {
+    return;
+  }
+  lastActiveSessionRecoveryWarning = message;
+  console.warn(`[Agent firebase active session recovery skipped] ${message}`);
+}
+
+function isFirebasePermissionDenied(message: string, error: unknown): boolean {
+  const code = typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code ?? "")
+    : "";
+  return code.includes("permission-denied") || /missing or insufficient permissions/i.test(message);
+}
 
 async function sendHeartbeatWithRecovery(config: AgentLocalConfig): Promise<AgentLocalConfig> {
   try {

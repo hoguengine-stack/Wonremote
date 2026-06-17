@@ -154,7 +154,7 @@ service cloud.firestore {
     }
 
     match /sessions/{sessionId} {
-      allow read: if ownsSession(sessionId);
+      allow read: if signedIn() && resource.data.ownerUid == request.auth.uid;
       allow update: if isOwnSessionClose(sessionId);
       allow create: if isOwnSessionCreate(sessionId);
       allow delete: if false;
