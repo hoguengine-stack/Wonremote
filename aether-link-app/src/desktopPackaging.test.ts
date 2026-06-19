@@ -125,9 +125,13 @@ describe("desktop packaging scaffold", () => {
     const tauriLib = readFileSync(path.join(projectRoot, "src-tauri", "src", "lib.rs"), "utf8");
 
     expect(agentHook).toContain("NSIS_HOOK_POSTINSTALL");
-    expect(agentHook).toContain('Exec \'"$INSTDIR\\wonremote-viewer.exe" --agent\'');
+    expect(agentHook).toContain('Exec \'"$INSTDIR\\wonremote-viewer.exe" --agent --show-window\'');
+    expect(agentHook).toContain('CreateShortCut "$DESKTOP\\WonRemote Agent.lnk" "$INSTDIR\\wonremote-viewer.exe" "--agent --show-window"');
+    expect(agentHook).toContain('CreateShortCut "$SMPROGRAMS\\WonRemote\\WonRemote Agent.lnk" "$INSTDIR\\wonremote-viewer.exe" "--agent --show-window"');
     expect(agentHookX86).toContain("NSIS_HOOK_POSTINSTALL");
-    expect(agentHookX86).toContain('Exec \'"$INSTDIR\\wonremote-viewer.exe" --agent\'');
+    expect(agentHookX86).toContain('Exec \'"$INSTDIR\\wonremote-viewer.exe" --agent --show-window\'');
+    expect(agentHookX86).toContain('CreateShortCut "$DESKTOP\\WonRemote Agent.lnk" "$INSTDIR\\wonremote-viewer.exe" "--agent --show-window"');
+    expect(agentHookX86).toContain('CreateShortCut "$SMPROGRAMS\\WonRemote\\WonRemote Agent.lnk" "$INSTDIR\\wonremote-viewer.exe" "--agent --show-window"');
     expect(viewerHook).not.toContain("NSIS_HOOK_POSTINSTALL");
     expect(tauriLib).toContain("duplicate instance ignored; existing instance is already running");
     expect(tauriLib).toContain("std::process::exit(0);");

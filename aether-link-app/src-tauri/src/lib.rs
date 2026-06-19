@@ -209,8 +209,48 @@ fn runtime_log_file_from_appdata(appdata: &Path) -> PathBuf {
         .join("wonremote-tauri.log")
 }
 
+fn agent_show_window_request_file_from_appdata(appdata: &Path) -> PathBuf {
+    appdata
+        .join("WonRemote")
+        .join("agent-show-window.request")
+}
+
 fn runtime_log_path() -> Option<PathBuf> {
     env::var_os("APPDATA").map(|appdata| runtime_log_file_from_appdata(&PathBuf::from(appdata)))
+}
+
+fn agent_show_window_request_path() -> Option<PathBuf> {
+    env::var_os("APPDATA")
+        .map(|appdata| agent_show_window_request_file_from_appdata(&PathBuf::from(appdata)))
+}
+
+fn request_existing_agent_window() -> io::Result<()> {
+    if let Some(path) = agent_show_window_request_path() {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, runtime_log_timestamp())?;
+    }
+    Ok(())
+}
+
+fn consume_agent_show_window_request() -> bool {
+    let Some(path) = agent_show_window_request_path() else {
+        return false;
+    };
+    if !path.exists() {
+        return false;
+    }
+    std::fs::remove_file(path).is_ok()
+}
+
+fn start_agent_show_window_request_watcher(app: tauri::AppHandle) {
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_millis(500));
+        if consume_agent_show_window_request() {
+            show_main_window_with_log(&app, "agent-show-window-request");
+        }
+    });
 }
 
 fn append_runtime_log_entry(log_path: &Path, component: &str, message: &str) -> io::Result<()> {
@@ -723,6 +763,20 @@ fn launched_as_agent() -> bool {
         || executable_name_requests_agent()
 }
 
+fn launched_with_show_window() -> bool {
+    let args: Vec<String> = std::env::args().collect();
+    args_request_show_window(&args)
+}
+
+fn args_request_show_window(args: &[String]) -> bool {
+    args.iter().any(|arg| {
+        matches!(
+            arg.to_ascii_lowercase().as_str(),
+            "--show-window" | "--open" | "--register"
+        )
+    })
+}
+
 fn default_mode_requests_agent() -> bool {
     mode_value_requests_agent(DEFAULT_APP_MODE)
         || env::var("WONREMOTE_DEFAULT_APP_MODE")
@@ -1071,6 +1125,14 @@ pub fn run() {
     let _single_instance_guard = match try_acquire_single_instance(is_agent) {
         Ok(Some(guard)) => guard,
         Ok(None) => {
+            if is_agent && launched_with_show_window() {
+                if let Err(error) = request_existing_agent_window() {
+                    append_runtime_log(
+                        "startup",
+                        &format!("failed to request existing agent window: {error}"),
+                    );
+                }
+            }
             append_runtime_log(
                 "startup",
                 "duplicate instance ignored; existing instance is already running",
@@ -1101,6 +1163,9 @@ pub fn run() {
             let agent_state = app.state::<AgentState>();
 
             if is_agent {
+                let force_show_window = launched_with_show_window();
+                start_agent_show_window_request_watcher(app.handle().clone());
+
                 // Agent Mode Setup
                 let resource_dir = if cfg!(debug_assertions) {
                     app_root_from_manifest()
@@ -1129,6 +1194,9 @@ pub fn run() {
                         &resource_dir,
                         api_url.as_deref(),
                     )?;
+                    if force_show_window {
+                        show_main_window_with_log(app.handle(), "agent-startup-show-window");
+                    }
                 } else {
                     // Show window to register
                     show_main_window_with_log(app.handle(), "agent-registration-required");
@@ -1424,6 +1492,18 @@ mod registry_tests {
     }
 
     #[test]
+    fn test_agent_show_window_flags_are_recognized() {
+        assert!(args_request_show_window(&[
+            "wonremote-viewer.exe".to_string(),
+            "--agent".to_string(),
+            "--show-window".to_string(),
+        ]));
+        assert!(args_request_show_window(&["--open".to_string()]));
+        assert!(args_request_show_window(&["--register".to_string()]));
+        assert!(!args_request_show_window(&["--agent".to_string()]));
+    }
+
+    #[test]
     fn test_single_instance_mutex_names_are_mode_scoped() {
         assert_ne!(
             single_instance_mutex_name(false),
@@ -1559,6 +1639,16 @@ mod registry_tests {
         assert_eq!(
             runtime_log_file_from_appdata(&appdata),
             PathBuf::from(r"C:\Users\Test\AppData\Roaming\WonRemote\logs\wonremote-tauri.log"),
+        );
+    }
+
+    #[test]
+    fn test_agent_show_window_request_path_uses_appdata_wonremote() {
+        let appdata = PathBuf::from(r"C:\Users\Test\AppData\Roaming");
+
+        assert_eq!(
+            agent_show_window_request_file_from_appdata(&appdata),
+            PathBuf::from(r"C:\Users\Test\AppData\Roaming\WonRemote\agent-show-window.request"),
         );
     }
 
