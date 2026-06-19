@@ -130,7 +130,7 @@ fn single_instance_mutex_name(is_agent: bool) -> &'static str {
     }
 }
 
-fn agent_tray_interactions_enabled() -> bool {
+fn agent_tray_enabled() -> bool {
     !cfg!(target_arch = "x86")
 }
 
@@ -763,9 +763,17 @@ fn launched_as_agent() -> bool {
         || executable_name_requests_agent()
 }
 
-fn launched_with_show_window() -> bool {
+fn agent_launch_should_show_window(is_agent: bool) -> bool {
     let args: Vec<String> = std::env::args().collect();
-    args_request_show_window(&args)
+    agent_launch_should_show_window_from_args(is_agent, &args)
+}
+
+fn args_request_background_agent(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == "--agent")
+}
+
+fn agent_launch_should_show_window_from_args(is_agent: bool, args: &[String]) -> bool {
+    is_agent && (args_request_show_window(args) || !args_request_background_agent(args))
 }
 
 fn args_request_show_window(args: &[String]) -> bool {
@@ -1125,7 +1133,7 @@ pub fn run() {
     let _single_instance_guard = match try_acquire_single_instance(is_agent) {
         Ok(Some(guard)) => guard,
         Ok(None) => {
-            if is_agent && launched_with_show_window() {
+            if agent_launch_should_show_window(is_agent) {
                 if let Err(error) = request_existing_agent_window() {
                     append_runtime_log(
                         "startup",
@@ -1163,7 +1171,7 @@ pub fn run() {
             let agent_state = app.state::<AgentState>();
 
             if is_agent {
-                let force_show_window = launched_with_show_window();
+                let force_show_window = agent_launch_should_show_window(is_agent);
                 start_agent_show_window_request_watcher(app.handle().clone());
 
                 // Agent Mode Setup
@@ -1202,8 +1210,8 @@ pub fn run() {
                     show_main_window_with_log(app.handle(), "agent-registration-required");
                 }
 
-                if let Some(icon) = app.default_window_icon().cloned() {
-                    if agent_tray_interactions_enabled() {
+                if agent_tray_enabled() {
+                    if let Some(icon) = app.default_window_icon().cloned() {
                         // System Tray Menu Setup for Agent
                         let status_i = MenuItemBuilder::new("Status: Connecting")
                             .id("status")
@@ -1319,13 +1327,9 @@ pub fn run() {
                                 }
                             })
                             .build(app)?;
-                    } else {
-                        append_runtime_log(
-                            "tray",
-                            "agent x86 tray interactions disabled; icon-only mode",
-                        );
-                        let _tray = TrayIconBuilder::with_id("agent_tray").icon(icon).build(app)?;
                     }
+                } else {
+                    append_runtime_log("tray", "agent x86 tray disabled; shortcut-only mode");
                 }
             } else {
                 // Viewer Mode Setup
@@ -1504,6 +1508,30 @@ mod registry_tests {
     }
 
     #[test]
+    fn test_agent_launch_visibility_distinguishes_user_and_background_starts() {
+        assert!(!agent_launch_should_show_window_from_args(
+            false,
+            &["wonremote-viewer.exe".to_string()],
+        ));
+        assert!(!agent_launch_should_show_window_from_args(
+            true,
+            &["wonremote-viewer.exe".to_string(), "--agent".to_string()],
+        ));
+        assert!(agent_launch_should_show_window_from_args(
+            true,
+            &[
+                "wonremote-viewer.exe".to_string(),
+                "--agent".to_string(),
+                "--show-window".to_string(),
+            ],
+        ));
+        assert!(agent_launch_should_show_window_from_args(
+            true,
+            &["WonRemote Agent.exe".to_string()],
+        ));
+    }
+
+    #[test]
     fn test_single_instance_mutex_names_are_mode_scoped() {
         assert_ne!(
             single_instance_mutex_name(false),
@@ -1535,8 +1563,8 @@ mod registry_tests {
     }
 
     #[test]
-    fn test_agent_tray_interactions_are_disabled_on_x86_builds() {
-        assert_eq!(agent_tray_interactions_enabled(), !cfg!(target_arch = "x86"));
+    fn test_agent_tray_is_disabled_on_x86_builds() {
+        assert_eq!(agent_tray_enabled(), !cfg!(target_arch = "x86"));
     }
 
     #[test]
