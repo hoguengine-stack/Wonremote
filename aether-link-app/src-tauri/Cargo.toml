@@ -1,6 +1,6 @@
 [package]
 name = "wonremote-viewer"
-version = "0.1.37"
+version = "0.1.38"
 description = "WonRemote Viewer desktop shell"
 authors = ["WonRemote"]
 edition = "2021"
@@ -19,7 +19,10 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_JobObjects",
     "Win32_System_Threading",
     "Win32_Foundation",
-    "Win32_Security"
+    "Win32_Security",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi"
 ] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

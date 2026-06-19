@@ -21,13 +21,23 @@ use tauri::{
 use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
 use winreg::RegKey;
 
-use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, LPARAM, LRESULT, WPARAM,
+};
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
     SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows_sys::Win32::System::Threading::CreateMutexW;
+use windows_sys::Win32::UI::Shell::{
+    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
+};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    CreateWindowExW, DefWindowProcW, DestroyWindow, LoadIconW, RegisterClassW, IDI_APPLICATION,
+    WM_APP, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONDBLCLK, WM_RBUTTONUP, WNDCLASSW,
+    WS_EX_TOOLWINDOW, WS_OVERLAPPED,
+};
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const STARTUP_REGISTRY_PATH: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
@@ -49,6 +59,8 @@ const PUBLIC_FIREBASE_PROJECT_ID: &str = "wonremote-a7fd3";
 const PUBLIC_FIREBASE_APP_ID: &str = "1:52940136204:web:b4b4ff3e57c215e5dc3329";
 const PUBLIC_FIREBASE_STORAGE_BUCKET: &str = "wonremote-a7fd3.appspot.com";
 const PUBLIC_FIREBASE_MESSAGING_SENDER_ID: &str = "52940136204";
+const WIN32_AGENT_TRAY_ID: u32 = 37;
+const WM_WONREMOTE_AGENT_TRAY: u32 = WM_APP + 37;
 static PANIC_LOGGER: Once = Once::new();
 
 struct SingleInstanceGuard {
@@ -72,6 +84,26 @@ pub struct Job {
 
 unsafe impl Send for Job {}
 unsafe impl Sync for Job {}
+
+pub struct Win32AgentTray {
+    hwnd: HWND,
+}
+
+unsafe impl Send for Win32AgentTray {}
+unsafe impl Sync for Win32AgentTray {}
+
+impl Drop for Win32AgentTray {
+    fn drop(&mut self) {
+        unsafe {
+            let mut notify_data: NOTIFYICONDATAW = mem::zeroed();
+            notify_data.cbSize = mem::size_of::<NOTIFYICONDATAW>() as u32;
+            notify_data.hWnd = self.hwnd;
+            notify_data.uID = WIN32_AGENT_TRAY_ID;
+            let _ = Shell_NotifyIconW(NIM_DELETE, &notify_data as *const _);
+            let _ = DestroyWindow(self.hwnd);
+        }
+    }
+}
 
 impl Job {
     pub fn new() -> Result<Self, std::io::Error> {
@@ -131,7 +163,19 @@ fn single_instance_mutex_name(is_agent: bool) -> &'static str {
 }
 
 fn agent_tray_enabled() -> bool {
-    !cfg!(target_arch = "x86")
+    agent_tray_backend() == "tauri"
+}
+
+fn agent_win32_tray_enabled() -> bool {
+    agent_tray_backend() == "win32-shell"
+}
+
+fn agent_tray_backend() -> &'static str {
+    if cfg!(target_arch = "x86") {
+        "win32-shell"
+    } else {
+        "tauri"
+    }
 }
 
 fn to_wide_null(value: &str) -> Vec<u16> {
@@ -163,6 +207,7 @@ pub struct AgentState {
     pub child_process: Arc<Mutex<Option<std::process::Child>>>,
     pub status: Arc<Mutex<String>>,
     pub status_menu_item: Arc<Mutex<Option<tauri::menu::MenuItem<tauri::Wry>>>>,
+    win32_tray: Arc<Mutex<Option<Win32AgentTray>>>,
 }
 
 impl AgentState {
@@ -171,6 +216,7 @@ impl AgentState {
             child_process: Arc::new(Mutex::new(None)),
             status: Arc::new(Mutex::new("Offline".to_string())),
             status_menu_item: Arc::new(Mutex::new(None)),
+            win32_tray: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -210,9 +256,7 @@ fn runtime_log_file_from_appdata(appdata: &Path) -> PathBuf {
 }
 
 fn agent_show_window_request_file_from_appdata(appdata: &Path) -> PathBuf {
-    appdata
-        .join("WonRemote")
-        .join("agent-show-window.request")
+    appdata.join("WonRemote").join("agent-show-window.request")
 }
 
 fn runtime_log_path() -> Option<PathBuf> {
@@ -251,6 +295,94 @@ fn start_agent_show_window_request_watcher(app: tauri::AppHandle) {
             show_main_window_with_log(&app, "agent-show-window-request");
         }
     });
+}
+
+fn tray_tooltip(tooltip: &str) -> [u16; 128] {
+    let mut destination = [0u16; 128];
+    let wide = to_wide_null(tooltip);
+    let copy_len = wide.len().min(destination.len());
+    destination[..copy_len].copy_from_slice(&wide[..copy_len]);
+    destination
+}
+
+fn win32_agent_tray_class_name() -> Vec<u16> {
+    to_wide_null("WonRemoteAgentWin32Tray")
+}
+
+fn start_win32_agent_tray() -> io::Result<Win32AgentTray> {
+    unsafe {
+        let class_name = win32_agent_tray_class_name();
+        let wnd_class = WNDCLASSW {
+            lpfnWndProc: Some(win32_agent_tray_proc),
+            lpszClassName: class_name.as_ptr(),
+            ..mem::zeroed()
+        };
+
+        RegisterClassW(&wnd_class);
+
+        let hwnd = CreateWindowExW(
+            WS_EX_TOOLWINDOW,
+            class_name.as_ptr(),
+            ptr::null(),
+            WS_OVERLAPPED,
+            0,
+            0,
+            0,
+            0,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null(),
+        );
+        if hwnd.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+
+        let mut notify_data: NOTIFYICONDATAW = mem::zeroed();
+        notify_data.cbSize = mem::size_of::<NOTIFYICONDATAW>() as u32;
+        notify_data.hWnd = hwnd;
+        notify_data.uID = WIN32_AGENT_TRAY_ID;
+        notify_data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+        notify_data.uCallbackMessage = WM_WONREMOTE_AGENT_TRAY;
+        notify_data.hIcon = LoadIconW(ptr::null_mut(), IDI_APPLICATION);
+        notify_data.szTip = tray_tooltip("WonRemote Agent");
+
+        if Shell_NotifyIconW(NIM_ADD, &notify_data as *const _) == 0 {
+            let error = io::Error::last_os_error();
+            DestroyWindow(hwnd);
+            return Err(error);
+        }
+
+        append_runtime_log("tray", "agent x86 Win32 shell tray registered");
+        Ok(Win32AgentTray { hwnd })
+    }
+}
+
+unsafe extern "system" fn win32_agent_tray_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if msg == WM_WONREMOTE_AGENT_TRAY {
+        match lparam as u32 {
+            WM_LBUTTONUP | WM_LBUTTONDBLCLK | WM_RBUTTONUP | WM_RBUTTONDBLCLK => {
+                let _ = std::panic::catch_unwind(|| {
+                    append_runtime_log("tray", "agent x86 Win32 tray open requested");
+                    if let Err(error) = request_existing_agent_window() {
+                        append_runtime_log(
+                            "tray",
+                            &format!("agent x86 Win32 tray open request failed: {error}"),
+                        );
+                    }
+                });
+                return 0;
+            }
+            _ => return 0,
+        }
+    }
+
+    DefWindowProcW(hwnd, msg, wparam, lparam)
 }
 
 fn append_runtime_log_entry(log_path: &Path, component: &str, message: &str) -> io::Result<()> {
@@ -1296,8 +1428,7 @@ pub fn run() {
                                     }
                                 }
                                 "toggle_startup" => {
-                                    let is_checked =
-                                        startup_i_clone.is_checked().unwrap_or(false);
+                                    let is_checked = startup_i_clone.is_checked().unwrap_or(false);
                                     let next_checked = !is_checked;
                                     if let Err(e) = set_startup_registry(next_checked, true) {
                                         append_runtime_log(
@@ -1328,8 +1459,21 @@ pub fn run() {
                             })
                             .build(app)?;
                     }
-                } else {
-                    append_runtime_log("tray", "agent x86 tray disabled; shortcut-only mode");
+                } else if agent_win32_tray_enabled() {
+                    append_runtime_log("tray", "agent x86 Win32 tray starting");
+                    match start_win32_agent_tray() {
+                        Ok(tray) => {
+                            let mut tray_guard = agent_state.win32_tray.lock().unwrap();
+                            *tray_guard = Some(tray);
+                        }
+                        Err(error) => {
+                            append_runtime_log(
+                                "tray",
+                                &format!("agent x86 Win32 tray failed: {error}"),
+                            );
+                            show_main_window_with_log(app.handle(), "agent-win32-tray-failed");
+                        }
+                    }
                 }
             } else {
                 // Viewer Mode Setup
@@ -1564,7 +1708,22 @@ mod registry_tests {
 
     #[test]
     fn test_agent_tray_is_disabled_on_x86_builds() {
+        assert_eq!(
+            agent_tray_backend(),
+            if cfg!(target_arch = "x86") {
+                "win32-shell"
+            } else {
+                "tauri"
+            }
+        );
         assert_eq!(agent_tray_enabled(), !cfg!(target_arch = "x86"));
+        assert_eq!(agent_win32_tray_enabled(), cfg!(target_arch = "x86"));
+    }
+
+    #[test]
+    fn test_win32_agent_tray_constants_are_stable() {
+        assert_eq!(WIN32_AGENT_TRAY_ID, 37);
+        assert_eq!(WM_WONREMOTE_AGENT_TRAY, WM_APP + 37);
     }
 
     #[test]

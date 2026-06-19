@@ -135,8 +135,10 @@ describe("desktop packaging scaffold", () => {
     expect(viewerHook).not.toContain("NSIS_HOOK_POSTINSTALL");
     expect(tauriLib).toContain("duplicate instance ignored; existing instance is already running");
     expect(tauriLib).toContain("std::process::exit(0);");
-    expect(tauriLib).toContain("agent x86 tray disabled; shortcut-only mode");
+    expect(tauriLib).toContain("agent x86 Win32 tray starting");
+    expect(tauriLib).toContain("agent x86 Win32 shell tray registered");
     expect(tauriLib).not.toContain("agent x86 tray interactions disabled; icon-only mode");
+    expect(tauriLib).not.toContain("agent x86 tray disabled; shortcut-only mode");
     expect(tauriLib).not.toContain("single-instance guard already held; exiting");
   });
 
