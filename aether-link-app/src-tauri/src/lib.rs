@@ -21,18 +21,20 @@ use tauri::{
 use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
 use winreg::RegKey;
 
-use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, LPARAM, LRESULT, WPARAM,
-};
+use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE};
+#[cfg(target_arch = "x86")]
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
     SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows_sys::Win32::System::Threading::CreateMutexW;
+#[cfg(target_arch = "x86")]
 use windows_sys::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
 };
+#[cfg(target_arch = "x86")]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, LoadIconW, RegisterClassW, IDI_APPLICATION,
     WM_APP, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONDBLCLK, WM_RBUTTONUP, WNDCLASSW,
@@ -59,7 +61,9 @@ const PUBLIC_FIREBASE_PROJECT_ID: &str = "wonremote-a7fd3";
 const PUBLIC_FIREBASE_APP_ID: &str = "1:52940136204:web:b4b4ff3e57c215e5dc3329";
 const PUBLIC_FIREBASE_STORAGE_BUCKET: &str = "wonremote-a7fd3.appspot.com";
 const PUBLIC_FIREBASE_MESSAGING_SENDER_ID: &str = "52940136204";
+#[cfg(target_arch = "x86")]
 const WIN32_AGENT_TRAY_ID: u32 = 37;
+#[cfg(target_arch = "x86")]
 const WM_WONREMOTE_AGENT_TRAY: u32 = WM_APP + 37;
 static PANIC_LOGGER: Once = Once::new();
 
@@ -85,13 +89,17 @@ pub struct Job {
 unsafe impl Send for Job {}
 unsafe impl Sync for Job {}
 
+#[cfg(target_arch = "x86")]
 pub struct Win32AgentTray {
     hwnd: HWND,
 }
 
+#[cfg(target_arch = "x86")]
 unsafe impl Send for Win32AgentTray {}
+#[cfg(target_arch = "x86")]
 unsafe impl Sync for Win32AgentTray {}
 
+#[cfg(target_arch = "x86")]
 impl Drop for Win32AgentTray {
     fn drop(&mut self) {
         unsafe {
@@ -162,20 +170,14 @@ fn single_instance_mutex_name(is_agent: bool) -> &'static str {
     }
 }
 
+#[cfg(not(target_arch = "x86"))]
 fn agent_tray_enabled() -> bool {
-    agent_tray_backend() == "tauri"
+    true
 }
 
-fn agent_win32_tray_enabled() -> bool {
-    agent_tray_backend() == "win32-shell"
-}
-
-fn agent_tray_backend() -> &'static str {
-    if cfg!(target_arch = "x86") {
-        "win32-shell"
-    } else {
-        "tauri"
-    }
+#[cfg(target_arch = "x86")]
+fn agent_tray_enabled() -> bool {
+    false
 }
 
 fn to_wide_null(value: &str) -> Vec<u16> {
@@ -207,6 +209,7 @@ pub struct AgentState {
     pub child_process: Arc<Mutex<Option<std::process::Child>>>,
     pub status: Arc<Mutex<String>>,
     pub status_menu_item: Arc<Mutex<Option<tauri::menu::MenuItem<tauri::Wry>>>>,
+    #[cfg(target_arch = "x86")]
     win32_tray: Arc<Mutex<Option<Win32AgentTray>>>,
 }
 
@@ -216,6 +219,7 @@ impl AgentState {
             child_process: Arc::new(Mutex::new(None)),
             status: Arc::new(Mutex::new("Offline".to_string())),
             status_menu_item: Arc::new(Mutex::new(None)),
+            #[cfg(target_arch = "x86")]
             win32_tray: Arc::new(Mutex::new(None)),
         }
     }
@@ -297,6 +301,7 @@ fn start_agent_show_window_request_watcher(app: tauri::AppHandle) {
     });
 }
 
+#[cfg(target_arch = "x86")]
 fn tray_tooltip(tooltip: &str) -> [u16; 128] {
     let mut destination = [0u16; 128];
     let wide = to_wide_null(tooltip);
@@ -305,10 +310,12 @@ fn tray_tooltip(tooltip: &str) -> [u16; 128] {
     destination
 }
 
+#[cfg(target_arch = "x86")]
 fn win32_agent_tray_class_name() -> Vec<u16> {
     to_wide_null("WonRemoteAgentWin32Tray")
 }
 
+#[cfg(target_arch = "x86")]
 fn start_win32_agent_tray() -> io::Result<Win32AgentTray> {
     unsafe {
         let class_name = win32_agent_tray_class_name();
@@ -358,6 +365,7 @@ fn start_win32_agent_tray() -> io::Result<Win32AgentTray> {
     }
 }
 
+#[cfg(target_arch = "x86")]
 unsafe extern "system" fn win32_agent_tray_proc(
     hwnd: HWND,
     msg: u32,
@@ -384,6 +392,24 @@ unsafe extern "system" fn win32_agent_tray_proc(
 
     DefWindowProcW(hwnd, msg, wparam, lparam)
 }
+
+#[cfg(target_arch = "x86")]
+fn start_arch_specific_agent_tray(app: &tauri::App, agent_state: &tauri::State<'_, AgentState>) {
+    append_runtime_log("tray", "agent x86 Win32 tray starting");
+    match start_win32_agent_tray() {
+        Ok(tray) => {
+            let mut tray_guard = agent_state.win32_tray.lock().unwrap();
+            *tray_guard = Some(tray);
+        }
+        Err(error) => {
+            append_runtime_log("tray", &format!("agent x86 Win32 tray failed: {error}"));
+            show_main_window_with_log(app.handle(), "agent-win32-tray-failed");
+        }
+    }
+}
+
+#[cfg(not(target_arch = "x86"))]
+fn start_arch_specific_agent_tray(_app: &tauri::App, _agent_state: &tauri::State<'_, AgentState>) {}
 
 fn append_runtime_log_entry(log_path: &Path, component: &str, message: &str) -> io::Result<()> {
     if let Some(parent) = log_path.parent() {
@@ -1459,21 +1485,8 @@ pub fn run() {
                             })
                             .build(app)?;
                     }
-                } else if agent_win32_tray_enabled() {
-                    append_runtime_log("tray", "agent x86 Win32 tray starting");
-                    match start_win32_agent_tray() {
-                        Ok(tray) => {
-                            let mut tray_guard = agent_state.win32_tray.lock().unwrap();
-                            *tray_guard = Some(tray);
-                        }
-                        Err(error) => {
-                            append_runtime_log(
-                                "tray",
-                                &format!("agent x86 Win32 tray failed: {error}"),
-                            );
-                            show_main_window_with_log(app.handle(), "agent-win32-tray-failed");
-                        }
-                    }
+                } else {
+                    start_arch_specific_agent_tray(app, &agent_state);
                 }
             } else {
                 // Viewer Mode Setup
@@ -1708,18 +1721,17 @@ mod registry_tests {
 
     #[test]
     fn test_agent_tray_is_disabled_on_x86_builds() {
-        assert_eq!(
-            agent_tray_backend(),
-            if cfg!(target_arch = "x86") {
-                "win32-shell"
-            } else {
-                "tauri"
-            }
-        );
-        assert_eq!(agent_tray_enabled(), !cfg!(target_arch = "x86"));
-        assert_eq!(agent_win32_tray_enabled(), cfg!(target_arch = "x86"));
+        #[cfg(target_arch = "x86")]
+        {
+            assert!(!agent_tray_enabled());
+        }
+        #[cfg(not(target_arch = "x86"))]
+        {
+            assert!(agent_tray_enabled());
+        }
     }
 
+    #[cfg(target_arch = "x86")]
     #[test]
     fn test_win32_agent_tray_constants_are_stable() {
         assert_eq!(WIN32_AGENT_TRAY_ID, 37);

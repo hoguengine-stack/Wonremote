@@ -142,6 +142,18 @@ describe("desktop packaging scaffold", () => {
     expect(tauriLib).not.toContain("single-instance guard already held; exiting");
   });
 
+  it("compile-gates the x86 native tray so x64 builds cannot compile that code path", () => {
+    const tauriLib = readFileSync(path.join(projectRoot, "src-tauri", "src", "lib.rs"), "utf8");
+
+    expect(tauriLib).toContain('#[cfg(target_arch = "x86")]\npub struct Win32AgentTray');
+    expect(tauriLib).toContain('#[cfg(target_arch = "x86")]\nfn start_win32_agent_tray');
+    expect(tauriLib).toContain('#[cfg(target_arch = "x86")]\nunsafe extern "system" fn win32_agent_tray_proc');
+    expect(tauriLib).toContain('#[cfg(not(target_arch = "x86"))]\nfn agent_tray_enabled() -> bool');
+    expect(tauriLib).toContain('#[cfg(target_arch = "x86")]\nfn start_arch_specific_agent_tray');
+    expect(tauriLib).toContain('#[cfg(not(target_arch = "x86"))]\nfn start_arch_specific_agent_tray');
+    expect(tauriLib).not.toContain('if cfg!(target_arch = "x86")');
+  });
+
   it("exposes desktop packaging npm scripts", () => {
     expect(packageJson.scripts).toMatchObject({
       "desktop:dev": "tauri dev",
