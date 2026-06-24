@@ -145,13 +145,35 @@ describe("desktop packaging scaffold", () => {
   it("compile-gates the x86 native tray so x64 builds cannot compile that code path", () => {
     const tauriLib = readFileSync(path.join(projectRoot, "src-tauri", "src", "lib.rs"), "utf8");
 
-    expect(tauriLib).toContain('#[cfg(target_arch = "x86")]\npub struct Win32AgentTray');
-    expect(tauriLib).toContain('#[cfg(target_arch = "x86")]\nfn start_win32_agent_tray');
-    expect(tauriLib).toContain('#[cfg(target_arch = "x86")]\nunsafe extern "system" fn win32_agent_tray_proc');
-    expect(tauriLib).toContain('#[cfg(not(target_arch = "x86"))]\nfn agent_tray_enabled() -> bool');
-    expect(tauriLib).toContain('#[cfg(target_arch = "x86")]\nfn start_arch_specific_agent_tray');
-    expect(tauriLib).toContain('#[cfg(not(target_arch = "x86"))]\nfn start_arch_specific_agent_tray');
-    expect(tauriLib).not.toContain('if cfg!(target_arch = "x86")');
+    const x86OnlyPatterns = [
+      /#\[cfg\(target_arch = "x86"\)\]\s+use windows_sys::Win32::Foundation::\{HWND, LPARAM, LRESULT, WPARAM\};/,
+      /#\[cfg\(target_arch = "x86"\)\]\s+use windows_sys::Win32::UI::Shell::\{[\s\S]*?Shell_NotifyIconW[\s\S]*?NOTIFYICONDATAW[\s\S]*?\};/,
+      /#\[cfg\(target_arch = "x86"\)\]\s+use windows_sys::Win32::UI::WindowsAndMessaging::\{[\s\S]*?CreateWindowExW[\s\S]*?WNDCLASSW[\s\S]*?\};/,
+      /#\[cfg\(target_arch = "x86"\)\]\s+const WIN32_AGENT_TRAY_ID: u32 = 37;/,
+      /#\[cfg\(target_arch = "x86"\)\]\s+const WM_WONREMOTE_AGENT_TRAY: u32 = WM_APP \+ 37;/,
+      /#\[cfg\(target_arch = "x86"\)\]\s+pub struct Win32AgentTray/,
+      /#\[cfg\(target_arch = "x86"\)\]\s+unsafe impl Send for Win32AgentTray/,
+      /#\[cfg\(target_arch = "x86"\)\]\s+unsafe impl Sync for Win32AgentTray/,
+      /#\[cfg\(target_arch = "x86"\)\]\s+impl Drop for Win32AgentTray/,
+      /#\[cfg\(target_arch = "x86"\)\]\s+win32_tray: Arc<Mutex<Option<Win32AgentTray>>>,/,
+      /#\[cfg\(target_arch = "x86"\)\]\s+win32_tray: Arc::new\(Mutex::new\(None\)\),/,
+      /#\[cfg\(target_arch = "x86"\)\]\s+fn tray_tooltip/,
+      /#\[cfg\(target_arch = "x86"\)\]\s+fn win32_agent_tray_class_name/,
+      /#\[cfg\(target_arch = "x86"\)\]\s+fn start_win32_agent_tray/,
+      /#\[cfg\(target_arch = "x86"\)\]\s+unsafe extern "system" fn win32_agent_tray_proc/,
+      /#\[cfg\(target_arch = "x86"\)\]\s+fn start_arch_specific_agent_tray/,
+    ];
+
+    for (const pattern of x86OnlyPatterns) {
+      expect(tauriLib).toMatch(pattern);
+    }
+
+    expect(tauriLib).toMatch(/#\[cfg\(not\(target_arch = "x86"\)\)\]\s+fn agent_tray_enabled\(\) -> bool/);
+    expect(tauriLib).toMatch(/#\[cfg\(target_arch = "x86"\)\]\s+fn agent_tray_enabled\(\) -> bool/);
+    expect(tauriLib).toMatch(/#\[cfg\(not\(target_arch = "x86"\)\)\]\s+fn start_arch_specific_agent_tray/);
+    expect(tauriLib).not.toContain('cfg!(target_arch = "x86")');
+    expect(tauriLib).not.toContain("agent_win32_tray_enabled");
+    expect(tauriLib).not.toContain("agent_tray_backend");
   });
 
   it("exposes desktop packaging npm scripts", () => {
