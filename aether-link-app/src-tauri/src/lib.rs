@@ -12,6 +12,7 @@ use std::{
 use std::io::{BufRead, BufReader, Read, Write};
 use std::sync::{Arc, Mutex, Once};
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use tauri::{
     menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -62,6 +63,7 @@ const PUBLIC_FIREBASE_APP_ID: &str = "1:52940136204:web:b4b4ff3e57c215e5dc3329";
 const PUBLIC_FIREBASE_STORAGE_BUCKET: &str = "wonremote-a7fd3.appspot.com";
 const PUBLIC_FIREBASE_MESSAGING_SENDER_ID: &str = "52940136204";
 const PORTABLE_MARKER_FILENAME: &str = "wonremote-portable.json";
+const UPDATE_HANDOFF_PREFIX: &str = "[WonRemoteUpdateHandoff]";
 #[cfg(target_arch = "x86")]
 const WIN32_AGENT_TRAY_ID: u32 = 37;
 #[cfg(target_arch = "x86")]
@@ -580,6 +582,7 @@ fn spawn_agent_only_process(
 
     command.env("WONREMOTE_BUILD_ARCH", runtime_build_arch());
     command.env("WONREMOTE_PACKAGE_KIND", packaged_update_kind(resource_dir));
+    command.env("WONREMOTE_TAURI_UPDATE_BROKER", "1");
     if let Some(url) = api_url {
         command.env("WONREMOTE_API_URL", url);
     } else {
@@ -641,6 +644,7 @@ fn spawn_agent_only_process(
         std::thread::spawn(move || {
             let reader = BufReader::new(stdout);
             let mut unregistered_detected = false;
+            let mut update_handoff_started = false;
             for line in reader.lines() {
                 let line_str = match line {
                     Ok(value) => value,
@@ -651,6 +655,15 @@ fn spawn_agent_only_process(
                 };
                 println!("[Agent Output] {}", line_str);
                 append_runtime_log("agent-stdout", &line_str);
+                if !update_handoff_started {
+                    match parse_update_handoff_request(&line_str).and_then(|request| {
+                        request.map_or(Ok(false), launch_brokered_update_handoff)
+                    }) {
+                        Ok(true) => update_handoff_started = true,
+                        Ok(false) => {}
+                        Err(error) => append_runtime_log("updater-broker", &error),
+                    }
+                }
                 if line_str.contains("[Error] Agent unregistered") {
                     unregistered_detected = true;
                 }
@@ -681,6 +694,86 @@ fn spawn_agent_only_process(
     }
 
     Ok(())
+}
+
+fn parse_update_handoff_request(line: &str) -> Result<Option<PathBuf>, String> {
+    let Some(encoded) = line.strip_prefix(UPDATE_HANDOFF_PREFIX) else {
+        return Ok(None);
+    };
+    if encoded.is_empty() || encoded.len() > 16_384 {
+        return Err("Rejected malformed Agent update handoff request.".to_string());
+    }
+    let decoded = URL_SAFE_NO_PAD
+        .decode(encoded)
+        .map_err(|_| "Rejected invalid Agent update handoff encoding.".to_string())?;
+    let script_path = String::from_utf8(decoded)
+        .map_err(|_| "Rejected non-UTF8 Agent update handoff path.".to_string())?;
+    if script_path.contains('\0') {
+        return Err("Rejected Agent update handoff path containing NUL.".to_string());
+    }
+    Ok(Some(PathBuf::from(script_path)))
+}
+
+fn validate_update_handoff_script_path(script_path: &Path) -> Result<PathBuf, String> {
+    let updates_root = default_agent_config_path()
+        .and_then(|path| path.parent().map(|parent| parent.join("updates")))
+        .ok_or_else(|| "Agent update directory is unavailable.".to_string())?;
+    validate_update_handoff_script_path_in_root(script_path, &updates_root)
+}
+
+fn validate_update_handoff_script_path_in_root(
+    script_path: &Path,
+    updates_root: &Path,
+) -> Result<PathBuf, String> {
+    if !script_path.is_absolute() || script_path.extension() != Some(OsStr::new("ps1")) {
+        return Err(
+            "Rejected non-absolute or non-PowerShell Agent update handoff path.".to_string(),
+        );
+    }
+    let file_name = script_path
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| {
+            "Rejected Agent update handoff path without a valid filename.".to_string()
+        })?;
+    if !(file_name.starts_with("run-installer-update-")
+        || file_name.starts_with("run-portable-update-"))
+    {
+        return Err(
+            "Rejected Agent update handoff script with an unexpected filename.".to_string(),
+        );
+    }
+
+    let canonical_root = std::fs::canonicalize(updates_root)
+        .map_err(|error| format!("Agent update directory is unavailable: {error}"))?;
+    let canonical_script = std::fs::canonicalize(script_path)
+        .map_err(|error| format!("Agent update handoff script is unavailable: {error}"))?;
+    if canonical_script.parent() != Some(canonical_root.as_path()) {
+        return Err(
+            "Rejected Agent update handoff script outside the update directory.".to_string(),
+        );
+    }
+    Ok(canonical_script)
+}
+
+fn launch_brokered_update_handoff(script_path: PathBuf) -> Result<bool, String> {
+    let script_path = validate_update_handoff_script_path(&script_path)?;
+    let mut command = Command::new("powershell.exe");
+    command
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+        .arg(&script_path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    add_no_window(&mut command);
+    command
+        .spawn()
+        .map_err(|error| format!("Agent update broker failed to start PowerShell: {error}"))?;
+    append_runtime_log(
+        "updater-broker",
+        &format!("started verified handoff script={}", script_path.display()),
+    );
+    Ok(true)
 }
 
 #[tauri::command]
@@ -1760,6 +1853,54 @@ mod registry_tests {
         assert_eq!(normalize_installer_restart_mode("agent"), Ok("agent"));
         assert!(normalize_installer_restart_mode("Viewer").is_err());
         assert!(normalize_installer_restart_mode("viewer & calc.exe").is_err());
+    }
+
+    #[test]
+    fn test_update_handoff_request_requires_prefix_and_base64url_utf8() {
+        assert_eq!(
+            parse_update_handoff_request("ordinary Agent output"),
+            Ok(None)
+        );
+
+        let script_path =
+            r"C:\Users\Tester Name\AppData\Roaming\WonRemote\updates\run-installer-update-123.ps1";
+        let encoded = URL_SAFE_NO_PAD.encode(script_path.as_bytes());
+        assert_eq!(
+            parse_update_handoff_request(&format!("{UPDATE_HANDOFF_PREFIX}{encoded}")),
+            Ok(Some(PathBuf::from(script_path)))
+        );
+        assert!(parse_update_handoff_request(UPDATE_HANDOFF_PREFIX).is_err());
+        assert!(parse_update_handoff_request(&format!("{UPDATE_HANDOFF_PREFIX}%%%")).is_err());
+    }
+
+    #[test]
+    fn test_update_handoff_script_must_be_a_direct_owned_update_script() {
+        let fixture_root = std::env::temp_dir().join(format!(
+            "wonremote-update-broker-test-{}",
+            std::process::id()
+        ));
+        let updates_root = fixture_root.join("updates");
+        let outside_root = fixture_root.join("outside");
+        std::fs::create_dir_all(&updates_root).expect("failed to create update fixture");
+        std::fs::create_dir_all(&outside_root).expect("failed to create outside fixture");
+
+        let valid = updates_root.join("run-portable-update-123.ps1");
+        std::fs::write(&valid, b"exit 0").expect("failed to create valid update script");
+        assert_eq!(
+            validate_update_handoff_script_path_in_root(&valid, &updates_root)
+                .expect("valid update script should pass"),
+            std::fs::canonicalize(&valid).expect("failed to canonicalize valid fixture")
+        );
+
+        let unexpected = updates_root.join("arbitrary.ps1");
+        std::fs::write(&unexpected, b"exit 0").expect("failed to create unexpected script");
+        assert!(validate_update_handoff_script_path_in_root(&unexpected, &updates_root).is_err());
+
+        let outside = outside_root.join("run-installer-update-escape.ps1");
+        std::fs::write(&outside, b"exit 0").expect("failed to create outside script");
+        assert!(validate_update_handoff_script_path_in_root(&outside, &updates_root).is_err());
+
+        let _ = std::fs::remove_dir_all(fixture_root);
     }
 
     #[test]

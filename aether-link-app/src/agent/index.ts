@@ -59,6 +59,10 @@ import { sendWakeOnLanMagicPacket } from "./wakeOnLan";
 import { parseAgentDisplayInventory } from "./agentDisplayInventory";
 import { PersistentInputInjector } from "./persistentInputInjector";
 import {
+  formatUpdateHandoffBrokerRequest,
+  isUpdateHandoffBrokerEnabled,
+} from "./agentUpdateHandoffBroker";
+import {
   releasePressedInput,
   releasePressedInputAndClose,
 } from "./persistentInputShutdown";
@@ -136,6 +140,24 @@ const UPDATE_CHECK_INTERVAL_MS = resolveAgentUpdateCheckIntervalMs(process.env);
 const USE_FIREBASE = isAgentFirebaseEnabled(process.env);
 const FIRESTORE_TILE_FALLBACK_POLICY = resolveFirestoreTileFallbackPolicy(process.env);
 const persistentInputInjector = new PersistentInputInjector(POC_PATH);
+
+async function releaseInputAndCompleteUpdateHandoff(scriptPath: string, reason: string): Promise<never> {
+  await agentCommandQueue.enqueue(() => releasePressedInputAndClose(
+    persistentInputInjector,
+    { pointer: pointerState, pressedKeys },
+    reason,
+  ));
+  if (isUpdateHandoffBrokerEnabled(process.env.WONREMOTE_TAURI_UPDATE_BROKER)) {
+    await new Promise<void>((resolve, reject) => {
+      process.stdout.write(`${formatUpdateHandoffBrokerRequest(scriptPath)}\n`, (error) => {
+        if (error) reject(error);
+        else resolve();
+      });
+    });
+  }
+  process.exit(0);
+  throw new Error("process.exit returned unexpectedly");
+}
 
 let streamProcess: any = null;
 let streamDesired = false;
@@ -1198,13 +1220,15 @@ async function handoffToProductionInstallerUpdate(data: SafeInstallerUpdateMetad
   console.log(`[WonRemote Agent] Installer handoff script: ${handoff.scriptPath}`);
   console.log(`[WonRemote Agent] Installer handoff log: ${handoff.logPath}`);
 
-  const installerProcess = spawn(handoff.command, handoff.args, {
-    detached: true,
-    stdio: "ignore",
-    windowsHide: true,
-    creationFlags: handoff.creationFlags,
-  } as any);
-  installerProcess.unref();
+  if (!isUpdateHandoffBrokerEnabled(process.env.WONREMOTE_TAURI_UPDATE_BROKER)) {
+    const installerProcess = spawn(handoff.command, handoff.args, {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+      creationFlags: handoff.creationFlags,
+    } as any);
+    installerProcess.unref();
+  }
 
   if (streamProcess) {
     streamProcess.kill();
@@ -1213,12 +1237,7 @@ async function handoffToProductionInstallerUpdate(data: SafeInstallerUpdateMetad
 
   console.log("[WonRemote Agent] Handed off to production installer and exiting current Agent.");
   await new Promise((resolve) => setTimeout(resolve, 500));
-  await agentCommandQueue.enqueue(() => releasePressedInputAndClose(
-    persistentInputInjector,
-    { pointer: pointerState, pressedKeys },
-    "Agent update handoff started.",
-  ));
-  process.exit(0);
+  await releaseInputAndCompleteUpdateHandoff(handoff.scriptPath, "Agent update handoff started.");
 }
 
 async function handoffToPortableUpdate(data: SafePortableUpdateMetadata): Promise<void> {
@@ -1233,13 +1252,15 @@ async function handoffToPortableUpdate(data: SafePortableUpdateMetadata): Promis
   console.log(`[WonRemote Agent] Portable update handoff script: ${handoff.scriptPath}`);
   console.log(`[WonRemote Agent] Portable update handoff log: ${handoff.logPath}`);
 
-  const updateProcess = spawn(handoff.command, handoff.args, {
-    detached: true,
-    stdio: "ignore",
-    windowsHide: true,
-    creationFlags: handoff.creationFlags,
-  } as any);
-  updateProcess.unref();
+  if (!isUpdateHandoffBrokerEnabled(process.env.WONREMOTE_TAURI_UPDATE_BROKER)) {
+    const updateProcess = spawn(handoff.command, handoff.args, {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+      creationFlags: handoff.creationFlags,
+    } as any);
+    updateProcess.unref();
+  }
 
   if (streamProcess) {
     streamProcess.kill();
@@ -1248,12 +1269,7 @@ async function handoffToPortableUpdate(data: SafePortableUpdateMetadata): Promis
 
   console.log("[WonRemote Agent] Handed off to portable updater and exiting current Agent.");
   await new Promise((resolve) => setTimeout(resolve, 500));
-  await agentCommandQueue.enqueue(() => releasePressedInputAndClose(
-    persistentInputInjector,
-    { pointer: pointerState, pressedKeys },
-    "Agent portable update handoff started.",
-  ));
-  process.exit(0);
+  await releaseInputAndCompleteUpdateHandoff(handoff.scriptPath, "Agent portable update handoff started.");
 }
 
 

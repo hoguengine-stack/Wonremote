@@ -1,6 +1,6 @@
 [package]
 name = "wonremote-viewer"
-version = "0.1.40"
+version = "0.1.41"
 description = "WonRemote Viewer desktop shell"
 authors = ["WonRemote"]
 edition = "2021"
@@ -26,6 +26,7 @@ windows-sys = { version = "0.59", features = [
 ] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+base64 = "0.22"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
