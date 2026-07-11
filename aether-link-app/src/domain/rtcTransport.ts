@@ -4,6 +4,10 @@ export interface WonRemoteIceServer {
   credential?: string;
 }
 
+export function viewerTileDataChannelOptions(): RTCDataChannelInit {
+  return { ordered: false };
+}
+
 type RtcEnv = Partial<Record<string, string | undefined>>;
 
 const DEFAULT_STUN_URLS = ["stun:stun.l.google.com:19302"];

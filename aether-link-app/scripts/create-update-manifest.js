@@ -47,8 +47,8 @@ function readPrivateKey(args) {
   return fs.readFileSync(path.resolve(keySource), "utf8");
 }
 
-function buildDownloadUrl(args, version, assetName) {
-  const explicitUrl = args.get("--download-url");
+function buildDownloadUrl(args, version, assetName, explicitUrlArg) {
+  const explicitUrl = args.get(explicitUrlArg);
   if (explicitUrl) {
     return explicitUrl;
   }
@@ -102,8 +102,8 @@ const assetName = normalizeGitHubAssetName(
 const assetNameX86 = normalizeGitHubAssetName(
   args.get("--asset-name-x86") || (args.get("--download-url-x86") ? assetNameFromDownloadUrl(args.get("--download-url-x86")) : stableInstallerAssetNameX86),
 );
-const downloadUrl = buildDownloadUrl(args, version, assetName);
-const downloadUrlX86 = args.get("--download-url-x86") || buildDownloadUrl(args, version, assetNameX86);
+const downloadUrl = buildDownloadUrl(args, version, assetName, "--download-url");
+const downloadUrlX86 = buildDownloadUrl(args, version, assetNameX86, "--download-url-x86");
 
 if (!downloadUrl.startsWith("https://")) {
   throw new Error("The update installer download URL must use HTTPS.");

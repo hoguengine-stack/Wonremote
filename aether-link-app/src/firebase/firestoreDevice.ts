@@ -115,6 +115,8 @@ function sanitizeDisplays(value: unknown): DeviceDisplayInfo[] | undefined {
       return {
         index: Number(raw.index),
         name: String(raw.name ?? `Display ${raw.index ?? ""}`),
+        ...(typeof raw.x === "number" && Number.isFinite(raw.x) ? { x: raw.x } : {}),
+        ...(typeof raw.y === "number" && Number.isFinite(raw.y) ? { y: raw.y } : {}),
         width: Number(raw.width),
         height: Number(raw.height),
         primary: Boolean(raw.primary),
@@ -203,6 +205,15 @@ function sanitizeStreamDiagnostics(value: unknown): ManagedDevice["streamDiagnos
     rtcState,
     rtcError:
       typeof raw.rtcError === "string" && raw.rtcError.trim() ? raw.rtcError.trim().slice(0, 500) : undefined,
+    backpressured: typeof raw.backpressured === "boolean" ? raw.backpressured : undefined,
+    bufferedAmount:
+      typeof raw.bufferedAmount === "number" && Number.isFinite(raw.bufferedAmount)
+        ? Math.max(0, Math.trunc(raw.bufferedAmount))
+        : undefined,
+    droppedFrameCount:
+      typeof raw.droppedFrameCount === "number" && Number.isFinite(raw.droppedFrameCount)
+        ? Math.max(0, Math.trunc(raw.droppedFrameCount))
+        : undefined,
   };
 }
 

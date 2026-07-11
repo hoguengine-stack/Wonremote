@@ -36,24 +36,28 @@ export function getAdaptiveStreamSleepCommand(latencyMs: number): "set-sleep 33"
 
 export function scheduleVisualPingPresentedMeasurement(input: ScheduleVisualPingPresentedMeasurementInput): void {
   input.requestAnimationFrame(() => {
-    let pixel: VisualPingPixel;
-    try {
-      pixel = input.readPixel();
-    } catch {
-      return;
-    }
+    // The first callback runs before the browser paints the updated canvas.
+    // Sample on the next frame boundary so the prior frame has reached the compositor.
+    input.requestAnimationFrame(() => {
+      let pixel: VisualPingPixel;
+      try {
+        pixel = input.readPixel();
+      } catch {
+        return;
+      }
 
-    if (!isVisualPingMarkerPixel(pixel)) {
-      return;
-    }
+      if (!isVisualPingMarkerPixel(pixel)) {
+        return;
+      }
 
-    const latencyMs = computeVisualPingLatencyMs({
-      startedAtMs: input.startedAtMs,
-      presentedAtMs: input.nowMs(),
-    });
-    input.onPresented({
-      latencyMs,
-      sleepCommand: getAdaptiveStreamSleepCommand(latencyMs),
+      const latencyMs = computeVisualPingLatencyMs({
+        startedAtMs: input.startedAtMs,
+        presentedAtMs: input.nowMs(),
+      });
+      input.onPresented({
+        latencyMs,
+        sleepCommand: getAdaptiveStreamSleepCommand(latencyMs),
+      });
     });
   });
 }

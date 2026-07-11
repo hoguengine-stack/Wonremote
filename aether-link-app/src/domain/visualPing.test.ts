@@ -23,15 +23,15 @@ describe("visual ping telemetry", () => {
     expect(getAdaptiveStreamSleepCommand(150.1)).toBe("set-sleep 100");
   });
 
-  it("waits for requestAnimationFrame before sampling the presented marker", () => {
-    let frameCallback: (() => void) | undefined;
+  it("waits for a completed paint boundary before sampling the presented marker", () => {
+    const frameCallbacks: Array<() => void> = [];
     let sampled = false;
     let result: { latencyMs: number; sleepCommand: string } | undefined;
 
     scheduleVisualPingPresentedMeasurement({
       startedAtMs: 1000,
       requestAnimationFrame: (callback) => {
-        frameCallback = callback;
+        frameCallbacks.push(callback);
       },
       readPixel: () => {
         sampled = true;
@@ -46,7 +46,12 @@ describe("visual ping telemetry", () => {
     expect(sampled).toBe(false);
     expect(result).toBeUndefined();
 
-    frameCallback?.();
+    frameCallbacks.shift()?.();
+
+    expect(sampled).toBe(false);
+    expect(result).toBeUndefined();
+
+    frameCallbacks.shift()?.();
 
     expect(sampled).toBe(true);
     expect(result).toEqual({ latencyMs: 120, sleepCommand: "set-sleep 33" });

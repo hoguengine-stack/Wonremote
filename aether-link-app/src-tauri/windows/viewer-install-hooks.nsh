@@ -20,3 +20,9 @@
   CreateDirectory "$INSTDIR"
   SetOutPath $INSTDIR
 !macroend
+
+!macro NSIS_HOOK_PREUNINSTALL
+  !insertmacro WONREMOTE_STOP_RUNNING_PROCESSES
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "WonRemoteViewer"
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "AetherLinkViewer"
+!macroend

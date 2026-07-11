@@ -1,7 +1,7 @@
 import type { UpdateCheckResult } from "../domain/updatePolicy";
 
-export const DEFAULT_VIEWER_UPDATE_RELEASE_API_URL =
-  "https://api.github.com/repos/hoguengine-stack/Wonremote/releases/latest";
+export const DEFAULT_VIEWER_UPDATE_MANIFEST_URL =
+  "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/wonremote-update-manifest.json";
 
 type ManifestAsset = {
   name?: unknown;
@@ -13,7 +13,7 @@ export async function fetchViewerUpdateMetadata(
   env: unknown = import.meta.env,
   fetchImpl: typeof fetch = fetch,
 ): Promise<UpdateCheckResult | null> {
-  const manifestUrl = readEnvString(env, "VITE_WONREMOTE_UPDATE_MANIFEST_URL") || DEFAULT_VIEWER_UPDATE_RELEASE_API_URL;
+  const manifestUrl = readEnvString(env, "VITE_WONREMOTE_UPDATE_MANIFEST_URL") || DEFAULT_VIEWER_UPDATE_MANIFEST_URL;
   const arch = readViewerBuildArch(env);
   const separator = manifestUrl.includes("?") ? "&" : "?";
   const response = await fetchImpl(`${manifestUrl}${separator}nocache=${Date.now()}`);

@@ -13,7 +13,10 @@ export function verifyFirebaseDeployReadiness(root = repoRoot) {
   const deployScript = readText(path.join(root, "aether-link-app", "scripts", "deploy-firebase.ps1"), failures);
   const realtimePolicy = readText(path.join(root, "aether-link-app", "src", "domain", "realtimeTransportPolicy.ts"), failures);
   const agentSource = readText(path.join(root, "aether-link-app", "src", "agent", "index.ts"), failures);
-  const viewerSource = readText(path.join(root, "aether-link-app", "src", "App.tsx"), failures);
+  const viewerSource = [
+    readText(path.join(root, "aether-link-app", "src", "App.tsx"), failures),
+    readText(path.join(root, "aether-link-app", "src", "firebase", "viewerFirebase.ts"), failures),
+  ].join("\n");
 
   if (firebaseJson) {
     expectEqual(firebaseJson.firestore?.rules, "firestore.rules", "firebase.json must point to firestore.rules", failures);

@@ -1,6 +1,6 @@
 {
   "name": "wonremote-app",
-  "version": "0.1.38",
+  "version": "0.1.39",
   "private": true,
   "type": "module",
   "scripts": {
@@ -25,12 +25,14 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@noble/hashes": "^2.2.0",
     "@tauri-apps/api": "^2.11.0",
     "firebase": "^12.14.0",
     "lucide-react": "^0.468.0",
     "node-datachannel": "^0.32.3",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "werift": "^0.23.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.2",
@@ -38,11 +40,14 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^6.0.2",
-    "esbuild": "^0.28.0",
+    "esbuild": "^0.28.1",
     "playwright": "^1.60.0",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",
     "vite": "^8.0.16",
     "vitest": "^4.1.8"
+  },
+  "overrides": {
+    "ip": "npm:neoip@2.1.0"
   }
 }

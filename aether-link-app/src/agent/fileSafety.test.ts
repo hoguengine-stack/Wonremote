@@ -3,14 +3,39 @@ import { describe, expect, it } from "vitest";
 import { resolveAgentDownloadDir, resolveSafeDownloadPath, sanitizeDownloadFilename } from "./fileSafety";
 
 describe("agent file safety", () => {
-  it("keeps transferred files inside the configured downloads directory", () => {
+  it("keeps single files inside the configured downloads directory", () => {
     const downloadsDir = path.join("C:", "Users", "tester", "AppData", "Roaming", "WonRemote", "Downloads");
 
     expect(resolveSafeDownloadPath(downloadsDir, "report.txt")).toBe(path.resolve(downloadsDir, "report.txt"));
-    expect(resolveSafeDownloadPath(downloadsDir, "..\\..\\Windows\\win.ini")).toBe(
-      path.resolve(downloadsDir, "win.ini"),
+  });
+
+  it("preserves safe webkitRelativePath subfolders", () => {
+    const downloadsDir = path.join("C:", "Users", "tester", "Desktop");
+
+    expect(resolveSafeDownloadPath(downloadsDir, "report.txt", "Store/reports/2026/report.txt")).toBe(
+      path.resolve(downloadsDir, "Store", "reports", "2026", "report.txt"),
     );
-    expect(resolveSafeDownloadPath(downloadsDir, "../secret.txt")).toBe(path.resolve(downloadsDir, "secret.txt"));
+    expect(resolveSafeDownloadPath(downloadsDir, "Store\\reports\\report.txt")).toBe(
+      path.resolve(downloadsDir, "Store", "reports", "report.txt"),
+    );
+  });
+
+  it.each([
+    "../secret.txt",
+    "Store/../../secret.txt",
+    "/Windows/System32/file.txt",
+    "C:\\Windows\\file.txt",
+    "\\\\server\\share\\file.txt",
+    "Store/CON/report.txt",
+    "Store/COM¹.txt",
+    "Store/CONOUT$/report.txt",
+    "Store/report.txt:Zone.Identifier",
+    "Store/trailing./report.txt",
+    "Store/report.txt ",
+  ])("rejects unsafe relative download path %s", (unsafePath) => {
+    expect(() => resolveSafeDownloadPath("C:\\Downloads", "report.txt", unsafePath)).toThrow(
+      "Unsafe download relative path",
+    );
   });
 
   it("normalizes empty, invalid, and reserved Windows filenames", () => {

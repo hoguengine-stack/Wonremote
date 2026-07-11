@@ -3,11 +3,13 @@ import {
   buildKeyboardCommand,
   buildMouseCommand,
   buildPasteTextCommand,
+  buildUnicodeTextCommand,
   buildSystemCommand,
   decodeUtf8Base64,
   encodeUtf8Base64,
   formatTransferStats,
   mapCanvasPointToAbsolute,
+  mapCanvasPointToVirtualDesktopAbsolute,
   normalizeRemoteKey,
 } from "./remoteControlCommands";
 
@@ -21,6 +23,43 @@ describe("remote control command helpers", () => {
       dx: 0,
       dy: 65535,
     });
+  });
+
+  it("maps a selected monitor into the full virtual desktop coordinate range", () => {
+    const displays = [
+      { x: -1280, y: 0, width: 1280, height: 1024 },
+      { x: 0, y: 0, width: 1920, height: 1080 },
+    ];
+    const secondaryCenter = mapCanvasPointToVirtualDesktopAbsolute(
+      50,
+      50,
+      { left: 0, top: 0, width: 100, height: 100 },
+      displays[0],
+      displays,
+    );
+    const primaryCenter = mapCanvasPointToVirtualDesktopAbsolute(
+      50,
+      50,
+      { left: 0, top: 0, width: 100, height: 100 },
+      displays[1],
+      displays,
+    );
+
+    expect(secondaryCenter.dx).toBeLessThan(32768);
+    expect(primaryCenter.dx).toBeGreaterThan(32768);
+    expect(primaryCenter.dy).toBe(32768);
+  });
+
+  it("keeps legacy single-display mapping when monitor origins are unavailable", () => {
+    expect(
+      mapCanvasPointToVirtualDesktopAbsolute(
+        50,
+        25,
+        { left: 0, top: 0, width: 100, height: 50 },
+        { width: 100, height: 50 },
+        [{ width: 100, height: 50 }],
+      ),
+    ).toEqual({ dx: 32768, dy: 32768 });
   });
 
   it("normalizes browser key names to stable agent tokens", () => {
@@ -44,6 +83,11 @@ describe("remote control command helpers", () => {
     const encoded = encodeUtf8Base64(text);
     expect(decodeUtf8Base64(encoded)).toBe(text);
     expect(buildPasteTextCommand(text)).toBe(`paste-text-base64 ${encoded}`);
+  });
+
+  it("encodes ordinary Unicode typing for direct Win32 text injection", () => {
+    const text = "한😀";
+    expect(buildUnicodeTextCommand(text)).toBe(`text-base64 ${encodeUtf8Base64(text)}`);
   });
 
   it("limits system command names to the supported safe whitelist", () => {

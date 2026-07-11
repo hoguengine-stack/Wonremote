@@ -225,6 +225,12 @@ impl AgentState {
     }
 }
 
+impl Default for AgentState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn is_agent_registered() -> bool {
     default_agent_config_path()
         .as_ref()
@@ -571,6 +577,7 @@ fn spawn_agent_only_process(
         cmd
     };
 
+    command.env("WONREMOTE_BUILD_ARCH", runtime_build_arch());
     if let Some(url) = api_url {
         command.env("WONREMOTE_API_URL", url);
     } else {
@@ -633,27 +640,32 @@ fn spawn_agent_only_process(
             let reader = BufReader::new(stdout);
             let mut unregistered_detected = false;
             for line in reader.lines() {
-                if let Ok(line_str) = line {
-                    println!("[Agent Output] {}", line_str);
-                    append_runtime_log("agent-stdout", &line_str);
-                    if line_str.contains("[Error] Agent unregistered") {
-                        unregistered_detected = true;
+                let line_str = match line {
+                    Ok(value) => value,
+                    Err(error) => {
+                        append_runtime_log("agent-stdout", &format!("read failed: {error}"));
+                        break;
                     }
-                    let new_status = if line_str.contains("[Status] Connecting") {
-                        Some("Connecting")
-                    } else if line_str.contains("[Status] Online") {
-                        Some("Online")
-                    } else if line_str.contains("[Status] Offline") {
-                        Some("Offline")
-                    } else {
-                        None
-                    };
+                };
+                println!("[Agent Output] {}", line_str);
+                append_runtime_log("agent-stdout", &line_str);
+                if line_str.contains("[Error] Agent unregistered") {
+                    unregistered_detected = true;
+                }
+                let new_status = if line_str.contains("[Status] Connecting") {
+                    Some("Connecting")
+                } else if line_str.contains("[Status] Online") {
+                    Some("Online")
+                } else if line_str.contains("[Status] Offline") {
+                    Some("Offline")
+                } else {
+                    None
+                };
 
-                    if let Some(status_str) = new_status {
-                        *status_clone.lock().unwrap() = status_str.to_string();
-                        if let Some(menu_item) = &*status_menu_item_clone.lock().unwrap() {
-                            let _ = menu_item.set_text(format!("Status: {status_str}"));
-                        }
+                if let Some(status_str) = new_status {
+                    *status_clone.lock().unwrap() = status_str.to_string();
+                    if let Some(menu_item) = &*status_menu_item_clone.lock().unwrap() {
+                        let _ = menu_item.set_text(format!("Status: {status_str}"));
                     }
                 }
             }
@@ -850,9 +862,9 @@ fn parse_mac_address(mac_address: &str) -> Result<[u8; 6], String> {
     }
 
     let mut bytes = [0_u8; 6];
-    for index in 0..6 {
+    for (index, byte) in bytes.iter_mut().enumerate() {
         let start = index * 2;
-        bytes[index] = u8::from_str_radix(&hex[start..start + 2], 16)
+        *byte = u8::from_str_radix(&hex[start..start + 2], 16)
             .map_err(|_| "Invalid MAC address.".to_string())?;
     }
     Ok(bytes)
@@ -956,6 +968,65 @@ fn mode_value_requests_agent(mode: Option<&str>) -> bool {
 
 fn bundled_node_path(resource_dir: &Path) -> PathBuf {
     resource_dir.join("runtime").join("node.exe")
+}
+
+fn bundled_agent_path(resource_dir: &Path) -> PathBuf {
+    resource_dir.join("agent").join("index.mjs")
+}
+
+fn runtime_build_arch() -> &'static str {
+    if env::consts::ARCH == "x86" {
+        "x86"
+    } else {
+        "x64"
+    }
+}
+
+fn normalize_installer_restart_mode(restart_mode: &str) -> Result<&str, String> {
+    match restart_mode {
+        "viewer" | "agent" => Ok(restart_mode),
+        _ => Err("Installer restart mode must be viewer or agent.".to_string()),
+    }
+}
+
+#[tauri::command]
+fn start_installer_update(app: tauri::AppHandle, restart_mode: String) -> Result<(), String> {
+    let restart_mode = normalize_installer_restart_mode(&restart_mode)?;
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|error| error.to_string())?;
+    let node_path = bundled_node_path(&resource_dir);
+    let agent_path = bundled_agent_path(&resource_dir);
+
+    ensure_resource_exists(&node_path, "bundled Node runtime")
+        .map_err(|error| error.to_string())?;
+    ensure_resource_exists(&agent_path, "bundled updater").map_err(|error| error.to_string())?;
+
+    let build_arch = runtime_build_arch();
+    let mut command = Command::new(&node_path);
+    command
+        .arg(&agent_path)
+        .args(["--update-once", "--restart-mode", restart_mode])
+        .env("NODE_ENV", "production")
+        .env("WONREMOTE_APP_DIR", &resource_dir)
+        .env("WONREMOTE_BUILD_ARCH", build_arch)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    add_no_window(&mut command);
+
+    command.spawn().map_err(|error| {
+        append_runtime_log("updater", &format!("spawn failed: {error}"));
+        error.to_string()
+    })?;
+    append_runtime_log(
+        "updater",
+        &format!(
+            "verified installer updater started restart_mode={restart_mode} arch={build_arch}"
+        ),
+    );
+    Ok(())
 }
 
 fn app_root_from_manifest() -> PathBuf {
@@ -1322,6 +1393,7 @@ pub fn run() {
             save_agent_config,
             get_agent_config,
             restart_agent_process,
+            start_installer_update,
             wake_device
         ])
         .setup(move |app| {
@@ -1650,6 +1722,22 @@ mod registry_tests {
         assert!(mode_value_requests_agent(Some("AGENT")));
         assert!(!mode_value_requests_agent(Some("viewer")));
         assert!(!mode_value_requests_agent(None));
+    }
+
+    #[test]
+    fn test_installer_update_restart_mode_is_strictly_validated() {
+        assert_eq!(normalize_installer_restart_mode("viewer"), Ok("viewer"));
+        assert_eq!(normalize_installer_restart_mode("agent"), Ok("agent"));
+        assert!(normalize_installer_restart_mode("Viewer").is_err());
+        assert!(normalize_installer_restart_mode("viewer & calc.exe").is_err());
+    }
+
+    #[test]
+    fn test_runtime_build_arch_matches_the_compiled_binary() {
+        #[cfg(target_arch = "x86")]
+        assert_eq!(runtime_build_arch(), "x86");
+        #[cfg(not(target_arch = "x86"))]
+        assert_eq!(runtime_build_arch(), "x64");
     }
 
     #[test]

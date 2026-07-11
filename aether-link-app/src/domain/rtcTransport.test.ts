@@ -1,7 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { requireTurnWhenRelayOnly, resolveRtcIceServers, shouldUseRelayOnly } from "./rtcTransport";
+import {
+  requireTurnWhenRelayOnly,
+  resolveRtcIceServers,
+  shouldUseRelayOnly,
+  viewerTileDataChannelOptions,
+} from "./rtcTransport";
 
 describe("rtc transport configuration", () => {
+  it("uses unordered reliable delivery so lost dirty tiles are retransmitted", () => {
+    expect(viewerTileDataChannelOptions()).toEqual({ ordered: false });
+    expect(viewerTileDataChannelOptions()).not.toHaveProperty("maxRetransmits");
+    expect(viewerTileDataChannelOptions()).not.toHaveProperty("maxPacketLifeTime");
+  });
+
   it("uses public STUN by default so local/LAN peer connections can start without extra config", () => {
     expect(resolveRtcIceServers({})).toEqual([
       { urls: ["stun:stun.l.google.com:19302"] },

@@ -6,6 +6,7 @@ import {
   openFirebaseSession,
   recordFirebaseInput,
   requestFirebaseSecureSession,
+  wakeFirebaseDevice,
 } from "./viewerFirebase";
 
 const mockState = vi.hoisted(() => ({
@@ -16,6 +17,7 @@ const mockState = vi.hoisted(() => ({
     functions: { app: "functions" },
   },
 }));
+const callableEnv = { VITE_WONREMOTE_FIREBASE_FUNCTIONS_MODE: "callable" } as ImportMetaEnv;
 
 vi.mock("./firebaseConfig", () => ({
   resolveFirebaseConfig: vi.fn(() => ({
@@ -55,7 +57,7 @@ describe("Firebase callable viewer controls", () => {
     }));
     mockState.callables.set("requestSecureSession", requestSecureSession);
 
-    await expect(requestFirebaseSecureSession("device-1")).resolves.toEqual({
+    await expect(requestFirebaseSecureSession("device-1", callableEnv)).resolves.toEqual({
       challengeId: "secure-1",
       expiresAt: "2026-06-16T08:00:00.000Z",
     });
@@ -83,7 +85,7 @@ describe("Firebase callable viewer controls", () => {
         challengeId: "secure-1",
         code: "123 456",
         deviceId: "device-1",
-      }),
+      }, callableEnv),
     ).resolves.toMatchObject({ session: { id: "session-device-1" } });
 
     expect(httpsCallable).toHaveBeenCalledWith(mockState.services.functions, "connectSecureSession");
@@ -112,12 +114,34 @@ describe("Firebase callable viewer controls", () => {
     mockState.callables.set("enqueueCommand", enqueueCommand);
     mockState.callables.set("closeSession", closeSession);
 
-    await expect(openFirebaseSession("device-1")).resolves.toMatchObject({ session: { id: "session-device-1" } });
-    await expect(recordFirebaseInput("session-device-1", "click 1 2")).resolves.toEqual(["click 1 2"]);
-    await expect(closeFirebaseSession("session-device-1")).resolves.toBeUndefined();
+    await expect(openFirebaseSession("device-1", callableEnv)).resolves.toMatchObject({ session: { id: "session-device-1" } });
+    await expect(recordFirebaseInput("session-device-1", "click 1 2", callableEnv)).resolves.toEqual(["click 1 2"]);
+    await expect(closeFirebaseSession("session-device-1", callableEnv)).resolves.toBeUndefined();
 
     expect(openSession).toHaveBeenCalledWith({ deviceId: "device-1" });
     expect(enqueueCommand).toHaveBeenCalledWith({ action: "click 1 2", sessionId: "session-device-1" });
     expect(closeSession).toHaveBeenCalledWith({ sessionId: "session-device-1" });
+  });
+
+  it("routes Wake-on-LAN through the authenticated relay function", async () => {
+    const wakeDevice = vi.fn(async () => ({
+      data: {
+        relayDeviceId: "relay-1",
+        targetDeviceId: "device-1",
+        targetMac: "AA:BB:CC:DD:EE:FF",
+      },
+    }));
+    mockState.callables.set("wakeDevice", wakeDevice);
+
+    await expect(wakeFirebaseDevice("device-1", "AA:BB:CC:DD:EE:FF", callableEnv)).resolves.toEqual({
+      relayDeviceId: "relay-1",
+      targetDeviceId: "device-1",
+      targetMac: "AA:BB:CC:DD:EE:FF",
+    });
+    expect(httpsCallable).toHaveBeenCalledWith(mockState.services.functions, "wakeDevice");
+    expect(wakeDevice).toHaveBeenCalledWith({
+      targetDeviceId: "device-1",
+      targetMac: "AA:BB:CC:DD:EE:FF",
+    });
   });
 });

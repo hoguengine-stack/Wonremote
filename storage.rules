@@ -13,9 +13,9 @@ service firebase.storage {
 
     match /sessions/{sessionId}/files/{transferId}/{fileName} {
       allow read: if ownsSession(sessionId);
-      allow write: if ownsSession(sessionId)
+      allow create, update: if ownsSession(sessionId)
         && request.resource.size <= 500 * 1024 * 1024;
-      allow delete: if false;
+      allow delete: if ownsSession(sessionId);
     }
   }
 }

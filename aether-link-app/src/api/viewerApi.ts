@@ -24,12 +24,14 @@ import {
   fetchFirebaseClipboardText,
   fetchFirebaseFileTransferReceipts,
   fetchFirebaseFiles,
+  fetchFirebaseConnectionHistory,
   fetchFirebaseSessionStatus,
   fetchFirebaseTiles,
   isViewerFirebaseEnabled,
   loginViewerWithFirebase,
   logoutViewerWithFirebase,
   connectFirebaseSecureSession,
+  deleteFirebaseStorageFile,
   openFirebaseSession,
   recordFirebaseInput,
   registerFirstRunAgentWithFirebase,
@@ -37,6 +39,7 @@ import {
   sendFirebaseChatMessage,
   sendFirebaseClipboardText,
   updateFirebaseDeviceMetadata,
+  wakeFirebaseDevice,
   uploadFirebaseFileChunk,
   uploadFirebaseFileToStorage,
 } from "../firebase/viewerFirebase";
@@ -48,7 +51,7 @@ const LOCAL_API_CONNECTION_ERROR =
 export async function loginAdmin(username: string, password: string): Promise<void> {
   if (isViewerFirebaseEnabled()) {
     if (username.trim() === "admin") {
-      throw new Error("Firebase 연동 모드에서는 'admin' 계정을 사용할 수 없습니다. 등록된 이메일 계정으로 로그인해 주세요.");
+      throw new Error("Firebase 연동 모드에서는 'admin' 계정을 사용할 수 없습니다. 등록된 사업자번호 또는 이메일 계정으로 로그인해 주세요.");
     }
     await loginViewerWithFirebase(username, password);
     return;
@@ -73,6 +76,16 @@ export async function fetchDevices(): Promise<ManagedDevice[]> {
 
   const body = await request<{ devices: ManagedDevice[] }>("/api/devices");
   return body.devices;
+}
+
+export async function wakeRemoteDevice(
+  deviceId: string,
+  macAddress: string,
+): Promise<{ relayDeviceId: string; targetDeviceId: string; targetMac: string }> {
+  if (!isViewerFirebaseEnabled()) {
+    throw new Error("Remote Wake-on-LAN relay requires Firebase mode.");
+  }
+  return wakeFirebaseDevice(deviceId, macAddress);
 }
 
 export async function updateDeviceMetadata(
@@ -307,11 +320,18 @@ export async function uploadFileToStorage(
     fileSha256?: string;
     onProgress?: (sentBytes: number, totalBytes: number) => void;
   },
-): Promise<void> {
+): Promise<{ storagePath: string }> {
   if (!isViewerFirebaseEnabled()) {
     throw new Error("Storage file upload is only available in Firebase mode.");
   }
-  await uploadFirebaseFileToStorage(sessionId, input);
+  return uploadFirebaseFileToStorage(sessionId, input);
+}
+
+export async function deleteUploadedFileFromStorage(storagePath: string): Promise<void> {
+  if (!isViewerFirebaseEnabled()) {
+    return;
+  }
+  await deleteFirebaseStorageFile(storagePath);
 }
 
 export async function fetchFiles(sessionId: string): Promise<TransferredFile[]> {
@@ -347,6 +367,10 @@ export async function fetchTiles(sessionId: string): Promise<{ tiles: any[]; wid
 }
 
 export async function fetchConnectionHistory(): Promise<ConnectionHistoryEntry[]> {
+  if (isViewerFirebaseEnabled()) {
+    return fetchFirebaseConnectionHistory();
+  }
+
   const body = await request<{ history: ConnectionHistoryEntry[] }>("/api/connection-history");
   return body.history;
 }

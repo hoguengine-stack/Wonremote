@@ -33,6 +33,22 @@ describe("WonRemote local API server", () => {
     expect(await response.json()).toEqual({ ok: true });
   });
 
+  it("rejects malformed and oversized JSON before route processing", async () => {
+    const malformed = await fetch(`${baseUrl}/api/admin/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{",
+    });
+    expect(malformed.status).toBe(400);
+
+    const oversized = await fetch(`${baseUrl}/api/admin/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ padding: "x".repeat(20 * 1024 * 1024) }),
+    });
+    expect(oversized.status).toBe(413);
+  });
+
   it("allows temporary local viewer ports through CORS preflight", async () => {
     const response = await fetch(`${baseUrl}/api/admin/login`, {
       headers: {
@@ -797,6 +813,17 @@ describe("WonRemote local API server", () => {
     expect(downloadRes.headers.get("content-type")).toBe("application/octet-stream");
     const buffer = await downloadRes.arrayBuffer();
     expect(buffer.byteLength).toBeGreaterThan(0);
+  });
+
+  it("does not expose source-tree update archives outside the test environment", async () => {
+    const previousNodeEnv = process.env.NODE_ENV;
+    try {
+      process.env.NODE_ENV = "production";
+      const downloadRes = await fetch(`${baseUrl}/api/update/download`);
+      expect(downloadRes.status).toBe(403);
+    } finally {
+      process.env.NODE_ENV = previousNodeEnv;
+    }
   });
 
   it("serves production installer update metadata from a release manifest file", async () => {

@@ -1,10 +1,11 @@
 mod capturer;
 
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use capturer::{CaptureFrameStatus, DesktopCapturer, DxgiCapturer};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::Write;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 use turbojpeg::{Compressor, Decompressor, Image, PixelFormat, Subsamp};
@@ -20,9 +21,10 @@ use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     MapVirtualKeyW, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
     KEYBD_EVENT_FLAGS, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE,
-    MAPVK_VK_TO_VSC_EX, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
-    MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
-    MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEINPUT, VIRTUAL_KEY,
+    KEYEVENTF_UNICODE, MAPVK_VK_TO_VSC_EX, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN,
+    MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE,
+    MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL,
+    MOUSEINPUT, VIRTUAL_KEY,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -44,8 +46,23 @@ pub enum RunMode {
     Benchmark,
     Diagnostics,
     InjectInput { action: String },
+    InputServer,
     ListDisplays,
     Stream,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+struct InputServerRequest {
+    id: String,
+    action: String,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct InputServerResponse {
+    id: String,
+    ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -301,6 +318,48 @@ mod tests {
     }
 
     #[test]
+    fn parse_config_accepts_persistent_input_server_mode() {
+        let config = parse_benchmark_config(["wonremote-poc", "--mode", "input-server"]).unwrap();
+
+        assert!(matches!(config.run_mode, RunMode::InputServer));
+    }
+
+    #[test]
+    fn input_server_protocol_preserves_ids_and_reports_injection_failures() {
+        let success =
+            process_input_server_line(r#"{"id":"input-1","action":"keypress A"}"#, |_| Ok(()));
+        assert_eq!(
+            success,
+            InputServerResponse {
+                id: "input-1".to_string(),
+                ok: true,
+                error: None,
+            }
+        );
+
+        let failure =
+            process_input_server_line(r#"{"id":"input-2","action":"keypress A"}"#, |_| {
+                Err("SendInput denied".to_string())
+            });
+        assert_eq!(failure.id, "input-2");
+        assert!(!failure.ok);
+        assert_eq!(failure.error.as_deref(), Some("SendInput denied"));
+    }
+
+    #[test]
+    fn input_server_protocol_rejects_malformed_or_oversized_requests() {
+        let malformed = process_input_server_line("not-json", |_| Ok(()));
+        assert!(!malformed.ok);
+        assert_eq!(malformed.id, "");
+
+        let oversized_action = "x".repeat(16 * 1024 + 1);
+        let line = serde_json::json!({ "id": "input-3", "action": oversized_action }).to_string();
+        let oversized = process_input_server_line(&line, |_| Ok(()));
+        assert!(!oversized.ok);
+        assert_eq!(oversized.id, "input-3");
+    }
+
+    #[test]
     fn gdi_fallback_output_info_preserves_geometry_and_primary_flag() {
         let rect = windows::Win32::Foundation::RECT {
             left: -1024,
@@ -370,6 +429,50 @@ mod tests {
     }
 
     #[test]
+    fn unicode_keyboard_inputs_emit_utf16_down_and_up_pairs() {
+        let inputs = unicode_keyboard_inputs("한😀");
+
+        assert_eq!(inputs.len(), 6);
+        for pair in inputs.chunks_exact(2) {
+            let down = unsafe { pair[0].Anonymous.ki };
+            let up = unsafe { pair[1].Anonymous.ki };
+            assert_eq!(down.wVk.0, 0);
+            assert_ne!(down.dwFlags.0 & KEYEVENTF_UNICODE.0, 0);
+            assert_ne!(up.dwFlags.0 & KEYEVENTF_UNICODE.0, 0);
+            assert_ne!(up.dwFlags.0 & KEYEVENTF_KEYUP.0, 0);
+        }
+    }
+
+    #[test]
+    fn absolute_mouse_input_targets_the_virtual_desktop() {
+        let input = mouse_input(
+            32768,
+            32768,
+            0,
+            MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+        );
+        let mouse = unsafe { input.Anonymous.mi };
+
+        assert_ne!(mouse.dwFlags.0 & MOUSEEVENTF_ABSOLUTE.0, 0);
+        assert_ne!(mouse.dwFlags.0 & MOUSEEVENTF_VIRTUALDESK.0, 0);
+    }
+
+    #[test]
+    fn input_protocol_rejects_unsafe_pointer_ranges_and_extra_arguments() {
+        assert_eq!(parse_absolute_pointer_coordinate("0", "dx").unwrap(), 0);
+        assert_eq!(
+            parse_absolute_pointer_coordinate("65535", "dy").unwrap(),
+            65_535
+        );
+        assert!(parse_absolute_pointer_coordinate("-1", "dx").is_err());
+        assert!(parse_absolute_pointer_coordinate("65536", "dy").is_err());
+        assert!(inject_input("move -1 100").is_err());
+        assert!(inject_input("mouse-wheel 100 100 12001").is_err());
+        assert!(inject_input("paste unexpected").is_err());
+        assert!(inject_input("system taskmgr unexpected").is_err());
+    }
+
+    #[test]
     fn send_input_failure_message_includes_windows_security_context() {
         let diagnostics = InputDiagnostics {
             win32_error_code: 5,
@@ -386,6 +489,17 @@ mod tests {
         assert!(message.contains("elevated=false"));
         assert!(message.contains("integrity=Medium"));
         assert!(message.contains("UIPI/UAC"));
+    }
+
+    #[test]
+    fn environment_diagnostics_do_not_report_a_stale_win32_error() {
+        let diagnostics = collect_input_diagnostics(None);
+
+        assert_eq!(diagnostics.win32_error_code, 0);
+        assert_eq!(
+            diagnostics.win32_error_message,
+            "No SendInput failure recorded."
+        );
     }
 
     #[test]
@@ -828,6 +942,9 @@ where
                             action: String::new(),
                         };
                     }
+                    "input-server" => {
+                        config.run_mode = RunMode::InputServer;
+                    }
                     "list-displays" => {
                         config.run_mode = RunMode::ListDisplays;
                     }
@@ -883,7 +1000,7 @@ fn parse_positive_u64_arg(name: &str, value: Option<String>) -> Result<u64, Stri
 }
 
 fn benchmark_usage() -> String {
-    "usage: aether-link-poc [--duration seconds] [--output file.json] [--snapshot file.png] [--loop-sleep-ms ms] [--capture-timeout-ms ms] [--mode benchmark|diagnostics|inject-input|list-displays|stream] [--action command] [--output-index index]".to_string()
+    "usage: aether-link-poc [--duration seconds] [--output file.json] [--snapshot file.png] [--loop-sleep-ms ms] [--capture-timeout-ms ms] [--mode benchmark|diagnostics|inject-input|input-server|list-displays|stream] [--action command] [--output-index index]".to_string()
 }
 
 fn benchmark_output_path(
@@ -1019,8 +1136,8 @@ fn parse_process_sample(value: &str) -> Option<ProcessSample> {
 
 impl TileDiff {
     pub fn new(width: u32, height: u32, tile_size: u32) -> Self {
-        let cols = (width + tile_size - 1) / tile_size;
-        let rows = (height + tile_size - 1) / tile_size;
+        let cols = width.div_ceil(tile_size);
+        let rows = height.div_ceil(tile_size);
         Self {
             width,
             height,
@@ -1232,11 +1349,11 @@ fn inject_input(action: &str) -> std::result::Result<(), String> {
 
     match parts[0] {
         "click" | "move" => {
-            if parts.len() < 3 {
+            if parts.len() != 3 {
                 return Err("Usage: click/move <dx> <dy>".to_string());
             }
-            let dx = parts[1].parse::<i32>().map_err(|_| "Invalid dx")?;
-            let dy = parts[2].parse::<i32>().map_err(|_| "Invalid dy")?;
+            let dx = parse_absolute_pointer_coordinate(parts[1], "dx")?;
+            let dy = parse_absolute_pointer_coordinate(parts[2], "dy")?;
 
             let is_click = parts[0] == "click";
             if is_click {
@@ -1245,7 +1362,10 @@ fn inject_input(action: &str) -> std::result::Result<(), String> {
                         dx,
                         dy,
                         0,
-                        MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTDOWN,
+                        MOUSEEVENTF_MOVE
+                            | MOUSEEVENTF_ABSOLUTE
+                            | MOUSEEVENTF_VIRTUALDESK
+                            | MOUSEEVENTF_LEFTDOWN,
                     ),
                     mouse_input(dx, dy, 0, MOUSEEVENTF_LEFTUP),
                 ];
@@ -1255,42 +1375,50 @@ fn inject_input(action: &str) -> std::result::Result<(), String> {
                     dx,
                     dy,
                     0,
-                    MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE,
+                    MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
                 )];
                 send_inputs(&inputs)?;
             }
         }
         "mouse-down" | "mouse-up" => {
-            if parts.len() < 4 {
+            if parts.len() != 4 {
                 return Err("Usage: mouse-down/mouse-up <dx> <dy> <left|middle|right>".to_string());
             }
-            let dx = parts[1].parse::<i32>().map_err(|_| "Invalid dx")?;
-            let dy = parts[2].parse::<i32>().map_err(|_| "Invalid dy")?;
+            let dx = parse_absolute_pointer_coordinate(parts[1], "dx")?;
+            let dy = parse_absolute_pointer_coordinate(parts[2], "dy")?;
             let button = mouse_button_from_token(parts[3])?;
             let flag = mouse_button_flag(button, parts[0] == "mouse-down");
             let inputs = [mouse_input(
                 dx,
                 dy,
                 0,
-                MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | flag,
+                MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK | flag,
             )];
             send_inputs(&inputs)?;
         }
         "mouse-wheel" => {
-            if parts.len() < 4 {
+            if parts.len() != 4 {
                 return Err("Usage: mouse-wheel <dx> <dy> <delta>".to_string());
             }
-            let dx = parts[1].parse::<i32>().map_err(|_| "Invalid dx")?;
-            let dy = parts[2].parse::<i32>().map_err(|_| "Invalid dy")?;
+            let dx = parse_absolute_pointer_coordinate(parts[1], "dx")?;
+            let dy = parse_absolute_pointer_coordinate(parts[2], "dy")?;
             let delta = parts[3].parse::<i32>().map_err(|_| "Invalid wheel delta")?;
+            if !(-12_000..=12_000).contains(&delta) {
+                return Err("Wheel delta must be between -12000 and 12000".to_string());
+            }
             let inputs = [
-                mouse_input(dx, dy, 0, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE),
+                mouse_input(
+                    dx,
+                    dy,
+                    0,
+                    MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+                ),
                 mouse_input(0, 0, delta, MOUSEEVENTF_WHEEL),
             ];
             send_inputs(&inputs)?;
         }
         "keypress" => {
-            if parts.len() < 2 {
+            if parts.len() != 2 {
                 return Err("Usage: keypress <key_char_or_vk>".to_string());
             }
             let vk = virtual_key_from_token(parts[1])?;
@@ -1298,14 +1426,28 @@ fn inject_input(action: &str) -> std::result::Result<(), String> {
             send_inputs(&inputs)?;
         }
         "key-down" | "key-up" => {
-            if parts.len() < 2 {
+            if parts.len() != 2 {
                 return Err("Usage: key-down/key-up <key>".to_string());
             }
             let vk = virtual_key_from_token(parts[1])?;
             let inputs = [keyboard_input(vk, parts[0] == "key-up")];
             send_inputs(&inputs)?;
         }
+        "text-base64" => {
+            if parts.len() != 2 {
+                return Err("Usage: text-base64 <utf8_base64>".to_string());
+            }
+            let bytes = BASE64_STANDARD
+                .decode(parts[1])
+                .map_err(|error| format!("Invalid text base64: {error}"))?;
+            let text = String::from_utf8(bytes)
+                .map_err(|error| format!("Invalid UTF-8 text payload: {error}"))?;
+            send_inputs(&unicode_keyboard_inputs(&text))?;
+        }
         "paste" => {
+            if parts.len() != 1 {
+                return Err("Usage: paste".to_string());
+            }
             let ctrl = virtual_key_from_token("Ctrl")?;
             let v = virtual_key_from_token("V")?;
             let inputs = [
@@ -1317,20 +1459,29 @@ fn inject_input(action: &str) -> std::result::Result<(), String> {
             send_inputs(&inputs)?;
         }
         "key-release-all" | "key_release_all" => {
+            if parts.len() != 1 {
+                return Err("Usage: key-release-all".to_string());
+            }
             // The persistent Agent process expands this command using its pressed-key set.
             // Keep direct CLI execution as a safe no-op for diagnostics.
         }
         "system" => {
-            if parts.len() < 2 {
+            if parts.len() != 2 {
                 return Err("Usage: system <command>".to_string());
             }
             let args = system_command_args(parts[1])?;
             Command::new("cmd")
                 .args(args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
                 .spawn()
                 .map_err(|error| format!("system command failed: {}", error))?;
         }
         "ping-color-change" => {
+            if parts.len() != 1 {
+                return Err("Usage: ping-color-change".to_string());
+            }
             let inputs = [
                 keyboard_input(VIRTUAL_KEY(0x10), false),
                 keyboard_input(VIRTUAL_KEY(0x10), true),
@@ -1340,6 +1491,16 @@ fn inject_input(action: &str) -> std::result::Result<(), String> {
         _ => return Err(format!("Unknown action: {}", parts[0])),
     }
     Ok(())
+}
+
+fn parse_absolute_pointer_coordinate(value: &str, label: &str) -> std::result::Result<i32, String> {
+    let coordinate = value
+        .parse::<i32>()
+        .map_err(|_| format!("Invalid {label}"))?;
+    if !(0..=65_535).contains(&coordinate) {
+        return Err(format!("{label} must be between 0 and 65535"));
+    }
+    Ok(coordinate)
 }
 
 fn virtual_key_from_token(token: &str) -> std::result::Result<VIRTUAL_KEY, String> {
@@ -1461,6 +1622,36 @@ fn keyboard_input(vk: VIRTUAL_KEY, key_up: bool) -> INPUT {
     }
 }
 
+fn unicode_keyboard_inputs(text: &str) -> Vec<INPUT> {
+    text.encode_utf16()
+        .flat_map(|code_unit| {
+            [
+                unicode_keyboard_input(code_unit, false),
+                unicode_keyboard_input(code_unit, true),
+            ]
+        })
+        .collect()
+}
+
+fn unicode_keyboard_input(code_unit: u16, key_up: bool) -> INPUT {
+    INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(0),
+                wScan: code_unit,
+                dwFlags: if key_up {
+                    KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
+                } else {
+                    KEYEVENTF_UNICODE
+                },
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    }
+}
+
 fn is_extended_virtual_key(vk: VIRTUAL_KEY) -> bool {
     matches!(
         vk.0,
@@ -1492,7 +1683,7 @@ fn mouse_input(
 fn send_inputs(inputs: &[INPUT]) -> std::result::Result<(), String> {
     let sent = unsafe { SendInput(inputs, std::mem::size_of::<INPUT>() as i32) };
     if sent != inputs.len() as u32 {
-        let diagnostics = collect_input_diagnostics();
+        let diagnostics = collect_input_diagnostics(Some(windows::core::Error::from_win32()));
         return Err(format_send_input_failure(sent, inputs.len(), &diagnostics));
     }
     Ok(())
@@ -1519,9 +1710,15 @@ fn format_send_input_failure(sent: u32, expected: usize, diagnostics: &InputDiag
     )
 }
 
-fn collect_input_diagnostics() -> InputDiagnostics {
-    let error = windows::core::Error::from_win32();
-    let win32_error_code = (error.code().0 as u32) & 0xFFFF;
+fn collect_input_diagnostics(win32_error: Option<windows::core::Error>) -> InputDiagnostics {
+    let (win32_error_code, win32_error_message) = win32_error
+        .map(|error| {
+            (
+                (error.code().0 as u32) & 0xFFFF,
+                error.message().to_string(),
+            )
+        })
+        .unwrap_or((0, "No SendInput failure recorded.".to_string()));
 
     let (elevated, integrity_level) = current_process_token_diagnostics()
         .map(|diagnostics| (diagnostics.0, diagnostics.1))
@@ -1529,7 +1726,7 @@ fn collect_input_diagnostics() -> InputDiagnostics {
 
     InputDiagnostics {
         win32_error_code,
-        win32_error_message: error.message().to_string(),
+        win32_error_message,
         elevated,
         integrity_level,
     }
@@ -1625,7 +1822,7 @@ fn integrity_label_from_rid(rid: u32) -> &'static str {
 
 fn base64_encode(data: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut result = String::with_capacity((data.len() + 2) / 3 * 4);
+    let mut result = String::with_capacity(data.len().div_ceil(3) * 4);
     let mut i = 0;
     while i < data.len() {
         let chunk = &data[i..std::cmp::min(i + 3, data.len())];
@@ -1811,7 +2008,7 @@ async fn run_streaming_loop(config: BenchmarkConfig) {
                             "tiles": base64_tiles,
                             "timestamp": now_unix_ms()
                         });
-                        println!("{}", msg.to_string());
+                        println!("{msg}");
                     }
                 }
             }
@@ -1838,6 +2035,98 @@ async fn run_streaming_loop(config: BenchmarkConfig) {
     }
 }
 
+const MAX_INPUT_SERVER_ID_BYTES: usize = 128;
+const MAX_INPUT_SERVER_ACTION_BYTES: usize = 16 * 1024;
+
+fn process_input_server_line<F>(line: &str, inject: F) -> InputServerResponse
+where
+    F: FnOnce(&str) -> std::result::Result<(), String>,
+{
+    let request = match serde_json::from_str::<InputServerRequest>(line) {
+        Ok(request) => request,
+        Err(error) => {
+            return InputServerResponse {
+                id: String::new(),
+                ok: false,
+                error: Some(format!("Invalid input-server request: {error}")),
+            }
+        }
+    };
+
+    if request.id.is_empty()
+        || request.id.len() > MAX_INPUT_SERVER_ID_BYTES
+        || request
+            .id
+            .chars()
+            .any(|character| matches!(character, '\r' | '\n' | '\0'))
+    {
+        return InputServerResponse {
+            id: request.id,
+            ok: false,
+            error: Some("Invalid input-server request id.".to_string()),
+        };
+    }
+    if request.action.is_empty()
+        || request.action.len() > MAX_INPUT_SERVER_ACTION_BYTES
+        || request
+            .action
+            .chars()
+            .any(|character| matches!(character, '\r' | '\n' | '\0'))
+    {
+        return InputServerResponse {
+            id: request.id,
+            ok: false,
+            error: Some("Invalid input-server action.".to_string()),
+        };
+    }
+
+    match inject(&request.action) {
+        Ok(()) => InputServerResponse {
+            id: request.id,
+            ok: true,
+            error: None,
+        },
+        Err(error) => InputServerResponse {
+            id: request.id,
+            ok: false,
+            error: Some(error),
+        },
+    }
+}
+
+async fn run_input_server() -> std::result::Result<(), String> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let stdin = tokio::io::stdin();
+    let mut lines = BufReader::new(stdin).lines();
+    loop {
+        let line = lines
+            .next_line()
+            .await
+            .map_err(|error| format!("input-server stdin failed: {error}"))?;
+        let Some(line) = line else {
+            return Ok(());
+        };
+        let response = if line.len() > MAX_INPUT_SERVER_ACTION_BYTES + 4 * 1024 {
+            InputServerResponse {
+                id: String::new(),
+                ok: false,
+                error: Some("Input-server request is too large.".to_string()),
+            }
+        } else {
+            process_input_server_line(&line, inject_input)
+        };
+        let serialized = serde_json::to_string(&response)
+            .map_err(|error| format!("input-server response serialization failed: {error}"))?;
+        let mut stdout = std::io::stdout().lock();
+        writeln!(stdout, "{serialized}")
+            .map_err(|error| format!("input-server stdout failed: {error}"))?;
+        stdout
+            .flush()
+            .map_err(|error| format!("input-server stdout flush failed: {error}"))?;
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let config = match parse_benchmark_config(std::env::args()) {
@@ -1852,7 +2141,7 @@ async fn main() {
         RunMode::Diagnostics => {
             println!(
                 "{}",
-                serde_json::to_string(&collect_input_diagnostics())
+                serde_json::to_string(&collect_input_diagnostics(None))
                     .unwrap_or_else(|_| "{}".to_string())
             );
             return;
@@ -1867,6 +2156,13 @@ async fn main() {
                 std::process::exit(1);
             }
             println!("입력 주입 성공: {}", action);
+            return;
+        }
+        RunMode::InputServer => {
+            if let Err(error) = run_input_server().await {
+                eprintln!("Persistent input server failed: {error}");
+                std::process::exit(1);
+            }
             return;
         }
         RunMode::Stream => {

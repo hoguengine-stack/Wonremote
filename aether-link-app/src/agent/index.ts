@@ -7,7 +7,6 @@ import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { bootstrapAgent } from "./agentBootstrap";
 import { parseAgentConfigJson } from "./agentConfigJson";
-import { parseSecurityCodeCommand, resolveInjectActions } from "./agentCommandActions";
 import { pollAgentCommands, postAgentSessionApproval, sendAgentHeartbeat } from "./agentClient";
 import { waitForApiHealth } from "./agentHealth";
 import {
@@ -16,6 +15,18 @@ import {
 } from "./agentRegistrationRecovery";
 import { resolveAgentAppDir, resolveAgentPocPath } from "./agentPaths";
 import { resolveAgentCredentials } from "./agentRuntime";
+import {
+  beginAgentCaptureGeneration,
+  currentSessionId,
+  endAgentSessionGeneration,
+} from "./agentSessionLifecycle";
+import {
+  createAgentCommandPollGate,
+  createSerializedAgentCommandQueue,
+  executeAgentCommand,
+  isCurrentWebRtcSessionGeneration,
+  type AgentCommandRuntime,
+} from "./agentCommandExecution";
 import {
   nextStreamCaptureBackend,
   nextStreamRestartDelayMs,
@@ -26,7 +37,9 @@ import {
 } from "./agentStreamPolicy";
 import { WONREMOTE_APP_VERSION } from "../domain/appVersion";
 import { computeSha256 } from "./checksum";
-import { saveTransferredFileChunk, saveTransferredFileDownloadStream } from "./fileTransferReceiver";
+import { saveTransferredFileChunk } from "./fileTransferReceiver";
+import { downloadFirebaseStorageFile } from "./firebaseStorageDownload";
+import { resolveAgentUpdateCheckIntervalMs, shouldAttemptAgentUpdateCheck } from "./agentUpdatePollPolicy";
 import { isSourceTreeUpdateTarget } from "./updateSafety";
 import {
   downloadInstallerUpdate,
@@ -35,6 +48,17 @@ import {
   type SafeInstallerUpdateMetadata,
 } from "./productionInstallerUpdate";
 import { loadProductionInstallerUpdateMetadata } from "./productionUpdateMetadata";
+import { handleUpdateOnceCli } from "./agentUpdateOnce";
+import { sendWakeOnLanMagicPacket } from "./wakeOnLan";
+import { parseAgentDisplayInventory } from "./agentDisplayInventory";
+import { PersistentInputInjector } from "./persistentInputInjector";
+import {
+  releasePressedInput,
+  releasePressedInputAndClose,
+} from "./persistentInputShutdown";
+import { createAgentPointerState, recordSuccessfulPointerAction } from "./agentPointerState";
+import { processWebRtcFileChunk } from "./webrtcFileReceiver";
+import { runAgentWebRtcRuntimeSmoke } from "./agentWebRtcRuntimeSmoke";
 import {
   authenticateAgentWithFirebase,
   type AgentWebRtcTransport,
@@ -102,16 +126,20 @@ const POC_PATH = resolveAgentPocPath(process.env, AGENT_APP_DIR);
 const API_BASE_URL = process.env.WONREMOTE_API_URL ?? "http://127.0.0.1:8787";
 const HEARTBEAT_INTERVAL_MS = Number(process.env.WONREMOTE_AGENT_HEARTBEAT_MS ?? 10_000);
 const COMMAND_POLL_INTERVAL_MS = resolveCommandPollIntervalMs(process.env);
+const UPDATE_CHECK_INTERVAL_MS = resolveAgentUpdateCheckIntervalMs(process.env);
 const USE_FIREBASE = isAgentFirebaseEnabled(process.env);
 const FIRESTORE_TILE_FALLBACK_POLICY = resolveFirestoreTileFallbackPolicy(process.env);
+const persistentInputInjector = new PersistentInputInjector(POC_PATH);
 
 let streamProcess: any = null;
 let streamDesired = false;
 let streamRestartTimer: any = null;
 let streamFailureCount = 0;
 let streamBackend: StreamCaptureBackend = "dxgi";
-let streamGeneration = 0;
+let captureGeneration = 0;
+let sessionGeneration = 0;
 let webRtcTransport: AgentWebRtcTransport | null = null;
+let webRtcTransportStartGeneration: number | null = null;
 let currentOutputIndex = 0;
 let currentLoopSleepMs = 33;
 let streamRestartCount = 0;
@@ -120,10 +148,17 @@ let lastStreamError: string | undefined;
 let streamTransport: AgentStreamDiagnostics["transport"] = "none";
 let rtcState: AgentStreamDiagnostics["rtcState"] = "none";
 let rtcError: string | undefined;
+let streamDroppedFrameCount = 0;
+let streamBackpressured = false;
+let streamBufferedAmount = 0;
+let streamFrameSequence = 0;
 let firestoreTileFallbackStartedAtMs = Date.now();
 let firestoreTileFallbackFrameCount = 0;
 let firestoreTileFallbackLimitLogged = false;
 const pressedKeys = new Set<string>();
+const pointerState = createAgentPointerState();
+const agentCommandQueue = createSerializedAgentCommandQueue();
+const agentCommandPollGate = createAgentCommandPollGate();
 let displayCache: { loadedAtMs: number; displays: DeviceDisplayInfo[] } | null = null;
 let controlDiagnosticsCache: { loadedAtMs: number; diagnostics: AgentControlDiagnostics | undefined } | null = null;
 const DIAGNOSTIC_FAILURE_RETRY_MS = 5 * 60_000;
@@ -131,29 +166,43 @@ const diagnosticFailureCache = new Map<string, { loggedAtMs: number; message: st
 
 let isApprovalPending = false;
 let isSessionActive = false;
+let activeSessionId: string | null = null;
 let sessionPollIntervalId: any = null;
-let isCommandPollInFlight = false;
 let lastSessionPollError = "";
 let activeSessionRecoveryPermissionBlocked = false;
 let lastActiveSessionRecoveryWarning = "";
 
 
-function startStreaming(
+async function startStreaming(
   deviceId: string,
+  sessionId: string,
   outputIndex = 0,
   loopSleepMs = 33,
   backend: StreamCaptureBackend = streamBackend,
 ) {
-  const wasStreaming = streamDesired;
+  const previousSessionId = activeSessionId;
+  const generationTransition = beginAgentCaptureGeneration({
+    activeSessionId,
+    captureGeneration,
+    sessionGeneration,
+  }, sessionId);
+  captureGeneration = generationTransition.captureGeneration;
+  sessionGeneration = generationTransition.sessionGeneration;
+  activeSessionId = generationTransition.activeSessionId;
+  const captureRunGeneration = captureGeneration;
+  const transportGeneration = sessionGeneration;
+  const { sessionChanged } = generationTransition;
   streamDesired = true;
-  streamGeneration += 1;
-  const generation = streamGeneration;
   streamBackend = backend;
   currentOutputIndex = outputIndex;
   currentLoopSleepMs = loopSleepMs;
-  streamTransport = USE_FIREBASE ? "none" : "local-api";
-  if (!wasStreaming) {
+  if (sessionChanged) {
+    streamTransport = USE_FIREBASE ? "none" : "local-api";
     resetFirestoreTileFallbackBudget();
+    streamDroppedFrameCount = 0;
+    streamBackpressured = false;
+    streamBufferedAmount = 0;
+    streamFrameSequence = 0;
   }
   if (streamRestartTimer) {
     clearTimeout(streamRestartTimer);
@@ -162,47 +211,31 @@ function startStreaming(
   if (streamProcess) {
     streamProcess.kill();
   }
+  if (sessionChanged) {
+    const previousTransport = webRtcTransport;
+    webRtcTransport = null;
+    webRtcTransportStartGeneration = null;
+    void previousTransport?.close();
+  }
+  if (sessionChanged && sessionPollIntervalId) {
+    clearInterval(sessionPollIntervalId);
+    sessionPollIntervalId = null;
+  }
+  if (sessionChanged && previousSessionId) {
+    await releasePressedInputAndClose(
+      persistentInputInjector,
+      { pointer: pointerState, pressedKeys },
+      "Agent input session changed.",
+    );
+  }
 
   // Data polling must stay alive even if the capture backend falls back or exits.
-  startSessionPolling(deviceId);
+  if (sessionChanged || !sessionPollIntervalId) {
+    startSessionPolling(sessionId);
+  }
 
   const pocPath = POC_PATH;
-  const sessionId = `session-${deviceId}`;
-  if (USE_FIREBASE) {
-    rtcState = "starting";
-    rtcError = undefined;
-    void startAgentWebRtcTransportWithFirebase(sessionId, {
-      onState: (state, error) => {
-        if (state === "open") {
-          rtcState = "ready";
-          rtcError = undefined;
-          return;
-        }
-        if (state === "closed") {
-          markWebRtcUnavailable("WebRTC data channel closed.");
-          return;
-        }
-        markWebRtcUnavailable(error ?? "WebRTC data channel failed.");
-      },
-    })
-      .then(async (transport) => {
-        if (!transport || generation !== streamGeneration) {
-          await transport?.close();
-          if (generation === streamGeneration) {
-            markWebRtcUnavailable("WebRTC offer or native realtime channel was unavailable.");
-          }
-          return;
-        }
-        await webRtcTransport?.close();
-        webRtcTransport = transport;
-        rtcState = "ready";
-        rtcError = undefined;
-        console.log("[WebRTC] Agent tile data channel transport is ready.");
-      })
-      .catch((error) => {
-        markWebRtcUnavailable(error instanceof Error ? error.message : String(error));
-      });
-  }
+  ensureSessionWebRtcTransport(deviceId, sessionId, transportGeneration);
   
   const env = {
     ...process.env,
@@ -221,15 +254,39 @@ function startStreaming(
   });
 
   rl.on("line", async (line) => {
+    if (
+      captureRunGeneration !== captureGeneration ||
+      sessionId !== activeSessionId
+    ) {
+      return;
+    }
     try {
       const data = JSON.parse(line);
       if (data.type === "frame") {
+        streamFrameSequence += 1;
         streamFailureCount = 0;
         lastStreamFrameAt = new Date().toISOString();
         lastStreamError = undefined;
-        if (USE_FIREBASE && webRtcTransport?.sendFrame({ tiles: data.tiles, width: data.width, height: data.height })) {
+        const sendResult = USE_FIREBASE
+          ? webRtcTransport?.sendFrame({
+              tiles: data.tiles,
+              width: data.width,
+              height: data.height,
+              sequence: streamFrameSequence,
+            })
+          : undefined;
+        if (sendResult === "sent") {
           streamTransport = "webrtc";
+          streamBackpressured = false;
+          streamBufferedAmount = webRtcTransport?.getBufferedAmount() ?? 0;
+        } else if (sendResult === "backpressure") {
+          streamTransport = "webrtc";
+          streamDroppedFrameCount += 1;
+          streamBackpressured = true;
+          streamBufferedAmount = webRtcTransport?.getBufferedAmount() ?? 0;
         } else if (USE_FIREBASE) {
+          streamBackpressured = false;
+          streamBufferedAmount = webRtcTransport?.getBufferedAmount() ?? 0;
           if (
             canPostFirestoreTileFallbackFrame(FIRESTORE_TILE_FALLBACK_POLICY, {
               postedFrames: firestoreTileFallbackFrameCount,
@@ -294,7 +351,7 @@ function startStreaming(
     if (streamProcess === child) {
       streamProcess = null;
     }
-    if (streamDesired && generation === streamGeneration) {
+    if (streamDesired && captureRunGeneration === captureGeneration) {
       const nextBackend = nextStreamCaptureBackend(streamBackend, finalStderr);
       const nextSleep = nextBackend === "gdi" ? Math.max(loopSleepMs, 125) : loopSleepMs;
       const delayMs = nextStreamRestartDelayMs(streamFailureCount);
@@ -307,25 +364,166 @@ function startStreaming(
       console.log(`Capture stream will restart in ${delayMs}ms (backend: ${nextBackend}, sleep: ${nextSleep}ms).`);
       streamRestartTimer = setTimeout(() => {
         streamRestartTimer = null;
-        startStreaming(deviceId, outputIndex, nextSleep, nextBackend);
+        void startStreaming(deviceId, sessionId, outputIndex, nextSleep, nextBackend).catch((error) => {
+          console.error(`[Capture restart failed] ${error instanceof Error ? error.message : error}`);
+        });
       }, delayMs);
     }
   });
 }
 
-function startSessionPolling(deviceId: string) {
+function ensureSessionWebRtcTransport(
+  deviceId: string,
+  sessionId: string,
+  expectedSessionGeneration: number,
+): void {
+  if (
+    !USE_FIREBASE ||
+    webRtcTransport ||
+    webRtcTransportStartGeneration === expectedSessionGeneration ||
+    !isCurrentWebRtcSessionGeneration(
+      expectedSessionGeneration,
+      sessionGeneration,
+      sessionId,
+      activeSessionId,
+    )
+  ) {
+    return;
+  }
+
+  webRtcTransportStartGeneration = expectedSessionGeneration;
+  rtcState = "starting";
+  rtcError = undefined;
+  void startAgentWebRtcTransportWithFirebase(sessionId, {
+    onControl: (action, isCurrentChannel) => {
+      void agentCommandQueue.enqueue(async () => {
+        if (
+          !isCurrentChannel() ||
+          !isCurrentWebRtcSessionGeneration(
+            expectedSessionGeneration,
+            sessionGeneration,
+            sessionId,
+            activeSessionId,
+          )
+        ) {
+          console.warn(`[WebRTC] Ignoring stale control action for session ${sessionId}.`);
+          return;
+        }
+        await executeAgentCommand(action, "webrtc", createAgentCommandRuntime(deviceId));
+      }).catch((error) => {
+        console.error(`[WebRTC control failed] ${error instanceof Error ? error.message : error}`);
+      });
+    },
+    onControlClosed: () => {
+      void agentCommandQueue.enqueue(async () => {
+        if (!isCurrentWebRtcSessionGeneration(
+          expectedSessionGeneration,
+          sessionGeneration,
+          sessionId,
+          activeSessionId,
+        )) {
+          return;
+        }
+        await releasePressedInput(
+          persistentInputInjector,
+          { pointer: pointerState, pressedKeys },
+        );
+      }).catch((error) => {
+        console.error(`[WebRTC input release failed] ${error instanceof Error ? error.message : error}`);
+      });
+    },
+    onFileChunk: (chunk, isCurrentChannel) => processWebRtcFileChunk(chunk, {
+      isCurrent: () => isCurrentChannel() && isCurrentWebRtcSessionGeneration(
+        expectedSessionGeneration,
+        sessionGeneration,
+        sessionId,
+        activeSessionId,
+      ),
+      postReceipt: (receipt) => postFileTransferReceipt(sessionId, receipt),
+      onReceiptError: (error) => {
+        console.warn(
+          `[WebRTC file receipt failed] ${error instanceof Error ? error.message : error}`,
+        );
+      },
+    }),
+    onState: (state, error) => {
+      if (!isCurrentWebRtcSessionGeneration(
+        expectedSessionGeneration,
+        sessionGeneration,
+        sessionId,
+        activeSessionId,
+      )) {
+        return;
+      }
+      if (state === "open") {
+        rtcState = "ready";
+        rtcError = undefined;
+        return;
+      }
+      if (state === "closed") {
+        markWebRtcUnavailable("WebRTC data channel closed.");
+        return;
+      }
+      markWebRtcUnavailable(error ?? "WebRTC data channel failed.");
+    },
+  })
+    .then(async (transport) => {
+      const isCurrent = isCurrentWebRtcSessionGeneration(
+        expectedSessionGeneration,
+        sessionGeneration,
+        sessionId,
+        activeSessionId,
+      );
+      if (!transport || !isCurrent) {
+        await transport?.close();
+        if (!transport && isCurrent) {
+          markWebRtcUnavailable("WebRTC offer or native realtime channel was unavailable.");
+        }
+        return;
+      }
+      webRtcTransport = transport;
+      if (rtcState !== "ready") {
+        rtcState = "starting";
+      }
+      console.log("[WebRTC] Agent tile, control, and file data channels are waiting to open.");
+    })
+    .catch((error) => {
+      if (isCurrentWebRtcSessionGeneration(
+        expectedSessionGeneration,
+        sessionGeneration,
+        sessionId,
+        activeSessionId,
+      )) {
+        markWebRtcUnavailable(error instanceof Error ? error.message : String(error));
+      }
+    })
+    .finally(() => {
+      if (webRtcTransportStartGeneration === expectedSessionGeneration) {
+        webRtcTransportStartGeneration = null;
+      }
+    });
+}
+
+function startSessionPolling(sessionId: string) {
   if (sessionPollIntervalId) {
     clearInterval(sessionPollIntervalId);
   }
   isSessionActive = true;
   sessionPollIntervalId = setInterval(() => {
-    void pollSessionData(deviceId);
+    void pollSessionData(sessionId);
   }, 1500);
 }
 
-function stopSessionPolling() {
+async function stopSessionPolling(): Promise<void> {
   streamDesired = false;
-  streamGeneration += 1;
+  const generationTransition = endAgentSessionGeneration({
+    activeSessionId,
+    captureGeneration,
+    sessionGeneration,
+  });
+  captureGeneration = generationTransition.captureGeneration;
+  sessionGeneration = generationTransition.sessionGeneration;
+  activeSessionId = generationTransition.activeSessionId;
   streamFailureCount = 0;
   if (streamRestartTimer) {
     clearTimeout(streamRestartTimer);
@@ -333,15 +531,28 @@ function stopSessionPolling() {
   }
   void webRtcTransport?.close();
   webRtcTransport = null;
+  webRtcTransportStartGeneration = null;
   streamTransport = "none";
   rtcState = "none";
   rtcError = undefined;
+  streamBackpressured = false;
+  streamBufferedAmount = 0;
   resetFirestoreTileFallbackBudget();
   isSessionActive = false;
+  if (streamProcess) {
+    console.log("Stopping capture stream due to stop-stream command");
+    streamProcess.kill();
+    streamProcess = null;
+  }
   if (sessionPollIntervalId) {
     clearInterval(sessionPollIntervalId);
     sessionPollIntervalId = null;
   }
+  await releasePressedInputAndClose(
+    persistentInputInjector,
+    { pointer: pointerState, pressedKeys },
+    "Agent remote session stopped.",
+  );
 }
 
 function markWebRtcUnavailable(reason: string) {
@@ -370,8 +581,7 @@ function logFirestoreTileFallbackLimit() {
   console.warn(`[Firebase Stream] ${lastStreamError}`);
 }
 
-async function pollSessionData(deviceId: string) {
-  const sessionId = `session-${deviceId}`;
+async function pollSessionData(sessionId: string) {
   try {
     if (USE_FIREBASE) {
       const sessionData = await fetchSessionDataWithFirebase(sessionId);
@@ -495,11 +705,7 @@ async function saveTransferredFileFromFirebaseStorage(file: any) {
     throw new Error("Firebase Storage file metadata is missing storagePath.");
   }
   const downloadUrl = await resolveFirebaseStorageDownloadUrl(storagePath);
-  const response = await fetch(downloadUrl);
-  if (!response.ok || !response.body) {
-    throw new Error(`Firebase Storage download failed: HTTP ${response.status}`);
-  }
-  return saveTransferredFileDownloadStream(file, response.body, process.env);
+  return downloadFirebaseStorageFile(file, downloadUrl);
 }
 
 async function postFileTransferReceipt(
@@ -520,6 +726,17 @@ async function postFileTransferReceipt(
 
 
 async function main() {
+  if (process.argv.includes("--runtime-smoke")) {
+    const runtime = await runAgentWebRtcRuntimeSmoke();
+    console.log(`Agent runtime smoke passed: arch=${process.arch}, webrtc=${runtime}`);
+    return;
+  }
+
+  if (process.argv.includes("--update-once")) {
+    process.exitCode = await handleUpdateOnceCli();
+    return;
+  }
+
   try {
     const baseDir = process.env.APPDATA ?? process.cwd();
     const wonRemoteDir = path.join(baseDir, "WonRemote");
@@ -529,14 +746,16 @@ async function main() {
     console.error("Failed to write agent.pid:", err);
   }
 
-  const crashFile = path.join(process.cwd(), "crash.txt");
-  try {
-    await access(crashFile);
-    console.error("[CRITICAL] Simulated boot crash detected via crash.txt!");
-    await rm(crashFile, { force: true });
-    process.exit(1);
-  } catch (e) {
-    // proceed
+  if (process.env.NODE_ENV === "test") {
+    const crashFile = path.join(process.cwd(), "crash.txt");
+    try {
+      await access(crashFile);
+      console.error("[CRITICAL] Simulated boot crash detected via crash.txt!");
+      await rm(crashFile, { force: true });
+      process.exit(1);
+    } catch {
+      // No test crash marker is present.
+    }
   }
 
   if (process.argv.includes("--install")) {
@@ -619,25 +838,7 @@ async function main() {
     await writeFile(successMarker, "SUCCESS");
   } catch (e) {}
 
-  try {
-    await pollCommands(activeConfig);
-  } catch (error: any) {
-    let recovered = false;
-    if (error.status === 404) {
-      const recoveredConfig = await recoverConfigAfterMissingDevice(activeConfig);
-      if (recoveredConfig) {
-        activeConfig = recoveredConfig;
-        await pollCommands(activeConfig);
-        recovered = true;
-      } else {
-        await handleUnregisteredDevice();
-      }
-    }
-    if (!recovered) {
-      console.log("[Status] Connecting");
-      console.error(error instanceof Error ? error.message : error);
-    }
-  }
+  activeConfig = await runCommandPollTick(activeConfig);
 
 
   // Setup CLI interactive input for chatting, clipboard sharing, and audio beep signals
@@ -678,7 +879,14 @@ async function main() {
     if (text.startsWith("chat ")) {
       const msg = text.slice(5).trim();
       if (msg && activeConfig.registeredDeviceId) {
-        const sessionId = `session-${activeConfig.registeredDeviceId}`;
+        const sessionId = currentSessionId(activeSessionId, {
+          deviceId: activeConfig.registeredDeviceId,
+          firebaseEnabled: USE_FIREBASE,
+        });
+        if (!sessionId) {
+          console.warn("[Chat] No active Firebase session.");
+          return;
+        }
         if (USE_FIREBASE) {
           await postChatWithFirebase(sessionId, { message: msg, sender: "agent" });
         } else {
@@ -693,7 +901,14 @@ async function main() {
     } else if (text.startsWith("clipboard ")) {
       const clip = text.slice(10);
       if (activeConfig.registeredDeviceId) {
-        const sessionId = `session-${activeConfig.registeredDeviceId}`;
+        const sessionId = currentSessionId(activeSessionId, {
+          deviceId: activeConfig.registeredDeviceId,
+          firebaseEnabled: USE_FIREBASE,
+        });
+        if (!sessionId) {
+          console.warn("[Clipboard] No active Firebase session.");
+          return;
+        }
         if (USE_FIREBASE) {
           await postClipboardWithFirebase(sessionId, { text: clip, sender: "agent" });
         } else {
@@ -707,7 +922,14 @@ async function main() {
       }
     } else if (text === "audio") {
       if (activeConfig.registeredDeviceId) {
-        const sessionId = `session-${activeConfig.registeredDeviceId}`;
+        const sessionId = currentSessionId(activeSessionId, {
+          deviceId: activeConfig.registeredDeviceId,
+          firebaseEnabled: USE_FIREBASE,
+        });
+        if (!sessionId) {
+          console.warn("[Audio] No active Firebase session.");
+          return;
+        }
         if (USE_FIREBASE) {
           await postChatWithFirebase(sessionId, { message: "__AUDIO_BEEP_SIGNAL__", sender: "agent" });
         } else {
@@ -727,6 +949,7 @@ async function main() {
   if (process.argv.includes("--watch")) {
     console.log(`Heartbeat interval: ${HEARTBEAT_INTERVAL_MS}ms`);
     console.log(`Command poll interval: ${COMMAND_POLL_INTERVAL_MS}ms`);
+    console.log(`Update check interval: ${UPDATE_CHECK_INTERVAL_MS}ms`);
     setInterval(() => {
       void runAgentTick(activeConfig).then((nextConfig) => {
         activeConfig = nextConfig;
@@ -741,9 +964,15 @@ async function main() {
 }
 
 let isUpdating = false;
+let lastUpdateCheckAttemptAtMs: number | null = null;
 
 async function checkUpdate(config: AgentLocalConfig) {
   if (isUpdating) return;
+  const attemptAtMs = Date.now();
+  if (!shouldAttemptAgentUpdateCheck(attemptAtMs, lastUpdateCheckAttemptAtMs, UPDATE_CHECK_INTERVAL_MS)) {
+    return;
+  }
+  lastUpdateCheckAttemptAtMs = attemptAtMs;
   isUpdating = true;
   const currentVersion = WONREMOTE_APP_VERSION;
   try {
@@ -842,13 +1071,19 @@ async function checkUpdate(config: AgentLocalConfig) {
       const agentId = process.env.WONREMOTE_AGENT_ID ?? "1234567890";
       const agentPassword = process.env.WONREMOTE_AGENT_PASSWORD ?? "1234";
       const heartbeatMs = process.env.WONREMOTE_AGENT_HEARTBEAT_MS ?? "1000";
+      const nodeEnv = process.env.NODE_ENV ?? "production";
+      const updateCheckMs = process.env.WONREMOTE_AGENT_UPDATE_CHECK_MS ?? "";
+      const testUpdateCheckMs = process.env.WONREMOTE_TEST_AGENT_UPDATE_CHECK_MS ?? "";
 
 const installerContent = `@echo off
 set "APPDATA=${baseDir}"
+set "NODE_ENV=${nodeEnv}"
 set "WONREMOTE_API_URL=${API_BASE_URL}"
 set "WONREMOTE_AGENT_ID=${agentId}"
 set "WONREMOTE_AGENT_PASSWORD=${agentPassword}"
 set "WONREMOTE_AGENT_HEARTBEAT_MS=${heartbeatMs}"
+set "WONREMOTE_AGENT_UPDATE_CHECK_MS=${updateCheckMs}"
+set "WONREMOTE_TEST_AGENT_UPDATE_CHECK_MS=${testUpdateCheckMs}"
 set "WONREMOTE_APP_DIR=${appDir}"
 set "WONREMOTE_POC_PATH=${POC_PATH}"
 set "WONREMOTE_AGENT_CONFIG=${configPath}"
@@ -916,6 +1151,11 @@ if exist "${path.join(baseDir, "WonRemote", ".update_success")}" (
       
       console.log("[WonRemote Agent] Handed off to installer and exiting current Agent.");
       await new Promise((resolve) => setTimeout(resolve, 500));
+      await agentCommandQueue.enqueue(() => releasePressedInputAndClose(
+        persistentInputInjector,
+        { pointer: pointerState, pressedKeys },
+        "Agent update handoff started.",
+      ));
       process.exit(0);
     } else {
       isUpdating = false;
@@ -941,7 +1181,7 @@ async function loadUpdateCheckData(): Promise<any | null> {
 async function handoffToProductionInstallerUpdate(data: SafeInstallerUpdateMetadata): Promise<void> {
   const baseDir = process.env.APPDATA ?? process.cwd();
   const download = await downloadInstallerUpdate(data, { baseDir });
-  const handoff = await prepareInstallerHandoff(download, { baseDir });
+  const handoff = await prepareInstallerHandoff(download, { baseDir, restartMode: "agent" });
   const { installerArgs, installerPath } = download;
   console.log(`[WonRemote Agent] Verified installer update downloaded: ${installerPath}`);
   console.log(`[WonRemote Agent] Launching installer with args: ${installerArgs.join(" ")}`);
@@ -963,6 +1203,11 @@ async function handoffToProductionInstallerUpdate(data: SafeInstallerUpdateMetad
 
   console.log("[WonRemote Agent] Handed off to production installer and exiting current Agent.");
   await new Promise((resolve) => setTimeout(resolve, 500));
+  await agentCommandQueue.enqueue(() => releasePressedInputAndClose(
+    persistentInputInjector,
+    { pointer: pointerState, pressedKeys },
+    "Agent update handoff started.",
+  ));
   process.exit(0);
 }
 
@@ -998,7 +1243,6 @@ async function runAgentTick(config: AgentLocalConfig): Promise<AgentLocalConfig>
   try {
     activeConfig = await sendHeartbeatWithRecovery(activeConfig);
     await ensureActiveFirebaseSessionRecovery(activeConfig);
-    await pollCommands(activeConfig);
     await checkUpdate(activeConfig);
     console.log("[Status] Online");
   } catch (error: any) {
@@ -1021,28 +1265,25 @@ async function runAgentTick(config: AgentLocalConfig): Promise<AgentLocalConfig>
 }
 
 async function runCommandPollTick(config: AgentLocalConfig): Promise<AgentLocalConfig> {
-  if (isCommandPollInFlight) {
-    return config;
-  }
-  isCommandPollInFlight = true;
-  try {
-    await pollCommands(config);
-    return config;
-  } catch (error: any) {
-    if (error.status === 404) {
-      const recoveredConfig = await recoverConfigAfterMissingDevice(config);
-      if (!recoveredConfig) {
-        await handleUnregisteredDevice();
+  const result = await agentCommandPollGate.run(async () => {
+    try {
+      await pollCommands(config);
+      return config;
+    } catch (error: any) {
+      if (error.status === 404) {
+        const recoveredConfig = await recoverConfigAfterMissingDevice(config);
+        if (!recoveredConfig) {
+          await handleUnregisteredDevice();
+          return config;
+        }
+        return recoveredConfig;
+      } else {
+        console.error(error instanceof Error ? error.message : error);
         return config;
       }
-      return recoveredConfig;
-    } else {
-      console.error(error instanceof Error ? error.message : error);
-      return config;
     }
-  } finally {
-    isCommandPollInFlight = false;
-  }
+  });
+  return result.started ? result.value : config;
 }
 
 async function ensureActiveFirebaseSessionRecovery(config: AgentLocalConfig): Promise<void> {
@@ -1059,7 +1300,7 @@ async function ensureActiveFirebaseSessionRecovery(config: AgentLocalConfig): Pr
       return;
     }
     console.log(`[Agent] Recovering active remote session after restart: ${sessions[0].id}`);
-    startStreaming(config.registeredDeviceId, currentOutputIndex, currentLoopSleepMs);
+    await startStreaming(config.registeredDeviceId, sessions[0].id, currentOutputIndex, currentLoopSleepMs);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (isFirebasePermissionDenied(message, error)) {
@@ -1161,97 +1402,90 @@ async function pollCommands(config: AgentLocalConfig): Promise<void> {
     deviceId: config.registeredDeviceId,
     installId: config.installId,
   });
-  
-  const pocPath = POC_PATH;
 
   for (const command of result.commands) {
     console.log(`Command received: ${command.action}`);
     try {
-      if (command.action === "request-approval") {
-        console.log("\n==============================================");
-        console.log("[Security Warning] Viewer requested remote access approval.");
-        console.log("Approve the request? Waiting for Y/N input...");
-        console.log("==============================================");
-        isApprovalPending = true;
-      } else if (command.action === "start-stream") {
-        console.log("Starting capture stream due to start-stream command");
-        startStreaming(config.registeredDeviceId!, currentOutputIndex, currentLoopSleepMs);
-      } else if (command.action === "stop-stream") {
-        stopSessionPolling();
-        if (streamProcess) {
-          console.log("Stopping capture stream due to stop-stream command");
-          streamProcess.kill();
-          streamProcess = null;
-        }
-      } else if (command.action.startsWith("switch-monitor ")) {
-        const parts = command.action.split(" ");
-        const nextIndex = parseInt(parts[1], 10);
-        if (!isNaN(nextIndex)) {
-          currentOutputIndex = nextIndex;
-          console.log(`Switching monitor to output-index: ${currentOutputIndex}`);
-          startStreaming(config.registeredDeviceId!, currentOutputIndex, currentLoopSleepMs);
-        }
-      } else if (command.action.startsWith("set-sleep ")) {
-        const parts = command.action.split(" ");
-        const nextSleep = parseInt(parts[1], 10);
-        if (!isNaN(nextSleep) && nextSleep !== currentLoopSleepMs) {
-          currentLoopSleepMs = nextSleep;
-          console.log(`Adjusting stream loop sleep to: ${currentLoopSleepMs}ms`);
-          startStreaming(config.registeredDeviceId!, currentOutputIndex, currentLoopSleepMs);
-        }
-      } else if (command.action === "clipboard-request") {
-        const text = await getClipboardText();
-        const sessionId = `session-${config.registeredDeviceId}`;
-        if (USE_FIREBASE) {
-          await postClipboardWithFirebase(sessionId, { text, sender: "agent" });
-        } else {
-          await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/clipboard`, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ text, sender: "agent" }),
-          });
-        }
-        console.log("[Clipboard] Current agent clipboard sent to viewer");
-      } else if (command.action.startsWith("security-code ")) {
-        const securityCode = parseSecurityCodeCommand(command.action);
-        if (!securityCode) {
-          console.warn(`[Security Connect] Invalid security-code command: ${command.action}`);
-          continue;
-        }
-        await showSecurityCode(securityCode.code);
-      } else if (command.action === "ping-color-change") {
-        if (streamProcess) {
-          console.log("Injecting color marker signal to streamer process stdin");
-          streamProcess.stdin.write("ping-color-change\n");
-        }
-        const { stdout } = await execFileHidden(pocPath, [
-          "--mode",
-          "inject-input",
-          "--action",
-          command.action,
-        ]);
-        console.log(`[Inject Success] ${stdout.trim()}`);
-      } else {
-        const resolved = resolveInjectActions(command.action, pressedKeys);
-        if (resolved.type === "pasteText") {
-          await setClipboardText(resolved.text);
-        }
-
-        for (const action of resolved.actions) {
-          const { stdout } = await execFileHidden(pocPath, [
-            "--mode",
-            "inject-input",
-            "--action",
-            action,
-          ]);
-          console.log(`[Inject Success] ${stdout.trim()}`);
-        }
-      }
+      await agentCommandQueue.enqueue(() =>
+        executeAgentCommand(command.action, "poll", createAgentCommandRuntime(config.registeredDeviceId!)),
+      );
     } catch (error) {
       console.error(`[Inject Failed] ${error instanceof Error ? error.message : error}`);
     }
   }
+}
 
+function createAgentCommandRuntime(deviceId: string): AgentCommandRuntime {
+  return {
+    deviceId,
+    firebaseEnabled: USE_FIREBASE,
+    pressedKeys,
+    getActiveSessionId: () => activeSessionId,
+    injectAction: async (action) => {
+      await persistentInputInjector.inject(action);
+      recordSuccessfulPointerAction(action, pointerState);
+      console.log(`[Inject Success] ${action}`);
+    },
+    requestApproval: () => {
+      console.log("\n==============================================");
+      console.log("[Security Warning] Viewer requested remote access approval.");
+      console.log("Approve the request? Waiting for Y/N input...");
+      console.log("==============================================");
+      isApprovalPending = true;
+    },
+    requestClipboard: async (sessionId) => {
+      const text = await getClipboardText();
+      if (USE_FIREBASE) {
+        await postClipboardWithFirebase(sessionId, { text, sender: "agent" });
+      } else {
+        await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/clipboard`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text, sender: "agent" }),
+        });
+      }
+      console.log("[Clipboard] Current agent clipboard sent to viewer");
+    },
+    sendWakeOnLan: async (macAddress) => {
+      await sendWakeOnLanMagicPacket(macAddress);
+      console.log(`[Wake-on-LAN] Magic packet sent for ${macAddress}`);
+    },
+    setClipboardText,
+    setSleep: async (milliseconds) => {
+      if (milliseconds === currentLoopSleepMs) {
+        return;
+      }
+      currentLoopSleepMs = milliseconds;
+      console.log(`Adjusting stream loop sleep to: ${currentLoopSleepMs}ms`);
+      if (activeSessionId) {
+        await startStreaming(deviceId, activeSessionId, currentOutputIndex, currentLoopSleepMs);
+      }
+    },
+    showSecurityCode,
+    startStream: async (sessionId) => {
+      console.log(`Starting capture stream for session ${sessionId}`);
+      await startStreaming(deviceId, sessionId, currentOutputIndex, currentLoopSleepMs);
+    },
+    stopStream: async () => {
+      await stopSessionPolling();
+    },
+    switchMonitor: async (outputIndex) => {
+      currentOutputIndex = outputIndex;
+      console.log(`Switching monitor to output-index: ${currentOutputIndex}`);
+      if (activeSessionId) {
+        await startStreaming(deviceId, activeSessionId, currentOutputIndex, currentLoopSleepMs);
+      }
+    },
+    triggerPingColorChange: async () => {
+      if (streamProcess) {
+        console.log("Injecting color marker signal to streamer process stdin");
+        streamProcess.stdin.write("ping-color-change\n");
+      }
+      await persistentInputInjector.inject("ping-color-change");
+      console.log("[Inject Success] ping-color-change");
+    },
+    warn: (message) => console.warn(message),
+  };
 }
 
 async function discoverDisplays(): Promise<DeviceDisplayInfo[] | undefined> {
@@ -1262,27 +1496,7 @@ async function discoverDisplays(): Promise<DeviceDisplayInfo[] | undefined> {
 
   try {
     const { stdout } = await execFileHidden(POC_PATH, ["--mode", "list-displays"]);
-    const parsed = JSON.parse(stdout) as Array<{
-      index?: unknown;
-      name?: unknown;
-      width?: unknown;
-      height?: unknown;
-      primary?: unknown;
-    }>;
-    const displays = parsed
-      .filter(
-        (display) =>
-          Number.isFinite(Number(display.index)) &&
-          Number(display.width) > 0 &&
-          Number(display.height) > 0,
-      )
-      .map((display) => ({
-        index: Number(display.index),
-        name: String(display.name ?? `Display ${display.index}`),
-        width: Number(display.width),
-        height: Number(display.height),
-        primary: Boolean(display.primary),
-      }));
+    const displays = parseAgentDisplayInventory(JSON.parse(stdout));
 
     displayCache = { loadedAtMs: now, displays };
     return displays;
@@ -1395,6 +1609,9 @@ function buildStreamDiagnostics(): AgentStreamDiagnostics {
     transport: streamTransport,
     rtcState,
     rtcError,
+    droppedFrameCount: streamDroppedFrameCount,
+    backpressured: streamBackpressured,
+    bufferedAmount: streamBufferedAmount,
   };
 }
 
@@ -1546,6 +1763,19 @@ async function handleRegistryUninstall() {
     console.error("Startup removal failed:", error instanceof Error ? error.message : error);
     process.exit(1);
   }
+}
+
+process.once("exit", () => {
+  persistentInputInjector.close("Agent process exited.");
+});
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.once(signal, () => {
+    void agentCommandQueue.enqueue(() => releasePressedInputAndClose(
+      persistentInputInjector,
+      { pointer: pointerState, pressedKeys },
+      `Agent received ${signal}.`,
+    )).finally(() => process.exit(0));
+  });
 }
 
 main().catch((error) => {

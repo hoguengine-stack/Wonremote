@@ -222,6 +222,8 @@ describe("agent registry domain", () => {
         {
           index: 0,
           name: "\\\\.\\DISPLAY1",
+          x: 0,
+          y: 0,
           width: 1920,
           height: 1200,
           primary: true,
@@ -229,6 +231,8 @@ describe("agent registry domain", () => {
         {
           index: 1,
           name: "\\\\.\\DISPLAY2",
+          x: -1024,
+          y: 0,
           width: 1024,
           height: 768,
           primary: false,
@@ -238,8 +242,8 @@ describe("agent registry domain", () => {
     });
 
     expect(heartbeat.device.displays).toEqual([
-      expect.objectContaining({ index: 0, width: 1920, height: 1200, primary: true }),
-      expect.objectContaining({ index: 1, width: 1024, height: 768, primary: false }),
+      expect.objectContaining({ index: 0, x: 0, y: 0, width: 1920, height: 1200, primary: true }),
+      expect.objectContaining({ index: 1, x: -1024, y: 0, width: 1024, height: 768, primary: false }),
     ]);
     expect(heartbeat.device.activeDisplayIndex).toBe(1);
   });

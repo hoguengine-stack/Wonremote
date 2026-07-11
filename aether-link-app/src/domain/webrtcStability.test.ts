@@ -3,9 +3,11 @@ import {
   DEFAULT_WEBRTC_CONNECT_TIMEOUT_MS,
   MAX_WEBRTC_CONNECT_TIMEOUT_MS,
   MIN_WEBRTC_CONNECT_TIMEOUT_MS,
+  MAX_WEBRTC_RECONNECT_DELAY_MS,
   formatWebRtcConnectionFailure,
   isTerminalWebRtcConnectionState,
   resolveWebRtcConnectTimeoutMs,
+  webRtcReconnectDelayMs,
 } from "./webrtcStability";
 
 describe("WebRTC stability policy", () => {
@@ -33,5 +35,13 @@ describe("WebRTC stability policy", () => {
       "WebRTC realtime channel unavailable (timeout): offer not answered",
     );
     expect(formatWebRtcConnectionFailure("failed")).toBe("WebRTC realtime channel unavailable (failed)");
+  });
+
+  it("backs off reconnect attempts without ever giving up or exceeding the cap", () => {
+    expect(webRtcReconnectDelayMs(0)).toBe(1_000);
+    expect(webRtcReconnectDelayMs(1)).toBe(2_000);
+    expect(webRtcReconnectDelayMs(4)).toBe(MAX_WEBRTC_RECONNECT_DELAY_MS);
+    expect(webRtcReconnectDelayMs(100)).toBe(MAX_WEBRTC_RECONNECT_DELAY_MS);
+    expect(webRtcReconnectDelayMs(-1)).toBe(1_000);
   });
 });

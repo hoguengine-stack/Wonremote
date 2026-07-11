@@ -53,6 +53,16 @@ let badBinaryChecksum = "";
 let goodUpdatePath = "";
 let badUpdatePath = "";
 let testUpdateMode: "none" | "good" | "bad_checksum" | "bad_binary" = "none";
+const MAX_API_JSON_BODY_BYTES = 20 * 1024 * 1024;
+
+class ApiRequestError extends Error {
+  constructor(
+    readonly statusCode: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
 
 function writeStagedAppVersion(stageDir: string, version: string) {
   const appVersionPath = path.join(stageDir, "src", "domain", "appVersion.ts");
@@ -176,7 +186,9 @@ async function loadProductionUpdateMetadata(): Promise<ProductionUpdateMetadata 
   }
 }
 
-prepareUpdateFiles();
+if (process.env.NODE_ENV === "test") {
+  prepareUpdateFiles();
+}
 
 const DEFAULT_UPDATE_MANIFEST_URL =
   "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/wonremote-update-manifest.json";
@@ -254,9 +266,12 @@ export function createApiServer(options: CreateApiServerOptions | ManagedDevice[
     try {
       await routeRequest(state, request, response);
     } catch (error) {
-      writeJson(response, 500, {
-        error: error instanceof Error ? error.message : "Internal server error",
-      });
+      if (error instanceof ApiRequestError) {
+        writeJson(response, error.statusCode, { error: error.message });
+      } else {
+        console.error("[API Server] Unhandled request error:", error);
+        writeJson(response, 500, { error: "Internal server error" });
+      }
     }
   });
 }
@@ -645,6 +660,10 @@ async function routeRequest(
 
   // GET /api/update/download
   if (request.method === "GET" && url.pathname === "/api/update/download") {
+    if (process.env.NODE_ENV !== "test") {
+      writeJson(response, 403, { error: "Forbidden: Only allowed in test environment" });
+      return;
+    }
     const isBad = url.searchParams.get("type") === "bad";
     const filePath = isBad ? badUpdatePath : goodUpdatePath;
     const filename = path.basename(filePath);
@@ -1081,16 +1100,30 @@ async function ensureDevicesLoaded(state: ApiState): Promise<void> {
 }
 
 async function readJson<T>(request: IncomingMessage): Promise<T> {
+  const declaredLength = Number(request.headers["content-length"] ?? 0);
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_API_JSON_BODY_BYTES) {
+    throw new ApiRequestError(413, "JSON request body is too large.");
+  }
   const chunks: Buffer[] = [];
+  let totalBytes = 0;
   for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalBytes += buffer.length;
+    if (totalBytes > MAX_API_JSON_BODY_BYTES) {
+      throw new ApiRequestError(413, "JSON request body is too large.");
+    }
+    chunks.push(buffer);
   }
 
   if (chunks.length === 0) {
     return {} as T;
   }
 
-  return JSON.parse(Buffer.concat(chunks).toString("utf8")) as T;
+  try {
+    return JSON.parse(Buffer.concat(chunks, totalBytes).toString("utf8")) as T;
+  } catch {
+    throw new ApiRequestError(400, "Request body must be valid JSON.");
+  }
 }
 
 function writeJson(response: ServerResponse, statusCode: number, body: unknown) {

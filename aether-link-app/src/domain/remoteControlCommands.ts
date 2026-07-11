@@ -5,6 +5,13 @@ export interface CanvasRect {
   height: number;
 }
 
+export interface RemoteDisplayBounds {
+  x?: number;
+  y?: number;
+  width: number;
+  height: number;
+}
+
 export type KeyboardCommandType = "keydown" | "keyup";
 export type MouseCommandType = "move" | "down" | "up" | "wheel";
 export type MouseButtonCode = 0 | 1 | 2;
@@ -56,6 +63,49 @@ export function mapCanvasPointToAbsolute(clientX: number, clientY: number, rect:
   };
 }
 
+export function mapCanvasPointToVirtualDesktopAbsolute(
+  clientX: number,
+  clientY: number,
+  rect: CanvasRect,
+  activeDisplay: RemoteDisplayBounds | undefined,
+  displays: RemoteDisplayBounds[] | undefined,
+) {
+  const positionedDisplays = displays?.filter(
+    (display) =>
+      typeof display.x === "number" &&
+      Number.isFinite(display.x) &&
+      typeof display.y === "number" &&
+      Number.isFinite(display.y) &&
+      Number.isFinite(display.width) &&
+      Number.isFinite(display.height) &&
+      display.width > 0 &&
+      display.height > 0,
+  );
+  if (
+    !activeDisplay ||
+    typeof activeDisplay.x !== "number" ||
+    typeof activeDisplay.y !== "number" ||
+    !positionedDisplays ||
+    positionedDisplays.length !== displays?.length
+  ) {
+    return mapCanvasPointToAbsolute(clientX, clientY, rect);
+  }
+
+  const virtualLeft = Math.min(...positionedDisplays.map((display) => display.x as number));
+  const virtualTop = Math.min(...positionedDisplays.map((display) => display.y as number));
+  const virtualRight = Math.max(...positionedDisplays.map((display) => (display.x as number) + display.width));
+  const virtualBottom = Math.max(...positionedDisplays.map((display) => (display.y as number) + display.height));
+  const localX = clamp(clientX - rect.left, 0, rect.width) / Math.max(1, rect.width);
+  const localY = clamp(clientY - rect.top, 0, rect.height) / Math.max(1, rect.height);
+  const virtualX = activeDisplay.x + localX * activeDisplay.width;
+  const virtualY = activeDisplay.y + localY * activeDisplay.height;
+
+  return {
+    dx: Math.round(clamp((virtualX - virtualLeft) / Math.max(1, virtualRight - virtualLeft), 0, 1) * 65535),
+    dy: Math.round(clamp((virtualY - virtualTop) / Math.max(1, virtualBottom - virtualTop), 0, 1) * 65535),
+  };
+}
+
 export function normalizeRemoteKey(key: string): string {
   if (KEY_ALIASES[key]) {
     return KEY_ALIASES[key];
@@ -88,6 +138,10 @@ export function buildMouseCommand(
 
 export function buildPasteTextCommand(text: string): string {
   return `paste-text-base64 ${encodeUtf8Base64(text)}`;
+}
+
+export function buildUnicodeTextCommand(text: string): string {
+  return `text-base64 ${encodeUtf8Base64(text)}`;
 }
 
 export function buildSystemCommand(command: string): string {

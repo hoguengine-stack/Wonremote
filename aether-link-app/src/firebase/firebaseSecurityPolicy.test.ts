@@ -68,6 +68,7 @@ describe("Firebase security deployment policy", () => {
     expect(storageRules).toContain("request.auth != null");
     expect(storageRules).toContain("firestore.get(/databases/(default)/documents/sessions/$(sessionId)).data.ownerUid == request.auth.uid");
     expect(storageRules).toContain("request.resource.size <= 500 * 1024 * 1024");
+    expect(storageRules).toContain("allow delete: if ownsSession(sessionId);");
   });
 
   it("limits Firestore file queue writes to Storage metadata or tiny direct fallback payloads", () => {
@@ -110,6 +111,31 @@ describe("Firebase security deployment policy", () => {
     expect(enqueueCommandBlock).not.toContain("request.data?.deviceId");
   });
 
+  it("creates a unique Firebase session and targets start/stop commands to that session", () => {
+    const functionsSource = readFileSync(resolve(repoRoot, "functions/src/index.ts"), "utf8");
+
+    expect(functionsSource).toContain('const sessionRef = db.collection("sessions").doc();');
+    expect(functionsSource).toContain('action: `start-stream ${session.id}`');
+    expect(functionsSource).toContain('action: `stop-stream ${sessionId}`');
+    expect(functionsSource).not.toContain("firebaseSessionIdForDevice");
+  });
+
+  it("queues Wake-on-LAN only through an owned, recent, same-business relay Agent", () => {
+    const functionsSource = readFileSync(resolve(repoRoot, "functions/src/index.ts"), "utf8");
+    const rules = readFileSync(resolve(repoRoot, "firestore.rules"), "utf8");
+    const start = functionsSource.indexOf("export const wakeDevice");
+    const end = functionsSource.indexOf("interface SessionResponse");
+    const wakeBlock = functionsSource.slice(start, end);
+
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    expect(wakeBlock).toContain("readOwnedDevice(targetDeviceId, uid)");
+    expect(wakeBlock).toContain('where("ownerUid", "==", uid)');
+    expect(wakeBlock).toContain("selectWakeRelay");
+    expect(wakeBlock).toContain('action: `wake-on-lan ${targetMac}`');
+    expect(rules).toContain("allow create: if isOwnDeviceCommandCreate(deviceId);");
+  });
+
   it("lets Agent recovery query owned sessions without making recovery failures fatal", () => {
     const agentEntry = readFileSync(resolve(repoRoot, "aether-link-app/src/agent/index.ts"), "utf8");
     const agentFirebase = readFileSync(resolve(repoRoot, "aether-link-app/src/firebase/agentFirebase.ts"), "utf8");
@@ -121,6 +147,9 @@ describe("Firebase security deployment policy", () => {
     expect(agentFirebase).toContain("fetchActiveFirebaseSessionsForAgent");
     expect(agentFirebase).toContain('where("deviceId", "==", input.deviceId)');
     expect(agentFirebase).toContain('where("ownerUid", "==", userId)');
+    expect(agentFirebase).toContain('where("state", "==", "connected")');
+    expect(agentFirebase).toContain(".sort((left, right) => sessionStartedAtMs(right.data) - sessionStartedAtMs(left.data))");
+    expect(agentFirebase).toContain(".slice(0, 1)");
   });
 
   it("normalizes Firebase device metadata store names before writing to Firestore", () => {

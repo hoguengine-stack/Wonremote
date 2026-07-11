@@ -115,6 +115,28 @@ describe("production installer update", () => {
       expect(script).toContain("Test-WonRemoteAgentRunning");
       expect(script).toContain("WonRemote Agent is already running after installer exit; skipping fallback start.");
       expect(script).toContain("Start-Process -FilePath $candidate -ArgumentList @('--agent') -WindowStyle Hidden");
+      expect(script).toContain("if ($process.ExitCode -eq 0) {\n    Start-WonRemoteAgent\n  }");
+    } finally {
+      await rm(baseDir, { recursive: true, force: true });
+    }
+  });
+
+  it("restarts the interactive Viewer after a viewer-mode installer handoff", async () => {
+    const baseDir = path.join(os.tmpdir(), `wonremote-viewer-handoff-${process.pid}-${Date.now()}`);
+    const installerPath = path.join(baseDir, "WonRemote", "updates", "WonRemote-Viewer-Agent-Setup.exe");
+
+    try {
+      await mkdir(path.dirname(installerPath), { recursive: true });
+      await writeFile(installerPath, "installer");
+      const result = await prepareInstallerHandoff(
+        { installerArgs: ["/S"], installerPath },
+        { baseDir, restartMode: "viewer" },
+      );
+      const script = await readFile(result.scriptPath, "utf8");
+
+      expect(script).toContain("function Start-WonRemoteViewer");
+      expect(script).toContain('Start-Process -FilePath $candidate\n');
+      expect(script).toContain("if ($process.ExitCode -eq 0) {\n    Start-WonRemoteViewer\n  }");
     } finally {
       await rm(baseDir, { recursive: true, force: true });
     }

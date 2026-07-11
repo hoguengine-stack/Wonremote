@@ -342,6 +342,8 @@ function sanitizeDisplays(displays: AgentHeartbeatInput["displays"]): ManagedDev
     .map((display) => ({
       index: Math.max(0, Math.trunc(display.index)),
       name: String(display.name || `Display ${display.index}`),
+      ...(Number.isFinite(Number(display.x)) ? { x: Math.trunc(Number(display.x)) } : {}),
+      ...(Number.isFinite(Number(display.y)) ? { y: Math.trunc(Number(display.y)) } : {}),
       width: Math.max(1, Math.trunc(display.width)),
       height: Math.max(1, Math.trunc(display.height)),
       primary: Boolean(display.primary),

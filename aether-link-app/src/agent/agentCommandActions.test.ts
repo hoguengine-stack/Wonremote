@@ -1,30 +1,38 @@
 import { describe, expect, it } from "vitest";
-import { resolveInjectActions } from "./agentCommandActions";
+import { recordSuccessfulInjectAction, resolveInjectActions } from "./agentCommandActions";
 
 describe("agent command actions", () => {
-  it("tracks key-down and key-up commands for release-all safety", () => {
+  it("updates key state only after injection succeeds", () => {
     const pressed = new Set<string>();
 
     expect(resolveInjectActions("key-down Ctrl", pressed)).toEqual({
       type: "inject",
       actions: ["key-down Ctrl"],
     });
+    expect([...pressed]).toEqual([]);
+    recordSuccessfulInjectAction("key-down Ctrl", pressed);
     expect([...pressed]).toEqual(["Ctrl"]);
 
     expect(resolveInjectActions("key-up Ctrl", pressed)).toEqual({
       type: "inject",
       actions: ["key-up Ctrl"],
     });
+    expect([...pressed]).toEqual(["Ctrl"]);
+    recordSuccessfulInjectAction("key-up Ctrl", pressed);
     expect([...pressed]).toEqual([]);
   });
 
-  it("expands key-release-all into key-up commands and clears tracked keys", () => {
+  it("expands key-release-all without clearing keys before injection succeeds", () => {
     const pressed = new Set(["Ctrl", "Shift", "A"]);
 
     expect(resolveInjectActions("key-release-all", pressed)).toEqual({
       type: "inject",
       actions: ["key-up A", "key-up Shift", "key-up Ctrl"],
     });
+    expect([...pressed]).toEqual(["Ctrl", "Shift", "A"]);
+    for (const action of ["key-up A", "key-up Shift", "key-up Ctrl"]) {
+      recordSuccessfulInjectAction(action, pressed);
+    }
     expect([...pressed]).toEqual([]);
   });
 
@@ -51,7 +59,7 @@ describe("agent command actions", () => {
       type: "inject",
       actions: ["key-up V", "key-up Ctrl"],
     });
-    expect([...pressed]).toEqual([]);
+    expect([...pressed]).toEqual(["Ctrl", "V"]);
   });
 
   it("passes ordinary inject commands through unchanged", () => {

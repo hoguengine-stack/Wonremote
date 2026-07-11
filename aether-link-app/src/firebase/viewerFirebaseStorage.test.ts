@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { addDoc } from "firebase/firestore";
-import { ref, uploadBytesResumable } from "firebase/storage";
-import { uploadFirebaseFileToStorage } from "./viewerFirebase";
+import { deleteObject, ref, uploadBytesResumable } from "firebase/storage";
+import { deleteFirebaseStorageFile, uploadFirebaseFileToStorage } from "./viewerFirebase";
 
 const mockState = vi.hoisted(() => ({
   services: {
@@ -46,6 +46,7 @@ vi.mock("firebase/auth", () => ({
 }));
 
 vi.mock("firebase/storage", () => ({
+  deleteObject: vi.fn(async () => undefined),
   ref: vi.fn((_storage: unknown, path: string) => ({ fullPath: path })),
   uploadBytesResumable: vi.fn((storageRef: { fullPath: string }) => ({
     on: vi.fn((_event: string, onProgress: (snapshot: { bytesTransferred: number; totalBytes: number }) => void, _onError: (error: Error) => void, onComplete: () => void) => {
@@ -65,7 +66,7 @@ describe("Firebase Storage file upload", () => {
   it("uploads the file body to Storage and stores only delivery metadata in Firestore", async () => {
     const progress: Array<{ sentBytes: number; totalBytes: number }> = [];
 
-    await uploadFirebaseFileToStorage("session-device-1", {
+    const result = await uploadFirebaseFileToStorage("session-device-1", {
       file: new Blob(["payload"]),
       fileSha256: "a".repeat(64),
       filename: "large report.txt",
@@ -79,6 +80,7 @@ describe("Firebase Storage file upload", () => {
       "sessions/session-device-1/files/transfer-1/large_report.txt",
     );
     expect(uploadBytesResumable).toHaveBeenCalled();
+    expect(result).toEqual({ storagePath: "sessions/session-device-1/files/transfer-1/large_report.txt" });
     expect(progress).toEqual([{ sentBytes: 3, totalBytes: 7 }]);
     expect(addDoc).toHaveBeenCalledWith(
       { segments: ["sessions", "session-device-1", "files"] },
@@ -110,5 +112,13 @@ describe("Firebase Storage file upload", () => {
     const metadata = vi.mocked(addDoc).mock.calls[0][1] as Record<string, unknown>;
     expect(metadata).not.toHaveProperty("fileSha256");
     expect(metadata).not.toHaveProperty("downloadUrl");
+  });
+
+  it("deletes the session-owned Storage object after Agent receipt", async () => {
+    await deleteFirebaseStorageFile("sessions/session-device-1/files/transfer-1/large_report.txt");
+
+    expect(deleteObject).toHaveBeenCalledWith({
+      fullPath: "sessions/session-device-1/files/transfer-1/large_report.txt",
+    });
   });
 });

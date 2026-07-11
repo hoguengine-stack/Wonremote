@@ -3,6 +3,23 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const buildArch = resolveBuildArch();
+const x86WebRtcRuntimeMarker = "wonremote-webrtc-runtime:werift";
+
+function resolveBuildArch() {
+  const value = process.env.WONREMOTE_BUILD_ARCH?.trim().toLowerCase();
+  return value === "ia32" || value === "x86" ? "ia32" : "x64";
+}
+
+function verifyAgentWebRtcBundle(agentBundlePath) {
+  const source = fs.readFileSync(agentBundlePath, "utf8");
+  if (buildArch === "ia32" && !source.includes(x86WebRtcRuntimeMarker)) {
+    throw new Error("x86 Agent package is missing the bundled werift runtime marker.");
+  }
+  if (buildArch === "ia32" && /import\(["']werift["']\)/.test(source)) {
+    throw new Error("x86 Agent package contains an unresolved werift import.");
+  }
+}
 
 async function run() {
   const pkgDir = path.join(appRoot, "dist-agent-pkg");
@@ -29,6 +46,8 @@ async function run() {
   const pocRuntimeSrc = path.join(appRoot, "dist-poc", "vcruntime140.dll");
   const pocRuntimeDest = path.join(binDir, "vcruntime140.dll");
 
+  verifyAgentWebRtcBundle(agentSrc);
+
   console.log("Copying bundled Node runtime...");
   fs.copyFileSync(nodeSrc, nodeDest);
 
@@ -45,7 +64,11 @@ async function run() {
     fs.copyFileSync(pocRuntimeSrc, pocRuntimeDest);
   }
 
-  console.log("Copying native WebRTC runtime...");
+  console.log(
+    buildArch === "ia32"
+      ? "Copying x86 native-runtime marker; werift is bundled in agent.mjs..."
+      : "Copying native WebRTC runtime...",
+  );
   fs.cpSync(
     path.join(appRoot, "dist-native", "node-datachannel"),
     path.join(nodeModulesDir, "node-datachannel"),

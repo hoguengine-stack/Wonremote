@@ -620,7 +620,13 @@ input:focus {
 .remote-focus-mode .workspace,
 .remote-focus-mode .content-grid,
 .remote-focus-mode .session-panel {
-  min-height: 100vh;
+  height: 100vh;
+  min-height: 0;
+}
+
+.remote-focus-mode .workspace,
+.remote-focus-mode .content-grid {
+  overflow: hidden;
 }
 
 .remote-focus-mode .content-grid {
@@ -634,8 +640,11 @@ input:focus {
   background: #0b1018;
   border: 0;
   border-radius: 0;
+  box-sizing: border-box;
   color: #edf2f5;
   gap: 10px;
+  max-height: 100vh;
+  overflow: hidden;
   padding: 12px;
 }
 
@@ -667,14 +676,25 @@ input:focus {
 }
 
 .remote-focus-mode .remote-preview canvas {
-  height: 100% !important;
+  height: auto !important;
+  max-height: 100%;
+  max-width: 100%;
   object-fit: contain;
-  width: 100% !important;
+  width: auto !important;
 }
 
 .remote-focus-mode .input-log {
-  max-height: 120px;
+  flex: 0 0 auto;
+  max-height: 72px;
+  min-height: 48px;
   overflow: auto;
+}
+
+.remote-focus-mode .session-actions {
+  flex: 0 0 auto;
+  max-height: 140px;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .preview-window {

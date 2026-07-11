@@ -21,21 +21,48 @@ import {
   type Unsubscribe,
 } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
-import { ref, uploadBytesResumable } from "firebase/storage";
+import { deleteObject, ref, uploadBytesResumable } from "firebase/storage";
 import type {
   AgentFirstRunInput,
   AgentFirstRunResult,
   ChatMessage,
   ClipboardData,
+  ConnectionHistoryEntry,
   DeviceMetadataUpdateInput,
   FileTransferReceipt,
   ManagedDevice,
   RemoteSession,
   TransferredFile,
 } from "../domain/types";
+import { normalizeWakeMac, selectViewerWakeRelay } from "../domain/wakeRelay";
 import { sortDevices } from "../domain/agentRegistry";
 import { DEFAULT_STORE_NAME, normalizeStoreNameForDisplay } from "../domain/deviceDefaults";
-import { requireTurnWhenRelayOnly, resolveRtcIceServers, shouldUseRelayOnly } from "../domain/rtcTransport";
+import { createFirebaseSessionId, mapFirebaseSessionHistory } from "../domain/firebaseSession";
+import {
+  requireTurnWhenRelayOnly,
+  resolveRtcIceServers,
+  shouldUseRelayOnly,
+  viewerTileDataChannelOptions,
+} from "../domain/rtcTransport";
+import {
+  serializeWebRtcControlAction,
+  WEBRTC_CONTROL_CHANNEL_LABEL,
+  WEBRTC_TILE_CHANNEL_LABEL,
+} from "../domain/webrtcControl";
+import {
+  parseWebRtcFileAck,
+  serializeWebRtcFileChunk,
+  WEBRTC_FILE_ACK_TIMEOUT_MS,
+  WEBRTC_FILE_CHANNEL_LABEL,
+  WEBRTC_FILE_CHUNK_BYTES,
+  WEBRTC_FILE_WINDOW_CHUNKS,
+  type WebRtcFileAckMessage,
+} from "../domain/webrtcFileTransfer";
+import {
+  buildSecureChallengeId,
+  generateSecurityCode,
+  secureChallengeExpiresAt,
+} from "../domain/secureSession";
 import {
   formatWebRtcConnectionFailure,
   isTerminalWebRtcConnectionState,
@@ -49,9 +76,18 @@ import { throwExplainedFirebaseAuthError } from "./firebaseError";
 import { safeAddDoc, safeBatchUpdate, safeSetDoc, safeUpdateDoc } from "./firestoreWrite";
 
 type ViewerFirebaseEnv = ImportMetaEnv;
+export type ViewerFunctionMode = "auto" | "callable" | "direct";
 
 export interface ViewerWebRtcTransport {
   close: () => void;
+  sendControl: (action: string) => boolean;
+  sendFile: (input: {
+    file: Blob;
+    filename: string;
+    fileSha256: string;
+    transferId: string;
+    onProgress?: (receivedBytes: number, totalBytes: number) => void;
+  }) => Promise<boolean>;
 }
 
 export function isViewerFirebaseEnabled(env: ViewerFirebaseEnv = import.meta.env): boolean {
@@ -114,6 +150,24 @@ export async function fetchFirebaseDevices(env: ViewerFirebaseEnv = import.meta.
   const userId = requireCurrentUserId(services.auth.currentUser?.uid);
   const snapshot = await getDocs(query(collection(services.db, "devices"), where("ownerUid", "==", userId)));
   return sortDevices(snapshot.docs.map((deviceDoc) => mapFirestoreDevice(deviceDoc.id, deviceDoc.data())));
+}
+
+export async function fetchFirebaseConnectionHistory(
+  env: ViewerFirebaseEnv = import.meta.env,
+): Promise<ConnectionHistoryEntry[]> {
+  const services = getViewerFirebaseServices(env);
+  const userId = requireCurrentUserId(services.auth.currentUser?.uid);
+  const [sessionsSnapshot, devices] = await Promise.all([
+    getDocs(query(collection(services.db, "sessions"), where("ownerUid", "==", userId), limit(200))),
+    fetchFirebaseDevices(env),
+  ]);
+  return mapFirebaseSessionHistory(
+    sessionsSnapshot.docs.map((sessionDoc) => ({
+      id: sessionDoc.id,
+      data: sessionDoc.data(),
+    })),
+    devices,
+  );
 }
 
 export async function updateFirebaseDeviceMetadata(
@@ -216,6 +270,17 @@ export async function openFirebaseSession(
     { deviceId: string },
     { session: RemoteSession; inputLog: string[] }
   >("openSession", { deviceId }, env, () => openFirebaseSessionDirect(deviceId, env));
+}
+
+export async function wakeFirebaseDevice(
+  targetDeviceId: string,
+  targetMac: string,
+  env: ViewerFirebaseEnv = import.meta.env,
+): Promise<{ relayDeviceId: string; targetDeviceId: string; targetMac: string }> {
+  return callViewerFunctionWithFirestoreFallback<
+    { targetDeviceId: string; targetMac: string },
+    { relayDeviceId: string; targetDeviceId: string; targetMac: string }
+  >("wakeDevice", { targetDeviceId, targetMac }, env, () => wakeFirebaseDeviceDirect(targetDeviceId, targetMac, env));
 }
 
 export async function requestFirebaseSecureSession(
@@ -340,7 +405,7 @@ export async function uploadFirebaseFileToStorage(
     onProgress?: (sentBytes: number, totalBytes: number) => void;
   },
   env: ViewerFirebaseEnv = import.meta.env,
-): Promise<void> {
+): Promise<{ storagePath: string }> {
   const services = getViewerFirebaseServices(env);
   const storagePath = [
     "sessions",
@@ -382,6 +447,15 @@ export async function uploadFirebaseFileToStorage(
     transferId: input.transferId,
     createdAt: serverTimestamp(),
   });
+  return { storagePath: uploadTask.snapshot.ref.fullPath };
+}
+
+export async function deleteFirebaseStorageFile(
+  storagePath: string,
+  env: ViewerFirebaseEnv = import.meta.env,
+): Promise<void> {
+  const services = getViewerFirebaseServices(env);
+  await deleteObject(ref(services.storage, storagePath));
 }
 
 export async function fetchFirebaseFiles(
@@ -448,7 +522,7 @@ export async function fetchFirebaseTiles(
 export async function startFirebaseViewerWebRtcTransport(
   sessionId: string,
   handlers: {
-    onFrame: (frame: { tiles: any[]; width: number; height: number }) => void;
+    onFrame: (frame: { tiles: any[]; width: number; height: number; sequence?: number }) => void;
     onState?: (state: string) => void;
     onError?: (error: Error) => void;
   },
@@ -464,13 +538,33 @@ export async function startFirebaseViewerWebRtcTransport(
   const viewerCandidates = collection(services.db, "sessions", sessionId, "viewerCandidates");
   const agentCandidates = collection(services.db, "sessions", sessionId, "agentCandidates");
   const appliedCandidateIds = new Set<string>();
+  const negotiationId = createFirebaseSessionId("rtc");
   let answerApplied = false;
   let channelOpened = false;
+  let controlChannelOpened = false;
+  let fileChannelOpened = false;
   let closedByCaller = false;
   let resourcesClosed = false;
   let unsubscribeSignal: Unsubscribe | null = null;
   let unsubscribeAgentCandidates: Unsubscribe | null = null;
   let connectWatchdog: ReturnType<typeof setTimeout> | null = null;
+  const fileAckStates = new Map<string, WebRtcFileAckMessage>();
+  const fileAckWaiters = new Map<string, Set<{
+    minReceivedChunks: number;
+    resolve: (ack: WebRtcFileAckMessage) => void;
+    reject: (error: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>>();
+
+  const rejectAllFileWaiters = (error: Error) => {
+    for (const waiters of fileAckWaiters.values()) {
+      for (const waiter of waiters) {
+        clearTimeout(waiter.timer);
+        waiter.reject(error);
+      }
+    }
+    fileAckWaiters.clear();
+  };
 
   const clearConnectWatchdog = () => {
     if (connectWatchdog) {
@@ -492,6 +586,17 @@ export async function startFirebaseViewerWebRtcTransport(
     } catch {
       // best effort cleanup
     }
+    try {
+      controlChannel.close();
+    } catch {
+      // best effort cleanup
+    }
+    try {
+      fileChannel.close();
+    } catch {
+      // best effort cleanup
+    }
+    rejectAllFileWaiters(new Error("WebRTC file channel closed."));
     peer.close();
   };
 
@@ -505,10 +610,65 @@ export async function startFirebaseViewerWebRtcTransport(
     closeResources();
   };
 
-  const channel = peer.createDataChannel("wonremote-tiles", {
-    ordered: false,
-    maxRetransmits: 0,
-  });
+  const channel = peer.createDataChannel(WEBRTC_TILE_CHANNEL_LABEL, viewerTileDataChannelOptions());
+  const controlChannel = peer.createDataChannel(WEBRTC_CONTROL_CHANNEL_LABEL, { ordered: true });
+  const fileChannel = peer.createDataChannel(WEBRTC_FILE_CHANNEL_LABEL, { ordered: true });
+  controlChannel.onopen = () => {
+    controlChannelOpened = true;
+    handlers.onState?.("webrtc-control-open");
+  };
+  controlChannel.onclose = () => {
+    controlChannelOpened = false;
+    if (!closedByCaller && !resourcesClosed) {
+      handlers.onState?.("webrtc-control-closed");
+    }
+  };
+  controlChannel.onerror = () => {
+    controlChannelOpened = false;
+    handlers.onError?.(new Error("Viewer WebRTC control channel failed."));
+  };
+  fileChannel.onopen = () => {
+    fileChannelOpened = true;
+    handlers.onState?.("webrtc-file-open");
+  };
+  fileChannel.onclose = () => {
+    fileChannelOpened = false;
+    rejectAllFileWaiters(new Error("WebRTC file channel closed during transfer."));
+    if (!closedByCaller && !resourcesClosed) {
+      handlers.onState?.("webrtc-file-closed");
+    }
+  };
+  fileChannel.onerror = () => {
+    fileChannelOpened = false;
+    const error = new Error("Viewer WebRTC file channel failed.");
+    rejectAllFileWaiters(error);
+    handlers.onError?.(error);
+  };
+  fileChannel.onmessage = (event) => {
+    const ack = parseWebRtcFileAck(event.data);
+    if (!ack) {
+      return;
+    }
+    fileAckStates.set(ack.transferId, ack);
+    const waiters = fileAckWaiters.get(ack.transferId);
+    if (!waiters) {
+      return;
+    }
+    for (const waiter of [...waiters]) {
+      if (ack.status === "error") {
+        clearTimeout(waiter.timer);
+        waiters.delete(waiter);
+        waiter.reject(new Error(ack.error || "Agent rejected the WebRTC file transfer."));
+      } else if (ack.receivedChunks >= waiter.minReceivedChunks) {
+        clearTimeout(waiter.timer);
+        waiters.delete(waiter);
+        waiter.resolve(ack);
+      }
+    }
+    if (waiters.size === 0) {
+      fileAckWaiters.delete(ack.transferId);
+    }
+  };
   channel.onopen = () => {
     channelOpened = true;
     clearConnectWatchdog();
@@ -519,19 +679,23 @@ export async function startFirebaseViewerWebRtcTransport(
       return;
     }
     handlers.onState?.("webrtc-closed");
-    if (!channelOpened) {
-      reportUnavailable("closed-before-open");
-    }
+    reportUnavailable(channelOpened ? "data-channel-closed" : "closed-before-open");
   };
   channel.onerror = () => reportUnavailable("data-channel-error", "Viewer WebRTC data channel failed.");
   channel.onmessage = (event) => {
     try {
-      const frame = JSON.parse(String(event.data)) as { tiles?: unknown; width?: unknown; height?: unknown };
+      const frame = JSON.parse(String(event.data)) as {
+        tiles?: unknown;
+        width?: unknown;
+        height?: unknown;
+        sequence?: unknown;
+      };
       if (Array.isArray(frame.tiles)) {
         handlers.onFrame({
           tiles: frame.tiles,
           width: Number(frame.width ?? 0),
           height: Number(frame.height ?? 0),
+          ...(Number.isFinite(Number(frame.sequence)) ? { sequence: Number(frame.sequence) } : {}),
         });
       }
     } catch (error) {
@@ -556,14 +720,22 @@ export async function startFirebaseViewerWebRtcTransport(
     void safeAddDoc(viewerCandidates, {
       candidate: event.candidate.toJSON(),
       createdAt: serverTimestamp(),
+      negotiationId,
     }).catch((error) => handlers.onError?.(error instanceof Error ? error : new Error(String(error))));
   };
 
   unsubscribeSignal = onSnapshot(
     signalRef,
     (snapshot) => {
-      const answer = snapshot.data()?.answer as { type?: unknown; sdp?: unknown } | undefined;
-      if (answerApplied || answer?.type !== "answer" || typeof answer.sdp !== "string") {
+      const signal = snapshot.data();
+      const answer = signal?.answer as { type?: unknown; sdp?: unknown; negotiationId?: unknown } | undefined;
+      const answerNegotiationId = answer?.negotiationId ?? signal?.negotiationId;
+      if (
+        answerApplied ||
+        answerNegotiationId !== negotiationId ||
+        answer?.type !== "answer" ||
+        typeof answer.sdp !== "string"
+      ) {
         return;
       }
       answerApplied = true;
@@ -582,7 +754,11 @@ export async function startFirebaseViewerWebRtcTransport(
           return;
         }
         appliedCandidateIds.add(candidateDoc.id);
-        const candidate = candidateDoc.data().candidate;
+        const candidateData = candidateDoc.data();
+        if (candidateData.negotiationId !== negotiationId) {
+          return;
+        }
+        const candidate = candidateData.candidate;
         if (candidate) {
           void peer
             .addIceCandidate(candidate as RTCIceCandidateInit)
@@ -599,9 +775,11 @@ export async function startFirebaseViewerWebRtcTransport(
     signalRef,
     {
       offer: {
+        negotiationId,
         type: offer.type,
         sdp: offer.sdp,
       },
+      negotiationId,
       state: "viewer-offer",
       updatedAt: serverTimestamp(),
     },
@@ -612,11 +790,99 @@ export async function startFirebaseViewerWebRtcTransport(
     reportUnavailable("timeout", `${resolveWebRtcConnectTimeoutMs(env)}ms without an open data channel`);
   }, resolveWebRtcConnectTimeoutMs(env));
 
+  const waitForFileAck = (transferId: string, minReceivedChunks: number): Promise<WebRtcFileAckMessage> => {
+    const current = fileAckStates.get(transferId);
+    if (current?.status === "error") {
+      return Promise.reject(new Error(current.error || "Agent rejected the WebRTC file transfer."));
+    }
+    if (current && current.receivedChunks >= minReceivedChunks) {
+      return Promise.resolve(current);
+    }
+    return new Promise((resolve, reject) => {
+      const waiters = fileAckWaiters.get(transferId) ?? new Set();
+      const waiter = {
+        minReceivedChunks,
+        resolve,
+        reject,
+        timer: setTimeout(() => {
+          waiters.delete(waiter);
+          if (waiters.size === 0) {
+            fileAckWaiters.delete(transferId);
+          }
+          reject(new Error(`WebRTC file acknowledgement timed out at chunk ${minReceivedChunks}.`));
+        }, WEBRTC_FILE_ACK_TIMEOUT_MS),
+      };
+      waiters.add(waiter);
+      fileAckWaiters.set(transferId, waiters);
+    });
+  };
+
+  const sendFile = async (input: {
+    file: Blob;
+    filename: string;
+    fileSha256: string;
+    transferId: string;
+    onProgress?: (receivedBytes: number, totalBytes: number) => void;
+  }): Promise<boolean> => {
+    if (!fileChannelOpened || fileChannel.readyState !== "open") {
+      return false;
+    }
+    const totalChunks = Math.max(1, Math.ceil(input.file.size / WEBRTC_FILE_CHUNK_BYTES));
+    fileAckStates.delete(input.transferId);
+    try {
+      for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
+        if (!fileChannelOpened || fileChannel.readyState !== "open") {
+          throw new Error("WebRTC file channel closed during transfer.");
+        }
+        const start = chunkIndex * WEBRTC_FILE_CHUNK_BYTES;
+        const end = Math.min(input.file.size, start + WEBRTC_FILE_CHUNK_BYTES);
+        const chunkBuffer = await input.file.slice(start, end).arrayBuffer();
+        fileChannel.send(serializeWebRtcFileChunk({
+          type: "file-chunk",
+          transferId: input.transferId,
+          filename: input.filename,
+          chunkIndex,
+          totalChunks,
+          totalBytes: input.file.size,
+          isLast: chunkIndex === totalChunks - 1,
+          fileData: arrayBufferToBase64(chunkBuffer),
+          chunkSha256: await sha256ArrayBufferHex(chunkBuffer),
+          ...(chunkIndex === totalChunks - 1 ? { fileSha256: input.fileSha256 } : {}),
+        }));
+
+        const sentChunks = chunkIndex + 1;
+        if (sentChunks % WEBRTC_FILE_WINDOW_CHUNKS === 0 || sentChunks === totalChunks) {
+          const ack = await waitForFileAck(input.transferId, sentChunks);
+          input.onProgress?.(ack.receivedBytes, input.file.size);
+          if (sentChunks === totalChunks && ack.status !== "complete") {
+            throw new Error("Agent did not confirm the completed WebRTC file transfer.");
+          }
+        }
+      }
+      return true;
+    } finally {
+      fileAckStates.delete(input.transferId);
+    }
+  };
+
   return {
     close: () => {
       closedByCaller = true;
       closeResources();
     },
+    sendControl: (action) => {
+      if (!controlChannelOpened || controlChannel.readyState !== "open") {
+        return false;
+      }
+      try {
+        controlChannel.send(serializeWebRtcControlAction(action));
+        return true;
+      } catch (error) {
+        handlers.onError?.(error instanceof Error ? error : new Error(String(error)));
+        return false;
+      }
+    },
+    sendFile,
   };
 }
 
@@ -688,15 +954,24 @@ async function callViewerFunctionWithFirestoreFallback<TInput extends object, TO
   env: ViewerFirebaseEnv,
   fallback: () => Promise<TOutput>,
 ): Promise<TOutput> {
+  const functionMode = resolveViewerFunctionMode(env);
+  if (functionMode === "direct") {
+    return fallback();
+  }
   try {
     return await callViewerFunction<TInput, TOutput>(name, input, env);
   } catch (error) {
-    if (!shouldUseFirestoreFallback(error)) {
+    if (functionMode === "callable" || !shouldUseFirestoreFallback(error)) {
       throw error;
     }
     console.warn(`[Firebase] Cloud Function ${name} unavailable; using Firestore direct fallback.`);
     return fallback();
   }
+}
+
+export function resolveViewerFunctionMode(env: Partial<Record<string, string | undefined>>): ViewerFunctionMode {
+  const value = env.VITE_WONREMOTE_FIREBASE_FUNCTIONS_MODE?.trim().toLowerCase();
+  return value === "auto" || value === "callable" ? value : "direct";
 }
 
 async function openFirebaseSessionDirect(
@@ -728,11 +1003,44 @@ async function openFirebaseSessionDirect(
     },
     { merge: true },
   );
-  await enqueueFirebaseDeviceCommandDirect(deviceId, "start-stream", env);
+  await enqueueFirebaseDeviceCommandDirect(deviceId, `start-stream ${session.id}`, env);
   return {
     inputLog: [`${new Date().toLocaleTimeString()} start-stream queued via Firestore fallback`],
     session,
   };
+}
+
+async function wakeFirebaseDeviceDirect(
+  targetDeviceId: string,
+  targetMac: string,
+  env: ViewerFirebaseEnv,
+): Promise<{ relayDeviceId: string; targetDeviceId: string; targetMac: string }> {
+  const services = getViewerFirebaseServices(env);
+  const userId = requireCurrentUserId(services.auth.currentUser?.uid);
+  const targetSnapshot = await getDoc(doc(services.db, "devices", targetDeviceId));
+  if (!targetSnapshot.exists()) {
+    throw new Error("Firebase device not found.");
+  }
+  const target = mapFirestoreDevice(targetSnapshot.id, targetSnapshot.data());
+  if ((targetSnapshot.data() as { ownerUid?: unknown }).ownerUid !== userId) {
+    throw new Error("Firebase device is not owned by the signed-in account.");
+  }
+  const normalizedMac = normalizeWakeMac(targetMac);
+  const registeredMacs = (target.macAddresses ?? []).map(normalizeWakeMac).filter((mac): mac is string => Boolean(mac));
+  if (!normalizedMac || !registeredMacs.includes(normalizedMac)) {
+    throw new Error("Wake-on-LAN MAC address is invalid or is not registered to the target device.");
+  }
+
+  const deviceSnapshot = await getDocs(query(collection(services.db, "devices"), where("ownerUid", "==", userId)));
+  const relay = selectViewerWakeRelay(
+    deviceSnapshot.docs.map((deviceDoc) => mapFirestoreDevice(deviceDoc.id, deviceDoc.data())),
+    { businessNumber: target.businessNumber, nowMs: Date.now(), targetDeviceId },
+  );
+  if (!relay) {
+    throw new Error("같은 업장에 최근 온라인 상태인 Wake-on-LAN 릴레이 Agent가 없습니다.");
+  }
+  await enqueueFirebaseDeviceCommandDirect(relay.id, `wake-on-lan ${normalizedMac}`, env);
+  return { relayDeviceId: relay.id, targetDeviceId, targetMac: normalizedMac };
 }
 
 async function requestFirebaseSecureSessionDirect(
@@ -754,9 +1062,9 @@ async function requestFirebaseSecureSessionDirect(
   }
 
   const nowMs = Date.now();
-  const challengeId = `secure-${nowMs}-${Math.random().toString(36).slice(2, 10)}`;
+  const challengeId = buildSecureChallengeId(nowMs);
   const code = generateSecurityCode();
-  const expiresAtMs = nowMs + 120_000;
+  const expiresAtMs = secureChallengeExpiresAt(nowMs);
   const expiresAt = new Date(expiresAtMs).toISOString();
 
   await safeSetDoc(doc(services.db, "secureChallenges", challengeId), {
@@ -887,17 +1195,13 @@ function buildConnectedSession(deviceId: string): RemoteSession {
   const startedAt = new Date().toISOString();
   return {
     deviceId,
-    id: firebaseSessionIdForDevice(deviceId),
+    id: createFirebaseSessionId(deviceId),
     startedAt,
     state: "connected",
   };
 }
 
-function firebaseSessionIdForDevice(deviceId: string): string {
-  return `session-${deviceId}`;
-}
-
-function shouldUseFirestoreFallback(error: unknown): boolean {
+export function shouldUseFirestoreFallback(error: unknown): boolean {
   const code = typeof error === "object" && error !== null && "code" in error
     ? String((error as { code?: unknown }).code)
     : "";
@@ -906,17 +1210,29 @@ function shouldUseFirestoreFallback(error: unknown): boolean {
     "functions/not-found",
     "functions/unimplemented",
     "functions/unavailable",
-    "functions/internal",
-  ].includes(code) || /function.*not.*found|not found|not available|unavailable|internal/i.test(message);
+  ].includes(code) || /cloud function.*(?:not.*found|not available)|functions service unavailable/i.test(message);
 }
 
-function generateSecurityCode(): string {
-  const value = Math.floor(Math.random() * 1_000_000).toString().padStart(6, "0");
-  return `${value.slice(0, 3)} ${value.slice(3)}`;
-}
 
 function normalizeSecurityCode(value: string): string {
   return value.replace(/\D/g, "");
+}
+
+async function sha256ArrayBufferHex(buffer: ArrayBuffer): Promise<string> {
+  if (!globalThis.crypto?.subtle) {
+    throw new Error("WebRTC file checksum is unavailable in this runtime.");
+  }
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", buffer);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 8_192) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 8_192));
+  }
+  return btoa(binary);
 }
 
 function safeStorageSegment(value: string): string {

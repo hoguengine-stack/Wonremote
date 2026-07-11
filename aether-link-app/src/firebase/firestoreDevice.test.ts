@@ -38,8 +38,8 @@ describe("firestore device mapping", () => {
       version: "0.1.2",
       activeDisplayIndex: 1,
       displays: [
-        { index: 0, name: "DISPLAY1", width: 1024, height: 768, primary: true },
-        { index: 1, name: "DISPLAY2", width: 1600, height: 900, primary: false },
+        { index: 0, name: "DISPLAY1", x: 0, y: 0, width: 1024, height: 768, primary: true },
+        { index: 1, name: "DISPLAY2", x: 1024, y: 0, width: 1600, height: 900, primary: false },
       ],
       streamDiagnostics: {
         backend: "gdi",
@@ -69,8 +69,8 @@ describe("firestore device mapping", () => {
       version: "0.1.2",
       activeDisplayIndex: 1,
       displays: [
-        { index: 0, name: "DISPLAY1", width: 1024, height: 768, primary: true },
-        { index: 1, name: "DISPLAY2", width: 1600, height: 900, primary: false },
+        { index: 0, name: "DISPLAY1", x: 0, y: 0, width: 1024, height: 768, primary: true },
+        { index: 1, name: "DISPLAY2", x: 1024, y: 0, width: 1600, height: 900, primary: false },
       ],
       streamDiagnostics: {
         backend: "gdi",

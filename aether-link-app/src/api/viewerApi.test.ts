@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ManagedDevice } from "../domain/types";
 import {
   fetchFirebaseDevices,
+  fetchFirebaseConnectionHistory,
   fetchFirebaseFileTransferReceipts,
   fetchFirebaseTiles,
   isViewerFirebaseEnabled,
@@ -9,7 +10,15 @@ import {
   uploadFirebaseFileToStorage,
   uploadFirebaseFileChunk,
 } from "../firebase/viewerFirebase";
-import { fetchDevices, fetchFileTransferReceipts, fetchTiles, logoutAdmin, uploadFileChunk, uploadFileToStorage } from "./viewerApi";
+import {
+  fetchConnectionHistory,
+  fetchDevices,
+  fetchFileTransferReceipts,
+  fetchTiles,
+  logoutAdmin,
+  uploadFileChunk,
+  uploadFileToStorage,
+} from "./viewerApi";
 
 const mockState = vi.hoisted(() => ({
   firebaseEnabled: true,
@@ -31,6 +40,16 @@ vi.mock("../firebase/viewerFirebase", () => ({
   closeFirebaseSession: vi.fn(),
   fetchFirebaseChatMessages: vi.fn(async () => []),
   fetchFirebaseDevices: vi.fn(async () => mockState.firebaseDevices),
+  fetchFirebaseConnectionHistory: vi.fn(async () => [
+    {
+      id: "session-1",
+      deviceId: "device-1",
+      storeName: "Test Store",
+      deviceName: "Counter POS",
+      startedAt: "2026-07-11T00:00:00.000Z",
+      status: "success",
+    },
+  ]),
   fetchFirebaseClipboardText: vi.fn(async () => []),
   fetchFirebaseFileTransferReceipts: vi.fn(async () => []),
   fetchFirebaseFiles: vi.fn(async () => []),
@@ -71,6 +90,18 @@ describe("viewer API routing", () => {
 
     expect(isViewerFirebaseEnabled).toHaveBeenCalled();
     expect(fetchFirebaseDevices).toHaveBeenCalled();
+    expect(localFetch).not.toHaveBeenCalled();
+  });
+
+  it("reads connection history from Firestore without requiring the local API", async () => {
+    const localFetch = vi.fn(async () => {
+      throw new Error("local API must not be called");
+    });
+    vi.stubGlobal("fetch", localFetch);
+
+    await expect(fetchConnectionHistory()).resolves.toHaveLength(1);
+
+    expect(fetchFirebaseConnectionHistory).toHaveBeenCalled();
     expect(localFetch).not.toHaveBeenCalled();
   });
 

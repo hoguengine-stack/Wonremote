@@ -1,6 +1,6 @@
 # WonRemote App
 
-17차 기준에 따라 실장비 성능 검증보다 먼저 만든 Viewer 관리 UI, Agent 최초 실행 등록 화면, 로컬 Agent 부트스트랩 CLI, 파일 기반 장비 저장 로컬 API 서버, Agent heartbeat/offline 판정, Viewer 입력 명령 큐, 원격 세션 골격이다.
+WonRemote는 Firebase 기반 장비 관리와 WebRTC P2P 화면·입력·파일 채널을 사용하는 Windows 원격 제어 프로그램이다. Viewer와 Agent를 x64/x86 설치본으로 각각 배포하며, 로컬 API는 개발 및 격리형 회귀 테스트에만 사용한다.
 
 ## 실행
 
@@ -15,7 +15,7 @@ npm run api
 npm run dev -- --port 5173
 ```
 
-개발 서버:
+로컬 개발 서버:
 
 ```text
 API:    http://127.0.0.1:8787/
@@ -62,41 +62,27 @@ PW: 1234
 
 ## 현재 구현 범위
 
-- Viewer 관리자 로그인 화면
-- Agent 사업자번호/비밀번호 입력
-- Agent 비밀번호 `1234` 검증
-- 업장명, 장비 번호, 장비명 입력
-- 접속 시 장비 리스트 자동 등록
-- 업장별 장비 그룹핑
-- Agent 데스크탑 이름 자동 생성 placeholder
-- 기본 원격 세션 패널과 입력 이벤트 로그
-- Node 로컬 API 서버 기반 장비 목록 JSON 파일 저장
-- 관리자 로그인, Agent 연결, 세션 생성, 입력 이벤트 기록 API 연동
-- Agent 최초 실행 화면에서 아이디/비밀번호 입력 후 Viewer 장비 목록 자동 등록
-- Agent 웹 프로토타입의 설치 식별자 브라우저 localStorage 보관
-- Agent CLI 최초 실행 시 아이디/비밀번호 입력 후 Viewer 장비 목록 자동 등록
-- Agent CLI 로컬 config 파일 기반 설치 식별자 및 등록 장비 ID 보관
-- Agent CLI heartbeat 전송 및 `npm run agent:watch` 주기 전송
-- heartbeat가 오래 끊긴 장비의 Viewer offline 표시
-- Viewer 세션 입력 이벤트의 Agent 명령 큐 적재
-- Agent CLI 실행 시 pending 명령 polling 및 처리 로그 출력
-- Rust PoC `--mode stream` 기반 32x32 JPEG 타일 JSON line 송출
-- Agent CLI `start-stream` 명령 수신 시 Rust stream 시작 및 `/api/sessions/:id/tiles` 전송
-- API `/api/sessions/:id/tiles` POST/GET 기반 최신 타일 버퍼 중계
-- Viewer Canvas의 JPEG 타일 부분 렌더링
-- Rust PoC `--mode inject-input`의 `SendInput` 반환값 검사
-- Viewer 로그인 상태에서 장비 목록 주기 갱신
+- Firebase Authentication 및 Firestore 기반 Viewer 로그인, Agent 등록, heartbeat, 장비 상태, 세션·명령 관리
+- Agent 최초 로그인 후 Windows 자동 실행, 백그라운드 트레이, 설정 복구 및 서버 등록 유실 시 재등록 화면 표시
+- 온라인 장비 즉시 접속과 Agent 화면에 표시되는 6자리 코드 기반 보안 접속
+- 접속 즉시 원격 전용 화면 전환, Fit/100%/확대·축소, 다중 모니터 목록 조회·전환
+- WebRTC P2P 화면 타일, 키보드·마우스 제어, 파일 전송 데이터 채널 분리
+- 전체 키 down/up, 조합키 유지, 포커스 이탈·세션 종료 시 키와 포인터 버튼 일괄 해제
+- DXGI 캡처와 GDI fallback, 캡처 재시작, 동일 세션 재연결 시 WebRTC 전송 유지
+- 500MB 파일 청크 전송, SHA-256 검증, 진행률·전송률·남은 시간, 실패 수신증과 이어받기
+- 채팅, 양방향 클립보드, 오디오 알림, 화면 녹화
+- 작업 관리자, CMD, 탐색기, 서비스, 장치 관리자, 잠금·로그오프·재시작·종료 제어와 위험 명령 재확인
+- Wake-on-LAN 매직 패킷 및 Firebase relay 요청
+- 서명된 업데이트 매니페스트, 체크섬 검증, 실패 롤백, Agent·Viewer 자동 업데이트
+- x64 네이티브 WebRTC와 x86 `werift` 런타임을 분리한 Viewer·Agent 설치본 및 포터블 패키지
+- 개발·회귀 테스트용 로컬 API와 격리형 파일 저장소
 
-## 아직 구현하지 않은 범위
+## 외부 인프라 및 물리 검증
 
-- 실제 Agent 프로세스 인증
-- 설치형 Agent EXE/Windows 서비스 등록
-- 서버/상용 영구 DB 저장
-- 상용 전송망 기반 화면 스트리밍
-- 실제 마우스/키보드 물리 입력 위치 정합성 검증
-- Agent 명령 큐 영구 저장
-- Visual Ping E2E 계측
-- J1800/J1900 실장비 성능 판정
+- 대칭 NAT나 UDP 차단망까지 연결을 보장하려면 운영 TURN 서버 자격 증명을 배포 환경에 설정해야 한다.
+- Windows SmartScreen 경고를 줄이고 업데이트 게시자를 검증하려면 Authenticode 코드 서명 인증서가 필요하다.
+- UAC 보안 데스크톱은 일반 사용자 세션의 `SendInput`으로 제어할 수 없으므로 별도 고권한 서비스 설계가 필요하다.
+- J1800/J1900 실제 성능과 재부팅 후 동작은 대상 장비에서 별도로 확인한다. `1024x768` 화면 검증은 현재 완료 조건에서 제외한다.
 
 ## 검증
 
@@ -106,8 +92,8 @@ npm run build
 npm audit --audit-level=moderate
 ```
 
-## 19차 기준 Visual Ping 상태
+## 화면 전송 지연 계측
 
-- Viewer Canvas는 Rust stream의 마젠타 ping marker 타일을 렌더링한 뒤 `requestAnimationFrame` 이후 픽셀을 샘플링해 PoC 수준 `T_presented - T_start` 지연을 계산한다.
+- Viewer Canvas는 Rust stream의 마젠타 ping marker 타일을 렌더링한 뒤 `requestAnimationFrame` 이후 픽셀을 샘플링해 `T_presented - T_start` 화면 전송 지연을 계산한다.
 - 지연이 150ms를 초과하면 Viewer가 Agent command queue로 `set-sleep 100`을 보내 스트림 주기를 보수적으로 낮춘다.
-- 이 값은 브라우저 Canvas 표시 시점 기준의 PoC 계측이며, 실제 모니터 물리 표시/GPU fence, 기존 ZOOK baseline, J1800/J1900 실장비 성능은 별도 검증이 필요하다.
+- 이 값은 Viewer Canvas 표시 시점 기준이며 실제 모니터 광자 출력 시점을 측정하는 고속 카메라 계측과는 구분한다.

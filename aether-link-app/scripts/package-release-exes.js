@@ -8,6 +8,7 @@ const releaseRoot = path.join(appRoot, "src-tauri", "target");
 const outputDir = path.join(appRoot, "release-exe");
 const packageJson = JSON.parse(fs.readFileSync(path.join(appRoot, "package.json"), "utf8"));
 const requiredResourceDirs = ["server", "agent", "runtime", "bin", "node_modules"];
+const x86WebRtcRuntimeMarker = "wonremote-webrtc-runtime:werift";
 
 const TARGET_ARCHITECTURES = [
   {
@@ -245,6 +246,7 @@ function copyInstaller(sourcePath, targetName) {
 function copyPortablePayload(target, sourceRoot) {
   const viewerSource = path.join(sourceRoot, "wonremote-viewer.exe");
   ensureExists(viewerSource, `${target.key} Tauri viewer executable`);
+  verifyTargetAgentRuntime(target, sourceRoot);
   fs.mkdirSync(target.stageDir, { recursive: true });
   fs.copyFileSync(viewerSource, path.join(target.stageDir, "WonRemote Viewer.exe"));
   fs.copyFileSync(viewerSource, path.join(target.stageDir, "WonRemote Agent.exe"));
@@ -252,6 +254,18 @@ function copyPortablePayload(target, sourceRoot) {
     copyDirectory(sourceRoot, target.stageDir, directory);
   }
   writeReadme(target.stageDir);
+}
+
+function verifyTargetAgentRuntime(target, sourceRoot) {
+  const agentBundlePath = path.join(sourceRoot, "agent", "index.mjs");
+  ensureExists(agentBundlePath, `${target.key} Agent bundle`);
+  const source = fs.readFileSync(agentBundlePath, "utf8");
+  if (target.key === "x86" && !source.includes(x86WebRtcRuntimeMarker)) {
+    throw new Error("x86 release payload is missing the bundled werift runtime marker.");
+  }
+  if (target.key === "x86" && /import\(["']werift["']\)/.test(source)) {
+    throw new Error("x86 release payload contains an unresolved werift import.");
+  }
 }
 
 function packageTarget(target) {

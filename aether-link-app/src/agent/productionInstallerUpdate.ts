@@ -38,7 +38,10 @@ type DownloadInstallerOptions = {
 
 type PrepareInstallerHandoffOptions = {
   baseDir: string;
+  restartMode?: InstallerRestartMode;
 };
+
+export type InstallerRestartMode = "agent" | "viewer";
 
 const CREATE_NO_WINDOW = 0x08000000;
 const CREATE_BREAKAWAY_FROM_JOB = 0x01000000;
@@ -106,6 +109,7 @@ export async function prepareInstallerHandoff(
       installerArgs: download.installerArgs,
       installerPath: download.installerPath,
       logPath,
+      restartMode: options.restartMode ?? "agent",
     }),
     "utf8",
   );
@@ -131,11 +135,13 @@ function buildInstallerHandoffScript(input: {
   installerArgs: string[];
   installerPath: string;
   logPath: string;
+  restartMode: InstallerRestartMode;
 }): string {
   const quotedArgs = input.installerArgs.map((arg) => `'${escapePowerShellSingleQuoted(arg)}'`).join(", ");
   const quotedExplicitInstallRoots = installerInstallRootsForHandoff(input.installerArgs)
     .map((root) => `'${escapePowerShellSingleQuoted(root)}'`)
     .join(", ");
+  const restartCommand = input.restartMode === "viewer" ? "Start-WonRemoteViewer" : "Start-WonRemoteAgent";
 
   return `$ErrorActionPreference = 'Stop'
 $LogPath = '${escapePowerShellSingleQuoted(input.logPath)}'
@@ -230,6 +236,27 @@ function Start-WonRemoteAgent {
   Write-HandoffLog "No installed WonRemote Agent executable was found after installer exit."
 }
 
+function Start-WonRemoteViewer {
+  $roots = @(
+    "$env:LOCALAPPDATA\\WonRemote Viewer",
+    "$env:LOCALAPPDATA\\WonRemote\\Viewer",
+    $explicitInstallRoots
+  ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+  $candidates = @()
+  foreach ($root in $roots) {
+    $candidates += Join-Path $root "wonremote-viewer.exe"
+    $candidates += Join-Path $root "WonRemote Viewer.exe"
+  }
+  foreach ($candidate in $candidates) {
+    if (Test-Path -LiteralPath $candidate) {
+      Write-HandoffLog "Starting WonRemote Viewer: $candidate"
+      Start-Process -FilePath $candidate
+      return
+    }
+  }
+  Write-HandoffLog "No installed WonRemote Viewer executable was found after installer exit."
+}
+
 try {
   $installerPath = '${escapePowerShellSingleQuoted(input.installerPath)}'
   $installerArgs = @(${quotedArgs})
@@ -240,7 +267,7 @@ try {
   $process.WaitForExit()
   Write-HandoffLog "Installer exit code: $($process.ExitCode)"
   if ($process.ExitCode -eq 0) {
-    Start-WonRemoteAgent
+    ${restartCommand}
   }
   exit $process.ExitCode
 } catch {

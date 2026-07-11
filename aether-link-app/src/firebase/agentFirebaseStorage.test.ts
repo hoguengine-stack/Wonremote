@@ -82,6 +82,7 @@ describe("Firebase Storage files for Agent", () => {
           totalBytes: 500 * 1024 * 1024,
           totalChunks: 1,
           transferId: "transfer-1",
+          webkitRelativePath: "Store/backups/large.bin",
         }),
       },
     ];
@@ -94,6 +95,7 @@ describe("Firebase Storage files for Agent", () => {
           storagePath: "sessions/session-1/files/transfer-1/large.bin",
           totalBytes: 500 * 1024 * 1024,
           transferId: "transfer-1",
+          webkitRelativePath: "Store/backups/large.bin",
         },
       ],
     });

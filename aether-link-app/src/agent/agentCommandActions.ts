@@ -5,24 +5,15 @@ export type ResolvedAgentAction =
 export function resolveInjectActions(action: string, pressedKeys: Set<string>): ResolvedAgentAction {
   const trimmed = action.trim();
   if (trimmed.startsWith("key-down ")) {
-    const key = trimmed.slice("key-down ".length).trim();
-    if (key) {
-      pressedKeys.add(key);
-    }
     return { type: "inject", actions: [trimmed] };
   }
 
   if (trimmed.startsWith("key-up ")) {
-    const key = trimmed.slice("key-up ".length).trim();
-    if (key) {
-      pressedKeys.delete(key);
-    }
     return { type: "inject", actions: [trimmed] };
   }
 
   if (trimmed === "key-release-all" || trimmed === "key_release_all") {
     const actions = [...pressedKeys].reverse().map((key) => `key-up ${key}`);
-    pressedKeys.clear();
     return { type: "inject", actions };
   }
 
@@ -39,6 +30,23 @@ export function resolveInjectActions(action: string, pressedKeys: Set<string>): 
   }
 
   return { type: "inject", actions: [trimmed] };
+}
+
+export function recordSuccessfulInjectAction(action: string, pressedKeys: Set<string>): void {
+  const trimmed = action.trim();
+  if (trimmed.startsWith("key-down ")) {
+    const key = trimmed.slice("key-down ".length).trim();
+    if (key) {
+      pressedKeys.add(key);
+    }
+    return;
+  }
+  if (trimmed.startsWith("key-up ")) {
+    const key = trimmed.slice("key-up ".length).trim();
+    if (key) {
+      pressedKeys.delete(key);
+    }
+  }
 }
 
 export function parseSecurityCodeCommand(action: string): { challengeId: string; code: string } | null {

@@ -33,6 +33,8 @@ if (-not $Token) {
 }
 
 $Tag = "v$Version"
+$RequestedDraft = [bool]$Draft
+$RequestedPrerelease = [bool]$Prerelease
 $ReleaseDir = Join-Path $AppRoot "release-exe"
 $InstallerName = "WonRemote Viewer_${Version}_x64-setup.exe"
 $InstallerAssetName = $InstallerName -replace "\s+", "."
@@ -75,6 +77,17 @@ foreach ($RequiredPath in @($InstallerPath, $AgentInstallerPath, $InstallerPathX
   }
 }
 
+& node (Join-Path $ScriptDir "verify-release-manifest.js") `
+  --manifest $ManifestPath `
+  --version $Version `
+  --installer-x64 $StableFullInstallerPath `
+  --installer-x86 $StableFullInstallerPathX86 `
+  --asset-name-x64 $StableFullInstallerAssetName `
+  --asset-name-x86 $StableFullInstallerAssetNameX86
+if ($LASTEXITCODE -ne 0) {
+  throw "Release manifest preflight failed with exit code $LASTEXITCODE."
+}
+
 $Headers = @{
   "Accept" = "application/vnd.github+json"
   "Authorization" = "Bearer $Token"
@@ -101,6 +114,12 @@ $Release = $null
 try {
   $Release = Invoke-GitHubJson "Get" "$ReleaseApi/tags/$Tag"
   Write-Host "Found existing GitHub Release $Tag."
+  if (-not $Release.draft) {
+    Write-Host "Temporarily moving $Tag back to draft so stable download links never expose a partial asset set."
+    $Release = Invoke-GitHubJson "Patch" "$ReleaseApi/$($Release.id)" @{
+      draft = $true
+    }
+  }
 } catch {
   if ((Get-StatusCode $_) -ne 404) {
     throw
@@ -110,8 +129,8 @@ try {
     tag_name = $Tag
     target_commitish = "main"
     name = "WonRemote $Version"
-    draft = [bool]$Draft
-    prerelease = [bool]$Prerelease
+    draft = $true
+    prerelease = $RequestedPrerelease
   }
 }
 
@@ -146,5 +165,14 @@ Publish-Asset $StableFullInstallerPathX86 $StableFullInstallerAssetNameX86 "appl
 Publish-Asset $PortableZipPathX86 $PortableZipNameX86 "application/zip"
 Publish-Asset $AgentZipPathX86 $AgentZipNameX86 "application/zip"
 Publish-Asset $ManifestPath $ManifestName "application/json"
+
+if (-not $RequestedDraft) {
+  Write-Host "Publishing GitHub Release $Tag after every required asset was uploaded."
+  $Release = Invoke-GitHubJson "Patch" "$ReleaseApi/$($Release.id)" @{
+    name = "WonRemote $Version"
+    draft = $false
+    prerelease = $RequestedPrerelease
+  }
+}
 
 Write-Host "Published WonRemote release assets for $Tag."

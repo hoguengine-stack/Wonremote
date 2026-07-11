@@ -19,7 +19,7 @@ import {
   RotateCcw,
   Power,
 } from "lucide-react";
-import React, { FormEvent, useEffect, useMemo, useState } from "react";
+import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -42,8 +42,10 @@ import {
   fetchConnectionHistory,
   fetchTiles,
   updateDeviceMetadata,
+  wakeRemoteDevice,
   requestSecureSession,
   connectSecureSession,
+  deleteUploadedFileFromStorage,
 } from "./api/viewerApi";
 import { fetchViewerUpdateMetadata } from "./api/viewerUpdate";
 import {
@@ -51,8 +53,9 @@ import {
   startFirebaseViewerWebRtcTransport,
   subscribeFirebaseDevices,
   subscribeViewerAuthState,
+  type ViewerWebRtcTransport,
 } from "./firebase/viewerFirebase";
-import { groupDevicesByStore } from "./domain/agentRegistry";
+import { groupDevicesByStore, resolveDeviceStatuses } from "./domain/agentRegistry";
 import {
   scheduleVisualPingPresentedMeasurement,
 } from "./domain/visualPing";
@@ -62,20 +65,38 @@ import {
   shouldWarnAboutControlLimit,
 } from "./domain/sessionDiagnostics";
 import { getViewerVersion } from "./domain/versioning";
-import { shouldNotifyUpdate, shouldReloadViewerForUpdate } from "./domain/updatePolicy";
+import {
+  resolveViewerUpdateIntervalMs,
+  shouldNotifyUpdate,
+  shouldReloadViewerForUpdate,
+} from "./domain/updatePolicy";
 import { shouldPollViewerTileFallback } from "./domain/realtimeTransportPolicy";
+import {
+  ACTIVE_SESSION_STORAGE_KEY,
+  parseActiveSession,
+  serializeActiveSession,
+} from "./domain/sessionPersistence";
+import { sha256BlobHex } from "./domain/blobHash";
+import {
+  STORAGE_TRANSFER_CLEANUP_KEY,
+  parseStorageTransferCleanup,
+  serializeStorageTransferCleanup,
+} from "./domain/storageTransferCleanup";
+import { webRtcReconnectDelayMs } from "./domain/webrtcStability";
 import {
   buildKeyboardCommand,
   buildMouseCommand,
   buildPasteTextCommand,
   buildSwitchMonitorCommand,
   buildSystemCommand,
+  buildUnicodeTextCommand,
   formatTransferStats,
-  mapCanvasPointToAbsolute,
+  mapCanvasPointToVirtualDesktopAbsolute,
   type MouseButtonCode,
 } from "./domain/remoteControlCommands";
 import {
   REMOTE_FILE_CHUNK_BYTES,
+  canUseFirestoreDirectFileTransfer,
   canTransferRemoteFile,
   remoteFileLimitLabel,
 } from "./domain/fileTransferPolicy";
@@ -157,6 +178,8 @@ function ViewerApp() {
   const [selectedStore, setSelectedStore] = useState("전체");
   const [inputLog, setInputLog] = useState<string[]>([]);
   const [updateAlert, setUpdateAlert] = useState<string | null>(null);
+  const updateLaunchRef = useRef<string | null>(null);
+  const sessionRestoreAttemptedRef = useRef(false);
   const [editTarget, setEditTarget] = useState<DeviceEditTarget | null>(null);
   const [secureConnect, setSecureConnect] = useState<SecureConnectState | null>(null);
 
@@ -194,11 +217,11 @@ function ViewerApp() {
     };
   }, []);
 
-  // Viewer auto update check loop
+  // Installed viewers hand off to the signed updater; hosted viewers only reload.
   useEffect(() => {
-    if (!isAuthenticated) return;
     const currentViewerVersion = getViewerVersion(import.meta.env);
     let active = true;
+    let reloadTimer: ReturnType<typeof setTimeout> | undefined;
 
     const checkViewerUpdate = async () => {
       try {
@@ -208,8 +231,22 @@ function ViewerApp() {
         const latestVersion = data.latestVersion;
         if (active && typeof latestVersion === "string" && shouldNotifyUpdate(data, currentViewerVersion)) {
           setUpdateAlert(latestVersion);
-          if (shouldReloadViewerForUpdate(data, currentViewerVersion)) {
-            setTimeout(() => {
+          if ((window as any).__TAURI_INTERNALS__) {
+            if (updateLaunchRef.current === latestVersion) {
+              return;
+            }
+            updateLaunchRef.current = latestVersion;
+            try {
+              await invoke("start_installer_update", { restartMode: "viewer" });
+            } catch (error) {
+              updateLaunchRef.current = null;
+              if (active) {
+                setUpdateAlert(null);
+                setApiError(error instanceof Error ? error.message : "자동 업데이트를 시작하지 못했습니다.");
+              }
+            }
+          } else if (shouldReloadViewerForUpdate(data, currentViewerVersion) && !reloadTimer) {
+            reloadTimer = setTimeout(() => {
               window.location.reload();
             }, 1500);
           }
@@ -220,12 +257,18 @@ function ViewerApp() {
     };
 
     void checkViewerUpdate();
-    const interval = setInterval(() => void checkViewerUpdate(), 4000);
+    const interval = setInterval(
+      () => void checkViewerUpdate(),
+      resolveViewerUpdateIntervalMs(import.meta.env),
+    );
     return () => {
       active = false;
       clearInterval(interval);
+      if (reloadTimer) {
+        clearTimeout(reloadTimer);
+      }
     };
-  }, [isAuthenticated]);
+  }, []);
 
 
   const groups = useMemo(() => groupDevicesByStore(devices), [devices]);
@@ -253,6 +296,35 @@ function ViewerApp() {
     ? devices.find((device) => device.id === session.deviceId) ?? null
     : null;
   const isRemoteFocusMode = Boolean(session);
+
+  useEffect(() => {
+    if (!isAuthenticated || !isViewerFirebaseEnabled() || sessionRestoreAttemptedRef.current) {
+      return;
+    }
+    sessionRestoreAttemptedRef.current = true;
+    const storedSession = parseActiveSession(window.localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY));
+    if (!storedSession) {
+      window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
+      return;
+    }
+    let active = true;
+    void fetchSessionStatus(storedSession.id)
+      .then((state) => {
+        if (!active || (state !== "connected" && state !== "pending")) return;
+        setSession({ ...storedSession, state });
+        setInputLog([`${new Date().toLocaleTimeString()} 이전 원격 세션 복원`]);
+      })
+      .catch(() => window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY));
+    return () => {
+      active = false;
+    };
+  }, [isAuthenticated]);
+
+  useEffect(() => {
+    if (session) {
+      window.localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, serializeActiveSession(session));
+    }
+  }, [session]);
 
   useEffect(() => {
     if (!(window as any).__TAURI_INTERNALS__) {
@@ -312,6 +384,21 @@ function ViewerApp() {
   }, [isAuthenticated]);
 
   useEffect(() => {
+    if (!isAuthenticated || !isViewerFirebaseEnabled()) {
+      return;
+    }
+    const configuredOfflineMs = Number(import.meta.env.VITE_WONREMOTE_AGENT_OFFLINE_MS);
+    const offlineAfterMs = Number.isFinite(configuredOfflineMs) && configuredOfflineMs > 0
+      ? Math.max(15_000, Math.trunc(configuredOfflineMs))
+      : 30_000;
+    const refreshStatuses = () => {
+      setDevices((current) => resolveDeviceStatuses(current, new Date().toISOString(), offlineAfterMs));
+    };
+    const interval = window.setInterval(refreshStatuses, 5_000);
+    return () => window.clearInterval(interval);
+  }, [isAuthenticated]);
+
+  useEffect(() => {
     if (!session || session.state !== "pending") {
       return;
     }
@@ -328,6 +415,7 @@ function ViewerApp() {
       } catch (error) {
         if (active) {
           setSession(null);
+          window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
           setInputLog((prev) => [`${new Date().toLocaleTimeString()} 접속 거절 또는 종료됨`, ...prev]);
         }
       }
@@ -367,14 +455,23 @@ function ViewerApp() {
     } finally {
       setIsAuthenticated(false);
       setSession(null);
+      window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
       setInputLog([]);
       setDevices([]);
       setApiError("");
     }
   }
 
-  async function markInput(action: string) {
+  async function markInput(action: string, options: { localOnly?: boolean } = {}) {
     if (!session) {
+      return;
+    }
+    if (options.localOnly) {
+      setInputLog((current) => [
+        `${new Date().toLocaleTimeString()} [WebRTC] ${action}`,
+        ...current,
+      ].slice(0, 100));
+      setApiError("");
       return;
     }
     try {
@@ -392,6 +489,7 @@ function ViewerApp() {
     try {
       await closeSession(session.id);
       setSession(null);
+      window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
       setInputLog([]);
       setApiError("");
     } catch (error) {
@@ -462,20 +560,28 @@ function ViewerApp() {
       setApiError("Wake-on-LAN을 보낼 MAC 주소가 아직 없습니다. Agent가 한 번 이상 온라인 heartbeat를 보내야 합니다.");
       return;
     }
-    if (!(window as any).__TAURI_INTERNALS__) {
-      setApiError("Wake-on-LAN은 설치형 Viewer에서만 사용할 수 있습니다.");
-      return;
+    try {
+      if (isViewerFirebaseEnabled()) {
+        const result = await wakeRemoteDevice(device.id, macAddress);
+        setApiError(`Wake-on-LAN 원격 전송 완료: ${result.targetMac} (릴레이 ${result.relayDeviceId})`);
+        return;
+      }
+    } catch (remoteError) {
+      if (!(window as any).__TAURI_INTERNALS__) {
+        setApiError(remoteError instanceof Error ? remoteError.message : "원격 Wake-on-LAN 전송 실패");
+        return;
+      }
     }
 
+    if (!(window as any).__TAURI_INTERNALS__) {
+      setApiError("Wake-on-LAN은 온라인 릴레이 Agent 또는 설치형 Viewer가 필요합니다.");
+      return;
+    }
     try {
-      await invoke("wake_device", {
-        macAddress,
-        broadcast: "255.255.255.255",
-        port: 9,
-      });
-      setApiError(`Wake-on-LAN 전송 완료: ${macAddress}`);
-    } catch (error) {
-      setApiError(error instanceof Error ? error.message : "Wake-on-LAN 전송 실패");
+      await invoke("wake_device", { macAddress, broadcast: "255.255.255.255", port: 9 });
+      setApiError(`Wake-on-LAN 로컬 전송 완료: ${macAddress}`);
+    } catch (localError) {
+      setApiError(localError instanceof Error ? localError.message : "Wake-on-LAN 전송 실패");
     }
   }
 
@@ -634,7 +740,7 @@ function ViewerApp() {
             sessionId={session?.id ?? ""}
             session={session}
             inputLog={inputLog}
-            onInputEvent={(action) => markInput(action)}
+            onInputEvent={(action, options) => markInput(action, options)}
             onCloseSession={handleCloseSession}
           />
         </section>
@@ -1278,35 +1384,42 @@ async function sha256Hex(buffer: ArrayBuffer): Promise<string | undefined> {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-async function sha256BlobHex(blob: Blob): Promise<string | undefined> {
-  return sha256Hex(await blob.arrayBuffer());
-}
-
 function RemoteSessionPanel({
   device,
   sessionId,
   session,
   inputLog,
-  onInputEvent,
+  onInputEvent: sendInputEvent,
   onCloseSession,
 }: {
   device: ManagedDevice | null;
   sessionId: string;
   session: RemoteSession | null;
   inputLog: string[];
-  onInputEvent: (action: string) => void | Promise<void>;
+  onInputEvent: (action: string, options?: { localOnly?: boolean }) => void | Promise<void>;
   onCloseSession: () => void;
 }) {
   const panelRef = React.useRef<HTMLElement | null>(null);
   const remotePreviewRef = React.useRef<HTMLDivElement | null>(null);
   const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
   const pressedKeysRef = React.useRef<Set<string>>(new Set());
+  const suppressedKeyUpsRef = React.useRef<Set<string>>(new Set());
   const pressedButtonsRef = React.useRef<Set<MouseButtonCode>>(new Set());
   const moveFrameRef = React.useRef<number | null>(null);
   const pendingMoveRef = React.useRef<{ dx: number; dy: number } | null>(null);
   const lastClipboardTextRef = React.useRef<string>("");
   const pingStateRef = React.useRef<{ start: number } | null>(null);
   const activeTransferIdRef = React.useRef<string>("");
+  const storageTransfersRef = React.useRef(
+    parseStorageTransferCleanup(window.localStorage.getItem(STORAGE_TRANSFER_CLEANUP_KEY)),
+  );
+  const tileSequenceRef = React.useRef<Map<string, number>>(new Map());
+  const receivedFrameSequenceRef = React.useRef(0);
+  const webRtcTransportRef = React.useRef<ViewerWebRtcTransport | null>(null);
+  const onInputEvent = React.useCallback((action: string) => {
+    const sentOverWebRtc = webRtcTransportRef.current?.sendControl(action) ?? false;
+    return sendInputEvent(action, { localOnly: sentOverWebRtc });
+  }, [sendInputEvent]);
   const dangerConfirmUntilRef = React.useRef<Record<string, number>>({});
   const [latencyReport, setLatencyReport] = useState<string>("");
   const [pingState, setPingState] = useState<{ start: number } | null>(null);
@@ -1331,7 +1444,17 @@ function RemoteSessionPanel({
   const [chatInput, setChatInput] = useState("");
   const [isClipboardSyncOn, setIsClipboardSyncOn] = useState(false);
   const [isChatOpen, setIsChatOpen] = useState(false);
+
+  const mapRemotePoint = (clientX: number, clientY: number, rect: DOMRect) =>
+    mapCanvasPointToVirtualDesktopAbsolute(
+      clientX,
+      clientY,
+      rect,
+      device?.displays?.find((display) => display.index === selectedDisplayIndex),
+      device?.displays,
+    );
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
+  const folderInputRef = React.useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (!device?.displays?.length) {
@@ -1412,6 +1535,29 @@ function RemoteSessionPanel({
         }
 
         const receipts = await fetchFileTransferReceipts(sessionId);
+        for (const completedReceipt of receipts) {
+          if (completedReceipt.status !== "received") continue;
+          const transfer = storageTransfersRef.current.get(completedReceipt.transferId);
+          if (!transfer) continue;
+          storageTransfersRef.current.set(completedReceipt.transferId, { ...transfer, received: true });
+        }
+        window.localStorage.setItem(
+          STORAGE_TRANSFER_CLEANUP_KEY,
+          serializeStorageTransferCleanup(storageTransfersRef.current),
+        );
+        for (const [transferId, transfer] of storageTransfersRef.current) {
+          if (!transfer.received) continue;
+          try {
+            await deleteUploadedFileFromStorage(transfer.path);
+            storageTransfersRef.current.delete(transferId);
+            window.localStorage.setItem(
+              STORAGE_TRANSFER_CLEANUP_KEY,
+              serializeStorageTransferCleanup(storageTransfersRef.current),
+            );
+          } catch (error) {
+            console.warn("Firebase Storage 전송 원본 정리 재시도 예정:", error);
+          }
+        }
         if (active && activeTransferIdRef.current && receipts.length > 0) {
           const receipt = receipts.find((item) => item.transferId === activeTransferIdRef.current);
           if (receipt?.status === "received") {
@@ -1483,9 +1629,14 @@ function RemoteSessionPanel({
     setStreamFrameCount(0);
     setStreamLastFrameAt("");
     setFallbackPollErrors(0);
+    tileSequenceRef.current.clear();
+    receivedFrameSequenceRef.current = 0;
     let active = true;
-    let webRtcTransport: { close: () => void } | null = null;
-    const drawTileFrame = (data: { tiles?: any[]; width?: number; height?: number }) => {
+    let webRtcTransport: ViewerWebRtcTransport | null = null;
+    let webRtcReconnectTimer: number | null = null;
+    let webRtcReconnectAttempt = 0;
+    let webRtcStartInFlight = false;
+    const drawTileFrame = (data: { tiles?: any[]; width?: number; height?: number; sequence?: number }) => {
       if (!active) return;
 
       const canvas = canvasRef.current;
@@ -1503,6 +1654,9 @@ function RemoteSessionPanel({
       }
 
       if (data.tiles && data.tiles.length > 0) {
+        const frameSequence = Number.isFinite(data.sequence)
+          ? Number(data.sequence)
+          : ++receivedFrameSequenceRef.current;
         const frameRenderedAt = new Date().toLocaleTimeString();
         setStreamFrameCount((value) => value + 1);
         setStreamLastFrameAt(frameRenderedAt);
@@ -1511,7 +1665,33 @@ function RemoteSessionPanel({
           const img = new Image();
           img.onload = () => {
             if (active) {
-              ctx.drawImage(img, tile.x * 32, tile.y * 32, tile.w, tile.h);
+              const tileX = Number(tile.x) * 32;
+              const tileY = Number(tile.y) * 32;
+              const tileWidth = Number(tile.w);
+              const tileHeight = Number(tile.h);
+              for (let offsetY = 0; offsetY < tileHeight; offsetY += 32) {
+                for (let offsetX = 0; offsetX < tileWidth; offsetX += 32) {
+                  const cellWidth = Math.min(32, tileWidth - offsetX);
+                  const cellHeight = Math.min(32, tileHeight - offsetY);
+                  const cellKey = `${Math.floor((tileX + offsetX) / 32)}:${Math.floor((tileY + offsetY) / 32)}`;
+                  const previousSequence = tileSequenceRef.current.get(cellKey) ?? -1;
+                  if (frameSequence < previousSequence) {
+                    continue;
+                  }
+                  ctx.drawImage(
+                    img,
+                    offsetX,
+                    offsetY,
+                    cellWidth,
+                    cellHeight,
+                    tileX + offsetX,
+                    tileY + offsetY,
+                    cellWidth,
+                    cellHeight,
+                  );
+                  tileSequenceRef.current.set(cellKey, frameSequence);
+                }
+              }
             }
             loadedCount++;
 
@@ -1550,26 +1730,60 @@ function RemoteSessionPanel({
 
     const firebaseEnabled = isViewerFirebaseEnabled();
     if (firebaseEnabled) {
-      void startFirebaseViewerWebRtcTransport(sessionId, {
-        onFrame: drawTileFrame,
-        onState: (state) => {
-          setStreamTransportState(state);
-          setLatencyReport(state.replace(/^webrtc-/, "WebRTC: "));
-        },
-        onError: (error) => {
-          setStreamTransportState(`webrtc-error: ${error.message}`);
-          console.warn("[WebRTC Viewer]", error.message);
-        },
-      }).then((transport) => {
-        if (!active) {
-          transport.close();
+      const scheduleWebRtcReconnect = (reason: string) => {
+        if (!active || webRtcReconnectTimer !== null) {
           return;
         }
-        webRtcTransport = transport;
-      }).catch((error) => {
-        setStreamTransportState(`webrtc-unavailable: ${error instanceof Error ? error.message : String(error)}`);
-        console.warn("[WebRTC Viewer] transport unavailable:", error instanceof Error ? error.message : error);
-      });
+        const delayMs = webRtcReconnectDelayMs(webRtcReconnectAttempt);
+        webRtcReconnectAttempt += 1;
+        setStreamTransportState(`webrtc-retrying in ${Math.ceil(delayMs / 1000)}s: ${reason}`);
+        webRtcReconnectTimer = window.setTimeout(() => {
+          webRtcReconnectTimer = null;
+          void startWebRtc();
+        }, delayMs);
+      };
+
+      const startWebRtc = async () => {
+        if (!active || webRtcStartInFlight) {
+          return;
+        }
+        webRtcStartInFlight = true;
+        webRtcTransport?.close();
+        webRtcTransport = null;
+        webRtcTransportRef.current = null;
+        setStreamTransportState(webRtcReconnectAttempt > 0 ? "webrtc-reconnecting" : "webrtc-starting");
+        try {
+          const transport = await startFirebaseViewerWebRtcTransport(sessionId, {
+            onFrame: drawTileFrame,
+            onState: (state) => {
+              if (!active) return;
+              setStreamTransportState(state);
+              if (state === "webrtc-open") {
+                webRtcReconnectAttempt = 0;
+              }
+            },
+            onError: (error) => {
+              if (!active) return;
+              console.warn("[WebRTC Viewer]", error.message);
+              scheduleWebRtcReconnect(error.message);
+            },
+          });
+          if (!active) {
+            transport.close();
+            return;
+          }
+          webRtcTransport = transport;
+          webRtcTransportRef.current = transport;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.warn("[WebRTC Viewer] transport unavailable:", message);
+          scheduleWebRtcReconnect(message);
+        } finally {
+          webRtcStartInFlight = false;
+        }
+      };
+
+      void startWebRtc();
     }
 
     const shouldPollTiles = shouldPollViewerTileFallback({
@@ -1607,7 +1821,13 @@ function RemoteSessionPanel({
 
     return () => {
       active = false;
+      if (webRtcReconnectTimer !== null) {
+        window.clearTimeout(webRtcReconnectTimer);
+      }
       webRtcTransport?.close();
+      if (webRtcTransportRef.current === webRtcTransport) {
+        webRtcTransportRef.current = null;
+      }
       if (intervalId) {
         clearInterval(intervalId);
       }
@@ -1615,6 +1835,7 @@ function RemoteSessionPanel({
   }, [device?.id, sessionId, session?.id, session?.state]);
 
   const releaseAllInputs = () => {
+    suppressedKeyUpsRef.current.clear();
     if (pressedKeysRef.current.size > 0) {
       pressedKeysRef.current.clear();
       onInputEvent("key-release-all");
@@ -1623,7 +1844,7 @@ function RemoteSessionPanel({
       const canvas = canvasRef.current;
       const rect = canvas?.getBoundingClientRect();
       const point = rect
-        ? mapCanvasPointToAbsolute(rect.left + rect.width / 2, rect.top + rect.height / 2, rect)
+        ? mapRemotePoint(rect.left + rect.width / 2, rect.top + rect.height / 2, rect)
         : { dx: 32768, dy: 32768 };
       for (const button of pressedButtonsRef.current) {
         onInputEvent(buildMouseCommand("up", point.dx, point.dy, button));
@@ -1646,7 +1867,7 @@ function RemoteSessionPanel({
     if (!canvas) return;
 
     const rect = canvas.getBoundingClientRect();
-    const { dx, dy } = mapCanvasPointToAbsolute(e.clientX, e.clientY, rect);
+    const { dx, dy } = mapRemotePoint(e.clientX, e.clientY, rect);
     const button = mapMouseButton(e.button);
     pressedButtonsRef.current.add(button);
     panelRef.current?.focus();
@@ -1659,7 +1880,7 @@ function RemoteSessionPanel({
     if (!canvas) return;
 
     const rect = canvas.getBoundingClientRect();
-    const { dx, dy } = mapCanvasPointToAbsolute(e.clientX, e.clientY, rect);
+    const { dx, dy } = mapRemotePoint(e.clientX, e.clientY, rect);
     const button = mapMouseButton(e.button);
     pressedButtonsRef.current.delete(button);
     onInputEvent(buildMouseCommand("up", dx, dy, button));
@@ -1670,7 +1891,7 @@ function RemoteSessionPanel({
     if (!canvas) return;
 
     const rect = canvas.getBoundingClientRect();
-    pendingMoveRef.current = mapCanvasPointToAbsolute(e.clientX, e.clientY, rect);
+    pendingMoveRef.current = mapRemotePoint(e.clientX, e.clientY, rect);
     if (moveFrameRef.current !== null) {
       return;
     }
@@ -1689,7 +1910,7 @@ function RemoteSessionPanel({
     if (!canvas) return;
 
     const rect = canvas.getBoundingClientRect();
-    const { dx, dy } = mapCanvasPointToAbsolute(e.clientX, e.clientY, rect);
+    const { dx, dy } = mapRemotePoint(e.clientX, e.clientY, rect);
     onInputEvent(buildMouseCommand("wheel", dx, dy, 0, e.deltaY > 0 ? -120 : 120));
   };
 
@@ -1704,12 +1925,17 @@ function RemoteSessionPanel({
 
     if (event.ctrlKey && event.key === "Escape") {
       event.preventDefault();
+      if (pressedKeysRef.current.delete("Ctrl")) {
+        onInputEvent("key-up Ctrl");
+      }
+      suppressedKeyUpsRef.current.add(event.key);
       onInputEvent("keypress Win");
       return;
     }
 
     if (event.ctrlKey && event.key.toLowerCase() === "v") {
       event.preventDefault();
+      suppressedKeyUpsRef.current.add(event.key);
       try {
         const text = await navigator.clipboard.readText();
         if (text) {
@@ -1723,9 +1949,10 @@ function RemoteSessionPanel({
       return;
     }
 
-    if (!event.ctrlKey && !event.altKey && !event.metaKey && event.key.length === 1) {
+    if (!event.ctrlKey && !event.altKey && !event.metaKey && Array.from(event.key).length === 1) {
       event.preventDefault();
-      onInputEvent(buildPasteTextCommand(event.key));
+      suppressedKeyUpsRef.current.add(event.key);
+      onInputEvent(buildUnicodeTextCommand(event.key));
       return;
     }
 
@@ -1740,6 +1967,9 @@ function RemoteSessionPanel({
       return;
     }
     event.preventDefault();
+    if (suppressedKeyUpsRef.current.delete(event.key)) {
+      return;
+    }
     const command = buildKeyboardCommand("keyup", event.key);
     pressedKeysRef.current.delete(command.slice("key-up ".length));
     onInputEvent(command);
@@ -1753,17 +1983,27 @@ function RemoteSessionPanel({
       const canvas = canvasRef.current;
       const rect = canvas?.getBoundingClientRect();
       const point = rect
-        ? mapCanvasPointToAbsolute(rect.left + rect.width / 2, rect.top + rect.height / 2, rect)
+        ? mapRemotePoint(rect.left + rect.width / 2, rect.top + rect.height / 2, rect)
         : { dx: 32768, dy: 32768 };
       for (const button of pressedButtonsRef.current) {
         onInputEvent(buildMouseCommand("up", point.dx, point.dy, button));
       }
       pressedButtonsRef.current.clear();
     };
+    const handleWindowBlur = () => releaseAllInputs();
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        releaseAllInputs();
+      }
+    };
 
     window.addEventListener("mouseup", handleWindowMouseUp);
+    window.addEventListener("blur", handleWindowBlur);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
       window.removeEventListener("mouseup", handleWindowMouseUp);
+      window.removeEventListener("blur", handleWindowBlur);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
       if (moveFrameRef.current !== null) {
         window.cancelAnimationFrame(moveFrameRef.current);
         moveFrameRef.current = null;
@@ -1874,51 +2114,85 @@ function RemoteSessionPanel({
   };
 
   // Files
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !sessionId) return;
-
+  const transferSingleFile = async (file: File) => {
+    if (!sessionId) return;
+    const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath?.trim();
+    const remoteFilename = relativePath || file.name;
     if (!canTransferRemoteFile(file.size)) {
-      alert(`File transfer limit is ${remoteFileLimitLabel()}.`);
-      e.target.value = "";
-      return;
+      throw new Error(`${remoteFilename}: file transfer limit is ${remoteFileLimitLabel()}.`);
     }
 
     const transferId = `transfer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     activeTransferIdRef.current = transferId;
     const startedAtMs = performance.now();
+    const fileSha256 = await sha256BlobHex(file);
+    if (!fileSha256) {
+      throw new Error("File checksum is unavailable in this runtime.");
+    }
 
     if (isViewerFirebaseEnabled()) {
-      try {
-        const fileSha256 = await sha256BlobHex(file);
-        if (!fileSha256) {
-          throw new Error("File checksum is unavailable in this browser runtime.");
+      const realtimeTransport = webRtcTransportRef.current;
+      if (realtimeTransport) {
+        try {
+          const sentOverWebRtc = await realtimeTransport.sendFile({
+            file,
+            filename: remoteFilename,
+            fileSha256,
+            transferId,
+            onProgress: (receivedBytes, totalBytes) => {
+              setTransferProgress({
+                fileName: remoteFilename,
+                ...formatTransferStats(receivedBytes, totalBytes, startedAtMs, performance.now()),
+              });
+            },
+          });
+          if (sentOverWebRtc) {
+            setTransferProgress({
+              fileName: remoteFilename,
+              ...formatTransferStats(file.size, file.size, startedAtMs, performance.now()),
+            });
+            window.setTimeout(() => setTransferProgress(null), 2500);
+            return;
+          }
+        } catch (error) {
+          console.warn("WebRTC file transfer failed; trying the signed Firebase fallback.", error);
         }
-        await uploadFileToStorage(sessionId, {
+      }
+
+      try {
+        const upload = await uploadFileToStorage(sessionId, {
           file,
           fileSha256,
-          filename: file.name,
+          filename: remoteFilename,
           onProgress: (sentBytes, totalBytes) => {
             setTransferProgress({
-              fileName: file.name,
+              fileName: remoteFilename,
               ...formatTransferStats(sentBytes, totalBytes, startedAtMs, performance.now()),
             });
           },
           totalBytes: file.size,
           transferId,
         });
+        storageTransfersRef.current.set(transferId, { path: upload.storagePath, received: false });
+        window.localStorage.setItem(
+          STORAGE_TRANSFER_CLEANUP_KEY,
+          serializeStorageTransferCleanup(storageTransfersRef.current),
+        );
         setTransferProgress({
-          fileName: file.name,
+          fileName: remoteFilename,
           ...formatTransferStats(file.size, file.size, startedAtMs, performance.now()),
         });
         window.setTimeout(() => setTransferProgress(null), 2500);
+        return;
       } catch (err) {
         setTransferProgress(null);
-        alert("File transfer failed: " + (err instanceof Error ? err.message : err));
-      } finally {
-        e.target.value = "";
+        if (!canUseFirestoreDirectFileTransfer(file.size)) {
+          throw new Error(
+            `WebRTC and Firebase Storage are unavailable. Files over 5MB require an open WebRTC file channel or an initialized Firebase Storage bucket. ${err instanceof Error ? err.message : err}`,
+          );
+        }
+        console.warn("Firebase Storage unavailable; using the bounded Firestore file fallback.", err);
       }
-      return;
     }
 
     const totalChunks = Math.max(1, Math.ceil(file.size / REMOTE_FILE_CHUNK_BYTES));
@@ -1933,7 +2207,7 @@ function RemoteSessionPanel({
         const fileData = arrayBufferToBase64(chunkBuffer);
         const chunkSha256 = await sha256Hex(chunkBuffer);
         await uploadFileChunk(sessionId, {
-          filename: file.name,
+          filename: remoteFilename,
           fileData,
           transferId,
           chunkIndex,
@@ -1941,20 +2215,41 @@ function RemoteSessionPanel({
           totalBytes: file.size,
           isLast: chunkIndex === totalChunks - 1,
           chunkSha256,
+          ...(chunkIndex === totalChunks - 1 ? { fileSha256 } : {}),
         });
         sentBytes = end;
         setTransferProgress({
-          fileName: file.name,
+          fileName: remoteFilename,
           ...formatTransferStats(sentBytes, file.size, startedAtMs, performance.now()),
         });
       }
       window.setTimeout(() => setTransferProgress(null), 2500);
     } catch (err) {
       setTransferProgress(null);
-      alert("File transfer failed: " + (err instanceof Error ? err.message : err));
-    } finally {
-      e.target.value = "";
+      throw err;
     }
+  };
+
+  const transferSelectedFiles = async (files: File[]) => {
+    if (!sessionId || files.length === 0) return;
+    try {
+      for (const file of files) {
+        await transferSingleFile(file);
+      }
+    } catch (error) {
+      alert("File transfer failed: " + (error instanceof Error ? error.message : error));
+    }
+  };
+
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    await transferSelectedFiles(files);
+  };
+
+  const handleFileDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    void transferSelectedFiles(Array.from(event.dataTransfer.files));
   };
 
   const setFitZoom = () => {
@@ -2089,7 +2384,13 @@ function RemoteSessionPanel({
               </span>
             )}
           </div>
-          <div ref={remotePreviewRef} className="remote-preview" style={{ padding: 0, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", flex: 1 }}>
+          <div
+            ref={remotePreviewRef}
+            className="remote-preview"
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={handleFileDrop}
+            style={{ padding: 0, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", flex: 1 }}
+          >
             <canvas
               ref={canvasRef}
               onContextMenu={(event) => event.preventDefault()}
@@ -2280,8 +2581,23 @@ function RemoteSessionPanel({
           <span>{`파일 전송 (${remoteFileLimitLabel()})`}</span>
         </button>
         <input
+          multiple
           type="file"
           ref={fileInputRef}
+          onChange={handleFileUpload}
+          style={{ display: "none" }}
+        />
+        <button className="secondary-button" type="button" onClick={() => folderInputRef.current?.click()}>
+          <FileUp size={17} />
+          <span>폴더 전송</span>
+        </button>
+        <input
+          multiple
+          type="file"
+          ref={(node) => {
+            folderInputRef.current = node;
+            node?.setAttribute("webkitdirectory", "");
+          }}
           onChange={handleFileUpload}
           style={{ display: "none" }}
         />

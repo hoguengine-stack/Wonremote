@@ -1,4 +1,5 @@
-use windows::core::{ComInterface, Error, Result};
+use windows::core::{ComInterface, Error, Result, HSTRING};
+use windows::Win32::Foundation::{BOOL, E_INVALIDARG, LPARAM, RECT};
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_11_1};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, D3D11_CPU_ACCESS_READ,
@@ -10,9 +11,10 @@ use windows::Win32::Graphics::Dxgi::{
     DXGI_OUTPUT_DESC,
 };
 use windows::Win32::Graphics::Gdi::{
-    BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits,
-    GetDeviceCaps, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
-    HGDIOBJ, HORZRES, SRCCOPY, VERTRES,
+    BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject,
+    EnumDisplayMonitors, GetDC, GetDIBits, GetMonitorInfoW, ReleaseDC, SelectObject, BITMAPINFO,
+    BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HDC, HGDIOBJ, HMONITOR, MONITORINFO, MONITORINFOEXW,
+    SRCCOPY,
 };
 
 pub struct DesktopCapturer {
@@ -108,33 +110,67 @@ pub struct DxgiCapturer {
 }
 
 pub struct GdiCapturer {
+    x: i32,
+    y: i32,
     width: u32,
     height: u32,
     output_name: String,
 }
 
+fn select_gdi_output(output_index: u32) -> Result<(RECT, String)> {
+    let mut outputs: Vec<(RECT, String)> = Vec::new();
+    let success = unsafe {
+        EnumDisplayMonitors(
+            HDC(0),
+            None,
+            Some(enum_gdi_output),
+            LPARAM((&mut outputs as *mut Vec<(RECT, String)>) as isize),
+        )
+    };
+    if !success.as_bool() {
+        return Err(Error::from_win32());
+    }
+    outputs.get(output_index as usize).cloned().ok_or_else(|| {
+        Error::new(
+            E_INVALIDARG,
+            HSTRING::from(format!("GDI output index {output_index} is unavailable")),
+        )
+    })
+}
+
+unsafe extern "system" fn enum_gdi_output(
+    monitor: HMONITOR,
+    _monitor_dc: HDC,
+    _monitor_rect: *mut RECT,
+    context: LPARAM,
+) -> BOOL {
+    let outputs = &mut *(context.0 as *mut Vec<(RECT, String)>);
+    let mut info = MONITORINFOEXW::default();
+    info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+    if GetMonitorInfoW(
+        monitor,
+        &mut info as *mut MONITORINFOEXW as *mut MONITORINFO,
+    )
+    .as_bool()
+    {
+        let name = utf16_to_string(&info.szDevice);
+        outputs.push((info.monitorInfo.rcMonitor, name));
+    }
+    BOOL(1)
+}
+
 impl GdiCapturer {
     pub fn new(output_index: u32) -> Result<Self> {
-        unsafe {
-            let screen_dc = GetDC(None);
-            if screen_dc.0 == 0 {
-                return Err(Error::from_win32());
-            }
-
-            let width = GetDeviceCaps(screen_dc, HORZRES);
-            let height = GetDeviceCaps(screen_dc, VERTRES);
-            let _ = ReleaseDC(None, screen_dc);
-
-            if width <= 0 || height <= 0 {
-                return Err(Error::from_win32());
-            }
-
-            Ok(Self {
-                width: width as u32,
-                height: height as u32,
-                output_name: format!("GDI primary desktop fallback (requested output {})", output_index),
-            })
-        }
+        let (rect, output_name) = select_gdi_output(output_index)?;
+        let (x, y, width, height) = gdi_capture_geometry(rect)
+            .ok_or_else(|| Error::new(E_INVALIDARG, "GDI output has invalid dimensions".into()))?;
+        Ok(Self {
+            x,
+            y,
+            width,
+            height,
+            output_name,
+        })
     }
 
     pub fn capture_frame(&mut self) -> Result<CaptureFrameStatus> {
@@ -167,8 +203,8 @@ impl GdiCapturer {
                 self.width as i32,
                 self.height as i32,
                 screen_dc,
-                0,
-                0,
+                self.x,
+                self.y,
                 SRCCOPY,
             );
 
@@ -222,7 +258,8 @@ impl GdiCapturer {
 
             let capture_time = capture_start.elapsed().as_micros();
             let convert_start = std::time::Instant::now();
-            let rgb565_buffer = bgra_to_rgb565(&bgra_buffer, self.width as usize, self.height as usize);
+            let rgb565_buffer =
+                bgra_to_rgb565(&bgra_buffer, self.width as usize, self.height as usize);
             let convert_time = convert_start.elapsed().as_micros();
 
             Ok(CaptureFrameStatus::Frame {
@@ -241,6 +278,15 @@ impl GdiCapturer {
     pub fn get_selection_names(&self) -> (String, String) {
         ("GDI".to_string(), self.output_name.clone())
     }
+}
+
+fn gdi_capture_geometry(rect: RECT) -> Option<(i32, i32, u32, u32)> {
+    let width = rect.right.checked_sub(rect.left)?;
+    let height = rect.bottom.checked_sub(rect.top)?;
+    if width <= 0 || height <= 0 {
+        return None;
+    }
+    Some((rect.left, rect.top, width as u32, height as u32))
 }
 
 impl DxgiCapturer {
@@ -313,9 +359,7 @@ impl DxgiCapturer {
     pub fn capture_frame(&mut self, timeout_ms: u32) -> Result<CaptureFrameStatus> {
         unsafe {
             if self.duplication.is_none() {
-                if let Err(e) = self.init_duplication() {
-                    return Err(e);
-                }
+                self.init_duplication()?;
             }
 
             let duplication = self.duplication.as_ref().unwrap();
@@ -471,9 +515,25 @@ mod tests {
         let restore_bitmap = source
             .find("SelectObject(memory_dc, old_object)")
             .expect("GDI bitmap restore should exist");
-        let get_dibits = source.find("GetDIBits(").expect("GDI pixel readback should exist");
+        let get_dibits = source
+            .find("GetDIBits(")
+            .expect("GDI pixel readback should exist");
 
         assert!(select_bitmap < restore_bitmap);
         assert!(restore_bitmap < get_dibits);
+    }
+
+    #[test]
+    fn gdi_capture_geometry_preserves_secondary_monitor_offsets() {
+        assert_eq!(
+            gdi_capture_geometry(RECT {
+                left: -1600,
+                top: 120,
+                right: 0,
+                bottom: 1020,
+            }),
+            Some((-1600, 120, 1600, 900)),
+        );
+        assert_eq!(gdi_capture_geometry(RECT::default()), None);
     }
 }

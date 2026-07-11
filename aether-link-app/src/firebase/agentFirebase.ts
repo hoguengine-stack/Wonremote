@@ -5,11 +5,13 @@ import {
   getDoc,
   getDocs,
   limit,
+  onSnapshot,
   orderBy,
   query,
   serverTimestamp,
   where,
   writeBatch,
+  type Unsubscribe,
 } from "firebase/firestore";
 import { getDownloadURL, ref } from "firebase/storage";
 import type {
@@ -35,17 +37,47 @@ import { buildAgentAuthEmail, buildAgentAuthPassword } from "./firebaseIdentity"
 import { buildFirestoreDevice, mapFirestoreDevice, mergeFirstRunDeviceDocument } from "./firestoreDevice";
 import { getWonRemoteFirebaseServices } from "./firebaseServices";
 import { throwExplainedFirebaseAuthError } from "./firebaseError";
-import { bindAgentDataChannelStatus, formatNodeDataChannelUnavailableError } from "./agentWebRtcStatus";
+import { bindAgentDataChannelStatus } from "./agentWebRtcStatus";
+import {
+  bindAgentControlMessages,
+  bindAgentFileMessages,
+  createAgentPeerConnection,
+  dataChannelBufferedAmount,
+  routeAgentDataChannel,
+  sendFrameWithBackpressure,
+  resolveWebRtcMaxBufferedAmount,
+  resolveWebRtcMaxMessageBytes,
+  type AgentDataChannelLike,
+  type AgentDataChannelTaskQueue,
+  type AgentPeerConnectionLike,
+} from "./agentPeerConnection";
+import {
+  serializeWebRtcFileAck,
+  type WebRtcFileAckMessage,
+  type WebRtcFileChunkMessage,
+} from "../domain/webrtcFileTransfer";
+import {
+  candidateMatchesNegotiation,
+  parseAgentWebRtcOffer,
+  rememberNegotiationAttempt,
+} from "./agentWebRtcNegotiation";
 import { safeAddDoc, safeBatchUpdate, safeSetDoc, safeUpdateDoc } from "./firestoreWrite";
 
 type AgentFirebaseEnv = Record<string, string | undefined>;
 
 export interface AgentWebRtcTransport {
   close: () => Promise<void>;
-  sendFrame: (frame: { tiles: any[]; width: number; height: number }) => boolean;
+  getBufferedAmount: () => number;
+  sendFrame: (frame: { tiles: any[]; width: number; height: number; sequence: number }) => "backpressure" | "sent" | "unavailable";
 }
 
 export interface AgentWebRtcTransportHandlers {
+  onControl?: (action: string, isCurrentChannel: () => boolean) => void;
+  onControlClosed?: () => void;
+  onFileChunk?: (
+    chunk: WebRtcFileChunkMessage,
+    isCurrentChannel: () => boolean,
+  ) => Promise<WebRtcFileAckMessage | null> | WebRtcFileAckMessage | null;
   onState?: (state: "open" | "closed" | "error", error?: string) => void;
 }
 
@@ -256,12 +288,13 @@ export async function fetchActiveFirebaseSessionsForAgent(
     collection(services.db, "sessions"),
     where("deviceId", "==", input.deviceId),
     where("ownerUid", "==", userId),
-    limit(10),
+    where("state", "==", "connected"),
   );
   const snapshot = await getDocs(sessionsQuery);
   return snapshot.docs
     .map((sessionDoc) => ({ id: sessionDoc.id, data: sessionDoc.data() as Record<string, unknown> }))
-    .filter((session) => session.data.state === "connected")
+    .sort((left, right) => sessionStartedAtMs(right.data) - sessionStartedAtMs(left.data))
+    .slice(0, 1)
     .map((session) => ({ id: session.id, deviceId: input.deviceId }));
 }
 
@@ -300,27 +333,26 @@ export async function startAgentWebRtcTransportWithFirebase(
     );
     return null;
   }
-
-  const offer = signalSnapshot.offer;
-  if (offer?.type !== "offer" || typeof offer.sdp !== "string") {
-    handlers.onState?.("error", formatWebRtcConnectionFailure("invalid-offer"));
-    return null;
-  }
-
-  const PeerConnectionCtor = await loadAgentPeerConnectionCtor();
-
   requireTurnWhenRelayOnly(env);
-  const peer = new PeerConnectionCtor({
-    iceServers: resolveRtcIceServers(env) as any,
-    iceTransportPolicy: shouldUseRelayOnly(env) ? "relay" : "all",
-  } as any);
   const agentCandidates = collection(services.db, "sessions", sessionId, "agentCandidates");
   const viewerCandidates = collection(services.db, "sessions", sessionId, "viewerCandidates");
+  const recentNegotiationIds = new Set<string>();
   const appliedViewerCandidates = new Set<string>();
-  let tileChannel: { readyState?: string; send?: (data: string) => void; close?: () => void } | null = null;
+  const maxBufferedAmount = resolveWebRtcMaxBufferedAmount(env);
+  const maxMessageBytes = resolveWebRtcMaxMessageBytes(env);
+  let activeNegotiationId: string | null = null;
+  let activePeer: AgentPeerConnectionLike | null = null;
+  let activeRemoteDescriptionSet = false;
+  let tileChannel: AgentDataChannelLike | null = null;
+  let controlChannel: AgentDataChannelLike | null = null;
+  let fileChannel: AgentDataChannelLike | null = null;
+  let fileChannelTasks: AgentDataChannelTaskQueue | null = null;
   let channelOpened = false;
   let closedByCaller = false;
   let connectWatchdog: ReturnType<typeof setTimeout> | null = null;
+  let unsubscribeSignal: Unsubscribe | null = null;
+  let unsubscribeViewerCandidates: Unsubscribe | null = null;
+  let negotiationQueue = Promise.resolve();
 
   const clearConnectWatchdog = () => {
     if (connectWatchdog) {
@@ -336,125 +368,372 @@ export async function startAgentWebRtcTransportWithFirebase(
     handlers.onState?.("error", formatWebRtcConnectionFailure(reason, detail));
   };
 
-  peer.onicecandidate = (event: any) => {
-    if (!event.candidate) {
+  const closeActivePeer = async (expectedNegotiationId?: string) => {
+    if (expectedNegotiationId && activeNegotiationId !== expectedNegotiationId) {
       return;
     }
-    void safeAddDoc(agentCandidates, {
-      candidate: event.candidate.toJSON(),
-      createdAt: serverTimestamp(),
-    }).catch((error) => {
-      reportTransportError(
-        "agent-candidate-write-failed",
-        error instanceof Error ? error.message : String(error),
-      );
-    });
-  };
-
-  peer.ondatachannel = (event: any) => {
-    tileChannel = event.channel;
-    bindAgentDataChannelStatus(event.channel, {
-      onState: (state, error) => {
-        if (state === "open") {
-          channelOpened = true;
-          clearConnectWatchdog();
-          handlers.onState?.("open");
-          return;
-        }
-        if (state === "closed") {
-          reportTransportError("closed");
-          handlers.onState?.("closed");
-          return;
-        }
-        clearConnectWatchdog();
-        handlers.onState?.("error", error);
-      },
-    });
-  };
-
-  if ("onconnectionstatechange" in peer) {
-    peer.onconnectionstatechange = () => {
-      const state = String(peer.connectionState ?? "");
-      if (isTerminalWebRtcConnectionState(state)) {
-        reportTransportError(state);
+    clearConnectWatchdog();
+    const previousTileChannel = tileChannel;
+    const previousControlChannel = controlChannel;
+    const previousFileChannel = fileChannel;
+    const previousFileChannelTasks = fileChannelTasks;
+    const peer = activePeer;
+    tileChannel = null;
+    controlChannel = null;
+    fileChannel = null;
+    fileChannelTasks = null;
+    activePeer = null;
+    activeRemoteDescriptionSet = false;
+    previousFileChannelTasks?.close();
+    previousTileChannel?.close?.();
+    previousControlChannel?.close?.();
+    previousFileChannel?.close?.();
+    if (peer) {
+      try {
+        await peer.close();
+      } catch {
+        // best effort cleanup before a new negotiation
       }
+    }
+  };
+
+  const failNegotiation = (negotiationId: string, reason: string, detail?: string) => {
+    if (closedByCaller || activeNegotiationId !== negotiationId) {
+      return;
+    }
+    clearConnectWatchdog();
+    reportTransportError(reason, detail);
+    void closeActivePeer(negotiationId);
+  };
+
+  const applyViewerCandidateDocs = (
+    docs: readonly { id: string; data: () => Record<string, any> }[],
+  ) => {
+    const negotiationId = activeNegotiationId;
+    const peer = activePeer;
+    if (!negotiationId || !peer || !activeRemoteDescriptionSet) {
+      return;
+    }
+    docs.forEach((candidateDoc) => {
+      const candidateData = candidateDoc.data();
+      const candidateKey = `${negotiationId}:${candidateDoc.id}`;
+      if (
+        appliedViewerCandidates.has(candidateKey) ||
+        !candidateMatchesNegotiation(candidateData, negotiationId)
+      ) {
+        return;
+      }
+      appliedViewerCandidates.add(candidateKey);
+      void peer.addIceCandidate(candidateData.candidate).catch((error: unknown) => {
+        appliedViewerCandidates.delete(candidateKey);
+        console.warn(`[WebRTC] Failed to add Viewer ICE candidate: ${error instanceof Error ? error.message : error}`);
+      });
+    });
+  };
+
+  const activateNegotiation = async (signal: unknown) => {
+    const offer = parseAgentWebRtcOffer(signal);
+    if (!offer || closedByCaller) {
+      return;
+    }
+    if (!rememberNegotiationAttempt(recentNegotiationIds, offer.negotiationId)) {
+      return;
+    }
+
+    await closeActivePeer();
+    if (closedByCaller) {
+      return;
+    }
+
+    activeNegotiationId = offer.negotiationId;
+    activeRemoteDescriptionSet = false;
+    channelOpened = false;
+    const peer = await createAgentPeerConnection({
+      iceServers: resolveRtcIceServers(env),
+      iceTransportPolicy: shouldUseRelayOnly(env) ? "relay" : "all",
+    });
+    if (closedByCaller || activeNegotiationId !== offer.negotiationId) {
+      await peer.close();
+      return;
+    }
+    activePeer = peer;
+
+    peer.onicecandidate = (event) => {
+      if (!event.candidate || activeNegotiationId !== offer.negotiationId) {
+        return;
+      }
+      const candidate = event.candidate.toJSON?.() ?? event.candidate;
+      void safeAddDoc(agentCandidates, {
+        candidate,
+        createdAt: serverTimestamp(),
+        negotiationId: offer.negotiationId,
+      }).catch((error) => {
+        reportTransportError(
+          "agent-candidate-write-failed",
+          error instanceof Error ? error.message : String(error),
+        );
+      });
     };
-  }
 
-  await peer.setRemoteDescription({ type: "offer", sdp: offer.sdp } as any);
-  const answer = await peer.createAnswer();
-  await peer.setLocalDescription(answer);
-  await safeSetDoc(
-    signalRef,
-    {
-      answer: {
-        type: answer.type,
-        sdp: answer.sdp,
-      },
-      state: "agent-answer",
-      updatedAt: serverTimestamp(),
-    },
-    { merge: true },
-  );
-  if (!channelOpened) {
-    connectWatchdog = setTimeout(() => {
-      reportTransportError("timeout", `${connectTimeoutMs}ms without an open Agent data channel`);
-    }, connectTimeoutMs);
-  }
-
-  const candidatePoll = setInterval(() => {
-    void getDocs(viewerCandidates)
-      .then((snapshot) => {
-        snapshot.docs.forEach((candidateDoc) => {
-          if (appliedViewerCandidates.has(candidateDoc.id)) {
+    peer.ondatachannel = (event) => {
+      if (activeNegotiationId !== offer.negotiationId) {
+        event.channel.close?.();
+        return;
+      }
+      routeAgentDataChannel(event.channel, {
+        onTiles: (channel) => {
+          if (tileChannel && tileChannel !== channel) {
+            console.warn("[WebRTC] Ignoring duplicate Agent tile data channel.");
+            channel.close?.();
             return;
           }
-          appliedViewerCandidates.add(candidateDoc.id);
-          const candidate = candidateDoc.data().candidate;
-          if (candidate) {
-            void peer.addIceCandidate(candidate as any).catch((error: unknown) => {
-              console.warn(`[WebRTC] Failed to add Viewer ICE candidate: ${error instanceof Error ? error.message : error}`);
-            });
+          tileChannel = channel;
+          bindAgentDataChannelStatus(channel, {
+            onState: (state, error) => {
+              if (activeNegotiationId !== offer.negotiationId) {
+                return;
+              }
+              if (state === "open") {
+                channelOpened = true;
+                clearConnectWatchdog();
+                handlers.onState?.("open");
+                return;
+              }
+              if (state === "closed") {
+                handlers.onState?.("closed");
+                void closeActivePeer(offer.negotiationId);
+                return;
+              }
+              failNegotiation(offer.negotiationId, "data-channel-error", error);
+            },
+          });
+        },
+        onControl: (channel) => {
+          if (controlChannel && controlChannel !== channel) {
+            console.warn("[WebRTC] Ignoring duplicate Agent control data channel.");
+            channel.close?.();
+            return;
           }
-        });
-      })
-      .catch((error) => {
-        reportTransportError("viewer-candidate-poll-failed", error instanceof Error ? error.message : String(error));
+          controlChannel = channel;
+          const isCurrentChannel = () => !(
+            closedByCaller ||
+            activeNegotiationId !== offer.negotiationId ||
+            controlChannel !== channel
+          );
+          let controlChannelEnded = false;
+          const clearControlChannel = () => {
+            if (controlChannelEnded) {
+              return;
+            }
+            controlChannelEnded = true;
+            channel.onmessage = undefined;
+            if (controlChannel === channel) {
+              controlChannel = null;
+            }
+            handlers.onControlClosed?.();
+          };
+          bindAgentControlMessages(channel, {
+            onControl: (action) => handlers.onControl?.(action, isCurrentChannel),
+            onInvalidMessage: () => {
+              console.warn("[WebRTC] Ignoring malformed, oversized, or binary Agent control message.");
+            },
+          });
+          channel.onopen = () => console.log("[WebRTC] Agent control data channel state: open");
+          channel.onclose = () => {
+            clearControlChannel();
+            console.log("[WebRTC] Agent control data channel state: closed");
+          };
+          channel.onerror = () => {
+            clearControlChannel();
+            channel.close?.();
+            console.warn("[WebRTC] Agent control data channel error.");
+          };
+        },
+        onFiles: (channel) => {
+          if (fileChannel && fileChannel !== channel) {
+            console.warn("[WebRTC] Ignoring duplicate Agent file data channel.");
+            channel.close?.();
+            return;
+          }
+          fileChannel = channel;
+          const tasks = bindAgentFileMessages(channel, {
+            onChunk: async (chunk) => {
+              const isCurrentChannel = () => !(
+                closedByCaller ||
+                activeNegotiationId !== offer.negotiationId ||
+                fileChannel !== channel
+              );
+              if (!isCurrentChannel()) {
+                return;
+              }
+              let acknowledgement: WebRtcFileAckMessage | null;
+              try {
+                if (!handlers.onFileChunk) {
+                  throw new Error("Agent file receiver is unavailable.");
+                }
+                acknowledgement = await handlers.onFileChunk(chunk, isCurrentChannel);
+              } catch (error) {
+                console.warn(
+                  `[WebRTC] Agent file chunk processing failed: ${error instanceof Error ? error.message : error}`,
+                );
+                acknowledgement = {
+                  type: "file-ack",
+                  transferId: chunk.transferId,
+                  receivedBytes: 0,
+                  receivedChunks: 0,
+                  status: "error",
+                  error: Array.from(error instanceof Error ? error.message : String(error))
+                    .slice(0, 200)
+                    .join("") || "Agent file chunk processing failed.",
+                };
+              }
+              if (
+                !acknowledgement ||
+                !isCurrentChannel() ||
+                channel.readyState !== "open" ||
+                !channel.send
+              ) {
+                return;
+              }
+              try {
+                channel.send(serializeWebRtcFileAck(acknowledgement));
+              } catch (error) {
+                console.warn(
+                  `[WebRTC] Failed to acknowledge Agent file chunk: ${error instanceof Error ? error.message : error}`,
+                );
+              }
+            },
+            onError: (error) => {
+              console.warn(
+                `[WebRTC] Agent file message queue failed: ${error instanceof Error ? error.message : error}`,
+              );
+            },
+            onInvalidMessage: () => {
+              console.warn("[WebRTC] Ignoring malformed, oversized, or binary Agent file message.");
+            },
+          });
+          fileChannelTasks = tasks;
+          const clearFileChannel = () => {
+            tasks.close();
+            if (fileChannelTasks === tasks) {
+              fileChannelTasks = null;
+            }
+            if (fileChannel === channel) {
+              fileChannel = null;
+            }
+          };
+          channel.onopen = () => console.log("[WebRTC] Agent file data channel state: open");
+          channel.onclose = () => {
+            clearFileChannel();
+            console.log("[WebRTC] Agent file data channel state: closed");
+          };
+          channel.onerror = () => {
+            clearFileChannel();
+            channel.close?.();
+            console.warn("[WebRTC] Agent file data channel error.");
+          };
+        },
+        onUnknown: (channel) => {
+          console.warn(`[WebRTC] Ignoring unexpected Agent data channel: ${channel.label ?? "<unlabeled>"}`);
+          channel.close?.();
+        },
       });
-  }, 750);
+    };
+
+    peer.onconnectionstatechange = () => {
+      if (activeNegotiationId !== offer.negotiationId) {
+        return;
+      }
+      const state = String(peer.connectionState ?? "");
+      if (isTerminalWebRtcConnectionState(state)) {
+        failNegotiation(offer.negotiationId, state);
+      }
+    };
+
+    await peer.setRemoteDescription({ type: "offer", sdp: offer.sdp });
+    activeRemoteDescriptionSet = true;
+    void getDocs(viewerCandidates)
+      .then((snapshot) => applyViewerCandidateDocs(snapshot.docs))
+      .catch((error) => {
+        reportTransportError(
+          "viewer-candidate-refresh-failed",
+          error instanceof Error ? error.message : String(error),
+        );
+      });
+    const answer = await peer.createAnswer();
+    await peer.setLocalDescription(answer);
+    await safeSetDoc(
+      signalRef,
+      {
+        answer: {
+          negotiationId: offer.negotiationId,
+          type: answer.type,
+          sdp: answer.sdp,
+        },
+        negotiationId: offer.negotiationId,
+        state: "agent-answer",
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true },
+    );
+    if (!channelOpened) {
+      connectWatchdog = setTimeout(() => {
+        failNegotiation(
+          offer.negotiationId,
+          "timeout",
+          `${connectTimeoutMs}ms without an open Agent data channel`,
+        );
+      }, connectTimeoutMs);
+    }
+  };
+
+  const scheduleNegotiation = (signal: unknown) => {
+    const offer = parseAgentWebRtcOffer(signal);
+    if (!offer || recentNegotiationIds.has(offer.negotiationId)) {
+      return;
+    }
+    negotiationQueue = negotiationQueue
+      .then(() => activateNegotiation(signal))
+      .catch((error) => {
+        reportTransportError("negotiation-failed", error instanceof Error ? error.message : String(error));
+        if (activeNegotiationId) {
+          void closeActivePeer(activeNegotiationId);
+        }
+      });
+  };
+
+  try {
+    await activateNegotiation(signalSnapshot);
+  } catch (error) {
+    reportTransportError("negotiation-failed", error instanceof Error ? error.message : String(error));
+    if (activeNegotiationId) {
+      await closeActivePeer(activeNegotiationId);
+    }
+  }
+
+  unsubscribeSignal = onSnapshot(
+    signalRef,
+    (snapshot) => scheduleNegotiation(snapshot.data()),
+    (error) => reportTransportError("signal-listener-failed", error.message),
+  );
+  unsubscribeViewerCandidates = onSnapshot(
+    viewerCandidates,
+    (snapshot) => applyViewerCandidateDocs(snapshot.docs),
+    (error) => reportTransportError("viewer-candidate-listener-failed", error.message),
+  );
 
   return {
     close: async () => {
       closedByCaller = true;
       clearConnectWatchdog();
-      clearInterval(candidatePoll);
-      tileChannel?.close?.();
-      peer.close();
+      unsubscribeSignal?.();
+      unsubscribeViewerCandidates?.();
+      await negotiationQueue.catch(() => undefined);
+      await closeActivePeer();
     },
-    sendFrame: (frame) => {
-      if (tileChannel?.readyState !== "open" || !tileChannel.send) {
-        return false;
-      }
-      try {
-        tileChannel.send(JSON.stringify(frame));
-        return true;
-      } catch {
-        return false;
-      }
-    },
+    getBufferedAmount: () => dataChannelBufferedAmount(tileChannel),
+    sendFrame: (frame) => sendFrameWithBackpressure(tileChannel, frame, { maxBufferedAmount, maxMessageBytes }),
   };
-}
-
-async function loadAgentPeerConnectionCtor(): Promise<any> {
-  if (process.arch === "ia32") {
-    throw new Error(formatNodeDataChannelUnavailableError(new Error("ia32 node-datachannel runtime is not bundled"), "ia32"));
-  }
-  try {
-    const rtcModule = await import("node-datachannel/polyfill");
-    return rtcModule.RTCPeerConnection;
-  } catch (error) {
-    throw new Error(formatNodeDataChannelUnavailableError(error));
-  }
 }
 
 export async function fetchSessionDataWithFirebase(
@@ -488,6 +767,7 @@ export async function fetchSessionDataWithFirebase(
     fileSha256: typeof data.fileSha256 === "string" ? data.fileSha256 : undefined,
     delivery: data.delivery === "firebase-storage" ? ("firebase-storage" as const) : ("firestore-direct" as const),
     storagePath: typeof data.storagePath === "string" ? data.storagePath : undefined,
+    webkitRelativePath: typeof data.webkitRelativePath === "string" ? data.webkitRelativePath : undefined,
   }), env);
 
   return {
@@ -582,8 +862,8 @@ async function waitForWebRtcOffer(
   while (Date.now() <= deadline) {
     const snapshot = await getDoc(signalRef);
     const data = snapshot.data() as Record<string, any> | undefined;
-    if (data?.offer?.type === "offer" && typeof data.offer.sdp === "string") {
-      return data;
+    if (parseAgentWebRtcOffer(data)) {
+      return data ?? null;
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
@@ -617,6 +897,26 @@ function coerceCreatedAt(value: unknown): string {
     return value.toDate().toISOString();
   }
   return new Date().toISOString();
+}
+
+function sessionStartedAtMs(data: Record<string, unknown>): number {
+  const startedAt = data.startedAt;
+  if (typeof startedAt === "string") {
+    const parsed = Date.parse(startedAt);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  const createdAt = data.createdAt;
+  if (createdAt && typeof createdAt === "object") {
+    if ("toMillis" in createdAt && typeof createdAt.toMillis === "function") {
+      return Number(createdAt.toMillis()) || 0;
+    }
+    if ("toDate" in createdAt && typeof createdAt.toDate === "function") {
+      return createdAt.toDate().getTime();
+    }
+  }
+  return 0;
 }
 
 function throwStatusError(message: string, status: number): never {

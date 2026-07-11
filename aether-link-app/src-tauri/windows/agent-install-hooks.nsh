@@ -28,3 +28,13 @@
   CreateShortCut "$SMPROGRAMS\WonRemote\WonRemote Agent.lnk" "$INSTDIR\wonremote-viewer.exe" "--agent --show-window"
   Exec '"$INSTDIR\wonremote-viewer.exe" --agent --show-window'
 !macroend
+
+!macro NSIS_HOOK_PREUNINSTALL
+  !insertmacro WONREMOTE_STOP_RUNNING_PROCESSES
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "WonRemoteAgent"
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "WonRemoteAgentCLI"
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "AetherLinkAgent"
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "AetherLinkAgentCLI"
+  Delete "$DESKTOP\WonRemote Agent.lnk"
+  Delete "$SMPROGRAMS\WonRemote\WonRemote Agent.lnk"
+!macroend

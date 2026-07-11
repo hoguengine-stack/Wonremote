@@ -12,6 +12,12 @@ describe("secure session helpers", () => {
     expect(generateSecurityCode(() => 999999)).toBe("999 999");
   });
 
+  it("rejects broken random sources instead of emitting malformed codes", () => {
+    expect(() => generateSecurityCode(() => Number.NaN)).toThrow("out-of-range");
+    expect(() => generateSecurityCode(() => 1_000_000)).toThrow("out-of-range");
+    expect(() => buildSecureChallengeId(1234, () => -1)).toThrow("out-of-range");
+  });
+
   it("normalizes viewer-entered security codes", () => {
     expect(normalizeSecurityCode("123 456")).toBe("123456");
     expect(normalizeSecurityCode("123-456")).toBe("123456");

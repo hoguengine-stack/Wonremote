@@ -283,29 +283,16 @@ function prepareNativeNodeDatachannelRuntime() {
       JSON.stringify(
         {
           name: "node-datachannel",
-          version: "0.0.0-wonremote-ia32-stub",
-          type: "module",
-          exports: {
-            ".": "./unavailable.mjs",
-            "./polyfill": "./unavailable.mjs",
-          },
+          version: "0.0.0-wonremote-ia32-unused",
+          private: true,
+          description: "WonRemote x86 uses the pure-JS werift runtime bundled in agent/index.mjs.",
         },
         null,
         2,
       ),
       "utf8",
     );
-    fs.writeFileSync(
-      path.join(nativeDir, "unavailable.mjs"),
-      [
-        "throw new Error(",
-        "  '32-bit WebRTC native module unavailable; ia32 node-datachannel runtime is not bundled.'",
-        ");",
-        "",
-      ].join("\n"),
-      "utf8",
-    );
-    console.log(`Created ${buildArch} node-datachannel stub at ${path.relative(appRoot, nativeDir)}`);
+    console.log(`Created ${buildArch} native-runtime marker at ${path.relative(appRoot, nativeDir)}`);
     return;
   }
 
@@ -383,22 +370,45 @@ async function build() {
   });
 
   console.log("Building Agent to dist-agent/index.mjs...");
-  await esbuild.build({
+  const agentBuild = await esbuild.build({
     entryPoints: ["src/agent/index.ts"],
     bundle: true,
+    metafile: true,
     platform: "node",
     format: "esm",
     target: "node20",
     outfile: "dist-agent/index.mjs",
     sourcemap: true,
     absWorkingDir: appRoot,
-    external: ["fsevents", "node-datachannel", "node-datachannel/polyfill"],
+    external: [
+      "fsevents",
+      "node-datachannel",
+      "node-datachannel/polyfill",
+      ...(buildArch === "ia32" ? [] : ["werift"]),
+    ],
     banner: {
       js: nodeEsmRequireBanner,
     },
   });
+  assertAgentWebRtcBundle(agentBuild.metafile);
 
   console.log("Backend bundling completed successfully!");
+}
+
+function assertAgentWebRtcBundle(metafile) {
+  const inputs = Object.keys(metafile.inputs).map((input) => input.replace(/\\/g, "/"));
+  const includesWerift = inputs.some((input) => input.includes("/node_modules/werift/") || input.startsWith("node_modules/werift/"));
+  if (buildArch === "ia32" && !includesWerift) {
+    throw new Error("x86 Agent bundle is missing the pure-JS werift runtime.");
+  }
+  if (buildArch !== "ia32" && includesWerift) {
+    throw new Error("x64 Agent bundle must keep werift external and use node-datachannel/polyfill.");
+  }
+  console.log(
+    buildArch === "ia32"
+      ? "Verified bundled x86 werift runtime in dist-agent/index.mjs."
+      : "Verified x64 Agent bundle keeps the x86 werift runtime external.",
+  );
 }
 
 build().catch((err) => {

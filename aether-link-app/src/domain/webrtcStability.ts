@@ -3,6 +3,7 @@ type RtcEnv = Partial<Record<string, string | undefined>>;
 export const DEFAULT_WEBRTC_CONNECT_TIMEOUT_MS = 12_000;
 export const MIN_WEBRTC_CONNECT_TIMEOUT_MS = 2_000;
 export const MAX_WEBRTC_CONNECT_TIMEOUT_MS = 120_000;
+export const MAX_WEBRTC_RECONNECT_DELAY_MS = 15_000;
 
 export function resolveWebRtcConnectTimeoutMs(env: RtcEnv): number {
   const raw = firstEnv(env, "WONREMOTE_RTC_CONNECT_TIMEOUT_MS", "VITE_WONREMOTE_RTC_CONNECT_TIMEOUT_MS");
@@ -25,6 +26,11 @@ export function isTerminalWebRtcConnectionState(state: string | undefined): bool
 export function formatWebRtcConnectionFailure(reason: string, detail?: string): string {
   const suffix = detail?.trim() ? `: ${detail.trim()}` : "";
   return `WebRTC realtime channel unavailable (${reason})${suffix}`;
+}
+
+export function webRtcReconnectDelayMs(attempt: number): number {
+  const safeAttempt = Math.max(0, Math.trunc(attempt));
+  return Math.min(MAX_WEBRTC_RECONNECT_DELAY_MS, 1_000 * 2 ** Math.min(safeAttempt, 4));
 }
 
 function firstEnv(env: RtcEnv, ...keys: string[]): string | undefined {

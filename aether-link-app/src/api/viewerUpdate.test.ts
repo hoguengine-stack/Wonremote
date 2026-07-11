@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_VIEWER_UPDATE_RELEASE_API_URL, fetchViewerUpdateMetadata } from "./viewerUpdate";
+import { DEFAULT_VIEWER_UPDATE_MANIFEST_URL, fetchViewerUpdateMetadata } from "./viewerUpdate";
 
 describe("viewer update metadata", () => {
-  it("checks the CORS-safe GitHub release API instead of the local API server", async () => {
+  it("checks the signed stable release manifest instead of the local API server", async () => {
     const requestedUrls: string[] = [];
 
     const metadata = await fetchViewerUpdateMetadata(
@@ -11,15 +11,14 @@ describe("viewer update metadata", () => {
         requestedUrls.push(String(url));
         return new Response(
           JSON.stringify({
-            tag_name: "v0.1.24",
-            assets: [
-              {
+            version: "0.1.24",
+            windows: {
+              x64: {
                 name: "WonRemote-Viewer-Agent-Setup.exe",
-                browser_download_url:
-                  "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Viewer-Agent-Setup.exe",
-                digest: `sha256:${"a".repeat(64)}`,
+                url: "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Viewer-Agent-Setup.exe",
+                sha256: "a".repeat(64),
               },
-            ],
+            },
           }),
           { status: 200 },
         );
@@ -27,7 +26,7 @@ describe("viewer update metadata", () => {
     );
 
     expect(requestedUrls[0]).toMatch(
-      /^https:\/\/api\.github\.com\/repos\/hoguengine-stack\/Wonremote\/releases\/latest\?nocache=/,
+      /^https:\/\/github\.com\/hoguengine-stack\/Wonremote\/releases\/latest\/download\/wonremote-update-manifest\.json\?nocache=/,
     );
     expect(requestedUrls[0]).not.toContain("127.0.0.1");
     expect(metadata).toMatchObject({
@@ -108,9 +107,9 @@ describe("viewer update metadata", () => {
     ).resolves.toBeNull();
   });
 
-  it("keeps the default release API URL stable for latest release assets", () => {
-    expect(DEFAULT_VIEWER_UPDATE_RELEASE_API_URL).toBe(
-      "https://api.github.com/repos/hoguengine-stack/Wonremote/releases/latest",
+  it("keeps the stable signed manifest URL independent of release versions", () => {
+    expect(DEFAULT_VIEWER_UPDATE_MANIFEST_URL).toBe(
+      "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/wonremote-update-manifest.json",
     );
   });
 });

@@ -38,11 +38,16 @@ export interface AgentStreamDiagnostics {
   transport?: "webrtc" | "firestore-fallback" | "local-api" | "none";
   rtcState?: "none" | "starting" | "ready" | "unavailable";
   rtcError?: string;
+  backpressured?: boolean;
+  bufferedAmount?: number;
+  droppedFrameCount?: number;
 }
 
 export interface DeviceDisplayInfo {
   index: number;
   name: string;
+  x?: number;
+  y?: number;
   width: number;
   height: number;
   primary: boolean;

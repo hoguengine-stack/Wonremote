@@ -142,6 +142,32 @@ describe("desktop packaging scaffold", () => {
     expect(tauriLib).not.toContain("single-instance guard already held; exiting");
   });
 
+  it("removes startup entries and custom Agent shortcuts during x86 and x64 uninstall", () => {
+    const hookPaths = [
+      "viewer-install-hooks.nsh",
+      "viewer-install-hooks-x86.nsh",
+      "agent-install-hooks.nsh",
+      "agent-install-hooks-x86.nsh",
+    ];
+    const hooks = hookPaths.map((name) =>
+      readFileSync(path.join(projectRoot, "src-tauri", "windows", name), "utf8"),
+    );
+
+    for (const hook of hooks) {
+      expect(hook).toContain("NSIS_HOOK_PREUNINSTALL");
+      expect(hook).toContain("WONREMOTE_STOP_RUNNING_PROCESSES");
+    }
+    for (const hook of hooks.slice(0, 2)) {
+      expect(hook).toContain('DeleteRegValue HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "WonRemoteViewer"');
+    }
+    for (const hook of hooks.slice(2)) {
+      expect(hook).toContain('DeleteRegValue HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "WonRemoteAgent"');
+      expect(hook).toContain('DeleteRegValue HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "WonRemoteAgentCLI"');
+      expect(hook).toContain('Delete "$DESKTOP\\WonRemote Agent.lnk"');
+      expect(hook).toContain('Delete "$SMPROGRAMS\\WonRemote\\WonRemote Agent.lnk"');
+    }
+  });
+
   it("compile-gates the x86 native tray so x64 builds cannot compile that code path", () => {
     const tauriLib = readFileSync(path.join(projectRoot, "src-tauri", "src", "lib.rs"), "utf8");
 
@@ -223,6 +249,17 @@ describe("desktop packaging scaffold", () => {
     expect(stylesSource).not.toContain('label:has(input[placeholder="http://127.0.0.1:8787"])');
   });
 
+  it("keeps the focused remote session and its controls inside the desktop viewport", () => {
+    const stylesSource = readFileSync(path.join(projectRoot, "src", "styles.css"), "utf8");
+
+    expect(stylesSource).toContain("height: 100vh;");
+    expect(stylesSource).toContain("max-height: 100vh;");
+    expect(stylesSource).toContain(".remote-focus-mode .session-actions");
+    expect(stylesSource).toContain("max-height: 140px;");
+    expect(stylesSource).toContain("max-width: 100%;");
+    expect(stylesSource).toContain("width: auto !important;");
+  });
+
   it("routes Firebase file uploads through Storage before chunking starts", () => {
     const appSource = readFileSync(path.join(projectRoot, "src", "App.tsx"), "utf8");
 
@@ -233,10 +270,22 @@ describe("desktop packaging scaffold", () => {
     );
   });
 
+  it("keeps the synthetic crash marker strictly inside the test runtime", () => {
+    const agentSource = readFileSync(path.join(projectRoot, "src", "agent", "index.ts"), "utf8");
+    const crashMarker = agentSource.indexOf('path.join(process.cwd(), "crash.txt")');
+    const testGate = agentSource.lastIndexOf('process.env.NODE_ENV === "test"', crashMarker);
+
+    expect(crashMarker).toBeGreaterThan(-1);
+    expect(testGate).toBeGreaterThan(-1);
+    expect(crashMarker - testGate).toBeLessThan(100);
+    expect(agentSource).toContain('set "NODE_ENV=${nodeEnv}"');
+    expect(agentSource).toContain('set "WONREMOTE_TEST_AGENT_UPDATE_CHECK_MS=${testUpdateCheckMs}"');
+  });
+
   it("downloads Firebase Storage file metadata through the Agent stream receiver", () => {
     const agentSource = readFileSync(path.join(projectRoot, "src", "agent", "index.ts"), "utf8");
 
-    expect(agentSource).toContain("saveTransferredFileDownloadStream");
+    expect(agentSource).toContain("downloadFirebaseStorageFile");
     expect(agentSource).toContain("resolveFirebaseStorageDownloadUrl");
     expect(agentSource).toContain('file.delivery === "firebase-storage"');
     expect(agentSource).not.toContain("file.downloadUrl");
@@ -265,9 +314,13 @@ describe("desktop packaging scaffold", () => {
 
   it("hashes Firebase Storage uploads before creating file metadata", () => {
     const appSource = readFileSync(path.join(projectRoot, "src", "App.tsx"), "utf8");
+    const blobHashSource = readFileSync(path.join(projectRoot, "src", "domain", "blobHash.ts"), "utf8");
 
     expect(appSource).toContain("const fileSha256 = await sha256BlobHex(file)");
     expect(appSource).toContain("fileSha256,");
+    expect(blobHashSource).toContain("sha256.create()");
+    expect(blobHashSource).toContain("blob.slice(offset, offset + chunkBytes)");
+    expect(blobHashSource).not.toContain("blob.arrayBuffer()");
   });
 
   it("keeps the Rust shell version aligned with the app package version", () => {
