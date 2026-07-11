@@ -3,80 +3,51 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const projectRoot = path.resolve(__dirname, "..", "..");
+const windowsRoot = path.join(projectRoot, "src-tauri", "windows");
 
 const hookCases = [
-  {
-    expectedMachine: 34404,
-    filename: "agent-install-hooks.nsh",
-    ownRoot: "WonRemote\\Agent",
-    otherRoot: "WonRemote\\Viewer",
-  },
-  {
-    expectedMachine: 332,
-    filename: "agent-install-hooks-x86.nsh",
-    ownRoot: "WonRemote\\Agent",
-    otherRoot: "WonRemote\\Viewer",
-  },
-  {
-    expectedMachine: 34404,
-    filename: "viewer-install-hooks.nsh",
-    ownRoot: "WonRemote\\Viewer",
-    otherRoot: "WonRemote\\Agent",
-  },
-  {
-    expectedMachine: 332,
-    filename: "viewer-install-hooks-x86.nsh",
-    ownRoot: "WonRemote\\Viewer",
-    otherRoot: "WonRemote\\Agent",
-  },
+  { filename: "agent-install-hooks.nsh", product: "Agent", architecture: "x64" },
+  { filename: "agent-install-hooks-x86.nsh", product: "Agent", architecture: "x86" },
+  { filename: "viewer-install-hooks.nsh", product: "Viewer", architecture: "x64" },
+  { filename: "viewer-install-hooks-x86.nsh", product: "Viewer", architecture: "x86" },
 ] as const;
 
 describe("NSIS installer process isolation", () => {
-  for (const hookCase of hookCases) {
-    it(`${hookCase.filename} stops only processes rooted in its own install directory`, () => {
-      const source = readFileSync(
-        path.join(projectRoot, "src-tauri", "windows", hookCase.filename),
-        "utf8",
-      );
-      const command = source.split(/\r?\n/).find((line) => line.includes("nsExec::ExecToLog")) ?? "";
-      const stopMacro = source.match(/!macro WONREMOTE_STOP_RUNNING_PROCESSES([\s\S]*?)!macroend/)?.[1] ?? "";
+  it("uses one shared PowerShell process stopper with no inline command execution", () => {
+    for (const hookCase of hookCases) {
+      const source = readFileSync(path.join(windowsRoot, hookCase.filename), "utf8");
 
-      expect(source).toContain("!include LogicLib.nsh");
-      expect(source).not.toMatch(/\btaskkill\b|\/IM\b/i);
-      expect(source).not.toContain("Get-Process");
-      expect(source).not.toContain("ProcessName -in");
-      expect(source).toContain("Get-CimInstance Win32_Process");
-      expect(source).toContain(`Join-Path $$env:LOCALAPPDATA ''${hookCase.ownRoot}''`);
-      expect(source).not.toContain(`Join-Path $$env:LOCALAPPDATA ''${hookCase.otherRoot}''`);
-      expect(source).toContain("[System.IO.Path]::GetFullPath");
-      expect(source).toContain("function Convert-ExtendedPath");
-      expect(source).toContain("$$extendedPrefix = -join @([char]92, [char]92, ''?'', [char]92)");
-      expect(source).toContain("$$extendedUncPrefix = $$extendedPrefix + ''UNC'' + [char]92");
-      expect(source).toContain("return (-join @([char]92, [char]92)) + $$normalized.Substring");
-      expect(source).toContain(
-        `$$root = Convert-ExtendedPath (Join-Path $$env:LOCALAPPDATA ''${hookCase.ownRoot}'')`,
-      );
-      expect(source).toContain("$$candidate = Convert-ExtendedPath $$process.ExecutablePath");
-      expect(source).not.toContain("$$candidate = [System.IO.Path]::GetFullPath($$process.ExecutablePath)");
-      expect(source).toContain("Test-TargetArchitecture");
-      expect(source).toContain(`ReadUInt16() -eq ${hookCase.expectedMachine}`);
-      expect(source).toContain("[System.IO.Path]::DirectorySeparatorChar");
-      expect(source).toContain("StartsWith($$prefix, [System.StringComparison]::OrdinalIgnoreCase)");
-      expect(source).toContain("$$id -eq 0");
-      expect(source).toContain("$$id -eq $$PID");
-      expect(source).toContain("$$id -eq $$installerPid");
-      expect(source).toContain("$$targetIds.Contains($$parentId)");
-      expect(source).toContain("Stop-Process -Id $$id");
-      expect(source).toContain("Start-Sleep -Milliseconds 1500");
-      expect(source).toContain("$$remainingIds = @(Get-CimInstance Win32_Process");
-      expect(source).toContain("$$targetIds.Contains([int]$$_.ProcessId)");
-      expect(source).toContain("if ($$remainingIds.Count -gt 0)");
-      expect(source).toContain("process termination failed. Remaining PIDs:");
-      expect(stopMacro).toMatch(
-        /nsExec::ExecToLog[\s\S]*Pop \$1[\s\S]*\$\{If\} \$1 != 0[\s\S]*SetErrorLevel \$1[\s\S]*Abort/,
-      );
-      expect(command).not.toMatch(/(?<!\$)\$(?:env:|PID\b|[A-Za-z_][A-Za-z0-9_]*)/);
-      expect(source.match(/!insertmacro WONREMOTE_STOP_RUNNING_PROCESSES/g)).toHaveLength(2);
-    });
-  }
+      expect(source).toContain("stop-wonremote-processes.ps1");
+      expect(source).toMatch(/\bFile\b[^\r\n]*stop-wonremote-processes\.ps1/i);
+      expect(source).toContain("${__FILEDIR__}\\..\\..\\stop-wonremote-processes.ps1");
+      expect(source).not.toMatch(/-Command\s+['\"]|\btaskkill\b|\bGet-Process\b/i);
+      expect(source).toMatch(new RegExp(`-Product\\s+[\"']?${hookCase.product}[\"']?`, "i"));
+      expect(source).toMatch(new RegExp(`-Architecture\\s+[\"']?${hookCase.architecture}[\"']?`, "i"));
+    }
+  });
+
+  it("keeps the shared stopper scoped to the exact install root and executable architecture", () => {
+    const source = readFileSync(path.join(windowsRoot, "stop-wonremote-processes.ps1"), "utf8");
+
+    expect(source).toContain("param(");
+    expect(source).toMatch(/\[ValidateSet\(['\"]Agent['\"],\s*['\"]Viewer['\"]\)\][\s\S]*?\[string\]\s*\$Product/i);
+    expect(source).toMatch(/\[ValidateSet\(['\"]x64['\"],\s*['\"]x86['\"]\)\][\s\S]*?\[string\]\s*\$Architecture/i);
+    expect(source).toContain("$env:LOCALAPPDATA");
+    expect(source).toContain("WonRemote");
+    expect(source).toContain("Get-CimInstance Win32_Process");
+    expect(source).toContain("ExecutablePath");
+    expect(source).toContain("GetFullPath");
+    expect(source).toContain("Test-TargetArchitecture");
+    expect(source).toMatch(/StartsWith\([^\r\n]*OrdinalIgnoreCase/);
+    expect(source).toContain("ParentProcessId");
+    expect(source).toContain("targetIds.Contains");
+    expect(source).toContain("Stop-Process -Id");
+    expect(source).toMatch(/Start-Sleep\s+-Milliseconds\s+\d+/i);
+    expect(source).toContain("remainingIds");
+    expect(source).toContain("process termination failed");
+
+    const buildSource = readFileSync(path.join(projectRoot, "src-tauri", "build.rs"), "utf8");
+    expect(buildSource).toContain("stage_installer_process_stop_script");
+    expect(buildSource).toContain('profile_dir.join("stop-wonremote-processes.ps1")');
+  });
 });

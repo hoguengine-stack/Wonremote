@@ -70,18 +70,27 @@ describe("desktop packaging scaffold", () => {
   it("stops running WonRemote processes before installer overwrite", () => {
     const viewerHook = readFileSync(path.join(projectRoot, "src-tauri", "windows", "viewer-install-hooks.nsh"), "utf8");
     const agentHook = readFileSync(path.join(projectRoot, "src-tauri", "windows", "agent-install-hooks.nsh"), "utf8");
+    const processStopper = readFileSync(
+      path.join(projectRoot, "src-tauri", "windows", "stop-wonremote-processes.ps1"),
+      "utf8",
+    );
 
-    for (const [hook, ownRoot] of [[viewerHook, "WonRemote\\Viewer"], [agentHook, "WonRemote\\Agent"]]) {
+    for (const [hook, product] of [[viewerHook, "Viewer"], [agentHook, "Agent"]]) {
       expect(hook).toContain("WONREMOTE_STOP_RUNNING_PROCESSES");
-      expect(hook).toContain("Get-CimInstance Win32_Process");
-      expect(hook).toContain("Stop-Process -Id");
-      expect(hook).toContain(`Join-Path $$env:LOCALAPPDATA ''${ownRoot}''`);
-      expect(hook).toContain("Test-TargetArchitecture");
-      expect(hook).toContain("$$remainingIds.Count -gt 0");
+      expect(hook).toContain("stop-wonremote-processes.ps1");
+      expect(hook).toContain(`-Product ${product} -Architecture x64`);
       expect(hook).toContain("SetErrorLevel $1");
       expect(hook).not.toContain("Get-Process");
       expect(hook).not.toContain("taskkill");
     }
+
+    expect(processStopper).toContain('Join-Path $env:LOCALAPPDATA "WonRemote\\$Product"');
+    expect(processStopper).toContain("Get-CimInstance Win32_Process");
+    expect(processStopper).toContain("Stop-Process -Id");
+    expect(processStopper).toContain("Test-TargetArchitecture");
+    expect(processStopper).toContain("$remainingIds.Count -gt 0");
+    expect(processStopper).not.toContain("Get-Process");
+    expect(processStopper).not.toContain("taskkill");
   });
 
   it("blocks the x64-only installers before installing on 32-bit Windows", () => {

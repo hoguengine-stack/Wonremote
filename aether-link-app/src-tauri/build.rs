@@ -1,4 +1,8 @@
-use std::{collections::HashMap, fs, path::Path};
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+};
 
 const FIREBASE_VITE_KEYS: [&str; 6] = [
     "VITE_WONREMOTE_FIREBASE_API_KEY",
@@ -19,8 +23,34 @@ fn main() {
     ensure_dist_poc_resource_exists_for_cargo_metadata();
     ensure_dist_poc_vc_runtime_exists_for_cargo_metadata();
     ensure_dist_native_node_datachannel_exists_for_cargo_metadata();
+    stage_installer_process_stop_script();
     export_public_firebase_env_from_dotenv();
     tauri_build::build()
+}
+
+fn stage_installer_process_stop_script() {
+    let manifest_dir = PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR")
+            .expect("CARGO_MANIFEST_DIR is required for installer hook staging"),
+    );
+    let source = manifest_dir.join("windows/stop-wonremote-processes.ps1");
+    println!("cargo:rerun-if-changed={}", source.display());
+
+    let target_root = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .map(|value| if value.is_absolute() { value } else { manifest_dir.join(value) })
+        .unwrap_or_else(|| manifest_dir.join("target"));
+    let host = std::env::var("HOST").unwrap_or_default();
+    let target = std::env::var("TARGET").unwrap_or_default();
+    let profile = std::env::var("PROFILE").unwrap_or_else(|_| "release".to_string());
+    let profile_dir = if host == target {
+        target_root.join(profile)
+    } else {
+        target_root.join(target).join(profile)
+    };
+    fs::create_dir_all(&profile_dir).expect("failed to create installer hook staging directory");
+    fs::copy(&source, profile_dir.join("stop-wonremote-processes.ps1"))
+        .expect("failed to stage installer process stop script");
 }
 
 fn ensure_dist_poc_resource_exists_for_cargo_metadata() {
