@@ -8,11 +8,15 @@ export type ProductionUpdateMetadata = {
   latestVersion: string;
   reloadViewer: boolean;
   signature?: string;
-  updateKind: "installer";
+  signatureV2?: string;
+  updateKind: ProductionUpdateKind;
 };
+
+export type ProductionUpdateKind = "installer" | "portable" | "portable-agent";
 
 export type ProductionUpdateManifestOptions = {
   arch?: "x64" | "x86";
+  assetKind?: ProductionUpdateKind;
   publicKeyPem?: string;
 };
 
@@ -20,6 +24,7 @@ type ManifestAsset = {
   name?: unknown;
   sha256?: unknown;
   signature?: unknown;
+  signatureV2?: unknown;
   url?: unknown;
 };
 
@@ -33,12 +38,14 @@ export function parseProductionUpdateManifest(
 
   const latestVersion = readRequiredString(input.version, "version");
   const arch = options.arch ?? "x64";
-  const asset = selectWindowsAsset(input, arch);
-  const downloadUrl = readRequiredString(asset.url, `windows.${arch}.url`);
-  const checksum = readRequiredString(asset.sha256, `windows.${arch}.sha256`).toLowerCase();
+  const assetKind = options.assetKind ?? "installer";
+  const manifestSection = manifestSectionForKind(assetKind);
+  const asset = selectReleaseAsset(input, arch, assetKind);
+  const downloadUrl = readRequiredString(asset.url, `${manifestSection}.${arch}.url`);
+  const checksum = readRequiredString(asset.sha256, `${manifestSection}.${arch}.sha256`).toLowerCase();
 
   if (!isHttpsUrl(downloadUrl)) {
-    throw new Error("Production update manifest must include a valid HTTPS installer URL.");
+    throw new Error(`Production update manifest must include a valid HTTPS ${assetKind} URL.`);
   }
   if (!/^[a-f0-9]{64}$/.test(checksum)) {
     throw new Error("Production update manifest must include a 64-character SHA-256 checksum.");
@@ -50,6 +57,9 @@ export function parseProductionUpdateManifest(
   const signature = typeof asset.signature === "string" && asset.signature.trim()
     ? asset.signature.trim()
     : undefined;
+  const signatureV2 = typeof asset.signatureV2 === "string" && asset.signatureV2.trim()
+    ? asset.signatureV2.trim()
+    : undefined;
 
   const metadata: ProductionUpdateMetadata = {
     assetName,
@@ -59,11 +69,12 @@ export function parseProductionUpdateManifest(
     latestVersion,
     reloadViewer: false,
     signature,
-    updateKind: "installer",
+    signatureV2,
+    updateKind: assetKind,
   };
 
   if (options.publicKeyPem) {
-    verifyProductionUpdateSignature(metadata, options.publicKeyPem);
+    verifyProductionUpdateSignature(metadata, options.publicKeyPem, arch);
   }
 
   return metadata;
@@ -83,7 +94,32 @@ export function buildProductionUpdateSignaturePayload(input: {
   ].join("\n");
 }
 
-function verifyProductionUpdateSignature(metadata: ProductionUpdateMetadata, publicKeyPem: string): void {
+export function buildProductionUpdateSignaturePayloadV2(input: {
+  arch: "x64" | "x86";
+  assetName: string;
+  checksum: string;
+  downloadUrl: string;
+  forceUpdate: boolean;
+  latestVersion: string;
+  updateKind: ProductionUpdateKind;
+}): string {
+  return [
+    "signatureVersion=2",
+    `version=${input.latestVersion}`,
+    `url=${input.downloadUrl}`,
+    `sha256=${input.checksum.toLowerCase()}`,
+    `assetName=${input.assetName}`,
+    `forceUpdate=${input.forceUpdate ? "true" : "false"}`,
+    `updateKind=${input.updateKind}`,
+    `arch=${input.arch}`,
+  ].join("\n");
+}
+
+function verifyProductionUpdateSignature(
+  metadata: ProductionUpdateMetadata,
+  publicKeyPem: string,
+  arch: "x64" | "x86",
+): void {
   if (!metadata.signature) {
     throw new Error("Production update manifest signature is required when a public key is configured.");
   }
@@ -92,17 +128,40 @@ function verifyProductionUpdateSignature(metadata: ProductionUpdateMetadata, pub
   if (!ok) {
     throw new Error("Production update manifest signature verification failed.");
   }
+  if (!metadata.signatureV2) {
+    throw new Error("Production update manifest v2 signature is required when a public key is configured.");
+  }
+  const payloadV2 = buildProductionUpdateSignaturePayloadV2({ ...metadata, arch });
+  const okV2 = verify(null, Buffer.from(payloadV2, "utf8"), publicKeyPem, Buffer.from(metadata.signatureV2, "base64"));
+  if (!okV2) {
+    throw new Error("Production update manifest v2 signature verification failed.");
+  }
 }
 
-function selectWindowsAsset(input: Record<string, unknown>, arch: "x64" | "x86"): ManifestAsset {
-  const windows = input.windows;
-  if (isRecord(windows) && isRecord(windows[arch])) {
-    return windows[arch] as ManifestAsset;
+function selectReleaseAsset(
+  input: Record<string, unknown>,
+  arch: "x64" | "x86",
+  assetKind: ProductionUpdateKind,
+): ManifestAsset {
+  const sectionName = manifestSectionForKind(assetKind);
+  const section = input[sectionName];
+  if (isRecord(section) && isRecord(section[arch])) {
+    return section[arch] as ManifestAsset;
   }
-  if (arch === "x64" && isRecord(input.installer)) {
+  if (assetKind === "installer" && arch === "x64" && isRecord(input.installer)) {
     return input.installer as ManifestAsset;
   }
-  throw new Error(`Production update manifest must include windows.${arch} installer metadata.`);
+  throw new Error(`Production update manifest must include ${sectionName}.${arch} ${assetKind} metadata.`);
+}
+
+function manifestSectionForKind(assetKind: ProductionUpdateKind): "windows" | "portable" | "portableAgent" {
+  if (assetKind === "portable") {
+    return "portable";
+  }
+  if (assetKind === "portable-agent") {
+    return "portableAgent";
+  }
+  return "windows";
 }
 
 function readRequiredString(value: unknown, fieldName: string): string {

@@ -61,6 +61,7 @@ const PUBLIC_FIREBASE_PROJECT_ID: &str = "wonremote-a7fd3";
 const PUBLIC_FIREBASE_APP_ID: &str = "1:52940136204:web:b4b4ff3e57c215e5dc3329";
 const PUBLIC_FIREBASE_STORAGE_BUCKET: &str = "wonremote-a7fd3.appspot.com";
 const PUBLIC_FIREBASE_MESSAGING_SENDER_ID: &str = "52940136204";
+const PORTABLE_MARKER_FILENAME: &str = "wonremote-portable.json";
 #[cfg(target_arch = "x86")]
 const WIN32_AGENT_TRAY_ID: u32 = 37;
 #[cfg(target_arch = "x86")]
@@ -578,6 +579,7 @@ fn spawn_agent_only_process(
     };
 
     command.env("WONREMOTE_BUILD_ARCH", runtime_build_arch());
+    command.env("WONREMOTE_PACKAGE_KIND", packaged_update_kind(resource_dir));
     if let Some(url) = api_url {
         command.env("WONREMOTE_API_URL", url);
     } else {
@@ -982,6 +984,32 @@ fn runtime_build_arch() -> &'static str {
     }
 }
 
+fn packaged_update_kind(resource_dir: &Path) -> &'static str {
+    let marker_path = resource_dir.join(PORTABLE_MARKER_FILENAME);
+    if let Ok(serialized) = std::fs::read_to_string(marker_path) {
+        if let Ok(marker) = serde_json::from_str::<serde_json::Value>(&serialized) {
+            if marker.get("schemaVersion").and_then(|value| value.as_u64()) == Some(1) {
+                match marker.get("packageKind").and_then(|value| value.as_str()) {
+                    Some("portable") => return "portable",
+                    Some("portable-agent") => return "portable-agent",
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // v0.1.39 and earlier portable archives did not contain a marker. Their stable
+    // executable names are not installed by NSIS, so this safely migrates them.
+    let has_portable_agent = resource_dir.join("WonRemote Agent.exe").is_file();
+    if has_portable_agent && resource_dir.join("WonRemote Viewer.exe").is_file() {
+        return "portable";
+    }
+    if has_portable_agent {
+        return "portable-agent";
+    }
+    "installer"
+}
+
 fn normalize_installer_restart_mode(restart_mode: &str) -> Result<&str, String> {
     match restart_mode {
         "viewer" | "agent" => Ok(restart_mode),
@@ -1004,6 +1032,7 @@ fn start_installer_update(app: tauri::AppHandle, restart_mode: String) -> Result
     ensure_resource_exists(&agent_path, "bundled updater").map_err(|error| error.to_string())?;
 
     let build_arch = runtime_build_arch();
+    let package_kind = packaged_update_kind(&resource_dir);
     let mut command = Command::new(&node_path);
     command
         .arg(&agent_path)
@@ -1011,6 +1040,7 @@ fn start_installer_update(app: tauri::AppHandle, restart_mode: String) -> Result
         .env("NODE_ENV", "production")
         .env("WONREMOTE_APP_DIR", &resource_dir)
         .env("WONREMOTE_BUILD_ARCH", build_arch)
+        .env("WONREMOTE_PACKAGE_KIND", package_kind)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
@@ -1023,7 +1053,7 @@ fn start_installer_update(app: tauri::AppHandle, restart_mode: String) -> Result
     append_runtime_log(
         "updater",
         &format!(
-            "verified installer updater started restart_mode={restart_mode} arch={build_arch}"
+            "verified updater started restart_mode={restart_mode} arch={build_arch} package={package_kind}"
         ),
     );
     Ok(())
@@ -1738,6 +1768,34 @@ mod registry_tests {
         assert_eq!(runtime_build_arch(), "x86");
         #[cfg(not(target_arch = "x86"))]
         assert_eq!(runtime_build_arch(), "x64");
+    }
+
+    #[test]
+    fn test_packaged_update_kind_distinguishes_installed_and_legacy_portable_layouts() {
+        let root = std::env::temp_dir().join(format!(
+            "wonremote-package-kind-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("failed to create package-kind fixture");
+        assert_eq!(packaged_update_kind(&root), "installer");
+
+        std::fs::write(root.join("WonRemote Agent.exe"), b"fixture")
+            .expect("failed to create legacy Agent executable");
+        assert_eq!(packaged_update_kind(&root), "portable-agent");
+
+        std::fs::write(root.join("WonRemote Viewer.exe"), b"fixture")
+            .expect("failed to create legacy Viewer executable");
+        assert_eq!(packaged_update_kind(&root), "portable");
+
+        std::fs::write(
+            root.join(PORTABLE_MARKER_FILENAME),
+            r#"{"schemaVersion":1,"packageKind":"portable-agent","version":"0.1.40"}"#,
+        )
+        .expect("failed to create portable marker");
+        assert_eq!(packaged_update_kind(&root), "portable-agent");
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

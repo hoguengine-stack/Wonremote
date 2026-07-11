@@ -262,6 +262,11 @@ export async function saveTransferredFileDownloadStream(
     };
   } catch (error) {
     writeStream.destroy();
+    if (!writeStream.closed) {
+      await new Promise<void>((resolve) => {
+        writeStream.once("close", resolve);
+      });
+    }
     if (error instanceof DownloadIntegrityError) {
       await rm(tmpPath, { force: true });
     }

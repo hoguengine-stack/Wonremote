@@ -49,6 +49,12 @@ import {
 } from "./productionInstallerUpdate";
 import { loadProductionInstallerUpdateMetadata } from "./productionUpdateMetadata";
 import { handleUpdateOnceCli } from "./agentUpdateOnce";
+import {
+  downloadPortableUpdate,
+  isPortableUpdateMetadata,
+  preparePortableHandoff,
+  type SafePortableUpdateMetadata,
+} from "./portableUpdate";
 import { sendWakeOnLanMagicPacket } from "./wakeOnLan";
 import { parseAgentDisplayInventory } from "./agentDisplayInventory";
 import { PersistentInputInjector } from "./persistentInputInjector";
@@ -983,6 +989,10 @@ async function checkUpdate(config: AgentLocalConfig) {
     }
 
     if (data.latestVersion && isHigherVersion(data.latestVersion, currentVersion)) {
+      if (isPortableUpdateMetadata(data)) {
+        await handoffToPortableUpdate(data);
+        return;
+      }
       if (isInstallerUpdateMetadata(data)) {
         await handoffToProductionInstallerUpdate(data);
         return;
@@ -1207,6 +1217,41 @@ async function handoffToProductionInstallerUpdate(data: SafeInstallerUpdateMetad
     persistentInputInjector,
     { pointer: pointerState, pressedKeys },
     "Agent update handoff started.",
+  ));
+  process.exit(0);
+}
+
+async function handoffToPortableUpdate(data: SafePortableUpdateMetadata): Promise<void> {
+  const baseDir = process.env.APPDATA ?? process.cwd();
+  const download = await downloadPortableUpdate(data, { baseDir });
+  const handoff = await preparePortableHandoff(download, {
+    baseDir,
+    portableRoot: AGENT_APP_DIR,
+    restartMode: "agent",
+  });
+  console.log(`[WonRemote Agent] Verified portable update downloaded: ${download.archivePath}`);
+  console.log(`[WonRemote Agent] Portable update handoff script: ${handoff.scriptPath}`);
+  console.log(`[WonRemote Agent] Portable update handoff log: ${handoff.logPath}`);
+
+  const updateProcess = spawn(handoff.command, handoff.args, {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true,
+    creationFlags: handoff.creationFlags,
+  } as any);
+  updateProcess.unref();
+
+  if (streamProcess) {
+    streamProcess.kill();
+    streamProcess = null;
+  }
+
+  console.log("[WonRemote Agent] Handed off to portable updater and exiting current Agent.");
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  await agentCommandQueue.enqueue(() => releasePressedInputAndClose(
+    persistentInputInjector,
+    { pointer: pointerState, pressedKeys },
+    "Agent portable update handoff started.",
   ));
   process.exit(0);
 }

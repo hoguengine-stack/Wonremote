@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -85,7 +85,8 @@ export async function downloadInstallerUpdate(
 
   const updatesDir = path.join(options.baseDir, "WonRemote", "updates");
   await mkdir(updatesDir, { recursive: true });
-  const installerPath = path.join(updatesDir, safeInstallerName(metadata));
+  const safeName = safeInstallerName(metadata);
+  const installerPath = path.join(updatesDir, `${safeName.slice(0, -4)}-${randomUUID()}.exe`);
   await writeFile(installerPath, installerBuffer);
 
   return {
@@ -101,13 +102,15 @@ export async function prepareInstallerHandoff(
   const updatesDir = path.join(options.baseDir, "WonRemote", "updates");
   await mkdir(updatesDir, { recursive: true });
 
-  const logPath = path.join(updatesDir, "installer-handoff.log");
-  const scriptPath = path.join(updatesDir, "run-installer-update.ps1");
+  const updateId = randomUUID();
+  const logPath = path.join(updatesDir, `installer-handoff-${updateId}.log`);
+  const scriptPath = path.join(updatesDir, `run-installer-update-${updateId}.ps1`);
   await writeFile(
     scriptPath,
     buildInstallerHandoffScript({
       installerArgs: download.installerArgs,
       installerPath: download.installerPath,
+      lockPath: path.join(updatesDir, "update-handoff.lock"),
       logPath,
       restartMode: options.restartMode ?? "agent",
     }),
@@ -134,6 +137,7 @@ export function installerArgsForUpdate(metadata: Pick<InstallerUpdateMetadata, "
 function buildInstallerHandoffScript(input: {
   installerArgs: string[];
   installerPath: string;
+  lockPath: string;
   logPath: string;
   restartMode: InstallerRestartMode;
 }): string {
@@ -145,22 +149,60 @@ function buildInstallerHandoffScript(input: {
 
   return `$ErrorActionPreference = 'Stop'
 $LogPath = '${escapePowerShellSingleQuoted(input.logPath)}'
+$InstallerPath = '${escapePowerShellSingleQuoted(input.installerPath)}'
+$InstallerArgs = @(${quotedArgs})
+$LockPath = '${escapePowerShellSingleQuoted(input.lockPath)}'
+$RestartMode = '${escapePowerShellSingleQuoted(input.restartMode)}'
 $explicitInstallRoots = @(${quotedExplicitInstallRoots})
 function Write-HandoffLog([string]$Message) {
   $stamp = Get-Date -Format o
   Add-Content -LiteralPath $LogPath -Encoding UTF8 -Value "[$stamp] $Message"
 }
 
-function Normalize-PathForCompare([string]$Value) {
+$UpdateLock = $null
+try {
+  $UpdateLock = [System.IO.File]::Open(
+    $LockPath,
+    [System.IO.FileMode]::OpenOrCreate,
+    [System.IO.FileAccess]::ReadWrite,
+    [System.IO.FileShare]::None
+  )
+} catch {
+  Write-HandoffLog 'Another WonRemote update is already in progress.'
+  Remove-Item -LiteralPath $InstallerPath -Force -ErrorAction SilentlyContinue
+  exit 20
+}
+
+function Close-UpdateLock {
+  if ($null -ne $UpdateLock) {
+    $UpdateLock.Dispose()
+    $UpdateLock = $null
+  }
+}
+
+function Convert-ExtendedPath([string]$Value) {
   if ([string]::IsNullOrWhiteSpace($Value)) { return "" }
   try {
-    return [System.IO.Path]::GetFullPath($Value).TrimEnd(
+    $normalized = [System.IO.Path]::GetFullPath($Value).TrimEnd(
       [System.IO.Path]::DirectorySeparatorChar,
       [System.IO.Path]::AltDirectorySeparatorChar
     )
+    $extendedPrefix = -join @([char]92, [char]92, '?', [char]92)
+    $extendedUncPrefix = $extendedPrefix + 'UNC' + [char]92
+    if ($normalized.StartsWith($extendedUncPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+      return (-join @([char]92, [char]92)) + $normalized.Substring($extendedUncPrefix.Length)
+    }
+    if ($normalized.StartsWith($extendedPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+      return $normalized.Substring($extendedPrefix.Length)
+    }
+    return $normalized
   } catch {
     return $Value.TrimEnd("\\", "/")
   }
+}
+
+function Normalize-PathForCompare([string]$Value) {
+  return Convert-ExtendedPath $Value
 }
 
 function Test-UnderPath([string]$Candidate, [string[]]$Roots) {
@@ -208,14 +250,42 @@ function Test-WonRemoteAgentRunning([string[]]$Roots) {
   return $null -ne $target
 }
 
-function Start-WonRemoteAgent {
-  $roots = @(
+function Get-WonRemoteAgentRoots {
+  return @(
     $explicitInstallRoots,
     "$env:LOCALAPPDATA\\WonRemote Agent",
     "$env:LOCALAPPDATA\\WonRemote Viewer",
     "$env:LOCALAPPDATA\\WonRemote\\Agent",
     "$env:LOCALAPPDATA\\WonRemote\\Viewer"
   ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+}
+
+function Test-WonRemoteAgentRuntime([string[]]$Roots) {
+  $target = Get-CimInstance Win32_Process | Where-Object {
+    -not [string]::IsNullOrWhiteSpace($_.ExecutablePath) -and
+    [System.IO.Path]::GetFileName($_.ExecutablePath) -ieq 'node.exe' -and
+    (Test-UnderPath $_.ExecutablePath $Roots) -and
+    [string]$_.CommandLine -match '(?i)[\\\\/]agent[\\\\/]index\\.mjs' -and
+    [string]$_.CommandLine -match '(?i)(^|\\s)--watch(\\s|$)'
+  } | Select-Object -First 1
+  return $null -ne $target
+}
+
+function Wait-WonRemoteAgentRuntime {
+  $roots = @(Get-WonRemoteAgentRoots)
+  $deadline = (Get-Date).AddSeconds(15)
+  do {
+    if (Test-WonRemoteAgentRuntime $roots) {
+      Write-HandoffLog 'WonRemote Agent node runtime health check passed.'
+      return
+    }
+    Start-Sleep -Milliseconds 500
+  } while ((Get-Date) -lt $deadline)
+  throw 'WonRemote Agent shell started, but its node.exe agent/index.mjs --watch runtime did not stay alive.'
+}
+
+function Start-WonRemoteAgent {
+  $roots = @(Get-WonRemoteAgentRoots)
   if (Test-WonRemoteAgentRunning $roots) {
     Write-HandoffLog "WonRemote Agent is already running after installer exit; skipping fallback start."
     return
@@ -258,20 +328,22 @@ function Start-WonRemoteViewer {
 }
 
 try {
-  $installerPath = '${escapePowerShellSingleQuoted(input.installerPath)}'
-  $installerArgs = @(${quotedArgs})
   Stop-WonRemoteProcesses
-  Write-HandoffLog "Starting installer update: $installerPath $($installerArgs -join ' ')"
-  $process = Start-Process -FilePath $installerPath -ArgumentList $installerArgs -WindowStyle Hidden -PassThru
+  $env:WONREMOTE_RESTART_MODE = $RestartMode
+  Write-HandoffLog "Starting installer update: $InstallerPath $($InstallerArgs -join ' ')"
+  $process = Start-Process -FilePath $InstallerPath -ArgumentList $InstallerArgs -WindowStyle Hidden -PassThru
   Write-HandoffLog "Installer PID: $($process.Id)"
   $process.WaitForExit()
   Write-HandoffLog "Installer exit code: $($process.ExitCode)"
   if ($process.ExitCode -eq 0) {
     ${restartCommand}
+    Wait-WonRemoteAgentRuntime
   }
+  Close-UpdateLock
   exit $process.ExitCode
 } catch {
   Write-HandoffLog "Installer handoff failed: $($_.Exception.Message)"
+  Close-UpdateLock
   exit 1
 }
 `;

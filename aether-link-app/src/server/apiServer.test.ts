@@ -8,7 +8,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createApiServer } from "./apiServer";
 import { createFileDeviceStore } from "./deviceStore";
 import type { ManagedDevice } from "../domain/types";
-import { buildProductionUpdateSignaturePayload } from "../domain/updateManifest";
+import {
+  buildProductionUpdateSignaturePayload,
+  buildProductionUpdateSignaturePayloadV2,
+} from "../domain/updateManifest";
 import { nextPatchVersion } from "../domain/versioning";
 
 describe("WonRemote local API server", () => {
@@ -849,6 +852,19 @@ describe("WonRemote local API server", () => {
       ),
       privateKey,
     ).toString("base64");
+    const signatureV2 = sign(
+      null,
+      Buffer.from(buildProductionUpdateSignaturePayloadV2({
+        arch: "x64",
+        assetName,
+        checksum,
+        downloadUrl,
+        forceUpdate: false,
+        latestVersion: "0.1.9",
+        updateKind: "installer",
+      }), "utf8"),
+      privateKey,
+    ).toString("base64");
     await writeFile(
       manifestPath,
       JSON.stringify({
@@ -859,6 +875,7 @@ describe("WonRemote local API server", () => {
             url: downloadUrl,
             sha256: checksum,
             signature,
+            signatureV2,
           },
         },
       }),
@@ -879,6 +896,7 @@ describe("WonRemote local API server", () => {
         latestVersion: "0.1.9",
         reloadViewer: false,
         signature,
+        signatureV2,
         updateKind: "installer",
       });
     } finally {

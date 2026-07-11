@@ -9,6 +9,7 @@ const outputDir = path.join(appRoot, "release-exe");
 const packageJson = JSON.parse(fs.readFileSync(path.join(appRoot, "package.json"), "utf8"));
 const requiredResourceDirs = ["server", "agent", "runtime", "bin", "node_modules"];
 const x86WebRtcRuntimeMarker = "wonremote-webrtc-runtime:werift";
+const portableMarkerName = "wonremote-portable.json";
 
 const TARGET_ARCHITECTURES = [
   {
@@ -146,20 +147,41 @@ function createZip(zipName, entries, baseDir) {
 }
 
 function createPortableZip(target) {
-  createZip(target.stablePortableZipName, [
-    "WonRemote Viewer.exe",
-    "WonRemote Agent.exe",
-    "README.txt",
-    ...requiredResourceDirs,
-  ], target.stageDir);
+  withPortableMarker(target, "portable", () => {
+    createZip(target.stablePortableZipName, [
+      "WonRemote Viewer.exe",
+      "WonRemote Agent.exe",
+      "README.txt",
+      portableMarkerName,
+      ...requiredResourceDirs,
+    ], target.stageDir);
+  });
 }
 
 function createAgentPortableZip(target) {
-  createZip(target.stableAgentZipName, [
-    "WonRemote Agent.exe",
-    "README.txt",
-    ...requiredResourceDirs,
-  ], target.stageDir);
+  withPortableMarker(target, "portable-agent", () => {
+    createZip(target.stableAgentZipName, [
+      "WonRemote Agent.exe",
+      "README.txt",
+      portableMarkerName,
+      ...requiredResourceDirs,
+    ], target.stageDir);
+  });
+}
+
+export function withPortableMarker(target, packageKind, createArchive) {
+  const markerPath = path.join(target.stageDir, portableMarkerName);
+  const marker = {
+    schemaVersion: 1,
+    packageKind,
+    version: packageJson.version,
+  };
+  fs.writeFileSync(markerPath, `${JSON.stringify(marker, null, 2)}\n`, "utf8");
+  try {
+    createArchive();
+  } finally {
+    fs.rmSync(markerPath, { force: true });
+  }
 }
 
 function escapeNsisString(value) {
@@ -197,6 +219,12 @@ function x64OnlyNsisGuard(target) {
 function createCombinedInstaller(viewerInstallerPath, agentInstallerPath, target) {
   const outputPath = path.join(outputDir, target.stableFullInstallerName);
   const scriptPath = path.join(outputDir, `WonRemote-Viewer-Agent-Setup-${target.key}.nsi`);
+  const bridgeScriptPath = path.join(appRoot, "scripts", "portable-installer-bridge.ps1");
+  const portableZipPath = path.join(outputDir, target.stablePortableZipName);
+  const agentPortableZipPath = path.join(outputDir, target.stableAgentZipName);
+  ensureExists(bridgeScriptPath, "legacy portable installer bridge");
+  ensureExists(portableZipPath, `${target.key} combined portable ZIP`);
+  ensureExists(agentPortableZipPath, `${target.key} Agent portable ZIP`);
   const script = `!include LogicLib.nsh
 !include x64.nsh
 Unicode true
@@ -211,7 +239,30 @@ ${x64OnlyNsisGuard(target)}  InitPluginsDir
   SetOutPath "$PLUGINSDIR"
   File /oname=${target.stableInstallerName} "${escapeNsisString(viewerInstallerPath)}"
   File /oname=${target.stableAgentInstallerName} "${escapeNsisString(agentInstallerPath)}"
+  File /oname=portable-installer-bridge.ps1 "${escapeNsisString(bridgeScriptPath)}"
+  File /oname=${target.stablePortableZipName} "${escapeNsisString(portableZipPath)}"
+  File /oname=${target.stableAgentZipName} "${escapeNsisString(agentPortableZipPath)}"
 
+  ReadEnvStr $R0 "WONREMOTE_APP_DIR"
+  \${If} $R0 != ""
+    ReadEnvStr $R1 "WONREMOTE_RESTART_MODE"
+    \${If} $R1 != "viewer"
+    \${AndIf} $R1 != "agent"
+      StrCpy $R1 "auto"
+    \${EndIf}
+    DetailPrint "Checking for a legacy WonRemote portable package..."
+    ExecWait '\"$SYSDIR\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File \"$PLUGINSDIR\\portable-installer-bridge.ps1\" -PortableRoot \"$R0\" -CombinedArchivePath \"$PLUGINSDIR\\${target.stablePortableZipName}\" -AgentArchivePath \"$PLUGINSDIR\\${target.stableAgentZipName}\" -ExpectedVersion \"${packageJson.version}\" -RestartMode \"$R1\"' $R4
+    \${If} $R4 == 0
+      Goto install_done
+    \${ElseIf} $R4 == 20
+      Goto install_done
+    \${ElseIf} $R4 != 10
+      SetErrorLevel $R4
+      Abort "WonRemote portable update failed and was rolled back."
+    \${EndIf}
+  \${EndIf}
+
+normal_install:
   DetailPrint "Installing WonRemote Viewer..."
   ExecWait '"$PLUGINSDIR\\${target.stableInstallerName}" /S' $0
   \${If} $0 != 0
@@ -225,6 +276,8 @@ ${x64OnlyNsisGuard(target)}  InitPluginsDir
     SetErrorLevel $1
     Abort "WonRemote Agent installer failed."
   \${EndIf}
+
+install_done:
 SectionEnd
 `;
 
@@ -288,17 +341,30 @@ function packageTarget(target) {
   ensureExists(expectedAgentInstallerPath, `${target.key} Agent-default WonRemote NSIS installer`);
   copyInstaller(expectedAgentInstallerPath, expectedAgentInstaller);
   copyInstaller(expectedAgentInstallerPath, target.stableAgentInstallerName);
-  createCombinedInstaller(expectedInstallerPath, expectedAgentInstallerPath, target);
 
+  const installedPayloadMarker = path.join(targetRelease, portableMarkerName);
+  if (fs.existsSync(installedPayloadMarker)) {
+    throw new Error(`Portable marker must not be present in installed ${target.key} resources: ${installedPayloadMarker}`);
+  }
   createPortableZip(target);
   createAgentPortableZip(target);
+  createCombinedInstaller(expectedInstallerPath, expectedAgentInstallerPath, target);
+  if (fs.existsSync(path.join(target.stageDir, portableMarkerName))) {
+    throw new Error(`Portable marker cleanup failed for ${target.key}.`);
+  }
 }
 
-fs.rmSync(outputDir, { recursive: true, force: true });
-fs.mkdirSync(outputDir, { recursive: true });
+function main() {
+  fs.rmSync(outputDir, { recursive: true, force: true });
+  fs.mkdirSync(outputDir, { recursive: true });
 
-for (const target of TARGET_ARCHITECTURES) {
-  packageTarget(target);
+  for (const target of TARGET_ARCHITECTURES) {
+    packageTarget(target);
+  }
+
+  console.log(`Portable EXE packages created at ${outputDir}`);
 }
 
-console.log(`Portable EXE packages created at ${outputDir}`);
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main();
+}

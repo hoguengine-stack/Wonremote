@@ -71,18 +71,16 @@ describe("desktop packaging scaffold", () => {
     const viewerHook = readFileSync(path.join(projectRoot, "src-tauri", "windows", "viewer-install-hooks.nsh"), "utf8");
     const agentHook = readFileSync(path.join(projectRoot, "src-tauri", "windows", "agent-install-hooks.nsh"), "utf8");
 
-    for (const hook of [viewerHook, agentHook]) {
+    for (const [hook, ownRoot] of [[viewerHook, "WonRemote\\Viewer"], [agentHook, "WonRemote\\Agent"]]) {
       expect(hook).toContain("WONREMOTE_STOP_RUNNING_PROCESSES");
-      expect(hook).toContain("Get-Process");
+      expect(hook).toContain("Get-CimInstance Win32_Process");
       expect(hook).toContain("Stop-Process -Id");
-      expect(hook).toContain("wonremote-viewer");
-      expect(hook).toContain("WonRemote Agent");
-      expect(hook).toContain("wonremote-poc");
-      expect(hook).toContain("node");
-      expect(hook).toContain("*\\WonRemote\\*");
-      expect(hook).toContain("*WonRemote Agent*");
-      expect(hook).not.toContain("Get-CimInstance");
-      expect(hook).not.toContain("taskkill /F /IM node.exe");
+      expect(hook).toContain(`Join-Path $$env:LOCALAPPDATA ''${ownRoot}''`);
+      expect(hook).toContain("Test-TargetArchitecture");
+      expect(hook).toContain("$$remainingIds.Count -gt 0");
+      expect(hook).toContain("SetErrorLevel $1");
+      expect(hook).not.toContain("Get-Process");
+      expect(hook).not.toContain("taskkill");
     }
   });
 

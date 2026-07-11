@@ -10,6 +10,13 @@ import {
   type InstallerRestartMode,
 } from "./productionInstallerUpdate";
 import { loadProductionInstallerUpdateMetadata } from "./productionUpdateMetadata";
+import {
+  downloadPortableUpdate,
+  isPortableUpdateMetadata,
+  preparePortableHandoff,
+  type PortableDownloadResult,
+  type PortableHandoffResult,
+} from "./portableUpdate";
 
 export const UPDATE_ONCE_EXIT = {
   success: 0,
@@ -20,6 +27,7 @@ export const UPDATE_ONCE_EXIT = {
 
 export interface UpdateOnceOptions {
   baseDir: string;
+  portableRoot?: string;
   restartMode: InstallerRestartMode;
 }
 
@@ -31,20 +39,27 @@ export interface UpdateOnceResult {
 interface UpdateOnceDeps {
   currentVersion: string;
   downloadInstaller: typeof downloadInstallerUpdate;
-  launchHandoff: (handoff: InstallerHandoffResult) => void;
+  downloadPortable: typeof downloadPortableUpdate;
+  launchHandoff: (handoff: InstallerHandoffResult | PortableHandoffResult) => void;
   loadMetadata: typeof loadProductionInstallerUpdateMetadata;
   prepareHandoff: (
     download: InstallerDownloadResult,
     options: { baseDir: string; restartMode: InstallerRestartMode },
   ) => Promise<InstallerHandoffResult>;
+  preparePortableHandoff: (
+    download: PortableDownloadResult,
+    options: { baseDir: string; portableRoot: string; restartMode: InstallerRestartMode },
+  ) => Promise<PortableHandoffResult>;
 }
 
 const defaultDeps: UpdateOnceDeps = {
   currentVersion: WONREMOTE_APP_VERSION,
   downloadInstaller: downloadInstallerUpdate,
+  downloadPortable: downloadPortableUpdate,
   launchHandoff: launchInstallerHandoff,
   loadMetadata: loadProductionInstallerUpdateMetadata,
   prepareHandoff: prepareInstallerHandoff,
+  preparePortableHandoff,
 };
 
 export class UpdateOnceError extends Error {
@@ -58,7 +73,7 @@ export class UpdateOnceError extends Error {
 
 export function parseUpdateOnceOptions(
   argv: string[],
-  env: Partial<Record<"APPDATA", string>> = process.env,
+  env: Partial<Record<"APPDATA" | "WONREMOTE_APP_DIR" | "WONREMOTE_PACKAGE_KIND", string>> = process.env,
 ): UpdateOnceOptions {
   let restartMode: InstallerRestartMode | undefined;
   for (let index = 0; index < argv.length; index += 1) {
@@ -83,8 +98,19 @@ export function parseUpdateOnceOptions(
       UPDATE_ONCE_EXIT.invalidArguments,
     );
   }
+  const packageKind = env.WONREMOTE_PACKAGE_KIND?.trim().toLowerCase();
+  const portableRoot = packageKind === "portable" || packageKind === "portable-agent"
+    ? env.WONREMOTE_APP_DIR?.trim()
+    : undefined;
+  if ((packageKind === "portable" || packageKind === "portable-agent") && !portableRoot) {
+    throw new UpdateOnceError(
+      "WONREMOTE_APP_DIR is required for portable updates.",
+      UPDATE_ONCE_EXIT.invalidArguments,
+    );
+  }
   return {
     baseDir: path.resolve(env.APPDATA?.trim() || process.cwd()),
+    ...(portableRoot ? { portableRoot: path.resolve(portableRoot) } : {}),
     restartMode,
   };
 }
@@ -108,11 +134,9 @@ export async function runUpdateOnce(
   }
 
   try {
-    const download = await deps.downloadInstaller(metadata, { baseDir: options.baseDir });
-    const handoff = await deps.prepareHandoff(download, {
-      baseDir: options.baseDir,
-      restartMode: options.restartMode,
-    });
+    const handoff = isPortableUpdateMetadata(metadata)
+      ? await prepareVerifiedPortableUpdate(metadata, options, deps)
+      : await prepareVerifiedInstallerUpdate(metadata, options, deps);
     deps.launchHandoff(handoff);
     return {
       latestVersion: metadata.latestVersion,
@@ -120,10 +144,38 @@ export async function runUpdateOnce(
     };
   } catch (error) {
     throw new UpdateOnceError(
-      `Verified installer update failed: ${error instanceof Error ? error.message : String(error)}`,
+      `Verified update failed: ${error instanceof Error ? error.message : String(error)}`,
       UPDATE_ONCE_EXIT.updateFailed,
     );
   }
+}
+
+async function prepareVerifiedInstallerUpdate(
+  metadata: Awaited<ReturnType<typeof loadProductionInstallerUpdateMetadata>> & {},
+  options: UpdateOnceOptions,
+  deps: UpdateOnceDeps,
+): Promise<InstallerHandoffResult> {
+  const download = await deps.downloadInstaller(metadata, { baseDir: options.baseDir });
+  return deps.prepareHandoff(download, {
+    baseDir: options.baseDir,
+    restartMode: options.restartMode,
+  });
+}
+
+async function prepareVerifiedPortableUpdate(
+  metadata: Parameters<typeof downloadPortableUpdate>[0],
+  options: UpdateOnceOptions,
+  deps: UpdateOnceDeps,
+): Promise<PortableHandoffResult> {
+  if (!options.portableRoot) {
+    throw new Error("Portable update target root is unavailable.");
+  }
+  const download = await deps.downloadPortable(metadata, { baseDir: options.baseDir });
+  return deps.preparePortableHandoff(download, {
+    baseDir: options.baseDir,
+    portableRoot: options.portableRoot,
+    restartMode: options.restartMode,
+  });
 }
 
 export async function handleUpdateOnceCli(
@@ -161,7 +213,7 @@ function parseRestartMode(value: string | undefined): InstallerRestartMode {
   );
 }
 
-function launchInstallerHandoff(handoff: InstallerHandoffResult): void {
+function launchInstallerHandoff(handoff: InstallerHandoffResult | PortableHandoffResult): void {
   const child = spawn(handoff.command, handoff.args, {
     detached: true,
     stdio: "ignore",

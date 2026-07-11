@@ -25,12 +25,24 @@ function updateDeps(overrides: Record<string, unknown> = {}) {
       installerArgs: ["/S"],
       installerPath: "C:\\Temp\\WonRemote-Viewer-Agent-Setup.exe",
     })),
+    downloadPortable: vi.fn(async () => ({
+      archivePath: "C:\\Temp\\WonRemote-Viewer-Agent-Portable.zip",
+      latestVersion: "9.9.9",
+      packageKind: "portable" as const,
+    })),
     prepareHandoff: vi.fn(async () => ({
       args: ["-File", "handoff.ps1"],
       command: "powershell.exe",
       creationFlags: 1,
       logPath: "handoff.log",
       scriptPath: "handoff.ps1",
+    })),
+    preparePortableHandoff: vi.fn(async () => ({
+      args: ["-File", "portable-handoff.ps1"],
+      command: "powershell.exe",
+      creationFlags: 1,
+      logPath: "portable-handoff.log",
+      scriptPath: "portable-handoff.ps1",
     })),
     launchHandoff: vi.fn(),
     ...overrides,
@@ -43,12 +55,45 @@ describe("non-interactive bundled updater", () => {
       baseDir: "C:\\Data",
       restartMode: "viewer",
     });
+    expect(parseUpdateOnceOptions(["--update-once", "--restart-mode", "agent"], {
+      APPDATA: "C:\\Data",
+      WONREMOTE_APP_DIR: "C:\\Portable",
+      WONREMOTE_PACKAGE_KIND: "portable-agent",
+    })).toEqual({
+      baseDir: "C:\\Data",
+      portableRoot: "C:\\Portable",
+      restartMode: "agent",
+    });
     expect(() => parseUpdateOnceOptions(["--update-once"], {})).toThrow(UpdateOnceError);
     try {
       parseUpdateOnceOptions(["--update-once", "--restart-mode", "bad"], {});
     } catch (error) {
       expect((error as UpdateOnceError).exitCode).toBe(UPDATE_ONCE_EXIT.invalidArguments);
     }
+  });
+
+  it("keeps a portable Agent on the signed Agent-only ZIP update path", async () => {
+    const portableMetadata = {
+      ...metadata,
+      assetName: "WonRemote-Agent-Portable.zip",
+      downloadUrl: "https://example.com/WonRemote-Agent-Portable.zip",
+      updateKind: "portable-agent" as const,
+    };
+    const deps = updateDeps({ loadMetadata: vi.fn(async () => portableMetadata) });
+
+    await expect(runUpdateOnce({
+      baseDir: "C:\\Data",
+      portableRoot: "C:\\Portable",
+      restartMode: "agent",
+    }, deps as any)).resolves.toMatchObject({ status: "handoff-started" });
+
+    expect(deps.downloadPortable).toHaveBeenCalledWith(portableMetadata, { baseDir: "C:\\Data" });
+    expect(deps.downloadInstaller).not.toHaveBeenCalled();
+    expect(deps.preparePortableHandoff).toHaveBeenCalledWith(expect.anything(), {
+      baseDir: "C:\\Data",
+      portableRoot: "C:\\Portable",
+      restartMode: "agent",
+    });
   });
 
   it("verifies, downloads, and hands off an update without Agent configuration", async () => {

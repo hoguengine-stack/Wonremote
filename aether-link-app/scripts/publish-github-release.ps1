@@ -82,8 +82,16 @@ foreach ($RequiredPath in @($InstallerPath, $AgentInstallerPath, $InstallerPathX
   --version $Version `
   --installer-x64 $StableFullInstallerPath `
   --installer-x86 $StableFullInstallerPathX86 `
+  --portable-x64 $PortableZipPath `
+  --portable-x86 $PortableZipPathX86 `
+  --portable-agent-x64 $AgentZipPath `
+  --portable-agent-x86 $AgentZipPathX86 `
   --asset-name-x64 $StableFullInstallerAssetName `
-  --asset-name-x86 $StableFullInstallerAssetNameX86
+  --asset-name-x86 $StableFullInstallerAssetNameX86 `
+  --portable-asset-name-x64 $PortableZipName `
+  --portable-asset-name-x86 $PortableZipNameX86 `
+  --portable-agent-asset-name-x64 $AgentZipName `
+  --portable-agent-asset-name-x86 $AgentZipNameX86
 if ($LASTEXITCODE -ne 0) {
   throw "Release manifest preflight failed with exit code $LASTEXITCODE."
 }

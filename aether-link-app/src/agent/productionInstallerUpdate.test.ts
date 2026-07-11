@@ -36,7 +36,10 @@ describe("production installer update", () => {
         },
       );
 
-      expect(result.installerPath).toBe(path.join(baseDir, "WonRemote", "updates", "WonRemote Viewer_0.1.9_x64-setup.exe"));
+      expect(path.dirname(result.installerPath)).toBe(path.join(baseDir, "WonRemote", "updates"));
+      expect(path.basename(result.installerPath)).toMatch(
+        /^WonRemote Viewer_0\.1\.9_x64-setup-[0-9a-f]{8}-[0-9a-f-]{27}\.exe$/,
+      );
       expect(await readFile(result.installerPath)).toEqual(body);
       expect(result.installerArgs).toEqual(["/S"]);
     } finally {
@@ -95,7 +98,8 @@ describe("production installer update", () => {
       expect(result.command).toBe("powershell.exe");
       expect(result.args).toEqual(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", result.scriptPath]);
       expect(result.creationFlags).toBe(INSTALLER_HANDOFF_CREATION_FLAGS);
-      expect(result.logPath).toBe(path.join(baseDir, "WonRemote", "updates", "installer-handoff.log"));
+      expect(path.dirname(result.logPath)).toBe(path.join(baseDir, "WonRemote", "updates"));
+      expect(path.basename(result.logPath)).toMatch(/^installer-handoff-[0-9a-f-]{36}\.log$/);
       expect(script).toContain("Start-Process -FilePath");
       expect(script).toContain("WaitForExit()");
       expect(script).toContain("Installer exit code");
@@ -105,17 +109,32 @@ describe("production installer update", () => {
       expect(script).toContain("Get-CimInstance Win32_Process");
       expect(script).toContain("Test-UnderPath $_.ExecutablePath $roots");
       expect(script).toContain("Normalize-PathForCompare");
+      expect(script).toContain("Convert-ExtendedPath");
+      expect(script).toContain("$extendedUncPrefix");
       expect(script).toContain("$candidatePath.Equals($rootPath, [System.StringComparison]::OrdinalIgnoreCase)");
       expect(script).toContain("$rootPrefix = \"$rootPath$([System.IO.Path]::DirectorySeparatorChar)\"");
       expect(script).toContain("Stop-Process -Id $target.ProcessId -Force");
       expect(script).not.toContain("Get-Process node");
       expect(script).not.toContain("taskkill");
+      expect(script).toContain("Another WonRemote update is already in progress");
+      expect(script).toContain("[System.IO.FileShare]::None");
+      expect(script).toContain("$env:WONREMOTE_RESTART_MODE = $RestartMode");
       expect(script).toContain("Start-WonRemoteAgent");
       expect(script).toContain("Join-Path $root \"wonremote-viewer.exe\"");
       expect(script).toContain("Test-WonRemoteAgentRunning");
       expect(script).toContain("WonRemote Agent is already running after installer exit; skipping fallback start.");
+      expect(script).toContain("Wait-WonRemoteAgentRuntime");
+      expect(script).toContain("agent/index.mjs --watch runtime did not stay alive");
+      expect(script).toContain("(?i)[\\\\/]agent[\\\\/]index\\.mjs");
+      expect(script).toContain("(?i)(^|\\s)--watch(\\s|$)");
       expect(script).toContain("Start-Process -FilePath $candidate -ArgumentList @('--agent') -WindowStyle Hidden");
-      expect(script).toContain("if ($process.ExitCode -eq 0) {\n    Start-WonRemoteAgent\n  }");
+      expect(script).toContain("if ($process.ExitCode -eq 0) {\n    Start-WonRemoteAgent\n    Wait-WonRemoteAgentRuntime\n  }");
+      const second = await prepareInstallerHandoff(
+        { installerArgs: ["/S"], installerPath },
+        { baseDir },
+      );
+      expect(second.scriptPath).not.toBe(result.scriptPath);
+      expect(second.logPath).not.toBe(result.logPath);
     } finally {
       await rm(baseDir, { recursive: true, force: true });
     }
@@ -136,7 +155,7 @@ describe("production installer update", () => {
 
       expect(script).toContain("function Start-WonRemoteViewer");
       expect(script).toContain('Start-Process -FilePath $candidate\n');
-      expect(script).toContain("if ($process.ExitCode -eq 0) {\n    Start-WonRemoteViewer\n  }");
+      expect(script).toContain("if ($process.ExitCode -eq 0) {\n    Start-WonRemoteViewer\n    Wait-WonRemoteAgentRuntime\n  }");
     } finally {
       await rm(baseDir, { recursive: true, force: true });
     }

@@ -30,15 +30,15 @@ function requiredArg(args, name) {
   return value;
 }
 
-function readAsset(manifest, arch) {
-  const asset = manifest?.windows?.[arch];
+function readAsset(manifest, section, arch) {
+  const asset = manifest?.[section]?.[arch];
   if (!asset || typeof asset !== "object") {
-    throw new Error(`Release manifest is missing windows.${arch}.`);
+    throw new Error(`Release manifest is missing ${section}.${arch}.`);
   }
   return asset;
 }
 
-function urlAssetName(value, arch) {
+function urlAssetName(value, fieldName) {
   try {
     const url = new URL(value);
     if (url.protocol !== "https:") {
@@ -46,7 +46,7 @@ function urlAssetName(value, arch) {
     }
     return decodeURIComponent(path.basename(url.pathname));
   } catch {
-    throw new Error(`Release manifest windows.${arch}.url must be a valid HTTPS asset URL.`);
+    throw new Error(`Release manifest ${fieldName}.url must be a valid HTTPS asset URL.`);
   }
 }
 
@@ -62,24 +62,28 @@ async function sha256File(filePath) {
 }
 
 async function verifyAsset(manifest, input) {
-  if (!fs.existsSync(input.installerPath)) {
-    throw new Error(`${input.arch} installer is missing: ${input.installerPath}`);
+  const fieldName = `${input.section}.${input.arch}`;
+  if (!fs.existsSync(input.filePath)) {
+    throw new Error(`${fieldName} release asset is missing: ${input.filePath}`);
   }
-  const asset = readAsset(manifest, input.arch);
+  const asset = readAsset(manifest, input.section, input.arch);
   if (asset.name !== input.expectedName) {
-    throw new Error(`windows.${input.arch}.name is ${String(asset.name)}; expected ${input.expectedName}.`);
+    throw new Error(`${fieldName}.name is ${String(asset.name)}; expected ${input.expectedName}.`);
   }
-  if (urlAssetName(asset.url, input.arch) !== input.expectedName) {
-    throw new Error(`windows.${input.arch}.url does not target ${input.expectedName}.`);
+  if (urlAssetName(asset.url, fieldName) !== input.expectedName) {
+    throw new Error(`${fieldName}.url does not target ${input.expectedName}.`);
   }
   if (typeof asset.signature !== "string" || !/^[A-Za-z0-9+/]+={0,2}$/.test(asset.signature)) {
-    throw new Error(`windows.${input.arch}.signature is missing or invalid.`);
+    throw new Error(`${fieldName}.signature is missing or invalid.`);
+  }
+  if (typeof asset.signatureV2 !== "string" || !/^[A-Za-z0-9+/]+={0,2}$/.test(asset.signatureV2)) {
+    throw new Error(`${fieldName}.signatureV2 is missing or invalid.`);
   }
   const expectedChecksum = typeof asset.sha256 === "string" ? asset.sha256.toLowerCase() : "";
-  const actualChecksum = await sha256File(input.installerPath);
+  const actualChecksum = await sha256File(input.filePath);
   if (expectedChecksum !== actualChecksum) {
     throw new Error(
-      `windows.${input.arch}.sha256 does not match ${input.installerPath}: expected ${expectedChecksum}, actual ${actualChecksum}.`,
+      `${fieldName}.sha256 does not match ${input.filePath}: expected ${expectedChecksum}, actual ${actualChecksum}.`,
     );
   }
   const signaturePayload = [
@@ -96,7 +100,26 @@ async function verifyAsset(manifest, input) {
     Buffer.from(asset.signature, "base64"),
   );
   if (!signatureValid) {
-    throw new Error(`windows.${input.arch}.signature does not match the trusted update public key.`);
+    throw new Error(`${fieldName}.signature does not match the trusted update public key.`);
+  }
+  const signaturePayloadV2 = [
+    "signatureVersion=2",
+    `version=${manifest.version}`,
+    `url=${asset.url}`,
+    `sha256=${expectedChecksum}`,
+    `assetName=${asset.name}`,
+    `forceUpdate=${manifest.forceUpdate === true ? "true" : "false"}`,
+    `updateKind=${input.section === "windows" ? "installer" : input.section === "portable" ? "portable" : "portable-agent"}`,
+    `arch=${input.arch}`,
+  ].join("\n");
+  const signatureV2Valid = verify(
+    null,
+    Buffer.from(signaturePayloadV2, "utf8"),
+    publicKey,
+    Buffer.from(asset.signatureV2, "base64"),
+  );
+  if (!signatureV2Valid) {
+    throw new Error(`${fieldName}.signatureV2 does not match signed update policy metadata.`);
   }
 }
 
@@ -110,13 +133,39 @@ if (manifest.version !== version) {
 
 await verifyAsset(manifest, {
   arch: "x64",
-  installerPath: path.resolve(requiredArg(args, "--installer-x64")),
+  section: "windows",
+  filePath: path.resolve(requiredArg(args, "--installer-x64")),
   expectedName: args.get("--asset-name-x64") || "WonRemote-Viewer-Agent-Setup.exe",
 });
 await verifyAsset(manifest, {
   arch: "x86",
-  installerPath: path.resolve(requiredArg(args, "--installer-x86")),
+  section: "windows",
+  filePath: path.resolve(requiredArg(args, "--installer-x86")),
   expectedName: args.get("--asset-name-x86") || "WonRemote-Viewer-Agent-Setup-x86.exe",
 });
+await verifyAsset(manifest, {
+  arch: "x64",
+  section: "portable",
+  filePath: path.resolve(requiredArg(args, "--portable-x64")),
+  expectedName: args.get("--portable-asset-name-x64") || "WonRemote-Viewer-Agent-Portable.zip",
+});
+await verifyAsset(manifest, {
+  arch: "x86",
+  section: "portable",
+  filePath: path.resolve(requiredArg(args, "--portable-x86")),
+  expectedName: args.get("--portable-asset-name-x86") || "WonRemote-Viewer-Agent-Portable-x86.zip",
+});
+await verifyAsset(manifest, {
+  arch: "x64",
+  section: "portableAgent",
+  filePath: path.resolve(requiredArg(args, "--portable-agent-x64")),
+  expectedName: args.get("--portable-agent-asset-name-x64") || "WonRemote-Agent-Portable.zip",
+});
+await verifyAsset(manifest, {
+  arch: "x86",
+  section: "portableAgent",
+  filePath: path.resolve(requiredArg(args, "--portable-agent-x86")),
+  expectedName: args.get("--portable-agent-asset-name-x86") || "WonRemote-Agent-Portable-x86.zip",
+});
 
-console.log(`Verified release manifest ${manifestPath} for ${version} (x64 and x86).`);
+console.log(`Verified release manifest ${manifestPath} for ${version} (installers and portable products, x64 and x86).`);

@@ -1,7 +1,13 @@
 import { generateKeyPairSync, sign } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { buildProductionUpdateSignaturePayload } from "../domain/updateManifest";
-import { loadProductionInstallerUpdateMetadata } from "./productionUpdateMetadata";
+import {
+  buildProductionUpdateSignaturePayload,
+  buildProductionUpdateSignaturePayloadV2,
+} from "../domain/updateManifest";
+import {
+  loadProductionInstallerUpdateMetadata,
+  resolveRuntimeUpdateKind,
+} from "./productionUpdateMetadata";
 
 describe("production update metadata loader", () => {
   it("loads and verifies the signed GitHub release manifest without the local API server", async () => {
@@ -24,6 +30,15 @@ describe("production update metadata loader", () => {
       latestVersion: manifest.version,
     });
     const signature = sign(null, Buffer.from(signaturePayload, "utf8"), privateKey).toString("base64");
+    const signatureV2 = sign(null, Buffer.from(buildProductionUpdateSignaturePayloadV2({
+      arch: "x64",
+      assetName: manifest.windows.x64.name,
+      checksum: manifest.windows.x64.sha256,
+      downloadUrl: manifest.windows.x64.url,
+      forceUpdate: false,
+      latestVersion: manifest.version,
+      updateKind: "installer",
+    }), "utf8"), privateKey).toString("base64");
     const requestedUrls: string[] = [];
 
     const metadata = await loadProductionInstallerUpdateMetadata(
@@ -40,6 +55,7 @@ describe("production update metadata loader", () => {
               x64: {
                 ...manifest.windows.x64,
                 signature,
+                signatureV2,
               },
             },
           }),
@@ -81,6 +97,15 @@ describe("production update metadata loader", () => {
       latestVersion: manifest.version,
     });
     const signature = sign(null, Buffer.from(signaturePayload, "utf8"), privateKey).toString("base64");
+    const signatureV2 = sign(null, Buffer.from(buildProductionUpdateSignaturePayloadV2({
+      arch: "x86",
+      assetName: manifest.windows.x86.name,
+      checksum: manifest.windows.x86.sha256,
+      downloadUrl: manifest.windows.x86.url,
+      forceUpdate: false,
+      latestVersion: manifest.version,
+      updateKind: "installer",
+    }), "utf8"), privateKey).toString("base64");
 
     const metadata = await loadProductionInstallerUpdateMetadata(
       {
@@ -97,6 +122,7 @@ describe("production update metadata loader", () => {
               x86: {
                 ...manifest.windows.x86,
                 signature,
+                signatureV2,
               },
             },
           }),
@@ -110,5 +136,61 @@ describe("production update metadata loader", () => {
       latestVersion: "0.1.26",
       updateKind: "installer",
     });
+  });
+
+  it("selects the signed portable product declared by the packaged runtime", async () => {
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    const asset = {
+      name: "WonRemote-Agent-Portable-x86.zip",
+      url: "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Agent-Portable-x86.zip",
+      sha256: "c".repeat(64),
+    };
+    const signature = sign(
+      null,
+      Buffer.from(buildProductionUpdateSignaturePayload({
+        assetName: asset.name,
+        checksum: asset.sha256,
+        downloadUrl: asset.url,
+        latestVersion: "0.1.40",
+      }), "utf8"),
+      privateKey,
+    ).toString("base64");
+    const signatureV2 = sign(
+      null,
+      Buffer.from(buildProductionUpdateSignaturePayloadV2({
+        arch: "x86",
+        assetName: asset.name,
+        checksum: asset.sha256,
+        downloadUrl: asset.url,
+        forceUpdate: false,
+        latestVersion: "0.1.40",
+        updateKind: "portable-agent",
+      }), "utf8"),
+      privateKey,
+    ).toString("base64");
+
+    const metadata = await loadProductionInstallerUpdateMetadata(
+      {
+        WONREMOTE_BUILD_ARCH: "x86",
+        WONREMOTE_PACKAGE_KIND: "portable-agent",
+        WONREMOTE_UPDATE_MANIFEST_PUBLIC_KEY: publicKey.export({ format: "pem", type: "spki" }).toString(),
+      },
+      async () => new Response(JSON.stringify({
+        version: "0.1.40",
+        portableAgent: { x86: { ...asset, signature, signatureV2 } },
+      })),
+    );
+
+    expect(metadata).toMatchObject({
+      assetName: asset.name,
+      updateKind: "portable-agent",
+    });
+  });
+
+  it("defaults invalid or missing package kinds to installer updates", () => {
+    expect(resolveRuntimeUpdateKind({})).toBe("installer");
+    expect(resolveRuntimeUpdateKind({ WONREMOTE_PACKAGE_KIND: "portable" })).toBe("portable");
+    expect(resolveRuntimeUpdateKind({ WONREMOTE_PACKAGE_KIND: "portable-agent" })).toBe("portable-agent");
+    expect(resolveRuntimeUpdateKind({ WONREMOTE_PACKAGE_KIND: "unknown" })).toBe("installer");
   });
 });
