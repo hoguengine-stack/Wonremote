@@ -1,4 +1,6 @@
 import { saveTransferredFileChunk } from "./fileTransferReceiver";
+import { resolveClipboardImageRoot } from "./clipboardImage";
+import { rm } from "node:fs/promises";
 import type { FileTransferReceipt, TransferredFile } from "../domain/types";
 import type {
   WebRtcFileAckMessage,
@@ -13,6 +15,8 @@ export interface ProcessWebRtcFileChunkOptions {
   onReceiptError?: (error: unknown) => void;
   postReceipt?: (receipt: FileReceiptInput) => Promise<void>;
   saveChunk?: typeof saveTransferredFileChunk;
+  onClipboardImageComplete?: (input: { targetPath: string; mimeType: "image/png" }) => Promise<void> | void;
+  clipboardImageRoot?: string;
 }
 
 export async function processWebRtcFileChunk(
@@ -25,15 +29,34 @@ export async function processWebRtcFileChunk(
   }
 
   try {
-    const result = await (options.saveChunk ?? saveTransferredFileChunk)(
-      toTransferredFile(chunk),
-      options.env ?? process.env,
-    );
+    const isClipboardImage = chunk.purpose === "clipboard-image";
+    if (isClipboardImage && !options.onClipboardImageComplete) {
+      throw new Error("Clipboard image completion handler is unavailable.");
+    }
+    const saveChunk = options.saveChunk ?? saveTransferredFileChunk;
+    const saveChunkInput = isClipboardImage
+      ? { ...toTransferredFile(chunk), filename: `${chunk.transferId}.png` }
+      : toTransferredFile(chunk);
+    const saveEnv = isClipboardImage
+      ? {
+        ...(options.env ?? process.env),
+        WONREMOTE_AGENT_DOWNLOADS_DIR: options.clipboardImageRoot ?? resolveClipboardImageRoot(options.env ?? process.env),
+      }
+      : options.env ?? process.env;
+    const result = await saveChunk(saveChunkInput, saveEnv);
     if (!isCurrent()) {
       return null;
     }
 
     if (result.status === "complete") {
+      if (isClipboardImage) {
+        try {
+          await options.onClipboardImageComplete!({ targetPath: result.targetPath, mimeType: "image/png" });
+        } catch (error) {
+          await rm(result.targetPath, { force: true });
+          throw error;
+        }
+      }
       postReceiptWithoutBreakingChannel(options, {
         transferId: chunk.transferId,
         filename: chunk.filename,
@@ -89,6 +112,8 @@ function toTransferredFile(chunk: WebRtcFileChunkMessage): TransferredFile {
     isLast: chunk.isLast,
     chunkSha256: chunk.chunkSha256,
     fileSha256: chunk.fileSha256,
+    purpose: chunk.purpose,
+    mimeType: chunk.mimeType,
     delivery: "firestore-direct",
   };
 }

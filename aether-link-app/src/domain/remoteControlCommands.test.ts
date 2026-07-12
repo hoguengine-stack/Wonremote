@@ -69,6 +69,8 @@ describe("remote control command helpers", () => {
     expect(normalizeRemoteKey("Meta")).toBe("Win");
     expect(buildKeyboardCommand("keydown", "ArrowLeft")).toBe("key-down Left");
     expect(buildKeyboardCommand("keyup", "A")).toBe("key-up A");
+    expect(buildKeyboardCommand("keydown", "Process", "Lang1")).toBe("key-down Hangul");
+    expect(buildKeyboardCommand("keyup", "HangulMode", "Lang1")).toBe("key-up Hangul");
   });
 
   it("builds mouse commands without changing the existing absolute coordinate mechanism", () => {

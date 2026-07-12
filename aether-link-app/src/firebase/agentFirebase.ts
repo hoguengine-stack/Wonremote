@@ -68,7 +68,7 @@ type AgentFirebaseEnv = Record<string, string | undefined>;
 export interface AgentWebRtcTransport {
   close: () => Promise<void>;
   getBufferedAmount: () => number;
-  sendFrame: (frame: { tiles: any[]; width: number; height: number; sequence: number }) => "backpressure" | "sent" | "unavailable";
+  sendFrame: (frame: { tiles: any[]; width: number; height: number; sequence: number; keyframe: boolean }) => "backpressure" | "sent" | "unavailable";
 }
 
 export interface AgentWebRtcTransportHandlers {
@@ -300,7 +300,7 @@ export async function fetchActiveFirebaseSessionsForAgent(
 
 export async function postSessionTilesWithFirebase(
   sessionId: string,
-  input: { tiles: any[]; width: number; height: number },
+  input: { tiles: any[]; width: number; height: number; sequence?: number; keyframe?: boolean },
   env: AgentFirebaseEnv = process.env,
 ): Promise<void> {
   const serialized = JSON.stringify(input);
@@ -313,6 +313,8 @@ export async function postSessionTilesWithFirebase(
     tiles: input.tiles,
     width: input.width,
     height: input.height,
+    keyframe: input.keyframe === true,
+    ...(Number.isSafeInteger(input.sequence) ? { sequence: input.sequence } : {}),
     createdAt: serverTimestamp(),
   });
 }

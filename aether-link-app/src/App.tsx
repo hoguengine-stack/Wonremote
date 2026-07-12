@@ -142,6 +142,26 @@ function playBeepSound() {
   }
 }
 
+async function readClipboardPngBlob(): Promise<Blob | null> {
+  const clipboard = navigator.clipboard as Clipboard & {
+    read?: () => Promise<Array<{ types: readonly string[]; getType: (type: string) => Promise<Blob> }>>;
+  };
+  if (typeof clipboard.read !== "function") {
+    return null;
+  }
+  try {
+    const items = await clipboard.read();
+    for (const item of items) {
+      if (item.types.includes("image/png")) {
+        return item.getType("image/png");
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 export function App() {
   const [appMode, setAppMode] = useState<"viewer" | "agent" | null>(null);
 
@@ -1408,6 +1428,7 @@ function RemoteSessionPanel({
   const moveFrameRef = React.useRef<number | null>(null);
   const pendingMoveRef = React.useRef<{ dx: number; dy: number } | null>(null);
   const lastClipboardTextRef = React.useRef<string>("");
+  const lastClipboardImageHashRef = React.useRef<string>("");
   const pingStateRef = React.useRef<{ start: number } | null>(null);
   const activeTransferIdRef = React.useRef<string>("");
   const storageTransfersRef = React.useRef(
@@ -1416,6 +1437,10 @@ function RemoteSessionPanel({
   const tileSequenceRef = React.useRef<Map<string, number>>(new Map());
   const receivedFrameSequenceRef = React.useRef(0);
   const webRtcTransportRef = React.useRef<ViewerWebRtcTransport | null>(null);
+  const activeSessionIdRef = React.useRef(sessionId);
+  React.useEffect(() => {
+    activeSessionIdRef.current = sessionId;
+  }, [sessionId]);
   const onInputEvent = React.useCallback((action: string) => {
     const sentOverWebRtc = webRtcTransportRef.current?.sendControl(action) ?? false;
     return sendInputEvent(action, { localOnly: sentOverWebRtc });
@@ -1444,6 +1469,32 @@ function RemoteSessionPanel({
   const [chatInput, setChatInput] = useState("");
   const [isClipboardSyncOn, setIsClipboardSyncOn] = useState(false);
   const [isChatOpen, setIsChatOpen] = useState(false);
+
+  const sendClipboardImage = React.useCallback(async (image: Blob, knownSha256?: string) => {
+    if (!sessionId) {
+      throw new Error("원격 세션이 연결되지 않았습니다.");
+    }
+    const transport = webRtcTransportRef.current;
+    if (!transport) {
+      throw new Error("클립보드 이미지는 WebRTC 연결이 완료된 뒤 전송할 수 있습니다.");
+    }
+    const fileSha256 = knownSha256 ?? await sha256BlobHex(image);
+    if (!fileSha256) {
+      throw new Error("클립보드 이미지 체크섬을 계산할 수 없습니다.");
+    }
+    const sent = await transport.sendFile({
+      file: image,
+      filename: "wonremote-clipboard.png",
+      fileSha256,
+      transferId: `clipboard-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      purpose: "clipboard-image",
+      mimeType: "image/png",
+    });
+    if (!sent) {
+      throw new Error("WebRTC 파일 채널이 아직 준비되지 않았습니다.");
+    }
+    lastClipboardImageHashRef.current = fileSha256;
+  }, [sessionId]);
 
   const mapRemotePoint = (clientX: number, clientY: number, rect: DOMRect) =>
     mapCanvasPointToVirtualDesktopAbsolute(
@@ -1600,6 +1651,14 @@ function RemoteSessionPanel({
     let active = true;
     const syncClipboard = async () => {
       try {
+        const image = await readClipboardPngBlob();
+        if (image) {
+          const imageSha256 = await sha256BlobHex(image);
+          if (active && imageSha256 && imageSha256 !== lastClipboardImageHashRef.current) {
+            await sendClipboardImage(image, imageSha256);
+          }
+          return;
+        }
         const text = await navigator.clipboard.readText();
         if (!active || !text || text === lastClipboardTextRef.current) {
           return;
@@ -1617,7 +1676,7 @@ function RemoteSessionPanel({
       active = false;
       window.clearInterval(intervalId);
     };
-  }, [isClipboardSyncOn, sessionId, session]);
+  }, [isClipboardSyncOn, sessionId, session, sendClipboardImage]);
 
   // Stream Frame drawing
   useEffect(() => {
@@ -1636,7 +1695,85 @@ function RemoteSessionPanel({
     let webRtcReconnectTimer: number | null = null;
     let webRtcReconnectAttempt = 0;
     let webRtcStartInFlight = false;
-    const drawTileFrame = (data: { tiles?: any[]; width?: number; height?: number; sequence?: number }) => {
+    type TileFrame = { tiles?: any[]; width?: number; height?: number; sequence?: number; keyframe?: boolean };
+    let keyframeRenderPending = false;
+    const queuedDuringKeyframe: TileFrame[] = [];
+
+    const resolveFrameSequence = (data: TileFrame) => Number.isFinite(data.sequence)
+      ? Number(data.sequence)
+      : ++receivedFrameSequenceRef.current;
+
+    const loadTileImage = (tile: any) => new Promise<HTMLImageElement | null>((resolve) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => resolve(null);
+      img.src = `data:image/jpeg;base64,${tile.data}`;
+    });
+
+    const drawTileCells = (
+      ctx: CanvasRenderingContext2D,
+      img: CanvasImageSource,
+      tile: any,
+      frameSequence: number,
+      enforceSequence: boolean,
+    ) => {
+      const tileX = Number(tile.x) * 32;
+      const tileY = Number(tile.y) * 32;
+      const tileWidth = Number(tile.w);
+      const tileHeight = Number(tile.h);
+      for (let offsetY = 0; offsetY < tileHeight; offsetY += 32) {
+        for (let offsetX = 0; offsetX < tileWidth; offsetX += 32) {
+          const cellWidth = Math.min(32, tileWidth - offsetX);
+          const cellHeight = Math.min(32, tileHeight - offsetY);
+          const cellKey = `${Math.floor((tileX + offsetX) / 32)}:${Math.floor((tileY + offsetY) / 32)}`;
+          const previousSequence = tileSequenceRef.current.get(cellKey) ?? -1;
+          if (enforceSequence && frameSequence < previousSequence) {
+            continue;
+          }
+          ctx.drawImage(
+            img,
+            offsetX,
+            offsetY,
+            cellWidth,
+            cellHeight,
+            tileX + offsetX,
+            tileY + offsetY,
+            cellWidth,
+            cellHeight,
+          );
+          if (enforceSequence) {
+            tileSequenceRef.current.set(cellKey, frameSequence);
+          }
+        }
+      }
+    };
+
+    const measurePresentedPing = (ctx: CanvasRenderingContext2D) => {
+      const activePingState = pingStateRef.current;
+      if (!activePingState) {
+        return;
+      }
+      scheduleVisualPingPresentedMeasurement({
+        requestAnimationFrame: (callback) => requestAnimationFrame(() => active && callback()),
+        startedAtMs: activePingState.start,
+        readPixel: () => {
+          const imgData = ctx.getImageData(5, 5, 1, 1).data;
+          return { r: imgData[0], g: imgData[1], b: imgData[2] };
+        },
+        nowMs: () => performance.now(),
+        onPresented: ({ latencyMs, sleepCommand }) => {
+          if (!active) return;
+          setLatencyReport(`E2E Latency: ${latencyMs.toFixed(1)}ms`);
+          setPingState(null);
+          if (sleepCommand === "set-sleep 100") {
+            console.log(`Latency ${latencyMs.toFixed(1)}ms > 150ms. Switching to low FPS (sleep 100ms)`);
+          }
+          onInputEvent(sleepCommand);
+        },
+      });
+    };
+
+    const renderDeltaFrame = (data: TileFrame) => {
       if (!active) return;
 
       const canvas = canvasRef.current;
@@ -1654,9 +1791,7 @@ function RemoteSessionPanel({
       }
 
       if (data.tiles && data.tiles.length > 0) {
-        const frameSequence = Number.isFinite(data.sequence)
-          ? Number(data.sequence)
-          : ++receivedFrameSequenceRef.current;
+        const frameSequence = resolveFrameSequence(data);
         const frameRenderedAt = new Date().toLocaleTimeString();
         setStreamFrameCount((value) => value + 1);
         setStreamLastFrameAt(frameRenderedAt);
@@ -1665,67 +1800,89 @@ function RemoteSessionPanel({
           const img = new Image();
           img.onload = () => {
             if (active) {
-              const tileX = Number(tile.x) * 32;
-              const tileY = Number(tile.y) * 32;
-              const tileWidth = Number(tile.w);
-              const tileHeight = Number(tile.h);
-              for (let offsetY = 0; offsetY < tileHeight; offsetY += 32) {
-                for (let offsetX = 0; offsetX < tileWidth; offsetX += 32) {
-                  const cellWidth = Math.min(32, tileWidth - offsetX);
-                  const cellHeight = Math.min(32, tileHeight - offsetY);
-                  const cellKey = `${Math.floor((tileX + offsetX) / 32)}:${Math.floor((tileY + offsetY) / 32)}`;
-                  const previousSequence = tileSequenceRef.current.get(cellKey) ?? -1;
-                  if (frameSequence < previousSequence) {
-                    continue;
-                  }
-                  ctx.drawImage(
-                    img,
-                    offsetX,
-                    offsetY,
-                    cellWidth,
-                    cellHeight,
-                    tileX + offsetX,
-                    tileY + offsetY,
-                    cellWidth,
-                    cellHeight,
-                  );
-                  tileSequenceRef.current.set(cellKey, frameSequence);
-                }
-              }
+              drawTileCells(ctx, img, tile, frameSequence, true);
             }
             loadedCount++;
-
-            const activePingState = pingStateRef.current;
-            if (loadedCount === data.tiles!.length && activePingState) {
-              scheduleVisualPingPresentedMeasurement({
-                requestAnimationFrame: (callback) =>
-                  requestAnimationFrame(() => {
-                    if (active) {
-                      callback();
-                    }
-                  }),
-                startedAtMs: activePingState.start,
-                readPixel: () => {
-                  const imgData = ctx.getImageData(5, 5, 1, 1).data;
-                  return { r: imgData[0], g: imgData[1], b: imgData[2] };
-                },
-                nowMs: () => performance.now(),
-                onPresented: ({ latencyMs, sleepCommand }) => {
-                  if (!active) return;
-                  setLatencyReport(`E2E Latency: ${latencyMs.toFixed(1)}ms`);
-                  setPingState(null);
-
-                  if (sleepCommand === "set-sleep 100") {
-                    console.log(`Latency ${latencyMs.toFixed(1)}ms > 150ms. Switching to low FPS (sleep 100ms)`);
-                  }
-                  onInputEvent(sleepCommand);
-                },
-              });
+            if (loadedCount === data.tiles!.length) {
+              measurePresentedPing(ctx);
             }
           };
           img.src = `data:image/jpeg;base64,${tile.data}`;
         }
       }
+    };
+
+    const renderKeyframeAtomically = async (data: TileFrame) => {
+      const canvas = canvasRef.current;
+      const width = Number(data.width ?? 0);
+      const height = Number(data.height ?? 0);
+      const tiles = data.tiles ?? [];
+      if (!active || !canvas || width <= 0 || height <= 0 || tiles.length === 0) {
+        return;
+      }
+      const frameSequence = resolveFrameSequence(data);
+      const staging = document.createElement("canvas");
+      staging.width = width;
+      staging.height = height;
+      const stagingContext = staging.getContext("2d");
+      if (!stagingContext) {
+        return;
+      }
+      stagingContext.fillStyle = "#1e1e2e";
+      stagingContext.fillRect(0, 0, width, height);
+      const decodedTiles = await Promise.all(tiles.map(async (tile) => ({ tile, img: await loadTileImage(tile) })));
+      if (!active) {
+        return;
+      }
+      for (const { tile, img } of decodedTiles) {
+        if (img) {
+          drawTileCells(stagingContext, img, tile, frameSequence, false);
+        }
+      }
+      await new Promise<void>((resolve) => requestAnimationFrame(() => {
+        if (active) {
+          canvas.width = width;
+          canvas.height = height;
+          const visibleContext = canvas.getContext("2d", { willReadFrequently: true });
+          visibleContext?.drawImage(staging, 0, 0);
+          tileSequenceRef.current.clear();
+          for (const { tile } of decodedTiles) {
+            const tileX = Number(tile.x) * 32;
+            const tileY = Number(tile.y) * 32;
+            for (let y = 0; y < Number(tile.h); y += 32) {
+              for (let x = 0; x < Number(tile.w); x += 32) {
+                tileSequenceRef.current.set(`${(tileX + x) / 32}:${(tileY + y) / 32}`, frameSequence);
+              }
+            }
+          }
+          setStreamFrameCount((value) => value + 1);
+          setStreamLastFrameAt(new Date().toLocaleTimeString());
+          if (visibleContext) {
+            measurePresentedPing(visibleContext);
+          }
+        }
+        resolve();
+      }));
+    };
+
+    const drawTileFrame = (data: TileFrame) => {
+      if (!active) return;
+      if (keyframeRenderPending) {
+        queuedDuringKeyframe.push(data);
+        return;
+      }
+      if (data.keyframe) {
+        keyframeRenderPending = true;
+        void renderKeyframeAtomically(data).finally(() => {
+          keyframeRenderPending = false;
+          const queued = queuedDuringKeyframe.splice(0);
+          for (const frame of queued) {
+            drawTileFrame(frame);
+          }
+        });
+        return;
+      }
+      renderDeltaFrame(data);
     };
 
     const firebaseEnabled = isViewerFirebaseEnabled();
@@ -1936,6 +2093,29 @@ function RemoteSessionPanel({
     if (event.ctrlKey && event.key.toLowerCase() === "v") {
       event.preventDefault();
       suppressedKeyUpsRef.current.add(event.key);
+      const image = await readClipboardPngBlob();
+      if (image) {
+        const targetSessionId = sessionId;
+        const targetTransport = webRtcTransportRef.current;
+        if (pressedKeysRef.current.delete("Ctrl")) {
+          onInputEvent("key-up Ctrl");
+        }
+        if (!targetSessionId || !targetTransport || activeSessionIdRef.current !== targetSessionId) {
+          return;
+        }
+        try {
+          await sendClipboardImage(image);
+          if (
+            activeSessionIdRef.current === targetSessionId &&
+            webRtcTransportRef.current === targetTransport
+          ) {
+            onInputEvent("paste");
+          }
+        } catch (error) {
+          console.error("클립보드 이미지 붙여넣기 실패:", error);
+        }
+        return;
+      }
       try {
         const text = await navigator.clipboard.readText();
         if (text) {
@@ -1957,7 +2137,7 @@ function RemoteSessionPanel({
     }
 
     event.preventDefault();
-    const command = buildKeyboardCommand("keydown", event.key);
+    const command = buildKeyboardCommand("keydown", event.key, event.code);
     pressedKeysRef.current.add(command.slice("key-down ".length));
     onInputEvent(command);
   };
@@ -1970,7 +2150,7 @@ function RemoteSessionPanel({
     if (suppressedKeyUpsRef.current.delete(event.key)) {
       return;
     }
-    const command = buildKeyboardCommand("keyup", event.key);
+    const command = buildKeyboardCommand("keyup", event.key, event.code);
     pressedKeysRef.current.delete(command.slice("key-up ".length));
     onInputEvent(command);
   };
@@ -2085,12 +2265,22 @@ function RemoteSessionPanel({
   // Clipboard
   const handleSendClipboard = async () => {
     try {
+      const image = await readClipboardPngBlob().catch(() => null);
+      if (image) {
+        await sendClipboardImage(image);
+        alert("클립보드 이미지를 원격 장비로 전송했습니다.");
+        return;
+      }
       const text = await navigator.clipboard.readText();
       if (text && sessionId) {
         await sendClipboardText(sessionId, text, "viewer");
         alert("클립보드 텍스트가 에이전트로 전송되었습니다.");
       }
     } catch (err) {
+      if (err instanceof Error) {
+        alert(err.message);
+        return;
+      }
       alert("클립보드 권한이 없거나 데이터가 비어있습니다.");
     }
   };

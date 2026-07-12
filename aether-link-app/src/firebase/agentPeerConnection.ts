@@ -226,13 +226,17 @@ export function isDataChannelBackpressured(
 }
 
 export function serializeFrameChunks(
-  frame: { tiles: unknown[]; width: number; height: number; sequence: number },
+  frame: { tiles: unknown[]; width: number; height: number; sequence: number; keyframe: boolean },
   maxMessageBytes: number,
 ): string[] {
-  const suffix = `],"width":${JSON.stringify(frame.width)},"height":${JSON.stringify(frame.height)},"sequence":${JSON.stringify(frame.sequence)}}`;
-  const prefix = '{"tiles":[';
-  const fixedBytes = Buffer.byteLength(prefix) + Buffer.byteLength(suffix);
-  const chunks: string[] = [];
+  const metadataReserveBytes = 192;
+  const fixedBytes = metadataReserveBytes + Buffer.byteLength(JSON.stringify({
+    width: frame.width,
+    height: frame.height,
+    sequence: frame.sequence,
+    keyframe: frame.keyframe,
+  }));
+  const chunkTiles: unknown[][] = [];
   let serializedTiles: string[] = [];
   let chunkBytes = fixedBytes;
 
@@ -247,7 +251,7 @@ export function serializeFrameChunks(
       throw new RangeError("A WebRTC frame tile exceeds the configured data-channel message limit.");
     }
     if (serializedTiles.length > 0 && chunkBytes + separatorBytes + tileBytes > maxMessageBytes) {
-      chunks.push(`${prefix}${serializedTiles.join(",")}${suffix}`);
+      chunkTiles.push(serializedTiles.map((value) => JSON.parse(value)));
       serializedTiles = [];
       chunkBytes = fixedBytes;
     }
@@ -256,14 +260,29 @@ export function serializeFrameChunks(
   }
 
   if (serializedTiles.length > 0 || frame.tiles.length === 0) {
-    chunks.push(`${prefix}${serializedTiles.join(",")}${suffix}`);
+    chunkTiles.push(serializedTiles.map((value) => JSON.parse(value)));
   }
-  return chunks;
+  const frameChunkCount = chunkTiles.length;
+  return chunkTiles.map((tiles, frameChunkIndex) => {
+    const payload = JSON.stringify({
+      tiles,
+      width: frame.width,
+      height: frame.height,
+      sequence: frame.sequence,
+      keyframe: frame.keyframe,
+      frameChunkIndex,
+      frameChunkCount,
+    });
+    if (Buffer.byteLength(payload) > maxMessageBytes) {
+      throw new RangeError("A WebRTC frame chunk exceeds the configured data-channel message limit.");
+    }
+    return payload;
+  });
 }
 
 export function sendFrameWithBackpressure(
   channel: AgentDataChannelLike | null,
-  frame: { tiles: unknown[]; width: number; height: number; sequence: number },
+  frame: { tiles: unknown[]; width: number; height: number; sequence: number; keyframe: boolean },
   options: { maxBufferedAmount: number; maxMessageBytes: number },
 ): AgentFrameSendResult {
   if (channel?.readyState !== "open" || !channel.send) {

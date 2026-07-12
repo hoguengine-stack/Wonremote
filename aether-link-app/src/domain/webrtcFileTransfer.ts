@@ -18,6 +18,8 @@ export type WebRtcFileChunkMessage = {
   fileData: string;
   chunkSha256: string;
   fileSha256?: string;
+  purpose?: "file" | "clipboard-image";
+  mimeType?: string;
 };
 
 export type WebRtcFileAckMessage = {
@@ -89,7 +91,10 @@ function validateFileChunk(message: WebRtcFileChunkMessage): void {
     typeof message.fileData !== "string" ||
     encodedBytes(message.fileData) > Math.ceil((WEBRTC_FILE_CHUNK_BYTES * 4) / 3) + 8 ||
     !isSha256(message.chunkSha256) ||
-    (message.fileSha256 !== undefined && !isSha256(message.fileSha256))
+    (message.fileSha256 !== undefined && !isSha256(message.fileSha256)) ||
+    (message.purpose !== undefined && message.purpose !== "file" && message.purpose !== "clipboard-image") ||
+    (message.mimeType !== undefined && !isSafeText(message.mimeType, 128)) ||
+    (message.purpose === "clipboard-image" && message.mimeType !== "image/png")
   ) {
     throw new Error("WebRTC file chunk is invalid.");
   }

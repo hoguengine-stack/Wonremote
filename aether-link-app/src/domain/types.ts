@@ -161,6 +161,8 @@ export interface TransferredFile {
   fileSha256?: string;
   delivery?: "firestore-direct" | "firebase-storage";
   storagePath?: string;
+  purpose?: "file" | "clipboard-image";
+  mimeType?: string;
 }
 
 export interface FileTransferReceipt {

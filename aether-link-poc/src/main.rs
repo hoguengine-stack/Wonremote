@@ -419,6 +419,17 @@ mod tests {
     }
 
     #[test]
+    fn resetting_tile_diff_forces_a_complete_keyframe() {
+        let frame = vec![0xFF; 64 * 32 * 2];
+        let mut tile_diff = TileDiff::new(64, 32, 32);
+
+        assert_eq!(tile_diff.get_dirty_tiles(&frame).0, vec![0, 1]);
+        assert!(tile_diff.get_dirty_tiles(&frame).0.is_empty());
+        tile_diff.prev_frame = None;
+        assert_eq!(tile_diff.get_dirty_tiles(&frame).0, vec![0, 1]);
+    }
+
+    #[test]
     fn keyboard_input_prefers_scancodes_for_system_key_combinations() {
         let input = keyboard_input(VIRTUAL_KEY(0x12), false);
         let key = unsafe { input.Anonymous.ki };
@@ -426,6 +437,17 @@ mod tests {
         assert_eq!(key.wVk.0, 0);
         assert_ne!(key.wScan, 0);
         assert_ne!(key.dwFlags.0 & KEYEVENTF_SCANCODE.0, 0);
+    }
+
+    #[test]
+    fn hangul_toggle_uses_the_virtual_key_instead_of_unicode_or_scancode_input() {
+        let input = keyboard_input(VIRTUAL_KEY(0x15), false);
+        let key = unsafe { input.Anonymous.ki };
+
+        assert_eq!(key.wVk.0, 0x15);
+        assert_eq!(key.wScan, 0);
+        assert_eq!(key.dwFlags.0 & KEYEVENTF_SCANCODE.0, 0);
+        assert_eq!(key.dwFlags.0 & KEYEVENTF_UNICODE.0, 0);
     }
 
     #[test]
@@ -621,6 +643,7 @@ mod tests {
         assert_eq!(virtual_key_from_token("Ctrl").unwrap().0, 0x11);
         assert_eq!(virtual_key_from_token("Esc").unwrap().0, 0x1B);
         assert_eq!(virtual_key_from_token("Win").unwrap().0, 0x5B);
+        assert_eq!(virtual_key_from_token("Hangul").unwrap().0, 0x15);
         assert_eq!(virtual_key_from_token("F12").unwrap().0, 0x7B);
         assert!(virtual_key_from_token("UnknownKeyName").is_err());
     }
@@ -1535,6 +1558,8 @@ fn virtual_key_from_token(token: &str) -> std::result::Result<VIRTUAL_KEY, Strin
         "enter" | "return" => 0x0D,
         "esc" | "escape" => 0x1B,
         "home" => 0x24,
+        "hangul" | "hangulmode" => 0x15,
+        "hanja" | "hanjamode" => 0x19,
         "insert" | "ins" => 0x2D,
         "left" => 0x25,
         "numlock" => 0x90,
@@ -1591,7 +1616,9 @@ fn system_command_args(command: &str) -> std::result::Result<Vec<&'static str>, 
 
 fn keyboard_input(vk: VIRTUAL_KEY, key_up: bool) -> INPUT {
     let scan = unsafe { MapVirtualKeyW(vk.0 as u32, MAPVK_VK_TO_VSC_EX) };
-    let use_scancode = scan != 0;
+    // Language toggle keys must preserve their VK identity. Converting VK_HANGUL/VK_HANJA
+    // to a scan code is unreliable across Korean keyboard layouts and IME versions.
+    let use_scancode = scan != 0 && !matches!(vk.0, 0x15 | 0x19);
     let mut flags = if key_up {
         KEYEVENTF_KEYUP
     } else {
@@ -1875,7 +1902,9 @@ async fn run_streaming_loop(config: BenchmarkConfig) {
 
     use tokio::io::{AsyncBufReadExt, BufReader};
     let inject_ping_marker = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let request_keyframe = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let inject_ping_marker_clone = inject_ping_marker.clone();
+    let request_keyframe_clone = request_keyframe.clone();
 
     tokio::spawn(async move {
         let stdin = tokio::io::stdin();
@@ -1883,6 +1912,8 @@ async fn run_streaming_loop(config: BenchmarkConfig) {
         while let Ok(Some(line)) = reader.next_line().await {
             if line.trim() == "ping-color-change" {
                 inject_ping_marker_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+            } else if line.trim() == "request-keyframe" {
+                request_keyframe_clone.store(true, std::sync::atomic::Ordering::SeqCst);
             }
         }
     });
@@ -1904,6 +1935,10 @@ async fn run_streaming_loop(config: BenchmarkConfig) {
                         }
                     }
                 }
+                if request_keyframe.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                    tile_diff.prev_frame = None;
+                }
+                let keyframe = tile_diff.prev_frame.is_none();
                 let (dirty_tiles, _) = tile_diff.get_dirty_tiles(&rgb565);
 
                 if !dirty_tiles.is_empty() {
@@ -2006,6 +2041,7 @@ async fn run_streaming_loop(config: BenchmarkConfig) {
                             "width": width,
                             "height": height,
                             "tiles": base64_tiles,
+                            "keyframe": keyframe,
                             "timestamp": now_unix_ms()
                         });
                         println!("{msg}");

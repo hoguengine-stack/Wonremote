@@ -131,6 +131,31 @@ describe("Viewer WebRTC transport", () => {
     await expect(filePromise).resolves.toBe(true);
     expect(onProgress).toHaveBeenCalledWith(3, 3);
 
+    const clipboardPromise = transport.sendFile({
+      file: new Blob([new Uint8Array([4, 5, 6])], { type: "image/png" }),
+      filename: "wonremote-clipboard.png",
+      fileSha256: "b".repeat(64),
+      transferId: "clipboard-1",
+      purpose: "clipboard-image",
+      mimeType: "image/png",
+    });
+    await vi.waitFor(() => expect(fileChannel!.send).toHaveBeenCalledTimes(2));
+    expect(parseWebRtcFileChunk(fileChannel!.send.mock.calls[1][0])).toMatchObject({
+      transferId: "clipboard-1",
+      purpose: "clipboard-image",
+      mimeType: "image/png",
+    });
+    fileChannel!.onmessage?.({
+      data: serializeWebRtcFileAck({
+        type: "file-ack",
+        transferId: "clipboard-1",
+        receivedBytes: 3,
+        receivedChunks: 1,
+        status: "complete",
+      }),
+    });
+    await expect(clipboardPromise).resolves.toBe(true);
+
     tileChannel!.readyState = "open";
     tileChannel!.onopen?.();
     tileChannel!.onclose?.();

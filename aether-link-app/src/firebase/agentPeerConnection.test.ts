@@ -133,7 +133,7 @@ describe("Agent data-channel backpressure", () => {
     expect(
       sendFrameWithBackpressure(
         selectedTile,
-        { tiles: [{ image: "tile" }], width: 10, height: 10, sequence: 1 },
+        { tiles: [{ image: "tile" }], width: 10, height: 10, sequence: 1, keyframe: false },
         { maxBufferedAmount: 64 * 1024, maxMessageBytes: 16 * 1024 },
       ),
     ).toBe("sent");
@@ -263,12 +263,19 @@ describe("Agent data-channel backpressure", () => {
 
   it("splits a large frame into bounded messages with one monotonic sequence", () => {
     const tiles = Array.from({ length: 8 }, (_, index) => ({ index, image: "a".repeat(9_000) }));
-    const payloads = serializeFrameChunks({ tiles, width: 1280, height: 720, sequence: 42 }, 30_000);
+    const payloads = serializeFrameChunks({ tiles, width: 1280, height: 720, sequence: 42, keyframe: true }, 30_000);
 
     expect(payloads.length).toBeGreaterThan(1);
     expect(payloads.every((payload) => Buffer.byteLength(payload) <= 30_000)).toBe(true);
     const parsed = payloads.map((payload) => JSON.parse(payload));
-    expect(parsed.every((frame) => frame.sequence === 42 && frame.width === 1280 && frame.height === 720)).toBe(true);
+    expect(parsed.every((frame, index) =>
+      frame.sequence === 42 &&
+      frame.width === 1280 &&
+      frame.height === 720 &&
+      frame.keyframe === true &&
+      frame.frameChunkIndex === index &&
+      frame.frameChunkCount === parsed.length
+    )).toBe(true);
     expect(parsed.flatMap((frame) => frame.tiles)).toEqual(tiles);
   });
 
@@ -278,6 +285,7 @@ describe("Agent data-channel backpressure", () => {
       width: 800,
       height: 600,
       sequence: 7,
+      keyframe: false,
     };
     const preflightSend = vi.fn();
     expect(

@@ -68,6 +68,7 @@ import {
 } from "./persistentInputShutdown";
 import { createAgentPointerState, recordSuccessfulPointerAction } from "./agentPointerState";
 import { processWebRtcFileChunk } from "./webrtcFileReceiver";
+import { copyPngFileToWindowsClipboardAndRemove } from "./clipboardImage";
 import { runAgentWebRtcRuntimeSmoke } from "./agentWebRtcRuntimeSmoke";
 import {
   authenticateAgentWithFirebase,
@@ -180,6 +181,7 @@ let streamDroppedFrameCount = 0;
 let streamBackpressured = false;
 let streamBufferedAmount = 0;
 let streamFrameSequence = 0;
+let keyframeRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let firestoreTileFallbackStartedAtMs = Date.now();
 let firestoreTileFallbackFrameCount = 0;
 let firestoreTileFallbackLimitLogged = false;
@@ -235,6 +237,10 @@ async function startStreaming(
   if (streamRestartTimer) {
     clearTimeout(streamRestartTimer);
     streamRestartTimer = null;
+  }
+  if (keyframeRetryTimer) {
+    clearTimeout(keyframeRetryTimer);
+    keyframeRetryTimer = null;
   }
   if (streamProcess) {
     streamProcess.kill();
@@ -301,6 +307,7 @@ async function startStreaming(
               width: data.width,
               height: data.height,
               sequence: streamFrameSequence,
+              keyframe: data.keyframe === true,
             })
           : undefined;
         if (sendResult === "sent") {
@@ -312,6 +319,14 @@ async function startStreaming(
           streamDroppedFrameCount += 1;
           streamBackpressured = true;
           streamBufferedAmount = webRtcTransport?.getBufferedAmount() ?? 0;
+          if (keyframeRetryTimer === null) {
+            keyframeRetryTimer = setTimeout(() => {
+              keyframeRetryTimer = null;
+              if (streamProcess === child && streamDesired) {
+                streamProcess.stdin.write("request-keyframe\n");
+              }
+            }, 250);
+          }
         } else if (USE_FIREBASE) {
           streamBackpressured = false;
           streamBufferedAmount = webRtcTransport?.getBufferedAmount() ?? 0;
@@ -327,6 +342,8 @@ async function startStreaming(
               tiles: data.tiles,
               width: data.width,
               height: data.height,
+              sequence: streamFrameSequence,
+              keyframe: data.keyframe === true,
             });
             firestoreTileFallbackFrameCount += 1;
           } else {
@@ -473,6 +490,10 @@ function ensureSessionWebRtcTransport(
           `[WebRTC file receipt failed] ${error instanceof Error ? error.message : error}`,
         );
       },
+      onClipboardImageComplete: async ({ targetPath }) => {
+        await copyPngFileToWindowsClipboardAndRemove(targetPath);
+        console.log("[Clipboard] Viewer PNG image injected into the agent clipboard.");
+      },
     }),
     onState: (state, error) => {
       if (!isCurrentWebRtcSessionGeneration(
@@ -486,6 +507,9 @@ function ensureSessionWebRtcTransport(
       if (state === "open") {
         rtcState = "ready";
         rtcError = undefined;
+        if (streamProcess && streamDesired) {
+          streamProcess.stdin.write("request-keyframe\n");
+        }
         return;
       }
       if (state === "closed") {
@@ -556,6 +580,10 @@ async function stopSessionPolling(): Promise<void> {
   if (streamRestartTimer) {
     clearTimeout(streamRestartTimer);
     streamRestartTimer = null;
+  }
+  if (keyframeRetryTimer) {
+    clearTimeout(keyframeRetryTimer);
+    keyframeRetryTimer = null;
   }
   void webRtcTransport?.close();
   webRtcTransport = null;

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { access, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -7,6 +7,54 @@ import { processWebRtcFileChunk } from "./webrtcFileReceiver";
 import type { WebRtcFileChunkMessage } from "../domain/webrtcFileTransfer";
 
 describe("Agent WebRTC file receiver", () => {
+  it("routes a completed clipboard image to the dedicated callback", async () => {
+    const clipboardRoot = await mkdtemp(path.join(tmpdir(), "wonremote-clipboard-"));
+    const onClipboardImageComplete = vi.fn(async () => undefined);
+    const bytes = Buffer.from("png");
+    const chunk = createChunk({
+      transferId: "clipboard-1",
+      filename: "clipboard.png",
+      purpose: "clipboard-image",
+      mimeType: "image/png",
+      chunkIndex: 0,
+      totalChunks: 1,
+      totalBytes: bytes.length,
+      isLast: true,
+      bytes,
+      fileSha256: computeSha256(bytes),
+    });
+
+    await expect(processWebRtcFileChunk(chunk, {
+      clipboardImageRoot: clipboardRoot,
+      onClipboardImageComplete,
+    })).resolves.toMatchObject({ status: "complete" });
+    expect(onClipboardImageComplete).toHaveBeenCalledWith(expect.objectContaining({
+      mimeType: "image/png",
+      targetPath: expect.stringContaining(clipboardRoot),
+    }));
+  });
+
+  it("returns ACK error when clipboard image completion fails", async () => {
+    const clipboardRoot = await mkdtemp(path.join(tmpdir(), "wonremote-clipboard-"));
+    const chunk = createChunk({
+      transferId: "clipboard-failure",
+      filename: "clipboard.png",
+      purpose: "clipboard-image",
+      mimeType: "image/png",
+      chunkIndex: 0,
+      totalChunks: 1,
+      totalBytes: 3,
+      isLast: true,
+      bytes: Buffer.from("png"),
+    });
+
+    const result = await processWebRtcFileChunk(chunk, {
+      clipboardImageRoot: clipboardRoot,
+      onClipboardImageComplete: async () => { throw new Error("clipboard unavailable"); },
+    });
+    expect(result).toMatchObject({ status: "error", error: "clipboard unavailable" });
+    await expect(access(path.join(clipboardRoot, "clipboard-failure.png"))).rejects.toThrow();
+  });
   it("stores ordered chunks in nested folders and acknowledges partial and complete states", async () => {
     const downloadsDir = await mkdtemp(path.join(tmpdir(), "wonremote-webrtc-files-"));
     const postReceipt = vi.fn(async () => undefined);
@@ -259,6 +307,8 @@ function createChunk(input: {
   isLast: boolean;
   bytes: Buffer;
   fileSha256?: string;
+  purpose?: "file" | "clipboard-image";
+  mimeType?: "image/png";
 }): WebRtcFileChunkMessage {
   return {
     type: "file-chunk",
@@ -271,5 +321,7 @@ function createChunk(input: {
     fileData: input.bytes.toString("base64"),
     chunkSha256: computeSha256(input.bytes),
     fileSha256: input.fileSha256,
+    purpose: input.purpose,
+    mimeType: input.mimeType,
   };
 }

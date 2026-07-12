@@ -37,6 +37,26 @@ describe("WebRTC file transfer protocol", () => {
     expect(parseWebRtcFileAck(serializeWebRtcFileAck(ack))).toEqual(ack);
   });
 
+  it("round-trips an optional clipboard-image purpose with strict PNG MIME", () => {
+    const chunk = {
+      type: "file-chunk" as const,
+      transferId: "clipboard-1",
+      filename: "clipboard.png",
+      purpose: "clipboard-image" as const,
+      mimeType: "image/png" as const,
+      chunkIndex: 0,
+      totalChunks: 1,
+      totalBytes: 3,
+      isLast: true,
+      fileData: "AQID",
+      chunkSha256: checksum,
+      fileSha256: checksum,
+    };
+    expect(parseWebRtcFileChunk(serializeWebRtcFileChunk(chunk))).toEqual(chunk);
+    expect(parseWebRtcFileChunk(JSON.stringify({ ...chunk, mimeType: "image/jpeg" }))).toBeNull();
+    expect(parseWebRtcFileChunk(JSON.stringify({ ...chunk, mimeType: undefined }))).toBeNull();
+  });
+
   it("rejects inconsistent or oversized chunks", () => {
     expect(parseWebRtcFileChunk(JSON.stringify({ type: "file-chunk" }))).toBeNull();
     expect(() => serializeWebRtcFileChunk({

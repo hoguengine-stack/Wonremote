@@ -69,6 +69,7 @@ import {
   resolveWebRtcConnectTimeoutMs,
 } from "../domain/webrtcStability";
 import { resolveFirebaseConfig } from "./firebaseConfig";
+import { WebRtcFrameAssembler, type RemoteTileFrame } from "../domain/webrtcFrameAssembly";
 import { buildAgentAuthEmail, buildAgentAuthPassword, buildViewerAuthCredentials } from "./firebaseIdentity";
 import { buildFirestoreDevice, mapFirestoreDevice, mergeFirstRunDeviceDocument } from "./firestoreDevice";
 import { getWonRemoteFirebaseServices } from "./firebaseServices";
@@ -86,6 +87,8 @@ export interface ViewerWebRtcTransport {
     filename: string;
     fileSha256: string;
     transferId: string;
+    purpose?: "file" | "clipboard-image";
+    mimeType?: "image/png";
     onProgress?: (receivedBytes: number, totalBytes: number) => void;
   }) => Promise<boolean>;
 }
@@ -503,26 +506,30 @@ export async function fetchFirebaseFileTransferReceipts(
 export async function fetchFirebaseTiles(
   sessionId: string,
   env: ViewerFirebaseEnv = import.meta.env,
-): Promise<{ tiles: any[]; width: number; height: number }> {
+): Promise<RemoteTileFrame> {
   const frames = await drainFirebaseSessionQueue(sessionId, "tileFrames", 3, undefined, (_id, data) => ({
     tiles: Array.isArray(data.tiles) ? data.tiles : [],
     width: Number(data.width ?? 0),
     height: Number(data.height ?? 0),
+    sequence: typeof data.sequence === "number" ? data.sequence : undefined,
+    keyframe: data.keyframe === true,
   }), env);
   return frames.reduce(
     (merged, frame) => ({
       tiles: [...merged.tiles, ...frame.tiles],
       width: frame.width || merged.width,
       height: frame.height || merged.height,
+      sequence: frame.sequence ?? merged.sequence,
+      keyframe: frame.keyframe || merged.keyframe,
     }),
-    { tiles: [] as any[], width: 0, height: 0 },
+    { tiles: [] as any[], width: 0, height: 0, sequence: undefined, keyframe: false } as RemoteTileFrame,
   );
 }
 
 export async function startFirebaseViewerWebRtcTransport(
   sessionId: string,
   handlers: {
-    onFrame: (frame: { tiles: any[]; width: number; height: number; sequence?: number }) => void;
+    onFrame: (frame: RemoteTileFrame) => void;
     onState?: (state: string) => void;
     onError?: (error: Error) => void;
   },
@@ -548,6 +555,7 @@ export async function startFirebaseViewerWebRtcTransport(
   let unsubscribeSignal: Unsubscribe | null = null;
   let unsubscribeAgentCandidates: Unsubscribe | null = null;
   let connectWatchdog: ReturnType<typeof setTimeout> | null = null;
+  const frameAssembler = new WebRtcFrameAssembler();
   const fileAckStates = new Map<string, WebRtcFileAckMessage>();
   const fileAckWaiters = new Map<string, Set<{
     minReceivedChunks: number;
@@ -683,23 +691,8 @@ export async function startFirebaseViewerWebRtcTransport(
   };
   channel.onerror = () => reportUnavailable("data-channel-error", "Viewer WebRTC data channel failed.");
   channel.onmessage = (event) => {
-    try {
-      const frame = JSON.parse(String(event.data)) as {
-        tiles?: unknown;
-        width?: unknown;
-        height?: unknown;
-        sequence?: unknown;
-      };
-      if (Array.isArray(frame.tiles)) {
-        handlers.onFrame({
-          tiles: frame.tiles,
-          width: Number(frame.width ?? 0),
-          height: Number(frame.height ?? 0),
-          ...(Number.isFinite(Number(frame.sequence)) ? { sequence: Number(frame.sequence) } : {}),
-        });
-      }
-    } catch (error) {
-      handlers.onError?.(error instanceof Error ? error : new Error(String(error)));
+    for (const frame of frameAssembler.push(event.data)) {
+      handlers.onFrame(frame);
     }
   };
 
@@ -822,6 +815,8 @@ export async function startFirebaseViewerWebRtcTransport(
     filename: string;
     fileSha256: string;
     transferId: string;
+    purpose?: "file" | "clipboard-image";
+    mimeType?: "image/png";
     onProgress?: (receivedBytes: number, totalBytes: number) => void;
   }): Promise<boolean> => {
     if (!fileChannelOpened || fileChannel.readyState !== "open") {
@@ -848,6 +843,8 @@ export async function startFirebaseViewerWebRtcTransport(
           fileData: arrayBufferToBase64(chunkBuffer),
           chunkSha256: await sha256ArrayBufferHex(chunkBuffer),
           ...(chunkIndex === totalChunks - 1 ? { fileSha256: input.fileSha256 } : {}),
+          ...(input.purpose ? { purpose: input.purpose } : {}),
+          ...(input.mimeType ? { mimeType: input.mimeType } : {}),
         }));
 
         const sentChunks = chunkIndex + 1;

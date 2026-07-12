@@ -286,9 +286,13 @@ describe("Agent command execution", () => {
     expect(transportCloseBlock).toContain("const previousTransport = webRtcTransport");
     expect(startBlock).toContain("void previousTransport?.close()");
     expect(startBlock).toContain("ensureSessionWebRtcTransport(deviceId, sessionId, transportGeneration)");
+    expect(startBlock).toContain("keyframe: data.keyframe === true");
+    expect(startBlock).toContain('streamProcess.stdin.write("request-keyframe\\n")');
+    expect(startBlock).not.toContain("data.keyframe === true && keyframeRetryTimer");
     expect(startBlock).not.toContain("webRtcTransport.close()");
     expect(ensureBlock).toContain("webRtcTransport ||");
     expect(ensureBlock).toContain("webRtcTransportStartGeneration === expectedSessionGeneration");
+    expect(ensureBlock).toContain('streamProcess.stdin.write("request-keyframe\\n")');
   });
 });
 
