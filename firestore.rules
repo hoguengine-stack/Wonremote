@@ -141,7 +141,12 @@ service cloud.firestore {
     }
 
     match /devices/{deviceId} {
-      allow read: if ownsDevice(deviceId) || (signedIn() && !exists(/databases/$(database)/documents/devices/$(deviceId)));
+      allow get: if signedIn()
+        && (
+          !exists(/databases/$(database)/documents/devices/$(deviceId))
+          || resource.data.ownerUid == request.auth.uid
+        );
+      allow list: if signedIn() && resource.data.ownerUid == request.auth.uid;
       allow create: if isOwnDeviceCreate();
       allow update: if isOwnDeviceUpdate(deviceId);
       allow delete: if false;

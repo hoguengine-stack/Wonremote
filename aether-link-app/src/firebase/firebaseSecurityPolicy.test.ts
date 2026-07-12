@@ -34,6 +34,19 @@ describe("Firebase security deployment policy", () => {
     expect(rules).toContain("request.resource.data.installId == resource.data.installId");
   });
 
+  it("authorizes owned-device list queries from resource data instead of a nested document get", () => {
+    const rules = readFileSync(resolve(repoRoot, "firestore.rules"), "utf8");
+    const deviceMatch = rules.match(/match \/devices\/\{deviceId\} \{([\s\S]*?)match \/commands/);
+
+    expect(deviceMatch?.[1]).toContain("allow get: if signedIn()");
+    expect(deviceMatch?.[1]).toContain("!exists(/databases/$(database)/documents/devices/$(deviceId))");
+    expect(deviceMatch?.[1]).toContain("resource.data.ownerUid == request.auth.uid");
+    expect(deviceMatch?.[1]).toContain(
+      "allow list: if signedIn() && resource.data.ownerUid == request.auth.uid;",
+    );
+    expect(deviceMatch?.[1]).not.toContain("ownsDevice(deviceId)");
+  });
+
   it("requires explicit session subcollection rules instead of recursive wildcard access", () => {
     const rules = readFileSync(resolve(repoRoot, "firestore.rules"), "utf8");
 
