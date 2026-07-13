@@ -699,6 +699,8 @@ describe("desktop packaging scaffold", () => {
     expect(viewerModeSetup).toContain("start_viewer_update_watcher(app.handle().clone())");
     expect(agentModeSetup).not.toContain("start_viewer_update_watcher");
     expect(tauriLib).toContain('.env("WONREMOTE_UPDATE_PRODUCT", restart_mode)');
+    expect(tauriLib).toContain('.env("WONREMOTE_TAURI_UPDATE_BROKER", "1")');
+    expect(tauriLib).toContain("launch_brokered_update_handoff");
     expect(appTsx).not.toContain('invoke("start_installer_update"');
     expect(appTsx).toContain("Native Viewer shell owns installed-app updates");
   });

@@ -1,5 +1,10 @@
 import { spawn } from "node:child_process";
+import { writeSync } from "node:fs";
 import path from "node:path";
+import {
+  formatUpdateHandoffBrokerRequest,
+  isUpdateHandoffBrokerEnabled,
+} from "./agentUpdateHandoffBroker";
 import { WONREMOTE_APP_VERSION } from "../domain/appVersion";
 import { isHigherVersion } from "../domain/versioning";
 import {
@@ -239,7 +244,17 @@ function parseRestartExecutable(value: string | undefined): string {
   );
 }
 
-function launchInstallerHandoff(handoff: InstallerHandoffResult | PortableHandoffResult): void {
+export function launchInstallerHandoff(
+  handoff: InstallerHandoffResult | PortableHandoffResult,
+  env: Partial<Record<"WONREMOTE_TAURI_UPDATE_BROKER", string>> = process.env,
+  writeBrokerRequest: (request: string) => void = (request) => {
+    writeSync(process.stdout.fd, `${request}\n`);
+  },
+): void {
+  if (isUpdateHandoffBrokerEnabled(env.WONREMOTE_TAURI_UPDATE_BROKER)) {
+    writeBrokerRequest(formatUpdateHandoffBrokerRequest(handoff.scriptPath));
+    return;
+  }
   const child = spawn(handoff.command, handoff.args, {
     detached: true,
     stdio: "ignore",

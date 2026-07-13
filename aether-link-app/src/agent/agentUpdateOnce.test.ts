@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   UPDATE_ONCE_EXIT,
   UpdateOnceError,
+  launchInstallerHandoff,
   parseUpdateOnceOptions,
   runUpdateOnce,
 } from "./agentUpdateOnce";
@@ -50,6 +51,21 @@ function updateDeps(overrides: Record<string, unknown> = {}) {
 }
 
 describe("non-interactive bundled updater", () => {
+  it("asks the Tauri broker to launch the handoff when direct child breakaway is unsafe", () => {
+    const writeBrokerRequest = vi.fn();
+    launchInstallerHandoff({
+      args: ["-File", "C:\\Data\\WonRemote\\updates\\run-installer-update-test.ps1"],
+      command: "powershell.exe",
+      creationFlags: 1,
+      logPath: "C:\\Data\\WonRemote\\updates\\handoff.log",
+      scriptPath: "C:\\Data\\WonRemote\\updates\\run-installer-update-test.ps1",
+    }, { WONREMOTE_TAURI_UPDATE_BROKER: "1" }, writeBrokerRequest);
+
+    expect(writeBrokerRequest).toHaveBeenCalledWith(
+      expect.stringMatching(/^\[WonRemoteUpdateHandoff\][A-Za-z0-9_-]+$/),
+    );
+  });
+
   it("requires an explicit viewer or agent restart mode", () => {
     expect(parseUpdateOnceOptions(["--update-once", "--restart-mode", "viewer"], { APPDATA: "C:\\Data" })).toEqual({
       baseDir: "C:\\Data",

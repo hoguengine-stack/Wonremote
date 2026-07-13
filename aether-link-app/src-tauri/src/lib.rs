@@ -1262,6 +1262,7 @@ fn start_installer_update(app: tauri::AppHandle, restart_mode: String) -> Result
         .env("WONREMOTE_BUILD_ARCH", build_arch)
         .env("WONREMOTE_PACKAGE_KIND", package_kind)
         .env("WONREMOTE_UPDATE_PRODUCT", restart_mode)
+        .env("WONREMOTE_TAURI_UPDATE_BROKER", "1")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -1273,9 +1274,21 @@ fn start_installer_update(app: tauri::AppHandle, restart_mode: String) -> Result
     })?;
     if let Some(stdout) = child.stdout.take() {
         thread::spawn(move || {
+            let mut update_handoff_started = false;
             for line in BufReader::new(stdout).lines() {
                 match line {
-                    Ok(line) => append_runtime_log("updater-stdout", &line),
+                    Ok(line) => {
+                        append_runtime_log("updater-stdout", &line);
+                        if !update_handoff_started {
+                            match parse_update_handoff_request(&line).and_then(|request| {
+                                request.map_or(Ok(false), launch_brokered_update_handoff)
+                            }) {
+                                Ok(true) => update_handoff_started = true,
+                                Ok(false) => {}
+                                Err(error) => append_runtime_log("updater-broker", &error),
+                            }
+                        }
+                    }
                     Err(error) => {
                         append_runtime_log("updater-stdout", &format!("read failed: {error}"));
                         break;
