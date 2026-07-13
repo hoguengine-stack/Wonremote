@@ -1093,32 +1093,32 @@ function AgentFirstRunApp() {
   if (registeredConfig) {
     return (
       <main className="login-screen agent-screen">
-        <div className="login-panel agent-panel" style={{ maxWidth: "450px" }}>
-          <div className="login-badge" style={{ background: "rgba(16, 185, 129, 0.2)", color: "#10b981" }}>
+        <div className="login-panel agent-panel active-agent-panel">
+          <div className="login-badge active-agent-badge">
             <Monitor size={20} />
             <span>Active Agent</span>
           </div>
           <h1>Agent 가동 중</h1>
           {error && <p className="error-text">{error}</p>}
-          <div className="agent-result" style={{ background: "rgba(16, 185, 129, 0.1)", border: "1px solid rgba(16, 185, 129, 0.2)", padding: "16px", borderRadius: "8px", display: "flex", flexDirection: "column", gap: "8px", width: "100%", boxSizing: "border-box" }}>
+          <div className="agent-result active-agent-result">
             <div style={{ display: firebaseMode ? "none" : undefined }}>
-              <span style={{ color: "#94a3b8", fontSize: "12px" }}>서버 주소:</span>
-              <strong style={{ display: "block", color: "#fff" }}>{registeredConfig.apiUrl}</strong>
+              <span>서버 주소:</span>
+              <strong>{registeredConfig.apiUrl}</strong>
             </div>
             <div>
-              <span style={{ color: "#94a3b8", fontSize: "12px" }}>등록 장비 ID:</span>
-              <strong style={{ display: "block", color: "#fff" }}>{registeredConfig.registeredDeviceId}</strong>
+              <span>등록 장비 ID:</span>
+              <strong>{registeredConfig.registeredDeviceId}</strong>
             </div>
             <div>
-              <span style={{ color: "#94a3b8", fontSize: "12px" }}>사업자번호:</span>
-              <strong style={{ display: "block", color: "#fff" }}>{registeredConfig.businessNumber}</strong>
+              <span>사업자번호:</span>
+              <strong>{registeredConfig.businessNumber}</strong>
             </div>
             <div>
-              <span style={{ color: "#94a3b8", fontSize: "12px" }}>설치 식별자:</span>
-              <code style={{ display: "block", color: "#818cf8", fontSize: "11px" }}>{registeredConfig.installId}</code>
+              <span>설치 식별자:</span>
+              <code>{registeredConfig.installId}</code>
             </div>
           </div>
-          <p style={{ color: "#94a3b8", fontSize: "13px", textAlign: "center", margin: "16px 0" }}>
+          <p className="agent-status-copy">
             본 프로그램은 백그라운드에서 원격 제어 대기 상태를 유지합니다. 트레이 아이콘을 통해 관리할 수 있습니다.
           </p>
           <button
@@ -1132,7 +1132,6 @@ function AgentFirstRunApp() {
                 alert("브라우저 환경 - 재시작 시뮬레이션 완료");
               }
             }}
-            style={{ background: "#10b981" }}
           >
             <span>에이전트 재시작</span>
           </button>

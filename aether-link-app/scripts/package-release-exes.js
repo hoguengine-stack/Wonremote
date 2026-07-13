@@ -296,17 +296,22 @@ function copyInstaller(sourcePath, targetName) {
   fs.copyFileSync(sourcePath, path.join(outputDir, targetName));
 }
 
-function copyPortablePayload(target, sourceRoot) {
+function copyViewerPortablePayload(target, sourceRoot) {
   const viewerSource = path.join(sourceRoot, "wonremote-viewer.exe");
   ensureExists(viewerSource, `${target.key} Tauri viewer executable`);
   verifyTargetAgentRuntime(target, sourceRoot);
   fs.mkdirSync(target.stageDir, { recursive: true });
   fs.copyFileSync(viewerSource, path.join(target.stageDir, "WonRemote Viewer.exe"));
-  fs.copyFileSync(viewerSource, path.join(target.stageDir, "WonRemote Agent.exe"));
   for (const directory of requiredResourceDirs) {
     copyDirectory(sourceRoot, target.stageDir, directory);
   }
   writeReadme(target.stageDir);
+}
+
+function copyAgentPortableExecutable(target, sourceRoot) {
+  const agentSource = path.join(sourceRoot, "wonremote-viewer.exe");
+  ensureExists(agentSource, `${target.key} Tauri Agent executable`);
+  fs.copyFileSync(agentSource, path.join(target.stageDir, "WonRemote Agent.exe"));
 }
 
 function verifyTargetAgentRuntime(target, sourceRoot) {
@@ -325,7 +330,7 @@ function packageTarget(target) {
   buildViewerInstaller(target);
 
   const targetRelease = releaseTargetFor(target);
-  copyPortablePayload(target, targetRelease);
+  copyViewerPortablePayload(target, targetRelease);
 
   const installerDir = path.join(targetRelease, "bundle", "nsis");
   const expectedInstaller = `WonRemote Viewer_${packageJson.version}_${target.installerArch}-setup.exe`;
@@ -337,6 +342,7 @@ function packageTarget(target) {
   copyInstaller(expectedInstallerPath, target.stableInstallerName);
 
   buildAgentDefaultInstaller(target);
+  copyAgentPortableExecutable(target, targetRelease);
 
   ensureExists(expectedAgentInstallerPath, `${target.key} Agent-default WonRemote NSIS installer`);
   copyInstaller(expectedAgentInstallerPath, expectedAgentInstaller);

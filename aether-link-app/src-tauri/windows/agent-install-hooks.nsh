@@ -42,11 +42,9 @@
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
-  DetailPrint "Starting WonRemote Agent..."
   CreateDirectory "$SMPROGRAMS\WonRemote"
   CreateShortCut "$DESKTOP\WonRemote Agent.lnk" "$INSTDIR\wonremote-viewer.exe" "--agent --show-window"
   CreateShortCut "$SMPROGRAMS\WonRemote\WonRemote Agent.lnk" "$INSTDIR\wonremote-viewer.exe" "--agent --show-window"
-  Exec '"$INSTDIR\wonremote-viewer.exe" --agent --show-window'
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL

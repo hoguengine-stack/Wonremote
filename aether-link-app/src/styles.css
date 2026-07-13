@@ -69,6 +69,10 @@ button:disabled {
 }
 
 .agent-screen {
+  box-sizing: border-box;
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
   padding: 10px;
 }
 
@@ -85,6 +89,59 @@ button:disabled {
 
 .agent-screen .agent-panel label {
   gap: 4px;
+}
+
+.agent-screen .primary-button {
+  color: #111827;
+}
+
+.active-agent-panel {
+  gap: 8px;
+  max-height: 100%;
+  overflow: hidden;
+  padding: 14px;
+}
+
+.active-agent-badge {
+  background: #d8f3ec;
+  color: #176d62;
+}
+
+.active-agent-result {
+  background: #e1f6ef;
+  border: 1px solid #b7ded3;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  width: 100%;
+}
+
+.active-agent-result span,
+.active-agent-result strong,
+.active-agent-result code {
+  color: #111827;
+}
+
+.active-agent-result span {
+  display: block;
+  font-size: 11px;
+}
+
+.active-agent-result strong,
+.active-agent-result code {
+  display: block;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.agent-status-copy {
+  color: #111827;
+  font-size: 11px;
+  line-height: 1.35;
+  margin: 0;
+  text-align: center;
 }
 
 .agent-result {

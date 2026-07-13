@@ -154,18 +154,18 @@ describe("desktop packaging scaffold", () => {
     expect(agentIndex).not.toContain("spawn(installerPath, installerArgs");
   });
 
-  it("starts the Agent in background after install without treating duplicate launches as failures", () => {
+  it("defers normal Agent launch until the installer finish page", () => {
     const viewerHook = readFileSync(path.join(projectRoot, "src-tauri", "windows", "viewer-install-hooks.nsh"), "utf8");
     const agentHook = readFileSync(path.join(projectRoot, "src-tauri", "windows", "agent-install-hooks.nsh"), "utf8");
     const agentHookX86 = readFileSync(path.join(projectRoot, "src-tauri", "windows", "agent-install-hooks-x86.nsh"), "utf8");
     const tauriLib = readFileSync(path.join(projectRoot, "src-tauri", "src", "lib.rs"), "utf8");
 
     expect(agentHook).toContain("NSIS_HOOK_POSTINSTALL");
-    expect(agentHook).toContain('Exec \'"$INSTDIR\\wonremote-viewer.exe" --agent --show-window\'');
+    expect(agentHook).not.toContain('Exec \'"$INSTDIR\\wonremote-viewer.exe" --agent --show-window\'');
     expect(agentHook).toContain('CreateShortCut "$DESKTOP\\WonRemote Agent.lnk" "$INSTDIR\\wonremote-viewer.exe" "--agent --show-window"');
     expect(agentHook).toContain('CreateShortCut "$SMPROGRAMS\\WonRemote\\WonRemote Agent.lnk" "$INSTDIR\\wonremote-viewer.exe" "--agent --show-window"');
     expect(agentHookX86).toContain("NSIS_HOOK_POSTINSTALL");
-    expect(agentHookX86).toContain('Exec \'"$INSTDIR\\wonremote-viewer.exe" --agent --show-window\'');
+    expect(agentHookX86).not.toContain('Exec \'"$INSTDIR\\wonremote-viewer.exe" --agent --show-window\'');
     expect(agentHookX86).toContain('CreateShortCut "$DESKTOP\\WonRemote Agent.lnk" "$INSTDIR\\wonremote-viewer.exe" "--agent --show-window"');
     expect(agentHookX86).toContain('CreateShortCut "$SMPROGRAMS\\WonRemote\\WonRemote Agent.lnk" "$INSTDIR\\wonremote-viewer.exe" "--agent --show-window"');
     expect(viewerHook).not.toContain("NSIS_HOOK_POSTINSTALL");
@@ -252,6 +252,26 @@ describe("desktop packaging scaffold", () => {
       "release:publish": "powershell -ExecutionPolicy Bypass -File scripts/publish-github-release.ps1",
     });
     expect(packageJson.devDependencies["@tauri-apps/cli"]).toBeDefined();
+  });
+
+  it("stages distinct Viewer and Agent executables after their respective icon builds", () => {
+    const packageReleaseScript = readFileSync(path.join(projectRoot, "scripts", "package-release-exes.js"), "utf8");
+    const viewerStage = packageReleaseScript.indexOf("copyViewerPortablePayload(target, targetRelease)");
+    const agentBuild = packageReleaseScript.indexOf("buildAgentDefaultInstaller(target)", viewerStage);
+    const agentStage = packageReleaseScript.indexOf("copyAgentPortableExecutable(target, targetRelease)", agentBuild);
+
+    expect(viewerStage).toBeGreaterThan(-1);
+    expect(agentBuild).toBeGreaterThan(viewerStage);
+    expect(agentStage).toBeGreaterThan(agentBuild);
+    expect(packageReleaseScript).toContain(
+      'fs.copyFileSync(viewerSource, path.join(target.stageDir, "WonRemote Viewer.exe"))',
+    );
+    expect(packageReleaseScript).toContain(
+      'fs.copyFileSync(agentSource, path.join(target.stageDir, "WonRemote Agent.exe"))',
+    );
+    expect(packageReleaseScript).not.toContain(
+      'fs.copyFileSync(viewerSource, path.join(target.stageDir, "WonRemote Agent.exe"))',
+    );
   });
 
   it("deploys Firebase functions, rules, and hosting only behind an explicit gate", () => {

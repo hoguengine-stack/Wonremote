@@ -19,6 +19,7 @@
     ]
   },
   "bundle": {
+    "icon": ["icons/agent.ico"],
     "windows": {
       "nsis": {
         "installMode": "currentUser",

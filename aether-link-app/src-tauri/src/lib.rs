@@ -37,9 +37,10 @@ use windows_sys::Win32::UI::Shell::{
 };
 #[cfg(target_arch = "x86")]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, LoadIconW, RegisterClassW, IDI_APPLICATION,
-    WM_APP, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONDBLCLK, WM_RBUTTONUP, WNDCLASSW,
-    WS_EX_TOOLWINDOW, WS_OVERLAPPED,
+    CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow, LoadIconW, LoadImageW,
+    RegisterClassW, HICON, IDI_APPLICATION, IMAGE_ICON, LR_DEFAULTSIZE, LR_LOADFROMFILE, WM_APP,
+    WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONDBLCLK, WM_RBUTTONUP, WNDCLASSW, WS_EX_TOOLWINDOW,
+    WS_OVERLAPPED,
 };
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -95,6 +96,7 @@ unsafe impl Sync for Job {}
 #[cfg(target_arch = "x86")]
 pub struct Win32AgentTray {
     hwnd: HWND,
+    icon: HICON,
 }
 
 #[cfg(target_arch = "x86")]
@@ -111,6 +113,9 @@ impl Drop for Win32AgentTray {
             notify_data.hWnd = self.hwnd;
             notify_data.uID = WIN32_AGENT_TRAY_ID;
             let _ = Shell_NotifyIconW(NIM_DELETE, &notify_data as *const _);
+            if !self.icon.is_null() {
+                let _ = DestroyIcon(self.icon);
+            }
             let _ = DestroyWindow(self.hwnd);
         }
     }
@@ -325,7 +330,7 @@ fn win32_agent_tray_class_name() -> Vec<u16> {
 }
 
 #[cfg(target_arch = "x86")]
-fn start_win32_agent_tray() -> io::Result<Win32AgentTray> {
+fn start_win32_agent_tray(icon_path: &Path) -> io::Result<Win32AgentTray> {
     unsafe {
         let class_name = win32_agent_tray_class_name();
         let wnd_class = WNDCLASSW {
@@ -360,17 +365,45 @@ fn start_win32_agent_tray() -> io::Result<Win32AgentTray> {
         notify_data.uID = WIN32_AGENT_TRAY_ID;
         notify_data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         notify_data.uCallbackMessage = WM_WONREMOTE_AGENT_TRAY;
-        notify_data.hIcon = LoadIconW(ptr::null_mut(), IDI_APPLICATION);
+        let icon_path_wide: Vec<u16> = icon_path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let loaded_icon = LoadImageW(
+            ptr::null_mut(),
+            icon_path_wide.as_ptr(),
+            IMAGE_ICON,
+            0,
+            0,
+            LR_DEFAULTSIZE | LR_LOADFROMFILE,
+        ) as HICON;
+        let icon = if loaded_icon.is_null() {
+            append_runtime_log(
+                "tray",
+                &format!(
+                    "agent icon load failed path={} error={}",
+                    icon_path.display(),
+                    io::Error::last_os_error()
+                ),
+            );
+            LoadIconW(ptr::null_mut(), IDI_APPLICATION)
+        } else {
+            loaded_icon
+        };
+        notify_data.hIcon = icon;
         notify_data.szTip = tray_tooltip("WonRemote Agent");
 
         if Shell_NotifyIconW(NIM_ADD, &notify_data as *const _) == 0 {
             let error = io::Error::last_os_error();
+            if !loaded_icon.is_null() {
+                let _ = DestroyIcon(loaded_icon);
+            }
             DestroyWindow(hwnd);
             return Err(error);
         }
 
         append_runtime_log("tray", "agent x86 Win32 shell tray registered");
-        Ok(Win32AgentTray { hwnd })
+        Ok(Win32AgentTray {
+            hwnd,
+            icon: loaded_icon,
+        })
     }
 }
 
@@ -405,7 +438,25 @@ unsafe extern "system" fn win32_agent_tray_proc(
 #[cfg(target_arch = "x86")]
 fn start_arch_specific_agent_tray(app: &tauri::App, agent_state: &tauri::State<'_, AgentState>) {
     append_runtime_log("tray", "agent x86 Win32 tray starting");
-    match start_win32_agent_tray() {
+    let icon_path = if cfg!(debug_assertions) {
+        app_root_from_manifest()
+            .join("src-tauri")
+            .join("icons")
+            .join("agent.ico")
+    } else {
+        match app.path().resource_dir() {
+            Ok(resource_dir) => resource_dir.join("icons").join("agent.ico"),
+            Err(error) => {
+                append_runtime_log(
+                    "tray",
+                    &format!("agent resource directory unavailable: {error}"),
+                );
+                show_main_window_with_log(app.handle(), "agent-icon-resource-failed");
+                return;
+            }
+        }
+    };
+    match start_win32_agent_tray(&icon_path) {
         Ok(tray) => {
             let mut tray_guard = agent_state.win32_tray.lock().unwrap();
             *tray_guard = Some(tray);
