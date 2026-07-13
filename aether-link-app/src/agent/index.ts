@@ -82,6 +82,7 @@ import {
   postSessionTilesWithFirebase,
   registerAgentFirstRunWithFirebase,
   resolveFirebaseStorageDownloadUrl,
+  subscribeAgentCommandsWithFirebase,
   startAgentWebRtcTransportWithFirebase,
 } from "../firebase/agentFirebase";
 import type {
@@ -91,6 +92,7 @@ import type {
 } from "./agentBootstrap";
 import type {
   AgentControlDiagnostics,
+  AgentCommand,
   AgentFirstRunResult,
   AgentStreamDiagnostics,
   DeviceDisplayInfo,
@@ -135,7 +137,7 @@ const AGENT_APP_DIR = resolveAgentAppDir(process.env, DEFAULT_APP_DIR);
 const POC_PATH = resolveAgentPocPath(process.env, AGENT_APP_DIR);
 
 const API_BASE_URL = process.env.WONREMOTE_API_URL ?? "http://127.0.0.1:8787";
-const HEARTBEAT_INTERVAL_MS = Number(process.env.WONREMOTE_AGENT_HEARTBEAT_MS ?? 10_000);
+const HEARTBEAT_INTERVAL_MS = Number(process.env.WONREMOTE_AGENT_HEARTBEAT_MS ?? 20_000);
 const COMMAND_POLL_INTERVAL_MS = resolveCommandPollIntervalMs(process.env);
 const UPDATE_CHECK_INTERVAL_MS = resolveAgentUpdateCheckIntervalMs(process.env);
 const USE_FIREBASE = isAgentFirebaseEnabled(process.env);
@@ -189,6 +191,8 @@ const pressedKeys = new Set<string>();
 const pointerState = createAgentPointerState();
 const agentCommandQueue = createSerializedAgentCommandQueue();
 const agentCommandPollGate = createAgentCommandPollGate();
+let firebaseCommandUnsubscribe: (() => void) | null = null;
+let firebaseCommandRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let displayCache: { loadedAtMs: number; displays: DeviceDisplayInfo[] } | null = null;
 let controlDiagnosticsCache: { loadedAtMs: number; diagnostics: AgentControlDiagnostics | undefined } | null = null;
 const DIAGNOSTIC_FAILURE_RETRY_MS = 5 * 60_000;
@@ -894,7 +898,9 @@ async function main() {
     await writeFile(successMarker, "SUCCESS");
   } catch (e) {}
 
-  activeConfig = await runCommandPollTick(activeConfig);
+  if (!USE_FIREBASE || !process.argv.includes("--watch")) {
+    activeConfig = await runCommandPollTick(activeConfig);
+  }
 
 
   // Setup CLI interactive input for chatting, clipboard sharing, and audio beep signals
@@ -1004,18 +1010,22 @@ async function main() {
 
   if (process.argv.includes("--watch")) {
     console.log(`Heartbeat interval: ${HEARTBEAT_INTERVAL_MS}ms`);
-    console.log(`Command poll interval: ${COMMAND_POLL_INTERVAL_MS}ms`);
     console.log(`Update check interval: ${UPDATE_CHECK_INTERVAL_MS}ms`);
     setInterval(() => {
       void runAgentTick(activeConfig).then((nextConfig) => {
         activeConfig = nextConfig;
       });
     }, HEARTBEAT_INTERVAL_MS);
-    setInterval(() => {
-      void runCommandPollTick(activeConfig).then((nextConfig) => {
-        activeConfig = nextConfig;
-      });
-    }, COMMAND_POLL_INTERVAL_MS);
+    if (USE_FIREBASE) {
+      startFirebaseCommandListener(() => activeConfig);
+    } else {
+      console.log(`Command poll interval: ${COMMAND_POLL_INTERVAL_MS}ms`);
+      setInterval(() => {
+        void runCommandPollTick(activeConfig).then((nextConfig) => {
+          activeConfig = nextConfig;
+        });
+      }, COMMAND_POLL_INTERVAL_MS);
+    }
   }
 }
 
@@ -1331,7 +1341,6 @@ async function runAgentTick(config: AgentLocalConfig): Promise<AgentLocalConfig>
   let activeConfig = config;
   try {
     activeConfig = await sendHeartbeatWithRecovery(activeConfig);
-    await ensureActiveFirebaseSessionRecovery(activeConfig);
     await checkUpdate(activeConfig);
     console.log("[Status] Online");
   } catch (error: any) {
@@ -1373,6 +1382,49 @@ async function runCommandPollTick(config: AgentLocalConfig): Promise<AgentLocalC
     }
   });
   return result.started ? result.value : config;
+}
+
+function startFirebaseCommandListener(getConfig: () => AgentLocalConfig): void {
+  const schedule = (delayMs: number) => {
+    if (firebaseCommandRetryTimer) {
+      return;
+    }
+    firebaseCommandRetryTimer = setTimeout(() => {
+      firebaseCommandRetryTimer = null;
+      void connect();
+    }, delayMs);
+  };
+
+  const handleFailure = (error: unknown) => {
+    firebaseCommandUnsubscribe?.();
+    firebaseCommandUnsubscribe = null;
+    console.error(`[Firebase command listener error] ${error instanceof Error ? error.message : String(error)}`);
+    schedule(15_000);
+  };
+
+  const connect = async () => {
+    const config = getConfig();
+    if (!config.registeredDeviceId) {
+      handleFailure(new Error("Firebase command subscription requires a registered device ID."));
+      return;
+    }
+    try {
+      firebaseCommandUnsubscribe?.();
+      firebaseCommandUnsubscribe = await subscribeAgentCommandsWithFirebase(
+        {
+          deviceId: config.registeredDeviceId,
+          installId: config.installId,
+        },
+        (commands) => executeReceivedCommands(getConfig(), commands),
+        handleFailure,
+      );
+      console.log("Firebase command listener active.");
+    } catch (error) {
+      handleFailure(error);
+    }
+  };
+
+  schedule(0);
 }
 
 async function ensureActiveFirebaseSessionRecovery(config: AgentLocalConfig): Promise<void> {
@@ -1492,7 +1544,11 @@ async function pollCommands(config: AgentLocalConfig): Promise<void> {
     installId: config.installId,
   });
 
-  for (const command of result.commands) {
+  await executeReceivedCommands(config, result.commands);
+}
+
+async function executeReceivedCommands(config: AgentLocalConfig, commands: AgentCommand[]): Promise<void> {
+  for (const command of commands) {
     console.log(`Command received: ${command.action}`);
     try {
       await agentCommandQueue.enqueue(() =>
@@ -1855,6 +1911,12 @@ async function handleRegistryUninstall() {
 }
 
 process.once("exit", () => {
+  firebaseCommandUnsubscribe?.();
+  firebaseCommandUnsubscribe = null;
+  if (firebaseCommandRetryTimer) {
+    clearTimeout(firebaseCommandRetryTimer);
+    firebaseCommandRetryTimer = null;
+  }
   persistentInputInjector.close("Agent process exited.");
 });
 for (const signal of ["SIGINT", "SIGTERM"] as const) {

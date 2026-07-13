@@ -410,7 +410,7 @@ function ViewerApp() {
     const configuredOfflineMs = Number(import.meta.env.VITE_WONREMOTE_AGENT_OFFLINE_MS);
     const offlineAfterMs = Number.isFinite(configuredOfflineMs) && configuredOfflineMs > 0
       ? Math.max(15_000, Math.trunc(configuredOfflineMs))
-      : 30_000;
+      : 60_000;
     const refreshStatuses = () => {
       setDevices((current) => resolveDeviceStatuses(current, new Date().toISOString(), offlineAfterMs));
     };
@@ -1068,12 +1068,21 @@ function AgentFirstRunApp() {
       };
 
       if ((window as any).__TAURI_INTERNALS__) {
-        await invoke("save_agent_config", {
-          config: configData
-        });
-      } else {
-        setRegisteredConfig(configData);
+        try {
+          await invoke("save_agent_config", {
+            config: configData
+          });
+        } catch (saveError) {
+          const persistedConfig = await invoke<any>("get_agent_config").catch(() => null);
+          if (persistedConfig?.registeredDeviceId === configData.registeredDeviceId) {
+            setError("장비 등록은 완료됐지만 Agent 자동 시작에 실패했습니다. 아래 버튼으로 다시 시작해 주세요.");
+            setRegisteredConfig(persistedConfig);
+            return;
+          }
+          throw saveError;
+        }
       }
+      setRegisteredConfig(configData);
     } catch (submissionError) {
       setError(submissionError instanceof Error ? submissionError.message : "Agent 등록 실패");
     } finally {
@@ -1090,6 +1099,7 @@ function AgentFirstRunApp() {
             <span>Active Agent</span>
           </div>
           <h1>Agent 가동 중</h1>
+          {error && <p className="error-text">{error}</p>}
           <div className="agent-result" style={{ background: "rgba(16, 185, 129, 0.1)", border: "1px solid rgba(16, 185, 129, 0.2)", padding: "16px", borderRadius: "8px", display: "flex", flexDirection: "column", gap: "8px", width: "100%", boxSizing: "border-box" }}>
             <div style={{ display: firebaseMode ? "none" : undefined }}>
               <span style={{ color: "#94a3b8", fontSize: "12px" }}>서버 주소:</span>

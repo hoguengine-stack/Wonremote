@@ -224,15 +224,21 @@ describe("Agent command execution", () => {
     const commandTickStart = source.indexOf("async function runCommandPollTick");
     const recoveryStart = source.indexOf("async function ensureActiveFirebaseSessionRecovery");
     const heartbeatBlock = source.slice(heartbeatStart, commandTickStart);
+    const heartbeatNormalPath = heartbeatBlock.slice(0, heartbeatBlock.indexOf("} catch"));
     const commandTickBlock = source.slice(commandTickStart, recoveryStart);
 
     expect(heartbeatStart).toBeGreaterThanOrEqual(0);
     expect(commandTickStart).toBeGreaterThan(heartbeatStart);
     expect(heartbeatBlock).not.toContain("pollCommands(");
+    expect(heartbeatNormalPath).not.toContain("ensureActiveFirebaseSessionRecovery(");
     expect(commandTickBlock).toContain("pollCommands(config)");
     expect(commandTickBlock).toContain("agentCommandPollGate.run");
     expect(source.match(/await pollCommands\(/g)).toHaveLength(1);
-    expect(source).toContain("activeConfig = await runCommandPollTick(activeConfig)");
+    expect(source).toContain('if (!USE_FIREBASE || !process.argv.includes("--watch"))');
+    expect(source).toContain("subscribeAgentCommandsWithFirebase(");
+    expect(source).toContain("Firebase command listener active.");
+    expect(source).toContain("schedule(15_000)");
+    expect(source).toContain("WONREMOTE_AGENT_HEARTBEAT_MS ?? 20_000");
   });
 
   it("routes interactive input through the persistent input server", () => {

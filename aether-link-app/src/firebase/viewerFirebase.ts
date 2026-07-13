@@ -78,6 +78,9 @@ import { safeAddDoc, safeBatchUpdate, safeSetDoc, safeUpdateDoc } from "./firest
 
 type ViewerFirebaseEnv = ImportMetaEnv;
 export type ViewerFunctionMode = "auto" | "callable" | "direct";
+const AGENT_VIEWER_LOGIN_ERROR = "사업자번호 Agent 계정은 Viewer로 로그인할 수 없습니다. 등록된 Viewer 이메일 계정을 사용해 주세요.";
+const CENTRAL_VIEWER_LOGIN_ERROR = "등록된 중앙 Viewer 관리자 계정이 아닙니다.";
+const CENTRAL_VIEWER_UIDS = new Set(["Xjjdvk0Nx1eqCvND4yIOHbM53tl1"]);
 
 export interface ViewerWebRtcTransport {
   close: () => void;
@@ -102,13 +105,21 @@ export async function loginViewerWithFirebase(
   password: string,
   env: ViewerFirebaseEnv = import.meta.env,
 ): Promise<void> {
+  if (isAgentViewerIdentity(username)) {
+    throw new Error(AGENT_VIEWER_LOGIN_ERROR);
+  }
   const services = getViewerFirebaseServices(env);
   const credentials = buildViewerAuthCredentials(username, password);
+  let credential;
   try {
     await setPersistence(services.auth, browserLocalPersistence);
-    await signInWithEmailAndPassword(services.auth, credentials.email, credentials.password);
+    credential = await signInWithEmailAndPassword(services.auth, credentials.email, credentials.password);
   } catch (error) {
     throwExplainedFirebaseAuthError(error);
+  }
+  if (!credential || !isCentralViewerUid(credential.user.uid)) {
+    await signOut(services.auth);
+    throw new Error(CENTRAL_VIEWER_LOGIN_ERROR);
   }
 }
 
@@ -120,9 +131,29 @@ export function subscribeViewerAuthState(
   const services = getViewerFirebaseServices(env);
   return onAuthStateChanged(
     services.auth,
-    (user) => onAuthenticated(Boolean(user)),
+    (user) => {
+      if (user && !isCentralViewerUid(user.uid)) {
+        void signOut(services.auth);
+        onAuthenticated(false);
+        onError(new Error(isAgentViewerIdentity(user.email ?? "")
+          ? AGENT_VIEWER_LOGIN_ERROR
+          : CENTRAL_VIEWER_LOGIN_ERROR));
+        return;
+      }
+      onAuthenticated(Boolean(user));
+    },
     (error) => onError(error),
   );
+}
+
+function isAgentViewerIdentity(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return /^\d{3}-?\d{2}-?\d{5}$/.test(normalized)
+    || normalized.endsWith("@agents.wonremote.app");
+}
+
+function isCentralViewerUid(uid: string): boolean {
+  return CENTRAL_VIEWER_UIDS.has(uid);
 }
 
 export async function logoutViewerWithFirebase(env: ViewerFirebaseEnv = import.meta.env): Promise<void> {
@@ -136,8 +167,8 @@ export function subscribeFirebaseDevices(
   env: ViewerFirebaseEnv = import.meta.env,
 ): Unsubscribe {
   const services = getViewerFirebaseServices(env);
-  const userId = requireCurrentUserId(services.auth.currentUser?.uid);
-  const devicesCollection = query(collection(services.db, "devices"), where("ownerUid", "==", userId));
+  requireCurrentUserId(services.auth.currentUser?.uid);
+  const devicesCollection = collection(services.db, "devices");
 
   return onSnapshot(
     devicesCollection,
@@ -150,8 +181,8 @@ export function subscribeFirebaseDevices(
 
 export async function fetchFirebaseDevices(env: ViewerFirebaseEnv = import.meta.env): Promise<ManagedDevice[]> {
   const services = getViewerFirebaseServices(env);
-  const userId = requireCurrentUserId(services.auth.currentUser?.uid);
-  const snapshot = await getDocs(query(collection(services.db, "devices"), where("ownerUid", "==", userId)));
+  requireCurrentUserId(services.auth.currentUser?.uid);
+  const snapshot = await getDocs(collection(services.db, "devices"));
   return sortDevices(snapshot.docs.map((deviceDoc) => mapFirestoreDevice(deviceDoc.id, deviceDoc.data())));
 }
 
@@ -981,10 +1012,7 @@ async function openFirebaseSessionDirect(
   if (!deviceSnapshot.exists()) {
     throw new Error("Firebase device not found.");
   }
-  const device = deviceSnapshot.data() as { ownerUid?: unknown; status?: unknown };
-  if (device.ownerUid !== userId) {
-    throw new Error("Device is not owned by this Firebase account.");
-  }
+  const device = deviceSnapshot.data() as { status?: unknown };
   if (device.status !== "online") {
     throw new Error("Only online agents can accept connections.");
   }
@@ -1013,22 +1041,19 @@ async function wakeFirebaseDeviceDirect(
   env: ViewerFirebaseEnv,
 ): Promise<{ relayDeviceId: string; targetDeviceId: string; targetMac: string }> {
   const services = getViewerFirebaseServices(env);
-  const userId = requireCurrentUserId(services.auth.currentUser?.uid);
+  requireCurrentUserId(services.auth.currentUser?.uid);
   const targetSnapshot = await getDoc(doc(services.db, "devices", targetDeviceId));
   if (!targetSnapshot.exists()) {
     throw new Error("Firebase device not found.");
   }
   const target = mapFirestoreDevice(targetSnapshot.id, targetSnapshot.data());
-  if ((targetSnapshot.data() as { ownerUid?: unknown }).ownerUid !== userId) {
-    throw new Error("Firebase device is not owned by the signed-in account.");
-  }
   const normalizedMac = normalizeWakeMac(targetMac);
   const registeredMacs = (target.macAddresses ?? []).map(normalizeWakeMac).filter((mac): mac is string => Boolean(mac));
   if (!normalizedMac || !registeredMacs.includes(normalizedMac)) {
     throw new Error("Wake-on-LAN MAC address is invalid or is not registered to the target device.");
   }
 
-  const deviceSnapshot = await getDocs(query(collection(services.db, "devices"), where("ownerUid", "==", userId)));
+  const deviceSnapshot = await getDocs(collection(services.db, "devices"));
   const relay = selectViewerWakeRelay(
     deviceSnapshot.docs.map((deviceDoc) => mapFirestoreDevice(deviceDoc.id, deviceDoc.data())),
     { businessNumber: target.businessNumber, nowMs: Date.now(), targetDeviceId },
@@ -1050,10 +1075,7 @@ async function requestFirebaseSecureSessionDirect(
   if (!deviceSnapshot.exists()) {
     throw new Error("Firebase device not found.");
   }
-  const device = deviceSnapshot.data() as { ownerUid?: unknown; status?: unknown };
-  if (device.ownerUid !== userId) {
-    throw new Error("Device is not owned by this Firebase account.");
-  }
+  const device = deviceSnapshot.data() as { status?: unknown };
   if (device.status !== "online") {
     throw new Error("Only online agents can accept secure connections.");
   }

@@ -6,6 +6,13 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function isCentralViewer() {
+      return signedIn()
+        && request.auth.uid in [
+          "Xjjdvk0Nx1eqCvND4yIOHbM53tl1"
+        ];
+    }
+
     function deviceDoc(deviceId) {
       return get(/databases/$(database)/documents/devices/$(deviceId));
     }
@@ -22,13 +29,36 @@ service cloud.firestore {
       return signedIn() && sessionDoc(sessionId).data.ownerUid == request.auth.uid;
     }
 
+    function canAccessSession(sessionId) {
+      return signedIn()
+        && (
+          sessionDoc(sessionId).data.ownerUid == request.auth.uid
+          || (
+            sessionDoc(sessionId).data.deviceId is string
+            && deviceDoc(sessionDoc(sessionId).data.deviceId).data.ownerUid == request.auth.uid
+          )
+        );
+    }
+
+    function canReadSession() {
+      return signedIn()
+        && (
+          resource.data.ownerUid == request.auth.uid
+          || (
+            resource.data.deviceId is string
+            && deviceDoc(resource.data.deviceId).data.ownerUid == request.auth.uid
+          )
+        );
+    }
+
     function isOwnSessionCreate(sessionId) {
       return signedIn()
         && request.resource.data.ownerUid == request.auth.uid
         && request.resource.data.id == sessionId
         && request.resource.data.deviceId is string
         && request.resource.data.state == "connected"
-        && deviceDoc(request.resource.data.deviceId).data.ownerUid == request.auth.uid;
+        && isCentralViewer()
+        && deviceDoc(request.resource.data.deviceId).data.ownerUid is string;
     }
 
     function isOwnSessionClose(sessionId) {
@@ -56,8 +86,24 @@ service cloud.firestore {
         && request.resource.data.installId == resource.data.installId;
     }
 
+    function isCentralViewerDeviceUpdate() {
+      return isCentralViewer()
+        && resource.data.ownerUid is string
+        && request.resource.data.ownerUid == resource.data.ownerUid
+        && request.resource.data.businessNumber == resource.data.businessNumber
+        && request.resource.data.deviceNumber == resource.data.deviceNumber
+        && request.resource.data.installId == resource.data.installId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "storeName",
+          "storeNameSource",
+          "deviceName",
+          "desktopName",
+          "updatedAt"
+        ]);
+    }
+
     function isOwnDeviceCommandCreate(deviceId) {
-      return ownsDevice(deviceId)
+      return (isCentralViewer() || ownsDevice(deviceId))
         && request.resource.data.action is string
         && request.resource.data.state == "pending";
     }
@@ -67,10 +113,10 @@ service cloud.firestore {
     }
 
     function isOwnSecureChallengeCreate() {
-      return signedIn()
+      return isCentralViewer()
         && request.resource.data.ownerUid == request.auth.uid
         && request.resource.data.deviceId is string
-        && deviceDoc(request.resource.data.deviceId).data.ownerUid == request.auth.uid
+        && deviceDoc(request.resource.data.deviceId).data.ownerUid is string
         && request.resource.data.challengeId is string
         && request.resource.data.code is string
         && request.resource.data.state == "pending";
@@ -141,14 +187,14 @@ service cloud.firestore {
     }
 
     match /devices/{deviceId} {
-      allow get: if signedIn()
+      allow get: if isCentralViewer() || (signedIn()
         && (
           !exists(/databases/$(database)/documents/devices/$(deviceId))
           || resource.data.ownerUid == request.auth.uid
-        );
-      allow list: if signedIn() && resource.data.ownerUid == request.auth.uid;
+        ));
+      allow list: if isCentralViewer() || (signedIn() && resource.data.ownerUid == request.auth.uid);
       allow create: if isOwnDeviceCreate();
-      allow update: if isOwnDeviceUpdate(deviceId);
+      allow update: if isCentralViewerDeviceUpdate() || isOwnDeviceUpdate(deviceId);
       allow delete: if false;
 
       match /commands/{commandId} {
@@ -159,48 +205,48 @@ service cloud.firestore {
     }
 
     match /sessions/{sessionId} {
-      allow read: if signedIn() && resource.data.ownerUid == request.auth.uid;
+      allow read: if canReadSession();
       allow update: if isOwnSessionClose(sessionId);
       allow create: if isOwnSessionCreate(sessionId);
       allow delete: if false;
 
       match /chat/{messageId} {
-        allow read, create, delete: if ownsSession(sessionId);
+        allow read, create, delete: if canAccessSession(sessionId);
         allow update: if false;
       }
 
       match /clipboard/{clipboardId} {
-        allow read, create, delete: if ownsSession(sessionId);
+        allow read, create, delete: if canAccessSession(sessionId);
         allow update: if false;
       }
 
       match /files/{fileId} {
-        allow read, delete: if ownsSession(sessionId);
+        allow read, delete: if canAccessSession(sessionId);
         allow create: if isOwnSessionFileCreate(sessionId);
         allow update: if false;
       }
 
       match /tileFrames/{frameId} {
-        allow read, create, delete: if ownsSession(sessionId);
+        allow read, create, delete: if canAccessSession(sessionId);
         allow update: if false;
       }
 
       match /fileReceipts/{transferId} {
-        allow read, create, update: if ownsSession(sessionId);
+        allow read, create, update: if canAccessSession(sessionId);
         allow delete: if false;
       }
 
       match /webrtc/{signalId} {
-        allow read, create, update, delete: if ownsSession(sessionId);
+        allow read, create, update, delete: if canAccessSession(sessionId);
       }
 
       match /viewerCandidates/{candidateId} {
-        allow read, create, delete: if ownsSession(sessionId);
+        allow read, create, delete: if canAccessSession(sessionId);
         allow update: if false;
       }
 
       match /agentCandidates/{candidateId} {
-        allow read, create, delete: if ownsSession(sessionId);
+        allow read, create, delete: if canAccessSession(sessionId);
         allow update: if false;
       }
     }

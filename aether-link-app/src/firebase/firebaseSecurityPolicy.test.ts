@@ -13,6 +13,17 @@ describe("Firebase security deployment policy", () => {
     expect(firebaseConfig.functions?.source).toBe("functions");
   });
 
+  it("keeps an executable Firestore emulator regression for Viewer and Agent role boundaries", () => {
+    const packageJson = JSON.parse(readFileSync(resolve(repoRoot, "aether-link-app/package.json"), "utf8")) as {
+      scripts?: Record<string, string>;
+    };
+    const verifier = readFileSync(resolve(repoRoot, "aether-link-app/scripts/verify-firestore-rules.mjs"), "utf8");
+
+    expect(packageJson.scripts?.["firebase:rules:test"]).toContain("verify-firestore-rules.mjs");
+    expect(verifier).toContain("Unauthorized device list");
+    expect(verifier).toContain("Agent could not read the central Viewer session for its device.");
+  });
+
   it("allows Spark-compatible direct session commands only for owned devices", () => {
     const rules = readFileSync(resolve(repoRoot, "firestore.rules"), "utf8");
 
@@ -27,24 +38,37 @@ describe("Firebase security deployment policy", () => {
     const rules = readFileSync(resolve(repoRoot, "firestore.rules"), "utf8");
 
     expect(rules).toContain("function isOwnDeviceUpdate(deviceId)");
-    expect(rules).toContain("allow update: if isOwnDeviceUpdate(deviceId);");
+    expect(rules).toContain("isCentralViewerDeviceUpdate() || isOwnDeviceUpdate(deviceId)");
     expect(rules).toContain("request.resource.data.ownerUid == resource.data.ownerUid");
     expect(rules).toContain("request.resource.data.businessNumber == resource.data.businessNumber");
     expect(rules).toContain("request.resource.data.deviceNumber == resource.data.deviceNumber");
     expect(rules).toContain("request.resource.data.installId == resource.data.installId");
   });
 
-  it("authorizes owned-device list queries from resource data instead of a nested document get", () => {
+  it("authorizes central Viewer device list queries while keeping Agent ownership checks", () => {
     const rules = readFileSync(resolve(repoRoot, "firestore.rules"), "utf8");
+    const viewerFirebase = readFileSync(resolve(repoRoot, "aether-link-app/src/firebase/viewerFirebase.ts"), "utf8");
     const deviceMatch = rules.match(/match \/devices\/\{deviceId\} \{([\s\S]*?)match \/commands/);
-
-    expect(deviceMatch?.[1]).toContain("allow get: if signedIn()");
-    expect(deviceMatch?.[1]).toContain("!exists(/databases/$(database)/documents/devices/$(deviceId))");
-    expect(deviceMatch?.[1]).toContain("resource.data.ownerUid == request.auth.uid");
-    expect(deviceMatch?.[1]).toContain(
-      "allow list: if signedIn() && resource.data.ownerUid == request.auth.uid;",
+    const deviceListBlock = viewerFirebase.slice(
+      viewerFirebase.indexOf("export function subscribeFirebaseDevices"),
+      viewerFirebase.indexOf("export async function fetchFirebaseConnectionHistory"),
     );
-    expect(deviceMatch?.[1]).not.toContain("ownsDevice(deviceId)");
+    const sessionOpenBlock = viewerFirebase.slice(
+      viewerFirebase.indexOf("async function openFirebaseSessionDirect"),
+      viewerFirebase.indexOf("async function recordFirebaseInputDirect"),
+    );
+
+    expect(rules).toContain("function isCentralViewer()");
+    expect(rules).toContain('request.auth.uid in [');
+    expect(rules).toContain('"Xjjdvk0Nx1eqCvND4yIOHbM53tl1"');
+    expect(viewerFirebase).toContain('const CENTRAL_VIEWER_UIDS = new Set(["Xjjdvk0Nx1eqCvND4yIOHbM53tl1"]);');
+    expect(rules).not.toContain('!request.auth.token.email.matches(".*@agents[.]wonremote[.]app")');
+    expect(deviceMatch?.[1]).toContain("allow get: if isCentralViewer()");
+    expect(deviceMatch?.[1]).toContain("allow list: if isCentralViewer()");
+    expect(deviceMatch?.[1]).toContain("allow update: if isCentralViewerDeviceUpdate() || isOwnDeviceUpdate(deviceId);");
+    expect(deviceMatch?.[1]).toContain("isOwnDeviceUpdate(deviceId)");
+    expect(deviceListBlock).not.toContain('where("ownerUid", "==", userId)');
+    expect(sessionOpenBlock).not.toContain("device.ownerUid !== userId");
   });
 
   it("requires explicit session subcollection rules instead of recursive wildcard access", () => {
@@ -52,9 +76,11 @@ describe("Firebase security deployment policy", () => {
 
     expect(rules).toContain("function ownsSession(sessionId)");
     expect(rules).toContain("function isOwnSessionCreate(sessionId)");
+    expect(rules).toContain("function canAccessSession(sessionId)");
+    expect(rules).toContain("function canReadSession()");
     expect(rules).toContain("function isOwnSessionClose(sessionId)");
     expect(rules).toContain("match /sessions/{sessionId}");
-    expect(rules).toContain("allow read: if signedIn() && resource.data.ownerUid == request.auth.uid;");
+    expect(rules).toContain("allow read: if canReadSession();");
     expect(rules).toContain("allow create: if isOwnSessionCreate(sessionId);");
     expect(rules).toContain("allow update: if isOwnSessionClose(sessionId);");
     expect(rules).not.toContain("allow read, update: if ownsSession(sessionId);");
@@ -159,7 +185,7 @@ describe("Firebase security deployment policy", () => {
     expect(agentEntry).not.toContain("withAgentOperationContext(\"firebase active session recovery\"");
     expect(agentFirebase).toContain("fetchActiveFirebaseSessionsForAgent");
     expect(agentFirebase).toContain('where("deviceId", "==", input.deviceId)');
-    expect(agentFirebase).toContain('where("ownerUid", "==", userId)');
+    expect(agentFirebase).not.toContain('where("ownerUid", "==", userId)');
     expect(agentFirebase).toContain('where("state", "==", "connected")');
     expect(agentFirebase).toContain(".sort((left, right) => sessionStartedAtMs(right.data) - sessionStartedAtMs(left.data))");
     expect(agentFirebase).toContain(".slice(0, 1)");

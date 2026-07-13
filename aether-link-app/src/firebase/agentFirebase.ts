@@ -169,33 +169,34 @@ export async function sendAgentHeartbeatWithFirebase(
 ): Promise<AgentHeartbeatResult> {
   const services = getAgentFirebaseServices(env);
   const deviceRef = doc(services.db, "devices", input.deviceId);
-  const snapshot = await getDoc(deviceRef);
-  if (!snapshot.exists()) {
-    throwStatusError("Firebase device not found", 404);
-  }
-
-  const data = snapshot.data() as { installId?: string };
-  if (data.installId && data.installId !== input.installId) {
-    throwStatusError("Firebase device installId mismatch", 409);
-  }
-
   const nowIso = new Date().toISOString();
-  await safeUpdateDoc(deviceRef, {
-    activeDisplayIndex: input.activeDisplayIndex,
-    displays: input.displays ?? [],
-    installId: input.installId,
-    lastSeenAt: nowIso,
-    macAddresses: input.macAddresses ?? [],
-    controlDiagnostics: input.controlDiagnostics ?? null,
-    streamDiagnostics: input.streamDiagnostics ?? null,
-    status: "online",
-    updatedAt: serverTimestamp(),
-    version: input.version,
-  });
+  try {
+    // Firestore rules keep installId immutable; a mismatched Agent update is rejected there.
+    await safeUpdateDoc(deviceRef, {
+      activeDisplayIndex: input.activeDisplayIndex,
+      displays: input.displays ?? [],
+      installId: input.installId,
+      lastSeenAt: nowIso,
+      macAddresses: input.macAddresses ?? [],
+      controlDiagnostics: input.controlDiagnostics ?? null,
+      streamDiagnostics: input.streamDiagnostics ?? null,
+      status: "online",
+      updatedAt: serverTimestamp(),
+      version: input.version,
+    });
+  } catch (error) {
+    if (isFirebaseNotFoundError(error)) {
+      throwStatusError("Firebase device not found", 404);
+    }
+    throw error;
+  }
 
-  const updatedSnapshot = await getDoc(deviceRef);
   const device = mapFirestoreDevice(input.deviceId, {
-    ...updatedSnapshot.data(),
+    businessNumber: "",
+    deviceNumber: "",
+    deviceName: "",
+    desktopName: "",
+    storeName: "",
     lastSeenAt: nowIso,
     status: "online",
     version: input.version,
@@ -267,6 +268,82 @@ export async function pollAgentCommandsWithFirebase(
   return { commands };
 }
 
+export async function subscribeAgentCommandsWithFirebase(
+  input: { deviceId: string; installId: string },
+  onCommands: (commands: AgentCommand[]) => void | Promise<void>,
+  onError: (error: Error) => void,
+  env: AgentFirebaseEnv = process.env,
+): Promise<Unsubscribe> {
+  const services = getAgentFirebaseServices(env);
+  const deviceRef = doc(services.db, "devices", input.deviceId);
+  try {
+    const deviceSnapshot = await getDoc(deviceRef);
+    if (!deviceSnapshot.exists()) {
+      throwStatusError("Firebase device not found", 404);
+    }
+    const data = deviceSnapshot.data() as { installId?: string };
+    if (data.installId && data.installId !== input.installId) {
+      throwStatusError("Firebase device installId mismatch", 409);
+    }
+  } catch (error) {
+    const normalized = error instanceof Error ? error : new Error(String(error));
+    onError(normalized);
+    throw normalized;
+  }
+
+  const commandQuery = query(
+    collection(services.db, "devices", input.deviceId, "commands"),
+    where("state", "==", "pending"),
+    limit(50),
+  );
+  let active = true;
+  let serialized = Promise.resolve();
+  const unsubscribe = onSnapshot(
+    commandQuery,
+    (snapshot) => {
+      serialized = serialized.then(async () => {
+        if (!active || snapshot.docs.length === 0) {
+          return;
+        }
+        const batch = writeBatch(services.db);
+        const commands: AgentCommand[] = [];
+        snapshot.docs.forEach((commandDoc) => {
+          const command = commandDoc.data() as { action?: unknown; createdAt?: unknown };
+          const action = typeof command.action === "string" ? command.action : "";
+          if (!action) {
+            safeBatchUpdate(batch, commandDoc.ref, {
+              state: "ignored",
+              deliveredAt: serverTimestamp(),
+            });
+            return;
+          }
+          commands.push({
+            id: commandDoc.id,
+            action,
+            createdAt: coerceCreatedAt(command.createdAt),
+            deviceId: input.deviceId,
+          });
+          safeBatchUpdate(batch, commandDoc.ref, {
+            state: "delivered",
+            deliveredAt: serverTimestamp(),
+          });
+        });
+        await batch.commit();
+        if (active && commands.length > 0) {
+          await onCommands(commands);
+        }
+      }).catch((error) => {
+        onError(error instanceof Error ? error : new Error(String(error)));
+      });
+    },
+    (error) => onError(error instanceof Error ? error : new Error(String(error))),
+  );
+  return () => {
+    active = false;
+    unsubscribe();
+  };
+}
+
 export async function fetchActiveFirebaseSessionsForAgent(
   input: { deviceId: string; installId: string },
   env: AgentFirebaseEnv = process.env,
@@ -282,12 +359,9 @@ export async function fetchActiveFirebaseSessionsForAgent(
   if (data.installId && data.installId !== input.installId) {
     throwStatusError("Firebase device installId mismatch", 409);
   }
-  const userId = requireCurrentAgentUserId(services.auth.currentUser?.uid);
-
   const sessionsQuery = query(
     collection(services.db, "sessions"),
     where("deviceId", "==", input.deviceId),
-    where("ownerUid", "==", userId),
     where("state", "==", "connected"),
   );
   const snapshot = await getDocs(sessionsQuery);
@@ -884,13 +958,6 @@ function getAgentFirebaseServices(env: AgentFirebaseEnv) {
   return getWonRemoteFirebaseServices(config);
 }
 
-function requireCurrentAgentUserId(userId: string | undefined): string {
-  if (!userId) {
-    throw new Error("Firebase agent is not authenticated.");
-  }
-  return userId;
-}
-
 function coerceCreatedAt(value: unknown): string {
   if (typeof value === "string" && value.trim()) {
     return value;
@@ -933,5 +1000,14 @@ function isFirebaseAuthCode(error: unknown, code: string): boolean {
     error !== null &&
     "code" in error &&
     (error as { code?: unknown }).code === code
+  );
+}
+
+function isFirebaseNotFoundError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "not-found"
   );
 }

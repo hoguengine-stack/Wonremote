@@ -68,6 +68,25 @@ button:disabled {
   align-content: start;
 }
 
+.agent-screen {
+  padding: 10px;
+}
+
+.agent-screen .agent-panel {
+  box-shadow: none;
+  gap: 10px;
+  padding: 16px;
+  width: 100%;
+}
+
+.agent-screen .agent-panel h1 {
+  font-size: 20px;
+}
+
+.agent-screen .agent-panel label {
+  gap: 4px;
+}
+
 .agent-result {
   background: #edf7f4;
   border: 1px solid #bfe1d7;

@@ -48,6 +48,35 @@ describe("desktop packaging scaffold", () => {
     expect(packageReleaseScript).toContain("tauri.agent.conf.json");
   });
 
+  it("keeps x64 and x86 Agent registration windows compact and non-resizable", () => {
+    for (const configName of ["tauri.agent.conf.json", "tauri.agent.x86.conf.json"]) {
+      const config = JSON.parse(readFileSync(path.join(projectRoot, "src-tauri", configName), "utf8"));
+      expect(config.app.windows[0]).toMatchObject({
+        width: 340,
+        height: 410,
+        minWidth: 340,
+        minHeight: 410,
+        maxWidth: 340,
+        maxHeight: 410,
+        resizable: false,
+      });
+    }
+
+    const styles = readFileSync(path.join(projectRoot, "src", "styles.css"), "utf8");
+    expect(styles).toContain(".agent-screen .agent-panel");
+  });
+
+  it("keeps a completed Agent registration when startup integration is degraded", () => {
+    const appSource = readFileSync(path.join(projectRoot, "src", "App.tsx"), "utf8");
+    const tauriSource = readFileSync(path.join(projectRoot, "src-tauri", "src", "lib.rs"), "utf8");
+
+    expect(appSource).toContain('const persistedConfig = await invoke<any>("get_agent_config")');
+    expect(appSource).toContain("persistedConfig?.registeredDeviceId === configData.registeredDeviceId");
+    expect(tauriSource).toContain("startup registry update failed after config save");
+    expect(tauriSource).toContain("job assign failed; child terminated");
+    expect(tauriSource).toContain("failed to assign Agent child to cleanup job");
+  });
+
   it("resets the NSIS output path after overriding split install folders", () => {
     const viewerHook = readFileSync(path.join(projectRoot, "src-tauri", "windows", "viewer-install-hooks.nsh"), "utf8");
     const agentHook = readFileSync(path.join(projectRoot, "src-tauri", "windows", "agent-install-hooks.nsh"), "utf8");

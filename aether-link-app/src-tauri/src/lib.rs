@@ -607,8 +607,15 @@ fn spawn_agent_only_process(
     let stderr = child.stderr.take();
 
     if let Err(error) = job.assign(&child) {
-        append_runtime_log("agent-process", &format!("job assign failed: {error}"));
-        return Err(error);
+        let _ = child.kill();
+        append_runtime_log(
+            "agent-process",
+            &format!("job assign failed; child terminated: {error}"),
+        );
+        return Err(io::Error::new(
+            error.kind(),
+            format!("failed to assign Agent child to cleanup job: {error}"),
+        ));
     }
 
     {
@@ -830,7 +837,12 @@ fn save_agent_config(
     )
     .map_err(|e| e.to_string())?;
 
-    set_startup_registry(true, true).map_err(|e| e.to_string())?;
+    if let Err(error) = set_startup_registry(true, true) {
+        append_runtime_log(
+            "agent-registration",
+            &format!("startup registry update failed after config save: {error}"),
+        );
+    }
 
     let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
     start_local_api_server_for_mode(&job, &resource_dir).map_err(|e| e.to_string())?;

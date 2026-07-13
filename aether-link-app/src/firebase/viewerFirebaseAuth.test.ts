@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { signInWithEmailAndPassword } from "firebase/auth";
-import { loginViewerWithFirebase } from "./viewerFirebase";
+import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
+import { loginViewerWithFirebase, subscribeViewerAuthState } from "./viewerFirebase";
+
+const CENTRAL_VIEWER_UID = "Xjjdvk0Nx1eqCvND4yIOHbM53tl1";
 
 const mockState = vi.hoisted(() => ({
   services: {
@@ -28,8 +30,8 @@ vi.mock("firebase/auth", () => ({
   createUserWithEmailAndPassword: vi.fn(),
   onAuthStateChanged: vi.fn(),
   setPersistence: vi.fn(async () => undefined),
-  signInWithEmailAndPassword: vi.fn(async () => ({ user: { uid: "uid-1" } })),
-  signOut: vi.fn(),
+  signInWithEmailAndPassword: vi.fn(async () => ({ user: { uid: CENTRAL_VIEWER_UID } })),
+  signOut: vi.fn(async () => undefined),
 }));
 
 describe("Viewer Firebase authentication", () => {
@@ -37,14 +39,11 @@ describe("Viewer Firebase authentication", () => {
     vi.clearAllMocks();
   });
 
-  it("uses the same business-number Firebase account as the Agent", async () => {
-    await loginViewerWithFirebase("123-45-67890", "1234");
-
-    expect(signInWithEmailAndPassword).toHaveBeenCalledWith(
-      mockState.services.auth,
-      "1234567890@agents.wonremote.app",
-      "wonremote-1234567890-1234",
+  it("rejects business-number login because Agent accounts are not central Viewer accounts", async () => {
+    await expect(loginViewerWithFirebase("123-45-67890", "1234")).rejects.toThrow(
+      "사업자번호 Agent 계정은 Viewer로 로그인할 수 없습니다.",
     );
+    expect(signInWithEmailAndPassword).not.toHaveBeenCalled();
   });
 
   it("keeps email login available for explicit Firebase accounts", async () => {
@@ -55,5 +54,47 @@ describe("Viewer Firebase authentication", () => {
       "owner@example.com",
       "secret123",
     );
+  });
+
+  it("signs out an authenticated email account that is not a registered central Viewer", async () => {
+    vi.mocked(signInWithEmailAndPassword).mockResolvedValueOnce({
+      user: { uid: "unregistered-viewer-uid" },
+    } as any);
+
+    await expect(loginViewerWithFirebase("other@example.com", "secret123")).rejects.toThrow(
+      "등록된 중앙 Viewer 관리자 계정이 아닙니다.",
+    );
+    expect(signOut).toHaveBeenCalledWith(mockState.services.auth);
+  });
+
+  it("rejects a persisted Agent account instead of opening the central Viewer", () => {
+    vi.mocked(onAuthStateChanged).mockImplementationOnce(((_auth: unknown, onNext: (user: unknown) => void) => {
+      onNext({ uid: "agent-uid", email: "1234567890@agents.wonremote.app" });
+      return vi.fn();
+    }) as any);
+    const onAuthenticated = vi.fn();
+    const onError = vi.fn();
+
+    subscribeViewerAuthState(onAuthenticated, onError);
+
+    expect(onAuthenticated).toHaveBeenCalledWith(false);
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({
+      message: expect.stringContaining("Viewer 이메일 계정"),
+    }));
+    expect(signOut).toHaveBeenCalledWith(mockState.services.auth);
+  });
+
+  it("accepts a persisted central Viewer account", () => {
+    vi.mocked(onAuthStateChanged).mockImplementationOnce(((_auth: unknown, onNext: (user: unknown) => void) => {
+      onNext({ uid: CENTRAL_VIEWER_UID, email: "owner@example.com" });
+      return vi.fn();
+    }) as any);
+    const onAuthenticated = vi.fn();
+    const onError = vi.fn();
+
+    subscribeViewerAuthState(onAuthenticated, onError);
+
+    expect(onAuthenticated).toHaveBeenCalledWith(true);
+    expect(onError).not.toHaveBeenCalled();
   });
 });
