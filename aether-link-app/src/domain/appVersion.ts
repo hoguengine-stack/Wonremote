@@ -1,1 +1,1 @@
-export const WONREMOTE_APP_VERSION = "0.1.48";
+export const WONREMOTE_APP_VERSION = "0.1.50";

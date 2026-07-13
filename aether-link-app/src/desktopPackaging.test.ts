@@ -683,6 +683,26 @@ describe("desktop packaging scaffold", () => {
     expect(viewerModeSetup).not.toContain('arg("--watch")');
   });
 
+  it("checks installed Viewer updates from the native shell instead of the WebView", () => {
+    const tauriLib = readFileSync(path.join(projectRoot, "src-tauri", "src", "lib.rs"), "utf8");
+    const appTsx = readFileSync(path.join(projectRoot, "src", "App.tsx"), "utf8");
+    const viewerModeSetup = tauriLib.slice(
+      tauriLib.indexOf("// Viewer Mode Setup"),
+      tauriLib.indexOf("// Show window for Viewer"),
+    );
+    const agentModeSetup = tauriLib.slice(
+      tauriLib.indexOf("// Agent Mode Setup"),
+      tauriLib.indexOf("// Viewer Mode Setup"),
+    );
+
+    expect(tauriLib).toContain("fn start_viewer_update_watcher");
+    expect(viewerModeSetup).toContain("start_viewer_update_watcher(app.handle().clone())");
+    expect(agentModeSetup).not.toContain("start_viewer_update_watcher");
+    expect(tauriLib).toContain('.env("WONREMOTE_UPDATE_PRODUCT", restart_mode)');
+    expect(appTsx).not.toContain('invoke("start_installer_update"');
+    expect(appTsx).toContain("Native Viewer shell owns installed-app updates");
+  });
+
   it("starts the bundled local API server before agent registration or heartbeat", () => {
     const tauriLib = readFileSync(path.join(projectRoot, "src-tauri", "src", "lib.rs"), "utf8");
 

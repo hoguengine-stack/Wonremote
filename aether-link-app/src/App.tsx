@@ -201,7 +201,6 @@ function ViewerApp() {
   const [selectedStore, setSelectedStore] = useState("전체");
   const [inputLog, setInputLog] = useState<string[]>([]);
   const [updateAlert, setUpdateAlert] = useState<string | null>(null);
-  const updateLaunchRef = useRef<string | null>(null);
   const sessionRestoreAttemptedRef = useRef(false);
   const [editTarget, setEditTarget] = useState<DeviceEditTarget | null>(null);
   const [secureConnect, setSecureConnect] = useState<SecureConnectState | null>(null);
@@ -240,8 +239,12 @@ function ViewerApp() {
     };
   }, []);
 
-  // Installed viewers hand off to the signed updater; hosted viewers only reload.
+  // Native Viewer shell owns installed-app updates so WebView CORS cannot block them.
   useEffect(() => {
+    if ((window as any).__TAURI_INTERNALS__) {
+      return;
+    }
+
     const currentViewerVersion = getViewerVersion(import.meta.env);
     let active = true;
     let reloadTimer: ReturnType<typeof setTimeout> | undefined;
@@ -254,21 +257,7 @@ function ViewerApp() {
         const latestVersion = data.latestVersion;
         if (active && typeof latestVersion === "string" && shouldNotifyUpdate(data, currentViewerVersion)) {
           setUpdateAlert(latestVersion);
-          if ((window as any).__TAURI_INTERNALS__) {
-            if (updateLaunchRef.current === latestVersion) {
-              return;
-            }
-            updateLaunchRef.current = latestVersion;
-            try {
-              await invoke("start_installer_update", { restartMode: "viewer" });
-            } catch (error) {
-              updateLaunchRef.current = null;
-              if (active) {
-                setUpdateAlert(null);
-                setApiError(error instanceof Error ? error.message : "자동 업데이트를 시작하지 못했습니다.");
-              }
-            }
-          } else if (shouldReloadViewerForUpdate(data, currentViewerVersion) && !reloadTimer) {
+          if (shouldReloadViewerForUpdate(data, currentViewerVersion) && !reloadTimer) {
             reloadTimer = setTimeout(() => {
               window.location.reload();
             }, 1500);

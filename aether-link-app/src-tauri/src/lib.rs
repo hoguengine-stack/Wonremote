@@ -65,6 +65,8 @@ const PUBLIC_FIREBASE_STORAGE_BUCKET: &str = "wonremote-a7fd3.appspot.com";
 const PUBLIC_FIREBASE_MESSAGING_SENDER_ID: &str = "52940136204";
 const PORTABLE_MARKER_FILENAME: &str = "wonremote-portable.json";
 const UPDATE_HANDOFF_PREFIX: &str = "[WonRemoteUpdateHandoff]";
+const VIEWER_UPDATE_INITIAL_DELAY: Duration = Duration::from_secs(3);
+const VIEWER_UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(15 * 60);
 #[cfg(target_arch = "x86")]
 const WIN32_AGENT_TRAY_ID: u32 = 37;
 #[cfg(target_arch = "x86")]
@@ -1308,6 +1310,21 @@ fn start_installer_update(app: tauri::AppHandle, restart_mode: String) -> Result
     Ok(())
 }
 
+fn start_viewer_update_watcher(app: tauri::AppHandle) {
+    thread::spawn(move || {
+        thread::sleep(VIEWER_UPDATE_INITIAL_DELAY);
+        loop {
+            if let Err(error) = start_installer_update(app.clone(), "viewer".to_string()) {
+                append_runtime_log(
+                    "viewer-native-update",
+                    &format!("failed to start signed update check: {error}"),
+                );
+            }
+            thread::sleep(VIEWER_UPDATE_CHECK_INTERVAL);
+        }
+    });
+}
+
 fn app_root_from_manifest() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -1848,6 +1865,7 @@ pub fn run() {
                     app.path().resource_dir()?
                 };
                 start_local_api_server_for_mode(&job, &resource_dir)?;
+                start_viewer_update_watcher(app.handle().clone());
 
                 // Show window for Viewer
                 show_main_window_with_log(app.handle(), "viewer-startup");
