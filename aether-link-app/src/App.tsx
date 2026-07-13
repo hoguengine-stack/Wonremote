@@ -18,6 +18,7 @@ import {
   Maximize2,
   RotateCcw,
   Power,
+  Trash2,
 } from "lucide-react";
 import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -46,6 +47,7 @@ import {
   requestSecureSession,
   connectSecureSession,
   deleteUploadedFileFromStorage,
+  deleteRemoteDevice,
 } from "./api/viewerApi";
 import { fetchViewerUpdateMetadata } from "./api/viewerUpdate";
 import {
@@ -646,6 +648,39 @@ function ViewerApp() {
     }
   }
 
+  async function handleDeleteDevice() {
+    if (!editTarget || editTarget.mode !== "device") {
+      return;
+    }
+
+    const device = editTarget.devices[0];
+    try {
+      if (session?.deviceId === device.id) {
+        await closeSession(session.id);
+        setSession(null);
+        window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
+        setInputLog([]);
+      }
+      await deleteRemoteDevice(device.id);
+      const remainingDevices = devices.filter((item) => item.id !== device.id);
+      setDevices(remainingDevices);
+      if (
+        selectedStore === device.storeName
+        && !remainingDevices.some((item) => item.storeName === selectedStore)
+      ) {
+        setSelectedStore("전체");
+      }
+      if (secureConnect?.device.id === device.id) {
+        setSecureConnect(null);
+      }
+      setEditTarget(null);
+      setApiError("");
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : "장비 삭제 실패");
+      throw error;
+    }
+  }
+
   if (isCheckingAutoLogin) {
     return <AutoLoginScreen />;
   }
@@ -767,6 +802,7 @@ function ViewerApp() {
         <DeviceEditDialog
           target={editTarget}
           onClose={() => setEditTarget(null)}
+          onDelete={handleDeleteDevice}
           onSave={handleSaveDeviceMetadata}
         />
       )}
@@ -803,10 +839,12 @@ function formatSecurityCodeInput(value: string): string {
 
 function DeviceEditDialog({
   onClose,
+  onDelete,
   onSave,
   target,
 }: {
   onClose: () => void;
+  onDelete: () => Promise<void>;
   onSave: (input: Omit<DeviceMetadataUpdateInput, "deviceId">) => Promise<void>;
   target: DeviceEditTarget;
 }) {
@@ -819,6 +857,8 @@ function DeviceEditDialog({
     storeName: primaryDevice.storeName,
   });
   const [isSaving, setIsSaving] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [isDeleteArmed, setIsDeleteArmed] = useState(false);
 
   useEffect(() => {
     setForm({
@@ -827,6 +867,7 @@ function DeviceEditDialog({
       deviceName: primaryDevice.deviceName,
       storeName: primaryDevice.storeName,
     });
+    setIsDeleteArmed(false);
   }, [primaryDevice.id]);
 
   async function saveCurrentForm() {
@@ -844,6 +885,25 @@ function DeviceEditDialog({
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     await saveCurrentForm();
+  }
+
+  async function deleteCurrentDevice() {
+    if (isSaving || isDeleting || isGroupEdit) {
+      return;
+    }
+    if (!isDeleteArmed) {
+      setIsDeleteArmed(true);
+      return;
+    }
+
+    setIsDeleting(true);
+    try {
+      await onDelete();
+    } catch {
+      setIsDeleteArmed(false);
+    } finally {
+      setIsDeleting(false);
+    }
   }
 
   return (
@@ -891,13 +951,29 @@ function DeviceEditDialog({
             </>
           )}
         </div>
+        {!isGroupEdit && (
+          <p className="modal-help">
+            삭제하면 이 Agent의 등록이 해제됩니다. 같은 PC에서 다시 등록하면 장비가 다시 생성됩니다.
+          </p>
+        )}
         <div className="modal-actions">
+          {!isGroupEdit && (
+            <button
+              className={`danger-button${isDeleteArmed ? " armed" : ""}`}
+              disabled={isSaving || isDeleting}
+              type="button"
+              onClick={() => void deleteCurrentDevice()}
+            >
+              <Trash2 size={15} />
+              {isDeleting ? "삭제 중..." : isDeleteArmed ? "한 번 더 눌러 삭제" : "장비 삭제"}
+            </button>
+          )}
           <button className="secondary-button" type="button" onClick={onClose}>
             취소
           </button>
           <button
             className="primary-button compact"
-            disabled={isSaving}
+            disabled={isSaving || isDeleting}
             type="button"
             onClick={() => void saveCurrentForm()}
             onMouseDown={(event) => {

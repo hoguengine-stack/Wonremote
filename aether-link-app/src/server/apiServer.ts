@@ -332,6 +332,42 @@ async function routeRequest(
     }
   }
 
+  if (request.method === "DELETE" && url.pathname.startsWith("/api/devices/")) {
+    const match = url.pathname.match(/^\/api\/devices\/(.+)$/);
+    if (match) {
+      const deviceId = decodeURIComponent(match[1]);
+      const deviceIndex = state.devices.findIndex((device) => device.id === deviceId);
+      if (deviceIndex === -1) {
+        writeJson(response, 404, { error: "Device not found." });
+        return;
+      }
+
+      state.devices = state.devices.filter((device) => device.id !== deviceId);
+      await state.deviceStore.writeDevices(state.devices);
+      state.commandQueues.delete(deviceId);
+      for (const [challengeId, challenge] of state.secureChallenges) {
+        if (challenge.deviceId === deviceId) {
+          state.secureChallenges.delete(challengeId);
+        }
+      }
+      for (const [sessionId, remoteSession] of state.sessions) {
+        if (remoteSession.deviceId !== deviceId) {
+          continue;
+        }
+        state.sessions.delete(sessionId);
+        state.inputLogs.delete(sessionId);
+        state.sessionTiles.delete(sessionId);
+        state.sessionChats.delete(sessionId);
+        state.sessionClipboards.delete(sessionId);
+        state.sessionFiles.delete(sessionId);
+        state.sessionFileReceipts.delete(sessionId);
+      }
+
+      writeJson(response, 200, { ok: true });
+      return;
+    }
+  }
+
   if (request.method === "POST" && url.pathname === "/api/agent/first-run") {
     const input = await readJson<AgentFirstRunInput>(request);
     try {
@@ -1137,7 +1173,7 @@ function setCorsHeaders(request: IncomingMessage, response: ServerResponse) {
     typeof origin === "string" && isAllowedLocalViewerOrigin(origin) ? origin : "http://127.0.0.1:5173";
 
   response.setHeader("access-control-allow-origin", allowedOrigin);
-  response.setHeader("access-control-allow-methods", "GET,POST,PATCH,OPTIONS");
+  response.setHeader("access-control-allow-methods", "GET,POST,PATCH,DELETE,OPTIONS");
   response.setHeader("access-control-allow-headers", "content-type");
 }
 

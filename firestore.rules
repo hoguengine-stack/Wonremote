@@ -195,12 +195,13 @@ service cloud.firestore {
       allow list: if isCentralViewer() || (signedIn() && resource.data.ownerUid == request.auth.uid);
       allow create: if isOwnDeviceCreate();
       allow update: if isCentralViewerDeviceUpdate() || isOwnDeviceUpdate(deviceId);
-      allow delete: if false;
+      allow delete: if isCentralViewer();
 
       match /commands/{commandId} {
         allow create: if isOwnDeviceCommandCreate(deviceId);
-        allow read, update: if ownsDevice(deviceId);
-        allow delete: if false;
+        allow read: if isCentralViewer() || ownsDevice(deviceId);
+        allow update: if ownsDevice(deviceId);
+        allow delete: if isCentralViewer();
       }
     }
 

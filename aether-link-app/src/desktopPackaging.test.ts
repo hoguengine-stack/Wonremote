@@ -440,6 +440,17 @@ describe("desktop packaging scaffold", () => {
     expect(buildBackendScript).toContain("process.execPath");
   });
 
+  it("injects portable CMake and NASM for both x64 and x86 PoC builds", () => {
+    const buildBackendScript = readFileSync(path.join(projectRoot, "scripts", "build-backend.js"), "utf8");
+    const envStart = buildBackendScript.indexOf("async function buildEnvWithNativeTools");
+    const envEnd = buildBackendScript.indexOf("async function prepareBundledNodeRuntime");
+    const nativeToolEnv = buildBackendScript.slice(envStart, envEnd);
+
+    expect(nativeToolEnv).toContain("resolvePortableCmakeBinDir()");
+    expect(nativeToolEnv).toContain("resolvePortableNasmBinDir()");
+    expect(nativeToolEnv).not.toContain('buildArch !== "ia32"');
+  });
+
   it("injects createRequire into ESM backend bundles for CommonJS dependencies", () => {
     const buildBackendScript = readFileSync(path.join(projectRoot, "scripts", "build-backend.js"), "utf8");
 

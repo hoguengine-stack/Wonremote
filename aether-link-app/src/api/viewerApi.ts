@@ -19,6 +19,7 @@ import {
 } from "../domain/fileTransferPolicy";
 import {
   closeFirebaseSession,
+  deleteFirebaseDevice,
   fetchFirebaseChatMessages,
   fetchFirebaseDevices,
   fetchFirebaseClipboardText,
@@ -101,6 +102,17 @@ export async function updateDeviceMetadata(
     body: input,
   });
   return body.device;
+}
+
+export async function deleteRemoteDevice(deviceId: string): Promise<void> {
+  if (isViewerFirebaseEnabled()) {
+    await deleteFirebaseDevice(deviceId);
+    return;
+  }
+
+  await request(`/api/devices/${encodeURIComponent(deviceId)}`, {
+    method: "DELETE",
+  });
 }
 
 export async function connectAgent(input: AgentConnectionInput): Promise<

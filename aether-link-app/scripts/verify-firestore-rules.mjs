@@ -2,7 +2,9 @@ import { deleteApp, initializeApp } from "firebase/app";
 import {
   collection,
   connectFirestoreEmulator,
+  deleteDoc,
   doc,
+  getDoc,
   getDocs,
   getFirestore,
   query,
@@ -102,10 +104,25 @@ try {
     state: "pending",
   });
 
+  await expectPermissionDenied(
+    () => deleteDoc(doc(agent.db, "devices", DEVICE_ID)),
+    "Agent device deletion",
+  );
+  await expectPermissionDenied(
+    () => deleteDoc(doc(unauthorized.db, "devices", DEVICE_ID)),
+    "Unauthorized device deletion",
+  );
+  await deleteDoc(doc(viewer.db, "devices", DEVICE_ID, "commands", "rules-test-command"));
+  await deleteDoc(doc(viewer.db, "devices", DEVICE_ID));
+  if ((await getDoc(doc(viewer.db, "devices", DEVICE_ID))).exists()) {
+    throw new Error("Central Viewer device deletion did not remove the device.");
+  }
+
   console.log(JSON.stringify({
     agentSessionAccess: true,
     centralViewerDeviceAccess: true,
     unauthorizedViewerDenied: true,
+    centralViewerDeviceDeletion: true,
   }));
 } finally {
   await Promise.all([agent.app, viewer.app, unauthorized.app].map((app) => deleteApp(app)));

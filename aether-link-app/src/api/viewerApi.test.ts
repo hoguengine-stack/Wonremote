@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ManagedDevice } from "../domain/types";
 import {
+  deleteFirebaseDevice,
   fetchFirebaseDevices,
   fetchFirebaseConnectionHistory,
   fetchFirebaseFileTransferReceipts,
@@ -11,6 +12,7 @@ import {
   uploadFirebaseFileChunk,
 } from "../firebase/viewerFirebase";
 import {
+  deleteRemoteDevice,
   fetchConnectionHistory,
   fetchDevices,
   fetchFileTransferReceipts,
@@ -38,6 +40,7 @@ const mockState = vi.hoisted(() => ({
 
 vi.mock("../firebase/viewerFirebase", () => ({
   closeFirebaseSession: vi.fn(),
+  deleteFirebaseDevice: vi.fn(),
   fetchFirebaseChatMessages: vi.fn(async () => []),
   fetchFirebaseDevices: vi.fn(async () => mockState.firebaseDevices),
   fetchFirebaseConnectionHistory: vi.fn(async () => [
@@ -91,6 +94,39 @@ describe("viewer API routing", () => {
     expect(isViewerFirebaseEnabled).toHaveBeenCalled();
     expect(fetchFirebaseDevices).toHaveBeenCalled();
     expect(localFetch).not.toHaveBeenCalled();
+  });
+
+  it("deletes devices through Firestore when Firebase is enabled", async () => {
+    const localFetch = vi.fn(async () => {
+      throw new Error("local API must not be called");
+    });
+    vi.stubGlobal("fetch", localFetch);
+
+    await expect(deleteRemoteDevice("device-1")).resolves.toBeUndefined();
+
+    expect(deleteFirebaseDevice).toHaveBeenCalledWith("device-1");
+    expect(localFetch).not.toHaveBeenCalled();
+  });
+
+  it("deletes devices through the local API fallback when Firebase is disabled", async () => {
+    mockState.firebaseEnabled = false;
+    const localFetch = vi.fn(async () => new Response(JSON.stringify({ ok: true }), {
+      headers: { "content-type": "application/json" },
+      status: 200,
+    }));
+    vi.stubGlobal("fetch", localFetch);
+
+    await expect(deleteRemoteDevice("device/with space")).resolves.toBeUndefined();
+
+    expect(deleteFirebaseDevice).not.toHaveBeenCalled();
+    expect(localFetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:8787/api/devices/device%2Fwith%20space",
+      {
+        body: undefined,
+        headers: undefined,
+        method: "DELETE",
+      },
+    );
   });
 
   it("reads connection history from Firestore without requiring the local API", async () => {

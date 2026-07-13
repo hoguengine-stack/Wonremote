@@ -66,6 +66,8 @@ describe("Firebase security deployment policy", () => {
     expect(deviceMatch?.[1]).toContain("allow get: if isCentralViewer()");
     expect(deviceMatch?.[1]).toContain("allow list: if isCentralViewer()");
     expect(deviceMatch?.[1]).toContain("allow update: if isCentralViewerDeviceUpdate() || isOwnDeviceUpdate(deviceId);");
+    expect(deviceMatch?.[1]).toContain("allow delete: if isCentralViewer();");
+    expect(rules).toContain("allow read: if isCentralViewer() || ownsDevice(deviceId);");
     expect(deviceMatch?.[1]).toContain("isOwnDeviceUpdate(deviceId)");
     expect(deviceListBlock).not.toContain('where("ownerUid", "==", userId)');
     expect(sessionOpenBlock).not.toContain("device.ownerUid !== userId");

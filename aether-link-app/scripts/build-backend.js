@@ -246,9 +246,6 @@ async function resolvePortableNasmBinDir() {
 }
 
 async function buildEnvWithNativeTools() {
-  if (buildArch !== "ia32") {
-    return process.env;
-  }
   const cmakeBinDir = await resolvePortableCmakeBinDir();
   const nasmBinDir = await resolvePortableNasmBinDir();
   return {

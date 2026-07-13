@@ -65,6 +65,7 @@ describe("WonRemote local API server", () => {
     expect(response.status).toBe(204);
     expect(response.headers.get("access-control-allow-origin")).toBe("http://127.0.0.1:5174");
     expect(response.headers.get("access-control-allow-methods")).toContain("PATCH");
+    expect(response.headers.get("access-control-allow-methods")).toContain("DELETE");
     expect(response.headers.get("access-control-allow-headers")).toBe("content-type");
   });
 
@@ -163,6 +164,38 @@ describe("WonRemote local API server", () => {
           desktopName: "KITCHEN-PC",
         }),
       ],
+    });
+  });
+
+  it("deletes a registered device, rejects its next heartbeat, and allows first-run recreation", async () => {
+    const registrationInput = {
+      businessNumber: "2223344444",
+      password: "1234",
+      installId: "agent-delete-api",
+    };
+    const registered = await postJson("/api/agent/first-run", registrationInput);
+    const registeredBody = await registered.json();
+    const deviceId = registeredBody.device.id as string;
+
+    const deleted = await fetch(`${baseUrl}/api/devices/${encodeURIComponent(deviceId)}`, {
+      method: "DELETE",
+    });
+    expect(deleted.status).toBe(200);
+    expect(await deleted.json()).toEqual({ ok: true });
+
+    const devicesAfterDelete = await fetch(`${baseUrl}/api/devices`);
+    expect(await devicesAfterDelete.json()).toEqual({ devices: [] });
+
+    const heartbeat = await postJson("/api/agent/heartbeat", {
+      deviceId,
+      installId: registrationInput.installId,
+    });
+    expect(heartbeat.status).toBe(404);
+
+    const recreated = await postJson("/api/agent/first-run", registrationInput);
+    expect(recreated.status).toBe(200);
+    expect(await recreated.json()).toMatchObject({
+      device: { id: deviceId, status: "online" },
     });
   });
 

@@ -248,6 +248,33 @@ export async function updateFirebaseDeviceMetadata(
   return mapFirestoreDevice(snapshot.id, snapshot.data());
 }
 
+export async function deleteFirebaseDevice(
+  deviceId: string,
+  env: ViewerFirebaseEnv = import.meta.env,
+): Promise<void> {
+  const services = getViewerFirebaseServices(env);
+  const userId = requireCurrentUserId(services.auth.currentUser?.uid);
+  if (!CENTRAL_VIEWER_UIDS.has(userId)) {
+    throw new Error("Only the central Viewer can delete devices.");
+  }
+
+  const deviceRef = doc(services.db, "devices", deviceId);
+  const deviceSnapshot = await getDoc(deviceRef);
+  if (!deviceSnapshot.exists()) {
+    return;
+  }
+
+  const commandSnapshot = await getDocs(collection(services.db, "devices", deviceId, "commands"));
+  const references = [...commandSnapshot.docs.map((commandDoc) => commandDoc.ref), deviceRef];
+  const maxBatchDeletes = 450;
+
+  for (let offset = 0; offset < references.length; offset += maxBatchDeletes) {
+    const batch = writeBatch(services.db);
+    references.slice(offset, offset + maxBatchDeletes).forEach((reference) => batch.delete(reference));
+    await batch.commit();
+  }
+}
+
 export async function registerFirstRunAgentWithFirebase(
   input: AgentFirstRunInput,
   env: ViewerFirebaseEnv = import.meta.env,

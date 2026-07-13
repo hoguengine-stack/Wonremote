@@ -616,6 +616,26 @@ input:focus {
   justify-content: flex-end;
 }
 
+.danger-button {
+  align-items: center;
+  background: #fff1f2;
+  border: 1px solid #fecdd3;
+  border-radius: 6px;
+  color: #be123c;
+  display: inline-flex;
+  font-weight: 800;
+  gap: 6px;
+  margin-right: auto;
+  min-height: 34px;
+  padding: 0 11px;
+}
+
+.danger-button.armed {
+  background: #be123c;
+  border-color: #be123c;
+  color: #ffffff;
+}
+
 .modal-help {
   color: #667287;
   font-size: 13px;
