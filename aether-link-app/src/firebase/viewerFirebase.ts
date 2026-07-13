@@ -35,7 +35,7 @@ import type {
   TransferredFile,
 } from "../domain/types";
 import { normalizeWakeMac, selectViewerWakeRelay } from "../domain/wakeRelay";
-import { sortDevices } from "../domain/agentRegistry";
+import { prepareViewerDeviceList, resolveViewerOfflineAfterMs } from "../domain/viewerDeviceList";
 import { DEFAULT_STORE_NAME, normalizeStoreNameForDisplay } from "../domain/deviceDefaults";
 import { createFirebaseSessionId, mapFirebaseSessionHistory } from "../domain/firebaseSession";
 import {
@@ -173,7 +173,11 @@ export function subscribeFirebaseDevices(
   return onSnapshot(
     devicesCollection,
     (snapshot) => {
-      onDevices(sortDevices(snapshot.docs.map((deviceDoc) => mapFirestoreDevice(deviceDoc.id, deviceDoc.data()))));
+      onDevices(prepareViewerDeviceList(
+        snapshot.docs.map((deviceDoc) => mapFirestoreDevice(deviceDoc.id, deviceDoc.data())),
+        new Date().toISOString(),
+        resolveViewerOfflineAfterMs(env),
+      ));
     },
     (error) => onError(error),
   );
@@ -183,7 +187,11 @@ export async function fetchFirebaseDevices(env: ViewerFirebaseEnv = import.meta.
   const services = getViewerFirebaseServices(env);
   requireCurrentUserId(services.auth.currentUser?.uid);
   const snapshot = await getDocs(collection(services.db, "devices"));
-  return sortDevices(snapshot.docs.map((deviceDoc) => mapFirestoreDevice(deviceDoc.id, deviceDoc.data())));
+  return prepareViewerDeviceList(
+    snapshot.docs.map((deviceDoc) => mapFirestoreDevice(deviceDoc.id, deviceDoc.data())),
+    new Date().toISOString(),
+    resolveViewerOfflineAfterMs(env),
+  );
 }
 
 export async function fetchFirebaseConnectionHistory(

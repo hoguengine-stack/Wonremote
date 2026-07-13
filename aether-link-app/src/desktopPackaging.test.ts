@@ -424,10 +424,12 @@ describe("desktop packaging scaffold", () => {
 
   it("does not require a Firestore composite index for the Viewer device list", () => {
     const viewerFirebase = readFileSync(path.join(projectRoot, "src", "firebase", "viewerFirebase.ts"), "utf8");
+    const viewerDeviceList = readFileSync(path.join(projectRoot, "src", "domain", "viewerDeviceList.ts"), "utf8");
 
     expect(viewerFirebase).not.toContain('orderBy("storeName")');
     expect(viewerFirebase).not.toContain('orderBy("deviceNumber")');
-    expect(viewerFirebase).toContain("sortDevices(");
+    expect(viewerFirebase).toContain("prepareViewerDeviceList(");
+    expect(viewerDeviceList).toContain("sortDevices(");
   });
 
   it("prepares all native runtime resources during the frontend build", () => {

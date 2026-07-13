@@ -273,6 +273,53 @@ fn runtime_log_file_from_appdata(appdata: &Path) -> PathBuf {
         .join("wonremote-tauri.log")
 }
 
+fn agent_install_id_file_from_appdata(appdata: &Path) -> PathBuf {
+    appdata.join("WonRemote").join("agent-install-id")
+}
+
+fn normalize_agent_install_id(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.len() > 64
+        || !value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        return None;
+    }
+    Some(value.to_string())
+}
+
+fn load_or_create_agent_install_id(
+    identity_path: &Path,
+    config_path: Option<&Path>,
+    legacy_install_id: &str,
+) -> Result<String, String> {
+    if let Ok(existing) = std::fs::read_to_string(identity_path) {
+        if let Some(install_id) = normalize_agent_install_id(&existing) {
+            return Ok(install_id);
+        }
+    }
+
+    let config_install_id = config_path
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|content| parse_json_config(&content).ok())
+        .and_then(|json| {
+            json.get("installId")
+                .and_then(|value| value.as_str())
+                .and_then(normalize_agent_install_id)
+        });
+    let install_id = config_install_id
+        .or_else(|| normalize_agent_install_id(legacy_install_id))
+        .ok_or_else(|| "Agent install id is invalid.".to_string())?;
+
+    if let Some(parent) = identity_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    std::fs::write(identity_path, &install_id).map_err(|error| error.to_string())?;
+    Ok(install_id)
+}
+
 fn agent_show_window_request_file_from_appdata(appdata: &Path) -> PathBuf {
     appdata.join("WonRemote").join("agent-show-window.request")
 }
@@ -985,6 +1032,14 @@ fn get_agent_config() -> Option<GetConfigOutput> {
 }
 
 #[tauri::command]
+fn get_or_create_agent_install_id(legacy_install_id: String) -> Result<String, String> {
+    let appdata = env::var_os("APPDATA").ok_or_else(|| "APPDATA is unavailable.".to_string())?;
+    let identity_path = agent_install_id_file_from_appdata(&PathBuf::from(appdata));
+    let config_path = default_agent_config_path();
+    load_or_create_agent_install_id(&identity_path, config_path.as_deref(), &legacy_install_id)
+}
+
+#[tauri::command]
 fn wake_device(
     mac_address: String,
     broadcast: Option<String>,
@@ -1578,6 +1633,7 @@ pub fn run() {
             get_app_mode,
             save_agent_config,
             get_agent_config,
+            get_or_create_agent_install_id,
             restart_agent_process,
             start_installer_update,
             wake_device
@@ -2189,6 +2245,43 @@ mod registry_tests {
             runtime_log_file_from_appdata(&appdata),
             PathBuf::from(r"C:\Users\Test\AppData\Roaming\WonRemote\logs\wonremote-tauri.log"),
         );
+    }
+
+    #[test]
+    fn test_agent_install_id_survives_config_and_webview_changes() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "wonremote-install-id-test-{}-{unique}",
+            std::process::id()
+        ));
+        let identity_path = agent_install_id_file_from_appdata(&root);
+        let config_path = root.join("WonRemote").join("agent-config.json");
+        std::fs::create_dir_all(config_path.parent().expect("config parent"))
+            .expect("failed to create config directory");
+        std::fs::write(&config_path, r#"{"installId":"agent-config-id"}"#)
+            .expect("failed to write config");
+
+        let first = load_or_create_agent_install_id(
+            &identity_path,
+            Some(&config_path),
+            "agent-webview-id",
+        )
+        .expect("config id should initialize persistent identity");
+        assert_eq!(first, "agent-config-id");
+
+        std::fs::remove_file(&config_path).expect("failed to remove config");
+        let restored = load_or_create_agent_install_id(
+            &identity_path,
+            Some(&config_path),
+            "agent-new-webview-id",
+        )
+        .expect("persistent identity should survive reinstall state changes");
+        assert_eq!(restored, "agent-config-id");
+
+        let _ = std::fs::remove_dir_all(root.join("WonRemote"));
     }
 
     #[test]

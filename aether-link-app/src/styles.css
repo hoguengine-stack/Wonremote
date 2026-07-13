@@ -499,6 +499,16 @@ input:focus {
   text-align: center;
 }
 
+.status-pill.online {
+  background: #e7f6ee;
+  color: #11733f;
+}
+
+.status-pill.offline {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
 .icon-button {
   background: #edf2f5;
   border-radius: 6px;

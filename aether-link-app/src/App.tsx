@@ -56,6 +56,7 @@ import {
   type ViewerWebRtcTransport,
 } from "./firebase/viewerFirebase";
 import { groupDevicesByStore, resolveDeviceStatuses } from "./domain/agentRegistry";
+import { resolveViewerOfflineAfterMs } from "./domain/viewerDeviceList";
 import {
   scheduleVisualPingPresentedMeasurement,
 } from "./domain/visualPing";
@@ -407,10 +408,7 @@ function ViewerApp() {
     if (!isAuthenticated || !isViewerFirebaseEnabled()) {
       return;
     }
-    const configuredOfflineMs = Number(import.meta.env.VITE_WONREMOTE_AGENT_OFFLINE_MS);
-    const offlineAfterMs = Number.isFinite(configuredOfflineMs) && configuredOfflineMs > 0
-      ? Math.max(15_000, Math.trunc(configuredOfflineMs))
-      : 60_000;
+    const offlineAfterMs = resolveViewerOfflineAfterMs(import.meta.env);
     const refreshStatuses = () => {
       setDevices((current) => resolveDeviceStatuses(current, new Date().toISOString(), offlineAfterMs));
     };
@@ -1025,20 +1023,49 @@ function AgentFirstRunApp() {
   const [businessNumber, setBusinessNumber] = useState("");
   const [password, setPassword] = useState("");
   const [apiUrl, setApiUrl] = useState("http://127.0.0.1:8787");
-  const [installId] = useState(getOrCreateAgentInstallId);
+  const [installId, setInstallId] = useState(getOrCreateAgentInstallId);
+  const [isInstallIdentityReady, setIsInstallIdentityReady] = useState(
+    () => !(window as any).__TAURI_INTERNALS__,
+  );
   const [registeredDevice, setRegisteredDevice] = useState<ManagedDevice | null>(null);
   const [registeredConfig, setRegisteredConfig] = useState<any | null>(null);
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
-    if ((window as any).__TAURI_INTERNALS__) {
-      invoke<any>("get_agent_config").then((config: any) => {
-        if (config && config.registeredDeviceId) {
+    if (!(window as any).__TAURI_INTERNALS__) {
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const config = await invoke<any>("get_agent_config");
+        if (!cancelled && config?.registeredDeviceId) {
           setRegisteredConfig(config);
         }
-      });
-    }
+        const persistentInstallId = await invoke<string>("get_or_create_agent_install_id", {
+          legacyInstallId: installId,
+        });
+        if (cancelled) {
+          return;
+        }
+        setInstallId(persistentInstallId);
+        window.localStorage.setItem("wonremote-agent-install-id", persistentInstallId);
+      } catch (identityError) {
+        if (!cancelled) {
+          setError(identityError instanceof Error ? identityError.message : "Agent install identity initialization failed.");
+        }
+      } finally {
+        if (!cancelled) {
+          setIsInstallIdentityReady(true);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   async function handleFirstRun(event: FormEvent<HTMLFormElement>) {
@@ -1188,7 +1215,7 @@ function AgentFirstRunApp() {
             )}
           </div>
         )}
-        <button className="primary-button" disabled={isSubmitting} type="submit">
+        <button className="primary-button" disabled={isSubmitting || !isInstallIdentityReady} type="submit">
           <PlugZap size={17} />
           <span>{isSubmitting ? "등록 중" : "등록"}</span>
         </button>
@@ -1259,6 +1286,17 @@ function getOrCreateAgentInstallId(): string {
   return installId;
 }
 
+export function sortDevicesForDisplay(devices: ManagedDevice[]): ManagedDevice[] {
+  const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+  return [...devices].sort((left, right) => {
+    const statusOrder = Number(right.status === "online") - Number(left.status === "online");
+    if (statusOrder !== 0) {
+      return statusOrder;
+    }
+    return collator.compare(left.desktopName ?? "", right.desktopName ?? "");
+  });
+}
+
 function DeviceTable({
   activeDeviceId,
   devices,
@@ -1288,7 +1326,7 @@ function DeviceTable({
           <span>데스크탑</span>
           <span>접속</span>
         </div>
-        {devices.map((device) => {
+        {sortDevicesForDisplay(devices).map((device) => {
           const isOnline = device.status === "online";
           return (
             <div
@@ -1305,7 +1343,7 @@ function DeviceTable({
               }}
               title={isOnline ? "더블클릭하면 바로 접속합니다." : "오프라인 장비입니다."}
             >
-              <span className="status-pill">{device.status}</span>
+              <span className={`status-pill ${isOnline ? "online" : "offline"}`}>{device.status}</span>
               <span className="store-cell">
                 <b>{device.storeName}</b>
                 <small>{device.businessNumber}</small>
