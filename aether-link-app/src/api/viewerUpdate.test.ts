@@ -90,6 +90,28 @@ describe("viewer update metadata", () => {
     });
   });
 
+  it("prefers viewerWindows over the legacy windows manifest section", async () => {
+    const metadata = await fetchViewerUpdateMetadata(
+      { VITE_WONREMOTE_UPDATE_MANIFEST_URL: "https://updates.example.com/manifest.json" },
+      async () => new Response(JSON.stringify({
+        version: "0.1.46",
+        viewerWindows: {
+          x64: {
+            url: "https://updates.example.com/viewer.exe",
+            sha256: "c".repeat(64),
+          },
+        },
+        windows: {
+          x64: {
+            url: "https://updates.example.com/legacy.exe",
+            sha256: "invalid-legacy-checksum",
+          },
+        },
+      }), { status: 200 }),
+    );
+    expect(metadata?.latestVersion).toBe("0.1.46");
+  });
+
   it("ignores unsafe or incomplete release manifests", async () => {
     await expect(
       fetchViewerUpdateMetadata({}, async () => {

@@ -256,22 +256,15 @@ describe("desktop packaging scaffold", () => {
 
   it("stages distinct Viewer and Agent executables after their respective icon builds", () => {
     const packageReleaseScript = readFileSync(path.join(projectRoot, "scripts", "package-release-exes.js"), "utf8");
-    const viewerStage = packageReleaseScript.indexOf("copyViewerPortablePayload(target, targetRelease)");
+    const viewerStage = packageReleaseScript.indexOf("buildViewerInstaller(target)");
     const agentBuild = packageReleaseScript.indexOf("buildAgentDefaultInstaller(target)", viewerStage);
-    const agentStage = packageReleaseScript.indexOf("copyAgentPortableExecutable(target, targetRelease)", agentBuild);
+    const agentStage = packageReleaseScript.indexOf("createProductInstaller(expectedInstallerPath", agentBuild);
 
     expect(viewerStage).toBeGreaterThan(-1);
     expect(agentBuild).toBeGreaterThan(viewerStage);
     expect(agentStage).toBeGreaterThan(agentBuild);
-    expect(packageReleaseScript).toContain(
-      'fs.copyFileSync(viewerSource, path.join(target.stageDir, "WonRemote Viewer.exe"))',
-    );
-    expect(packageReleaseScript).toContain(
-      'fs.copyFileSync(agentSource, path.join(target.stageDir, "WonRemote Agent.exe"))',
-    );
-    expect(packageReleaseScript).not.toContain(
-      'fs.copyFileSync(viewerSource, path.join(target.stageDir, "WonRemote Agent.exe"))',
-    );
+    expect(packageReleaseScript).toContain("createProductInstaller(expectedInstallerPath, expectedAgentInstallerPath, target, \"viewer\")");
+    expect(packageReleaseScript).toContain("createProductInstaller(expectedInstallerPath, expectedAgentInstallerPath, target, \"agent\")");
   });
 
   it("deploys Firebase functions, rules, and hosting only behind an explicit gate", () => {
@@ -524,12 +517,10 @@ describe("desktop packaging scaffold", () => {
     expect(packageReleaseScript).toContain("WonRemote Viewer.exe");
     expect(packageReleaseScript).toContain("WonRemote Agent.exe");
     expect(packageReleaseScript).toContain("WonRemote-Agent-Setup.exe");
-    expect(packageReleaseScript).toContain("WonRemote-Viewer-Agent-Setup.exe");
-    expect(packageReleaseScript).toContain("createCombinedInstaller");
+    expect(packageReleaseScript).toContain("createProductInstaller");
     expect(packageReleaseScript).toContain("makensis.exe");
     expect(packageReleaseScript).not.toContain("copyInstaller(viewerInstallerPath, stableFullInstallerName)");
-    expect(packageReleaseScript).toContain("WonRemote-Viewer-Agent-Portable.zip");
-    expect(packageReleaseScript).toContain("WonRemote-Agent-Portable.zip");
+    expect(packageReleaseScript).toContain("expectedOutputs");
     expect(packageReleaseScript).toContain("WONREMOTE_DEFAULT_APP_MODE");
     expect(packageReleaseScript).toContain("Compress-Archive");
     expect(packageReleaseScript).toContain("server");
@@ -552,25 +543,14 @@ describe("desktop packaging scaffold", () => {
     expect(packageReleaseScript).toContain("WONREMOTE_BUILD_ARCH");
     expect(packageReleaseScript).toContain("WonRemote-Viewer-Setup-x86.exe");
     expect(packageReleaseScript).toContain("WonRemote-Agent-Setup-x86.exe");
-    expect(packageReleaseScript).toContain("WonRemote-Viewer-Agent-Setup-x86.exe");
-    expect(packageReleaseScript).toContain("WonRemote-Viewer-Agent-Portable-x86.zip");
-    expect(packageReleaseScript).toContain("WonRemote-Agent-Portable-x86.zip");
 
     expect(publishScript).toContain("WonRemote-Viewer-Setup-x86.exe");
     expect(publishScript).toContain("WonRemote-Agent-Setup-x86.exe");
-    expect(publishScript).toContain("WonRemote-Viewer-Agent-Setup-x86.exe");
-    expect(publishScript).toContain("WonRemote-Viewer-Agent-Portable-x86.zip");
-    expect(publishScript).toContain("WonRemote-Agent-Portable-x86.zip");
-    expect(publishScript).toContain('WonRemote Viewer_${Version}_x86-setup.exe');
-    expect(publishScript).toContain('WonRemote Agent_${Version}_x86-setup.exe');
-    expect(publishScript).toContain("Publish-Asset $InstallerPathX86 $InstallerAssetNameX86");
-    expect(publishScript).toContain("Publish-Asset $AgentInstallerPathX86 $AgentInstallerAssetNameX86");
+    expect(publishScript).toContain("Publish-Asset $StableInstallerPathX86 $StableInstallerAssetNameX86");
+    expect(publishScript).toContain("Publish-Asset $StableAgentInstallerPathX86 $StableAgentInstallerAssetNameX86");
 
     expect(redirects["/download/viewer-x86"]).toContain("WonRemote-Viewer-Setup-x86.exe");
     expect(redirects["/download/agent-x86"]).toContain("WonRemote-Agent-Setup-x86.exe");
-    expect(redirects["/download/viewer-agent-x86"]).toContain("WonRemote-Viewer-Agent-Setup-x86.exe");
-    expect(redirects["/download/portable-x86"]).toContain("WonRemote-Viewer-Agent-Portable-x86.zip");
-    expect(redirects["/download/agent-portable-x86"]).toContain("WonRemote-Agent-Portable-x86.zip");
   });
 
   it("can create a signed production update manifest for a GitHub release installer", () => {
@@ -583,9 +563,10 @@ describe("desktop packaging scaffold", () => {
     expect(manifestScript).toContain("version=");
     expect(manifestScript).toContain("sha256=");
     expect(manifestScript).toContain("assetName=");
-    expect(manifestScript).toContain("WonRemote-Viewer-Agent-Setup.exe");
-    expect(manifestScript).toContain("WonRemote-Viewer-Agent-Setup-x86.exe");
-    expect(manifestScript).toContain("windows.x86");
+    expect(manifestScript).toContain("WonRemote-Viewer-Setup.exe");
+    expect(manifestScript).toContain("WonRemote-Agent-Setup-x86.exe");
+    expect(manifestScript).toContain("viewerWindows");
+    expect(manifestScript).toContain("agentWindows");
     expect(manifestScript).toContain("WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY");
   });
 
@@ -613,22 +594,16 @@ describe("desktop packaging scaffold", () => {
     expect(publishScript).toContain("[string]$Repository = \"hoguengine-stack/Wonremote\"");
     expect(publishScript).toContain("api.github.com/repos/$Repository/releases");
     expect(publishScript).toContain("uploads.github.com/repos/$Repository/releases");
-    expect(publishScript).toContain("WonRemote Viewer_");
-    expect(publishScript).toContain("WonRemote Agent_");
     expect(publishScript).toContain("WonRemote-Viewer-Setup.exe");
     expect(publishScript).toContain("WonRemote-Agent-Setup.exe");
-    expect(publishScript).toContain("WonRemote-Viewer-Agent-Setup.exe");
-    expect(publishScript).toContain("WonRemote-Viewer-Agent-Portable.zip");
-    expect(publishScript).toContain("WonRemote-Agent-Portable.zip");
     expect(publishScript).toContain("$StableAgentInstallerPath");
-    expect(publishScript).toContain("$AgentInstallerPath");
-    expect(publishScript).toContain("$InstallerPathX86");
-    expect(publishScript).toContain("$AgentInstallerPathX86");
+    expect(publishScript).toContain("$StableInstallerPathX86");
+    expect(publishScript).toContain("$StableAgentInstallerPathX86");
     expect(publishScript).toContain("Publish-Asset $StableAgentInstallerPath $StableAgentInstallerAssetName");
     expect(publishScript).toContain("wonremote-update-manifest.json");
   });
 
-  it("exposes the four public download redirects plus the agent portable diagnostic link", () => {
+  it("exposes exactly four canonical public download redirects", () => {
     const firebaseConfig = JSON.parse(readFileSync(path.join(projectRoot, "..", "firebase.json"), "utf8"));
     const redirects = Object.fromEntries(
       firebaseConfig.hosting.redirects.map((redirect: { source: string; destination: string }) => [
@@ -639,9 +614,14 @@ describe("desktop packaging scaffold", () => {
 
     expect(redirects["/download/viewer"]).toContain("WonRemote-Viewer-Setup.exe");
     expect(redirects["/download/agent"]).toContain("WonRemote-Agent-Setup.exe");
-    expect(redirects["/download/portable"]).toContain("WonRemote-Viewer-Agent-Portable.zip");
-    expect(redirects["/download/viewer-agent"]).toContain("WonRemote-Viewer-Agent-Setup.exe");
-    expect(redirects["/download/agent-portable"]).toContain("WonRemote-Agent-Portable.zip");
+    expect(redirects["/download/viewer-x86"]).toContain("WonRemote-Viewer-Setup-x86.exe");
+    expect(redirects["/download/agent-x86"]).toContain("WonRemote-Agent-Setup-x86.exe");
+    expect(Object.keys(redirects).filter((key) => key.startsWith("/download/")).sort()).toEqual([
+      "/download/agent",
+      "/download/agent-x86",
+      "/download/viewer",
+      "/download/viewer-x86",
+    ]);
   });
 
   it("verifies delivery against the split WonRemote install folders", () => {
@@ -658,6 +638,30 @@ describe("desktop packaging scaffold", () => {
     expect(registryStatusScript).toContain("wmic os get OSArchitecture");
     expect(registryStatusScript).toContain("OSArchitecture:");
     expect(registryStatusScript).toContain("requires 64-bit Windows");
+  });
+
+  it("enforces the four-installer release contract and restart-mode wrapper", () => {
+    const packageReleaseScript = readFileSync(path.join(projectRoot, "scripts", "package-release-exes.js"), "utf8");
+    const publishScript = readFileSync(path.join(projectRoot, "scripts", "publish-github-release.ps1"), "utf8");
+    const manifestScript = readFileSync(path.join(projectRoot, "scripts", "create-update-manifest.js"), "utf8");
+    for (const asset of [
+      "WonRemote-Viewer-Setup.exe",
+      "WonRemote-Agent-Setup.exe",
+      "WonRemote-Viewer-Setup-x86.exe",
+      "WonRemote-Agent-Setup-x86.exe",
+    ]) {
+      expect(publishScript).toContain(asset);
+    }
+    const packageMain = packageReleaseScript.slice(packageReleaseScript.indexOf("function main()"));
+    expect(packageMain).toContain("expectedOutputs");
+    expect(packageMain).toContain("Four WonRemote product installers created");
+    expect(publishScript).toContain("Publish-Asset $ManifestPath $ManifestName");
+    expect(publishScript.match(/^Publish-Asset /gm)?.length).toBe(5);
+    expect(manifestScript).toContain("viewerWindows");
+    expect(manifestScript).toContain("agentWindows");
+    expect(manifestScript).toContain("release-tag");
+    expect(manifestScript).not.toContain("latest/download");
+    expect(packageReleaseScript).toContain("WONREMOTE_RESTART_MODE");
   });
 
   it("does not require a system Node installation at runtime", () => {

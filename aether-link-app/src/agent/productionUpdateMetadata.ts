@@ -12,6 +12,7 @@ export async function loadProductionInstallerUpdateMetadata(
   env: Partial<Record<
     | "WONREMOTE_BUILD_ARCH"
     | "WONREMOTE_PACKAGE_KIND"
+    | "WONREMOTE_UPDATE_PRODUCT"
     | "WONREMOTE_UPDATE_MANIFEST_PUBLIC_KEY"
     | "WONREMOTE_UPDATE_MANIFEST_URL",
     string
@@ -29,8 +30,15 @@ export async function loadProductionInstallerUpdateMetadata(
   return parseProductionUpdateManifest(await response.json(), {
     arch: resolveRuntimeArch(env),
     assetKind: resolveRuntimeUpdateKind(env),
+    product: resolveRuntimeUpdateProduct(env),
     publicKeyPem: resolveProductionUpdatePublicKey(env),
   });
+}
+
+export function resolveRuntimeUpdateProduct(
+  env: Partial<Record<"WONREMOTE_UPDATE_PRODUCT", string>> = process.env,
+): "agent" | "viewer" {
+  return env.WONREMOTE_UPDATE_PRODUCT?.trim().toLowerCase() === "viewer" ? "viewer" : "agent";
 }
 
 export function resolveRuntimeUpdateKind(

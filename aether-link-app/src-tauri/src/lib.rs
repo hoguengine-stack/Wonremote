@@ -680,7 +680,11 @@ fn spawn_agent_only_process(
 
     command.env("WONREMOTE_BUILD_ARCH", runtime_build_arch());
     command.env("WONREMOTE_PACKAGE_KIND", packaged_update_kind(resource_dir));
+    command.env("WONREMOTE_UPDATE_PRODUCT", "agent");
     command.env("WONREMOTE_TAURI_UPDATE_BROKER", "1");
+    if let Ok(host_exe_path) = env::current_exe() {
+        command.env("WONREMOTE_HOST_EXE_PATH", host_exe_path);
+    }
     if let Some(url) = api_url {
         command.env("WONREMOTE_API_URL", url);
     } else {
@@ -1244,23 +1248,57 @@ fn start_installer_update(app: tauri::AppHandle, restart_mode: String) -> Result
 
     let build_arch = runtime_build_arch();
     let package_kind = packaged_update_kind(&resource_dir);
+    let restart_executable = env::current_exe().map_err(|error| error.to_string())?;
     let mut command = Command::new(&node_path);
     command
         .arg(&agent_path)
         .args(["--update-once", "--restart-mode", restart_mode])
+        .arg("--restart-executable")
+        .arg(&restart_executable)
         .env("NODE_ENV", "production")
         .env("WONREMOTE_APP_DIR", &resource_dir)
         .env("WONREMOTE_BUILD_ARCH", build_arch)
         .env("WONREMOTE_PACKAGE_KIND", package_kind)
+        .env("WONREMOTE_UPDATE_PRODUCT", restart_mode)
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
     add_no_window(&mut command);
 
-    command.spawn().map_err(|error| {
+    let mut child = command.spawn().map_err(|error| {
         append_runtime_log("updater", &format!("spawn failed: {error}"));
         error.to_string()
     })?;
+    if let Some(stdout) = child.stdout.take() {
+        thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                match line {
+                    Ok(line) => append_runtime_log("updater-stdout", &line),
+                    Err(error) => {
+                        append_runtime_log("updater-stdout", &format!("read failed: {error}"));
+                        break;
+                    }
+                }
+            }
+        });
+    }
+    if let Some(stderr) = child.stderr.take() {
+        thread::spawn(move || {
+            for line in BufReader::new(stderr).lines() {
+                match line {
+                    Ok(line) => append_runtime_log("updater-stderr", &line),
+                    Err(error) => {
+                        append_runtime_log("updater-stderr", &format!("read failed: {error}"));
+                        break;
+                    }
+                }
+            }
+        });
+    }
+    thread::spawn(move || match child.wait() {
+        Ok(status) => append_runtime_log("updater", &format!("process exited: {status}")),
+        Err(error) => append_runtime_log("updater", &format!("wait failed: {error}")),
+    });
     append_runtime_log(
         "updater",
         &format!(

@@ -1251,7 +1251,11 @@ async function loadUpdateCheckData(): Promise<any | null> {
 async function handoffToProductionInstallerUpdate(data: SafeInstallerUpdateMetadata): Promise<void> {
   const baseDir = process.env.APPDATA ?? process.cwd();
   const download = await downloadInstallerUpdate(data, { baseDir });
-  const handoff = await prepareInstallerHandoff(download, { baseDir, restartMode: "agent" });
+  const handoff = await prepareInstallerHandoff(download, {
+    baseDir,
+    restartExecutablePath: process.env.WONREMOTE_HOST_EXE_PATH,
+    restartMode: "agent",
+  });
   const { installerArgs, installerPath } = download;
   console.log(`[WonRemote Agent] Verified installer update downloaded: ${installerPath}`);
   console.log(`[WonRemote Agent] Launching installer with args: ${installerArgs.join(" ")}`);

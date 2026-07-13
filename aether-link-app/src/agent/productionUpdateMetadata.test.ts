@@ -138,6 +138,42 @@ describe("production update metadata loader", () => {
     });
   });
 
+  it("prefers agentWindows over the legacy windows section for Agent updates", async () => {
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    const asset = {
+      name: "WonRemote-Agent-Setup.exe",
+      url: "https://updates.example.com/WonRemote-Agent-Setup.exe",
+      sha256: "e".repeat(64),
+    };
+    const signature = sign(null, Buffer.from(buildProductionUpdateSignaturePayload({
+      assetName: asset.name,
+      checksum: asset.sha256,
+      downloadUrl: asset.url,
+      latestVersion: "0.1.47",
+    }), "utf8"), privateKey).toString("base64");
+    const signatureV2 = sign(null, Buffer.from(buildProductionUpdateSignaturePayloadV2({
+      arch: "x64",
+      assetName: asset.name,
+      checksum: asset.sha256,
+      downloadUrl: asset.url,
+      forceUpdate: false,
+      latestVersion: "0.1.47",
+      updateKind: "installer",
+    }), "utf8"), privateKey).toString("base64");
+    const metadata = await loadProductionInstallerUpdateMetadata(
+      {
+        WONREMOTE_UPDATE_MANIFEST_PUBLIC_KEY: publicKey.export({ format: "pem", type: "spki" }).toString(),
+        WONREMOTE_UPDATE_MANIFEST_URL: "https://updates.example.com/manifest.json",
+      },
+      async () => new Response(JSON.stringify({
+        version: "0.1.47",
+        agentWindows: { x64: { ...asset, signature, signatureV2 } },
+        windows: { x64: { name: "legacy.exe", url: "https://updates.example.com/legacy.exe", sha256: "f".repeat(64) } },
+      }), { status: 200 }),
+    );
+    expect(metadata?.assetName).toBe("WonRemote-Agent-Setup.exe");
+  });
+
   it("selects the signed portable product declared by the packaged runtime", async () => {
     const { privateKey, publicKey } = generateKeyPairSync("ed25519");
     const asset = {

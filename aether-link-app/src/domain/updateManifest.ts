@@ -17,6 +17,7 @@ export type ProductionUpdateKind = "installer" | "portable" | "portable-agent";
 export type ProductionUpdateManifestOptions = {
   arch?: "x64" | "x86";
   assetKind?: ProductionUpdateKind;
+  product?: "agent" | "viewer";
   publicKeyPem?: string;
 };
 
@@ -39,8 +40,9 @@ export function parseProductionUpdateManifest(
   const latestVersion = readRequiredString(input.version, "version");
   const arch = options.arch ?? "x64";
   const assetKind = options.assetKind ?? "installer";
-  const manifestSection = manifestSectionForKind(assetKind);
-  const asset = selectReleaseAsset(input, arch, assetKind);
+  const product = options.product ?? "agent";
+  const manifestSection = manifestSectionForKind(assetKind, product);
+  const asset = selectReleaseAsset(input, arch, assetKind, product);
   const downloadUrl = readRequiredString(asset.url, `${manifestSection}.${arch}.url`);
   const checksum = readRequiredString(asset.sha256, `${manifestSection}.${arch}.sha256`).toLowerCase();
 
@@ -142,11 +144,15 @@ function selectReleaseAsset(
   input: Record<string, unknown>,
   arch: "x64" | "x86",
   assetKind: ProductionUpdateKind,
+  product: "agent" | "viewer",
 ): ManifestAsset {
-  const sectionName = manifestSectionForKind(assetKind);
+  const sectionName = manifestSectionForKind(assetKind, product);
   const section = input[sectionName];
   if (isRecord(section) && isRecord(section[arch])) {
     return section[arch] as ManifestAsset;
+  }
+  if (assetKind === "installer" && isRecord(input.windows) && isRecord(input.windows[arch])) {
+    return input.windows[arch] as ManifestAsset;
   }
   if (assetKind === "installer" && arch === "x64" && isRecord(input.installer)) {
     return input.installer as ManifestAsset;
@@ -154,14 +160,17 @@ function selectReleaseAsset(
   throw new Error(`Production update manifest must include ${sectionName}.${arch} ${assetKind} metadata.`);
 }
 
-function manifestSectionForKind(assetKind: ProductionUpdateKind): "windows" | "portable" | "portableAgent" {
+function manifestSectionForKind(
+  assetKind: ProductionUpdateKind,
+  product: "agent" | "viewer",
+): "agentWindows" | "viewerWindows" | "portable" | "portableAgent" {
   if (assetKind === "portable") {
     return "portable";
   }
   if (assetKind === "portable-agent") {
     return "portableAgent";
   }
-  return "windows";
+  return product === "viewer" ? "viewerWindows" : "agentWindows";
 }
 
 function readRequiredString(value: unknown, fieldName: string): string {

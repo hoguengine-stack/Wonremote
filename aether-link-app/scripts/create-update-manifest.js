@@ -5,12 +5,10 @@ import { fileURLToPath } from "node:url";
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const packageJson = JSON.parse(fs.readFileSync(path.join(appRoot, "package.json"), "utf8"));
-const stableInstallerAssetName = "WonRemote-Viewer-Agent-Setup.exe";
-const stableInstallerAssetNameX86 = "WonRemote-Viewer-Agent-Setup-x86.exe";
-const stablePortableAssetName = "WonRemote-Viewer-Agent-Portable.zip";
-const stablePortableAssetNameX86 = "WonRemote-Viewer-Agent-Portable-x86.zip";
-const stablePortableAgentAssetName = "WonRemote-Agent-Portable.zip";
-const stablePortableAgentAssetNameX86 = "WonRemote-Agent-Portable-x86.zip";
+const stableViewerAssetName = "WonRemote-Viewer-Setup.exe";
+const stableViewerAssetNameX86 = "WonRemote-Viewer-Setup-x86.exe";
+const stableAgentAssetName = "WonRemote-Agent-Setup.exe";
+const stableAgentAssetNameX86 = "WonRemote-Agent-Setup-x86.exe";
 
 function readArgs(argv) {
   const args = new Map();
@@ -58,7 +56,7 @@ function buildDownloadUrl(args, version, assetName, explicitUrlArg) {
   }
   const repository = args.get("--repository") || "hoguengine-stack/Wonremote";
   const tag = args.get("--release-tag");
-  const releasePath = tag ? `download/${tag}` : "latest/download";
+  const releasePath = `download/${tag || `v${version}`}`;
   return `https://github.com/${repository}/releases/${releasePath}/${encodeURIComponent(assetName)}`;
 }
 
@@ -70,16 +68,16 @@ function assetNameFromDownloadUrl(downloadUrl) {
   try {
     return normalizeGitHubAssetName(decodeURIComponent(path.basename(new URL(downloadUrl).pathname)));
   } catch {
-    return stableInstallerAssetName;
+    return stableViewerAssetName;
   }
 }
 
 function defaultInstallerPath(version) {
-  return path.join(appRoot, "release-exe", stableInstallerAssetName);
+  return path.join(appRoot, "release-exe", stableViewerAssetName);
 }
 
 function defaultInstallerPathX86() {
-  return path.join(appRoot, "release-exe", stableInstallerAssetNameX86);
+  return path.join(appRoot, "release-exe", stableViewerAssetNameX86);
 }
 
 function defaultReleaseAssetPath(assetName) {
@@ -115,74 +113,33 @@ function buildSignaturePayloadV2(input) {
 const args = readArgs(process.argv.slice(2));
 const version = args.get("--version") || packageJson.version;
 const forceUpdate = args.get("--force-update") === "true";
-const installerPath = path.resolve(args.get("--installer") || defaultInstallerPath(version));
-const installerPathX86 = path.resolve(args.get("--installer-x86") || defaultInstallerPathX86(version));
-const portablePath = path.resolve(args.get("--portable-x64") || defaultReleaseAssetPath(stablePortableAssetName));
-const portablePathX86 = path.resolve(args.get("--portable-x86") || defaultReleaseAssetPath(stablePortableAssetNameX86));
-const portableAgentPath = path.resolve(
-  args.get("--portable-agent-x64") || defaultReleaseAssetPath(stablePortableAgentAssetName),
-);
-const portableAgentPathX86 = path.resolve(
-  args.get("--portable-agent-x86") || defaultReleaseAssetPath(stablePortableAgentAssetNameX86),
-);
+const viewerPath = path.resolve(args.get("--viewer-x64") || args.get("--installer") || defaultInstallerPath(version));
+const viewerPathX86 = path.resolve(args.get("--viewer-x86") || args.get("--installer-x86") || defaultInstallerPathX86(version));
+const agentPath = path.resolve(args.get("--agent-x64") || defaultReleaseAssetPath(stableAgentAssetName));
+const agentPathX86 = path.resolve(args.get("--agent-x86") || defaultReleaseAssetPath(stableAgentAssetNameX86));
 const outPath = path.resolve(args.get("--out") || defaultOutputPath());
-const assetName = normalizeGitHubAssetName(
-  args.get("--asset-name") || (args.get("--download-url") ? assetNameFromDownloadUrl(args.get("--download-url")) : stableInstallerAssetName),
+const viewerAssetName = normalizeGitHubAssetName(
+  args.get("--viewer-asset-name-x64") || args.get("--asset-name") || stableViewerAssetName,
 );
-const assetNameX86 = normalizeGitHubAssetName(
-  args.get("--asset-name-x86") || (args.get("--download-url-x86") ? assetNameFromDownloadUrl(args.get("--download-url-x86")) : stableInstallerAssetNameX86),
+const viewerAssetNameX86 = normalizeGitHubAssetName(
+  args.get("--viewer-asset-name-x86") || args.get("--asset-name-x86") || stableViewerAssetNameX86,
 );
-const portableAssetName = normalizeGitHubAssetName(
-  args.get("--portable-asset-name-x64") || stablePortableAssetName,
+const agentAssetName = normalizeGitHubAssetName(
+  args.get("--agent-asset-name-x64") || stableAgentAssetName,
 );
-const portableAssetNameX86 = normalizeGitHubAssetName(
-  args.get("--portable-asset-name-x86") || stablePortableAssetNameX86,
+const agentAssetNameX86 = normalizeGitHubAssetName(
+  args.get("--agent-asset-name-x86") || stableAgentAssetNameX86,
 );
-const portableAgentAssetName = normalizeGitHubAssetName(
-  args.get("--portable-agent-asset-name-x64") || stablePortableAgentAssetName,
-);
-const portableAgentAssetNameX86 = normalizeGitHubAssetName(
-  args.get("--portable-agent-asset-name-x86") || stablePortableAgentAssetNameX86,
-);
-const downloadUrl = buildDownloadUrl(args, version, assetName, "--download-url");
-const downloadUrlX86 = buildDownloadUrl(args, version, assetNameX86, "--download-url-x86");
-const portableDownloadUrl = buildDownloadUrl(
-  args,
-  version,
-  portableAssetName,
-  "--portable-download-url-x64",
-);
-const portableDownloadUrlX86 = buildDownloadUrl(
-  args,
-  version,
-  portableAssetNameX86,
-  "--portable-download-url-x86",
-);
-const portableAgentDownloadUrl = buildDownloadUrl(
-  args,
-  version,
-  portableAgentAssetName,
-  "--portable-agent-download-url-x64",
-);
-const portableAgentDownloadUrlX86 = buildDownloadUrl(
-  args,
-  version,
-  portableAgentAssetNameX86,
-  "--portable-agent-download-url-x86",
-);
-
-if (!downloadUrl.startsWith("https://")) {
-  throw new Error("The update installer download URL must use HTTPS.");
-}
-if (!fs.existsSync(installerPath)) {
-  throw new Error(`Installer not found: ${installerPath}`);
-}
+const viewerDownloadUrl = buildDownloadUrl(args, version, viewerAssetName, "--viewer-download-url-x64");
+const viewerDownloadUrlX86 = buildDownloadUrl(args, version, viewerAssetNameX86, "--viewer-download-url-x86");
+const agentDownloadUrl = buildDownloadUrl(args, version, agentAssetName, "--agent-download-url-x64");
+const agentDownloadUrlX86 = buildDownloadUrl(args, version, agentAssetNameX86, "--agent-download-url-x86");
 
 for (const [label, assetPath] of [
-  ["x64 portable Viewer+Agent ZIP", portablePath],
-  ["x86 portable Viewer+Agent ZIP", portablePathX86],
-  ["x64 portable Agent ZIP", portableAgentPath],
-  ["x86 portable Agent ZIP", portableAgentPathX86],
+  ["x64 Viewer installer", viewerPath],
+  ["x86 Viewer installer", viewerPathX86],
+  ["x64 Agent installer", agentPath],
+  ["x86 Agent installer", agentPathX86],
 ]) {
   if (!fs.existsSync(assetPath)) {
     throw new Error(`${label} not found: ${assetPath}`);
@@ -221,69 +178,42 @@ function buildSignedAsset({ arch, assetName, downloadUrl, filePath, updateKind }
   };
 }
 
+const viewerX64 = buildSignedAsset({
+  arch: "x64", assetName: viewerAssetName, downloadUrl: viewerDownloadUrl, filePath: viewerPath, updateKind: "installer",
+});
+const viewerX86 = buildSignedAsset({
+  arch: "x86", assetName: viewerAssetNameX86, downloadUrl: viewerDownloadUrlX86, filePath: viewerPathX86, updateKind: "installer",
+});
+const agentX64 = buildSignedAsset({
+  arch: "x64", assetName: agentAssetName, downloadUrl: agentDownloadUrl, filePath: agentPath, updateKind: "installer",
+});
+const agentX86 = buildSignedAsset({
+  arch: "x86", assetName: agentAssetNameX86, downloadUrl: agentDownloadUrlX86, filePath: agentPathX86, updateKind: "installer",
+});
+
 const manifest = {
   version,
   generatedAt: new Date().toISOString(),
   forceUpdate,
   windows: {
-    x64: buildSignedAsset({ arch: "x64", assetName, downloadUrl, filePath: installerPath, updateKind: "installer" }),
+    x64: viewerX64,
+    x86: viewerX86,
   },
-  portable: {
-    x64: buildSignedAsset({
-      assetName: portableAssetName,
-      downloadUrl: portableDownloadUrl,
-      filePath: portablePath,
-      arch: "x64",
-      updateKind: "portable",
-    }),
-    x86: buildSignedAsset({
-      assetName: portableAssetNameX86,
-      downloadUrl: portableDownloadUrlX86,
-      filePath: portablePathX86,
-      arch: "x86",
-      updateKind: "portable",
-    }),
+  viewerWindows: {
+    x64: viewerX64,
+    x86: viewerX86,
   },
-  portableAgent: {
-    x64: buildSignedAsset({
-      assetName: portableAgentAssetName,
-      downloadUrl: portableAgentDownloadUrl,
-      filePath: portableAgentPath,
-      arch: "x64",
-      updateKind: "portable-agent",
-    }),
-    x86: buildSignedAsset({
-      assetName: portableAgentAssetNameX86,
-      downloadUrl: portableAgentDownloadUrlX86,
-      filePath: portableAgentPathX86,
-      arch: "x86",
-      updateKind: "portable-agent",
-    }),
+  agentWindows: {
+    x64: agentX64,
+    x86: agentX86,
   },
 };
-
-if (args.has("--installer-x86") || fs.existsSync(installerPathX86)) {
-  if (!fs.existsSync(installerPathX86)) {
-    throw new Error(`x86 installer not found: ${installerPathX86}`);
-  }
-  manifest.windows.x86 = buildSignedAsset({
-    assetName: assetNameX86,
-    downloadUrl: downloadUrlX86,
-    filePath: installerPathX86,
-    arch: "x86",
-    updateKind: "installer",
-  });
-}
 
 fs.mkdirSync(path.dirname(outPath), { recursive: true });
 fs.writeFileSync(outPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 
 console.log(`Production update manifest written to ${outPath}`);
-console.log(`Installer SHA-256: ${manifest.windows.x64.sha256}`);
-if (manifest.windows.x86) {
-  console.log(`x86 installer SHA-256: ${manifest.windows.x86.sha256}`);
-}
-console.log(`x64 portable Viewer+Agent SHA-256: ${manifest.portable.x64.sha256}`);
-console.log(`x86 portable Viewer+Agent SHA-256: ${manifest.portable.x86.sha256}`);
-console.log(`x64 portable Agent SHA-256: ${manifest.portableAgent.x64.sha256}`);
-console.log(`x86 portable Agent SHA-256: ${manifest.portableAgent.x86.sha256}`);
+console.log(`x64 Viewer SHA-256: ${manifest.viewerWindows.x64.sha256}`);
+console.log(`x86 Viewer SHA-256: ${manifest.viewerWindows.x86.sha256}`);
+console.log(`x64 Agent SHA-256: ${manifest.agentWindows.x64.sha256}`);
+console.log(`x86 Agent SHA-256: ${manifest.agentWindows.x86.sha256}`);

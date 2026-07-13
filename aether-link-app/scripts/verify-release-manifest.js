@@ -109,7 +109,7 @@ async function verifyAsset(manifest, input) {
     `sha256=${expectedChecksum}`,
     `assetName=${asset.name}`,
     `forceUpdate=${manifest.forceUpdate === true ? "true" : "false"}`,
-    `updateKind=${input.section === "windows" ? "installer" : input.section === "portable" ? "portable" : "portable-agent"}`,
+    `updateKind=${input.section === "portable" ? "portable" : input.section === "portableAgent" ? "portable-agent" : "installer"}`,
     `arch=${input.arch}`,
   ].join("\n");
   const signatureV2Valid = verify(
@@ -133,39 +133,33 @@ if (manifest.version !== version) {
 
 await verifyAsset(manifest, {
   arch: "x64",
-  section: "windows",
-  filePath: path.resolve(requiredArg(args, "--installer-x64")),
-  expectedName: args.get("--asset-name-x64") || "WonRemote-Viewer-Agent-Setup.exe",
+  section: "viewerWindows",
+  filePath: path.resolve(requiredArg(args, "--viewer-x64")),
+  expectedName: args.get("--viewer-asset-name-x64") || "WonRemote-Viewer-Setup.exe",
 });
 await verifyAsset(manifest, {
   arch: "x86",
-  section: "windows",
-  filePath: path.resolve(requiredArg(args, "--installer-x86")),
-  expectedName: args.get("--asset-name-x86") || "WonRemote-Viewer-Agent-Setup-x86.exe",
+  section: "viewerWindows",
+  filePath: path.resolve(requiredArg(args, "--viewer-x86")),
+  expectedName: args.get("--viewer-asset-name-x86") || "WonRemote-Viewer-Setup-x86.exe",
 });
 await verifyAsset(manifest, {
   arch: "x64",
-  section: "portable",
-  filePath: path.resolve(requiredArg(args, "--portable-x64")),
-  expectedName: args.get("--portable-asset-name-x64") || "WonRemote-Viewer-Agent-Portable.zip",
+  section: "agentWindows",
+  filePath: path.resolve(requiredArg(args, "--agent-x64")),
+  expectedName: args.get("--agent-asset-name-x64") || "WonRemote-Agent-Setup.exe",
 });
 await verifyAsset(manifest, {
   arch: "x86",
-  section: "portable",
-  filePath: path.resolve(requiredArg(args, "--portable-x86")),
-  expectedName: args.get("--portable-asset-name-x86") || "WonRemote-Viewer-Agent-Portable-x86.zip",
-});
-await verifyAsset(manifest, {
-  arch: "x64",
-  section: "portableAgent",
-  filePath: path.resolve(requiredArg(args, "--portable-agent-x64")),
-  expectedName: args.get("--portable-agent-asset-name-x64") || "WonRemote-Agent-Portable.zip",
-});
-await verifyAsset(manifest, {
-  arch: "x86",
-  section: "portableAgent",
-  filePath: path.resolve(requiredArg(args, "--portable-agent-x86")),
-  expectedName: args.get("--portable-agent-asset-name-x86") || "WonRemote-Agent-Portable-x86.zip",
+  section: "agentWindows",
+  filePath: path.resolve(requiredArg(args, "--agent-x86")),
+  expectedName: args.get("--agent-asset-name-x86") || "WonRemote-Agent-Setup-x86.exe",
 });
 
-console.log(`Verified release manifest ${manifestPath} for ${version} (installers and portable products, x64 and x86).`);
+for (const arch of ["x64", "x86"]) {
+  if (JSON.stringify(manifest.windows?.[arch]) !== JSON.stringify(manifest.viewerWindows?.[arch])) {
+    throw new Error(`Release manifest windows.${arch} compatibility metadata must match viewerWindows.${arch}.`);
+  }
+}
+
+console.log(`Verified release manifest ${manifestPath} for ${version} (four Viewer/Agent installers, x64 and x86).`);

@@ -128,7 +128,7 @@ describe("production installer update", () => {
       expect(script).toContain("(?i)[\\\\/]agent[\\\\/]index\\.mjs");
       expect(script).toContain("(?i)(^|\\s)--watch(\\s|$)");
       expect(script).toContain("Start-Process -FilePath $candidate -ArgumentList @('--agent') -WindowStyle Hidden");
-      expect(script).toContain("if ($process.ExitCode -eq 0) {\n    Start-WonRemoteAgent\n    Wait-WonRemoteAgentRuntime\n  }");
+      expect(script).toContain("if ($process.ExitCode -eq 0) {\n    Start-WonRemoteAgent\n    if ($RestartMode -eq 'agent') {\n      Wait-WonRemoteAgentRuntime");
       const second = await prepareInstallerHandoff(
         { installerArgs: ["/S"], installerPath },
         { baseDir },
@@ -155,7 +155,27 @@ describe("production installer update", () => {
 
       expect(script).toContain("function Start-WonRemoteViewer");
       expect(script).toContain('Start-Process -FilePath $candidate\n');
-      expect(script).toContain("if ($process.ExitCode -eq 0) {\n    Start-WonRemoteViewer\n    Wait-WonRemoteAgentRuntime\n  }");
+      expect(script).toContain("if ($process.ExitCode -eq 0) {\n    Start-WonRemoteViewer\n    if ($RestartMode -eq 'agent') {");
+      expect(script).toContain("} else {\n      Wait-WonRemoteViewer\n    }");
+    } finally {
+      await rm(baseDir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses the exact product restart executable path before legacy install-path discovery", async () => {
+    const baseDir = path.join(os.tmpdir(), `wonremote-explicit-restart-${process.pid}-${Date.now()}`);
+    const installerPath = path.join(baseDir, "WonRemote", "updates", "installer.exe");
+    const restartExecutablePath = path.join(baseDir, "custom", "WonRemote Viewer.exe");
+    try {
+      await mkdir(path.dirname(installerPath), { recursive: true });
+      await writeFile(installerPath, "installer");
+      const result = await prepareInstallerHandoff(
+        { installerArgs: ["/S"], installerPath },
+        { baseDir, restartMode: "viewer", restartExecutablePath } as any,
+      );
+      const script = await readFile(result.scriptPath, "utf8");
+      expect(script).toContain(restartExecutablePath);
+      expect(script).toContain("Start-Process -FilePath $RestartExecutablePath");
     } finally {
       await rm(baseDir, { recursive: true, force: true });
     }

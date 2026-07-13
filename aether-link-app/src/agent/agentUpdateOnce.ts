@@ -28,6 +28,7 @@ export const UPDATE_ONCE_EXIT = {
 export interface UpdateOnceOptions {
   baseDir: string;
   portableRoot?: string;
+  restartExecutablePath?: string;
   restartMode: InstallerRestartMode;
 }
 
@@ -44,7 +45,7 @@ interface UpdateOnceDeps {
   loadMetadata: typeof loadProductionInstallerUpdateMetadata;
   prepareHandoff: (
     download: InstallerDownloadResult,
-    options: { baseDir: string; restartMode: InstallerRestartMode },
+    options: { baseDir: string; restartExecutablePath?: string; restartMode: InstallerRestartMode },
   ) => Promise<InstallerHandoffResult>;
   preparePortableHandoff: (
     download: PortableDownloadResult,
@@ -73,9 +74,13 @@ export class UpdateOnceError extends Error {
 
 export function parseUpdateOnceOptions(
   argv: string[],
-  env: Partial<Record<"APPDATA" | "WONREMOTE_APP_DIR" | "WONREMOTE_PACKAGE_KIND", string>> = process.env,
+  env: Partial<Record<
+    "APPDATA" | "WONREMOTE_APP_DIR" | "WONREMOTE_HOST_EXE_PATH" | "WONREMOTE_PACKAGE_KIND",
+    string
+  >> = process.env,
 ): UpdateOnceOptions {
   let restartMode: InstallerRestartMode | undefined;
+  let restartExecutablePath = env.WONREMOTE_HOST_EXE_PATH?.trim();
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--update-once") {
@@ -88,6 +93,15 @@ export function parseUpdateOnceOptions(
     }
     if (arg.startsWith("--restart-mode=")) {
       restartMode = parseRestartMode(arg.slice("--restart-mode=".length));
+      continue;
+    }
+    if (arg === "--restart-executable") {
+      restartExecutablePath = parseRestartExecutable(argv[index + 1]);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--restart-executable=")) {
+      restartExecutablePath = parseRestartExecutable(arg.slice("--restart-executable=".length));
       continue;
     }
     throw new UpdateOnceError(`Unknown update option: ${arg}`, UPDATE_ONCE_EXIT.invalidArguments);
@@ -111,6 +125,7 @@ export function parseUpdateOnceOptions(
   return {
     baseDir: path.resolve(env.APPDATA?.trim() || process.cwd()),
     ...(portableRoot ? { portableRoot: path.resolve(portableRoot) } : {}),
+    ...(restartExecutablePath ? { restartExecutablePath: path.resolve(restartExecutablePath) } : {}),
     restartMode,
   };
 }
@@ -158,6 +173,7 @@ async function prepareVerifiedInstallerUpdate(
   const download = await deps.downloadInstaller(metadata, { baseDir: options.baseDir });
   return deps.prepareHandoff(download, {
     baseDir: options.baseDir,
+    restartExecutablePath: options.restartExecutablePath,
     restartMode: options.restartMode,
   });
 }
@@ -209,6 +225,16 @@ function parseRestartMode(value: string | undefined): InstallerRestartMode {
   }
   throw new UpdateOnceError(
     "--restart-mode must be viewer or agent.",
+    UPDATE_ONCE_EXIT.invalidArguments,
+  );
+}
+
+function parseRestartExecutable(value: string | undefined): string {
+  if (typeof value === "string" && value.trim()) {
+    return value.trim();
+  }
+  throw new UpdateOnceError(
+    "--restart-executable must include an executable path.",
     UPDATE_ONCE_EXIT.invalidArguments,
   );
 }

@@ -65,11 +65,35 @@ describe("non-interactive bundled updater", () => {
       restartMode: "agent",
     });
     expect(() => parseUpdateOnceOptions(["--update-once"], {})).toThrow(UpdateOnceError);
+    expect(parseUpdateOnceOptions([
+      "--update-once",
+      "--restart-mode",
+      "agent",
+      "--restart-executable",
+      "C:\\WonRemote\\Agent.exe",
+    ], { APPDATA: "C:\\Data" })).toMatchObject({
+      restartMode: "agent",
+      restartExecutablePath: "C:\\WonRemote\\Agent.exe",
+    });
     try {
       parseUpdateOnceOptions(["--update-once", "--restart-mode", "bad"], {});
     } catch (error) {
       expect((error as UpdateOnceError).exitCode).toBe(UPDATE_ONCE_EXIT.invalidArguments);
     }
+  });
+
+  it("passes the explicit restart executable path into Agent handoff preparation", async () => {
+    const deps = updateDeps();
+    await runUpdateOnce({
+      baseDir: "C:\\Data",
+      restartMode: "agent",
+      restartExecutablePath: "C:\\WonRemote\\Agent.exe",
+    } as any, deps as any);
+    expect(deps.prepareHandoff).toHaveBeenCalledWith(expect.anything(), {
+      baseDir: "C:\\Data",
+      restartMode: "agent",
+      restartExecutablePath: "C:\\WonRemote\\Agent.exe",
+    });
   });
 
   it("keeps a portable Agent on the signed Agent-only ZIP update path", async () => {

@@ -57,6 +57,11 @@ function parseViewerUpdateManifest(input: unknown, arch: "x64" | "x86"): UpdateC
 }
 
 function selectWindowsAsset(input: Record<string, unknown>, arch: "x64" | "x86"): ManifestAsset | null {
+  const viewerWindows = input.viewerWindows;
+  if (isRecord(viewerWindows) && isRecord(viewerWindows[arch])) {
+    return viewerWindows[arch] as ManifestAsset;
+  }
+
   if (Array.isArray(input.assets)) {
     const installerAsset = input.assets.find((asset): asset is Record<string, unknown> => {
       if (!isRecord(asset)) {

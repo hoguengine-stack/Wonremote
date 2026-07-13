@@ -38,6 +38,7 @@ type DownloadInstallerOptions = {
 
 type PrepareInstallerHandoffOptions = {
   baseDir: string;
+  restartExecutablePath?: string;
   restartMode?: InstallerRestartMode;
 };
 
@@ -112,6 +113,7 @@ export async function prepareInstallerHandoff(
       installerPath: download.installerPath,
       lockPath: path.join(updatesDir, "update-handoff.lock"),
       logPath,
+      restartExecutablePath: options.restartExecutablePath,
       restartMode: options.restartMode ?? "agent",
     }),
     "utf8",
@@ -139,6 +141,7 @@ function buildInstallerHandoffScript(input: {
   installerPath: string;
   lockPath: string;
   logPath: string;
+  restartExecutablePath?: string;
   restartMode: InstallerRestartMode;
 }): string {
   const quotedArgs = input.installerArgs.map((arg) => `'${escapePowerShellSingleQuoted(arg)}'`).join(", ");
@@ -153,6 +156,7 @@ $InstallerPath = '${escapePowerShellSingleQuoted(input.installerPath)}'
 $InstallerArgs = @(${quotedArgs})
 $LockPath = '${escapePowerShellSingleQuoted(input.lockPath)}'
 $RestartMode = '${escapePowerShellSingleQuoted(input.restartMode)}'
+$RestartExecutablePath = '${escapePowerShellSingleQuoted(input.restartExecutablePath ?? "")}'
 $explicitInstallRoots = @(${quotedExplicitInstallRoots})
 function Write-HandoffLog([string]$Message) {
   $stamp = Get-Date -Format o
@@ -223,12 +227,14 @@ function Test-UnderPath([string]$Candidate, [string[]]$Roots) {
 }
 
 function Stop-WonRemoteProcesses {
-  $roots = @(
-    "$env:LOCALAPPDATA\\WonRemote Viewer",
-    "$env:LOCALAPPDATA\\WonRemote Agent",
-    "$env:LOCALAPPDATA\\WonRemote\\Viewer",
-    "$env:LOCALAPPDATA\\WonRemote\\Agent"
-  )
+  $roots = if ($RestartMode -eq 'agent') {
+    @("$env:LOCALAPPDATA\\WonRemote\\Agent", "$env:LOCALAPPDATA\\WonRemote Agent")
+  } else {
+    @("$env:LOCALAPPDATA\\WonRemote\\Viewer", "$env:LOCALAPPDATA\\WonRemote Viewer")
+  }
+  if (-not [string]::IsNullOrWhiteSpace($RestartExecutablePath)) {
+    $roots += Split-Path -Parent $RestartExecutablePath
+  }
   $roots = @($roots + $explicitInstallRoots) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
   $targets = Get-CimInstance Win32_Process | Where-Object {
     Test-UnderPath $_.ExecutablePath $roots
@@ -252,11 +258,10 @@ function Test-WonRemoteAgentRunning([string[]]$Roots) {
 
 function Get-WonRemoteAgentRoots {
   return @(
+    $(if (-not [string]::IsNullOrWhiteSpace($RestartExecutablePath)) { Split-Path -Parent $RestartExecutablePath }),
     $explicitInstallRoots,
-    "$env:LOCALAPPDATA\\WonRemote Agent",
-    "$env:LOCALAPPDATA\\WonRemote Viewer",
     "$env:LOCALAPPDATA\\WonRemote\\Agent",
-    "$env:LOCALAPPDATA\\WonRemote\\Viewer"
+    "$env:LOCALAPPDATA\\WonRemote Agent"
   ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
 }
 
@@ -290,6 +295,11 @@ function Start-WonRemoteAgent {
     Write-HandoffLog "WonRemote Agent is already running after installer exit; skipping fallback start."
     return
   }
+  if (-not [string]::IsNullOrWhiteSpace($RestartExecutablePath) -and (Test-Path -LiteralPath $RestartExecutablePath)) {
+    Write-HandoffLog "Starting WonRemote Agent from exact update origin: $RestartExecutablePath --agent"
+    Start-Process -FilePath $RestartExecutablePath -ArgumentList @('--agent') -WindowStyle Hidden
+    return
+  }
   $candidates = @()
   foreach ($root in $roots) {
     $candidates += Join-Path $root "wonremote-viewer.exe"
@@ -308,10 +318,20 @@ function Start-WonRemoteAgent {
 
 function Start-WonRemoteViewer {
   $roots = @(
-    "$env:LOCALAPPDATA\\WonRemote Viewer",
+    $(if (-not [string]::IsNullOrWhiteSpace($RestartExecutablePath)) { Split-Path -Parent $RestartExecutablePath }),
     "$env:LOCALAPPDATA\\WonRemote\\Viewer",
+    "$env:LOCALAPPDATA\\WonRemote Viewer",
     $explicitInstallRoots
   ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+  if (Test-WonRemoteAgentRunning $roots) {
+    Write-HandoffLog "WonRemote Viewer is already running after installer exit; skipping fallback start."
+    return
+  }
+  if (-not [string]::IsNullOrWhiteSpace($RestartExecutablePath) -and (Test-Path -LiteralPath $RestartExecutablePath)) {
+    Write-HandoffLog "Starting WonRemote Viewer from exact update origin: $RestartExecutablePath"
+    Start-Process -FilePath $RestartExecutablePath
+    return
+  }
   $candidates = @()
   foreach ($root in $roots) {
     $candidates += Join-Path $root "wonremote-viewer.exe"
@@ -327,6 +347,24 @@ function Start-WonRemoteViewer {
   Write-HandoffLog "No installed WonRemote Viewer executable was found after installer exit."
 }
 
+function Wait-WonRemoteViewer {
+  $roots = @(
+    $(if (-not [string]::IsNullOrWhiteSpace($RestartExecutablePath)) { Split-Path -Parent $RestartExecutablePath }),
+    "$env:LOCALAPPDATA\\WonRemote\\Viewer",
+    "$env:LOCALAPPDATA\\WonRemote Viewer",
+    $explicitInstallRoots
+  ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+  $deadline = (Get-Date).AddSeconds(15)
+  do {
+    if (Test-WonRemoteAgentRunning $roots) {
+      Write-HandoffLog 'WonRemote Viewer process health check passed.'
+      return
+    }
+    Start-Sleep -Milliseconds 500
+  } while ((Get-Date) -lt $deadline)
+  throw 'WonRemote Viewer did not stay alive after installer exit.'
+}
+
 try {
   Stop-WonRemoteProcesses
   $env:WONREMOTE_RESTART_MODE = $RestartMode
@@ -337,7 +375,11 @@ try {
   Write-HandoffLog "Installer exit code: $($process.ExitCode)"
   if ($process.ExitCode -eq 0) {
     ${restartCommand}
-    Wait-WonRemoteAgentRuntime
+    if ($RestartMode -eq 'agent') {
+      Wait-WonRemoteAgentRuntime
+    } else {
+      Wait-WonRemoteViewer
+    }
   }
   Close-UpdateLock
   exit $process.ExitCode

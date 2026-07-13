@@ -216,68 +216,51 @@ function x64OnlyNsisGuard(target) {
 `;
 }
 
-function createCombinedInstaller(viewerInstallerPath, agentInstallerPath, target) {
-  const outputPath = path.join(outputDir, target.stableFullInstallerName);
-  const scriptPath = path.join(outputDir, `WonRemote-Viewer-Agent-Setup-${target.key}.nsi`);
-  const bridgeScriptPath = path.join(appRoot, "scripts", "portable-installer-bridge.ps1");
-  const portableZipPath = path.join(outputDir, target.stablePortableZipName);
-  const agentPortableZipPath = path.join(outputDir, target.stableAgentZipName);
-  ensureExists(bridgeScriptPath, "legacy portable installer bridge");
-  ensureExists(portableZipPath, `${target.key} combined portable ZIP`);
-  ensureExists(agentPortableZipPath, `${target.key} Agent portable ZIP`);
+function createProductInstaller(viewerInstallerPath, agentInstallerPath, target, defaultMode) {
+  const outputName = defaultMode === "agent" ? target.stableAgentInstallerName : target.stableInstallerName;
+  const outputPath = path.join(outputDir, outputName);
+  const scriptPath = path.join(outputDir, `WonRemote-${defaultMode}-Setup-${target.key}.nsi`);
   const script = `!include LogicLib.nsh
 !include x64.nsh
 Unicode true
-Name "WonRemote Viewer + Agent"
+Name "WonRemote ${defaultMode === "agent" ? "Agent" : "Viewer"}"
 OutFile "${escapeNsisString(outputPath)}"
 RequestExecutionLevel user
-InstallDir "$LOCALAPPDATA\\WonRemote"
 Page instfiles
 
 Section "Install"
 ${x64OnlyNsisGuard(target)}  InitPluginsDir
   SetOutPath "$PLUGINSDIR"
-  File /oname=${target.stableInstallerName} "${escapeNsisString(viewerInstallerPath)}"
-  File /oname=${target.stableAgentInstallerName} "${escapeNsisString(agentInstallerPath)}"
-  File /oname=portable-installer-bridge.ps1 "${escapeNsisString(bridgeScriptPath)}"
-  File /oname=${target.stablePortableZipName} "${escapeNsisString(portableZipPath)}"
-  File /oname=${target.stableAgentZipName} "${escapeNsisString(agentPortableZipPath)}"
+  File /oname=viewer-installer.exe "${escapeNsisString(viewerInstallerPath)}"
+  File /oname=agent-installer.exe "${escapeNsisString(agentInstallerPath)}"
 
-  ReadEnvStr $R0 "WONREMOTE_APP_DIR"
-  \${If} $R0 != ""
-    ReadEnvStr $R1 "WONREMOTE_RESTART_MODE"
-    \${If} $R1 != "viewer"
-    \${AndIf} $R1 != "agent"
-      StrCpy $R1 "auto"
-    \${EndIf}
-    DetailPrint "Checking for a legacy WonRemote portable package..."
-    ExecWait '\"$SYSDIR\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File \"$PLUGINSDIR\\portable-installer-bridge.ps1\" -PortableRoot \"$R0\" -CombinedArchivePath \"$PLUGINSDIR\\${target.stablePortableZipName}\" -AgentArchivePath \"$PLUGINSDIR\\${target.stableAgentZipName}\" -ExpectedVersion \"${packageJson.version}\" -RestartMode \"$R1\"' $R4
-    \${If} $R4 == 0
-      Goto install_done
-    \${ElseIf} $R4 == 20
-      Goto install_done
-    \${ElseIf} $R4 != 10
-      SetErrorLevel $R4
-      Abort "WonRemote portable update failed and was rolled back."
-    \${EndIf}
+  ReadEnvStr $R0 "WONREMOTE_RESTART_MODE"
+  StrCpy $R1 "1"
+  \${If} $R0 != "viewer"
+  \${AndIf} $R0 != "agent"
+    StrCpy $R0 "${defaultMode}"
+    StrCpy $R1 "0"
   \${EndIf}
-
-normal_install:
-  DetailPrint "Installing WonRemote Viewer..."
-  ExecWait '"$PLUGINSDIR\\${target.stableInstallerName}" /S' $0
+  \${If} $R0 == "agent"
+    DetailPrint "Installing WonRemote Agent..."
+    ExecWait '"$PLUGINSDIR\\agent-installer.exe" /S' $0
+  \${Else}
+    DetailPrint "Installing WonRemote Viewer..."
+    ExecWait '"$PLUGINSDIR\\viewer-installer.exe" /S' $0
+  \${EndIf}
   \${If} $0 != 0
     SetErrorLevel $0
-    Abort "WonRemote Viewer installer failed."
+    Abort "WonRemote $R0 installer failed."
   \${EndIf}
-
-  DetailPrint "Installing WonRemote Agent..."
-  ExecWait '"$PLUGINSDIR\\${target.stableAgentInstallerName}" /S' $1
-  \${If} $1 != 0
-    SetErrorLevel $1
-    Abort "WonRemote Agent installer failed."
+  \${If} $R1 == "1"
+    \${If} $R0 == "agent"
+      Exec '"$LOCALAPPDATA\\WonRemote\\Agent\\wonremote-viewer.exe" --agent'
+    \${Else}
+      Exec '"$LOCALAPPDATA\\WonRemote\\Viewer\\wonremote-viewer.exe"'
+      IfFileExists "$LOCALAPPDATA\\WonRemote\\Agent\\wonremote-viewer.exe" 0 +2
+      Exec '"$LOCALAPPDATA\\WonRemote\\Agent\\wonremote-viewer.exe" --agent'
+    \${EndIf}
   \${EndIf}
-
-install_done:
 SectionEnd
 `;
 
@@ -289,7 +272,7 @@ SectionEnd
     windowsHide: true,
   });
   fs.rmSync(scriptPath, { force: true });
-  ensureExists(outputPath, `combined ${target.key} WonRemote viewer and agent installer`);
+  ensureExists(outputPath, `${target.key} WonRemote ${defaultMode} installer wrapper`);
 }
 
 function copyInstaller(sourcePath, targetName) {
@@ -330,34 +313,18 @@ function packageTarget(target) {
   buildViewerInstaller(target);
 
   const targetRelease = releaseTargetFor(target);
-  copyViewerPortablePayload(target, targetRelease);
-
   const installerDir = path.join(targetRelease, "bundle", "nsis");
   const expectedInstaller = `WonRemote Viewer_${packageJson.version}_${target.installerArch}-setup.exe`;
   const expectedAgentInstaller = `WonRemote Agent_${packageJson.version}_${target.installerArch}-setup.exe`;
   const expectedInstallerPath = path.join(installerDir, expectedInstaller);
   const expectedAgentInstallerPath = path.join(installerDir, expectedAgentInstaller);
   ensureExists(expectedInstallerPath, `${target.key} WonRemote Viewer NSIS installer`);
-  copyInstaller(expectedInstallerPath, expectedInstaller);
-  copyInstaller(expectedInstallerPath, target.stableInstallerName);
 
   buildAgentDefaultInstaller(target);
-  copyAgentPortableExecutable(target, targetRelease);
-
   ensureExists(expectedAgentInstallerPath, `${target.key} Agent-default WonRemote NSIS installer`);
-  copyInstaller(expectedAgentInstallerPath, expectedAgentInstaller);
-  copyInstaller(expectedAgentInstallerPath, target.stableAgentInstallerName);
-
-  const installedPayloadMarker = path.join(targetRelease, portableMarkerName);
-  if (fs.existsSync(installedPayloadMarker)) {
-    throw new Error(`Portable marker must not be present in installed ${target.key} resources: ${installedPayloadMarker}`);
-  }
-  createPortableZip(target);
-  createAgentPortableZip(target);
-  createCombinedInstaller(expectedInstallerPath, expectedAgentInstallerPath, target);
-  if (fs.existsSync(path.join(target.stageDir, portableMarkerName))) {
-    throw new Error(`Portable marker cleanup failed for ${target.key}.`);
-  }
+  verifyTargetAgentRuntime(target, targetRelease);
+  createProductInstaller(expectedInstallerPath, expectedAgentInstallerPath, target, "viewer");
+  createProductInstaller(expectedInstallerPath, expectedAgentInstallerPath, target, "agent");
 }
 
 function main() {
@@ -368,7 +335,15 @@ function main() {
     packageTarget(target);
   }
 
-  console.log(`Portable EXE packages created at ${outputDir}`);
+  const expectedOutputs = TARGET_ARCHITECTURES.flatMap((target) => [
+    target.stableInstallerName,
+    target.stableAgentInstallerName,
+  ]).sort();
+  const actualOutputs = fs.readdirSync(outputDir).filter((name) => /\.exe$/i.test(name)).sort();
+  if (JSON.stringify(actualOutputs) !== JSON.stringify(expectedOutputs)) {
+    throw new Error(`Release output must contain exactly four product installers; found: ${actualOutputs.join(", ")}`);
+  }
+  console.log(`Four WonRemote product installers created at ${outputDir}`);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
