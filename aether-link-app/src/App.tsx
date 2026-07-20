@@ -16,6 +16,7 @@ import {
   ZoomIn,
   ZoomOut,
   Maximize2,
+  Minimize2,
   RotateCcw,
   Power,
   Trash2,
@@ -63,8 +64,6 @@ import {
   scheduleVisualPingPresentedMeasurement,
 } from "./domain/visualPing";
 import {
-  formatControlDiagnostics,
-  formatStreamDiagnostics,
   shouldWarnAboutControlLimit,
 } from "./domain/sessionDiagnostics";
 import { getViewerVersion } from "./domain/versioning";
@@ -204,7 +203,6 @@ function ViewerApp() {
   const [apiError, setApiError] = useState("");
   const [query, setQuery] = useState("");
   const [selectedStore, setSelectedStore] = useState("전체");
-  const [inputLog, setInputLog] = useState<string[]>([]);
   const [updateAlert, setUpdateAlert] = useState<string | null>(null);
   const sessionRestoreAttemptedRef = useRef(false);
   const [editTarget, setEditTarget] = useState<DeviceEditTarget | null>(null);
@@ -329,7 +327,6 @@ function ViewerApp() {
       .then((state) => {
         if (!active || (state !== "connected" && state !== "pending")) return;
         setSession({ ...storedSession, state });
-        setInputLog([`${new Date().toLocaleTimeString()} 이전 원격 세션 복원`]);
       })
       .catch(() => window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY));
     return () => {
@@ -424,13 +421,11 @@ function ViewerApp() {
         if (!active) return;
         if (nextState === "connected") {
           setSession({ ...session, state: "connected" });
-          setInputLog((prev) => [`${new Date().toLocaleTimeString()} 세션 연결 완료`, ...prev]);
         }
       } catch (error) {
         if (active) {
           setSession(null);
           window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
-          setInputLog((prev) => [`${new Date().toLocaleTimeString()} 접속 거절 또는 종료됨`, ...prev]);
         }
       }
     };
@@ -470,7 +465,6 @@ function ViewerApp() {
       setIsAuthenticated(false);
       setSession(null);
       window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
-      setInputLog([]);
       setDevices([]);
       setApiError("");
     }
@@ -481,15 +475,11 @@ function ViewerApp() {
       return;
     }
     if (options.localOnly) {
-      setInputLog((current) => [
-        `${new Date().toLocaleTimeString()} [WebRTC] ${action}`,
-        ...current,
-      ].slice(0, 100));
       setApiError("");
       return;
     }
     try {
-      setInputLog(await recordInput(session.id, action));
+      await recordInput(session.id, action);
       setApiError("");
     } catch (error) {
       setApiError(error instanceof Error ? error.message : "입력 이벤트 전송 실패");
@@ -504,7 +494,6 @@ function ViewerApp() {
       await closeSession(session.id);
       setSession(null);
       window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
-      setInputLog([]);
       setApiError("");
     } catch (error) {
       setApiError(error instanceof Error ? error.message : "세션 종료 실패");
@@ -519,7 +508,6 @@ function ViewerApp() {
     try {
       const result = await openSession(device.id);
       setSession(result.session);
-      setInputLog(result.inputLog);
       setApiError("");
     } catch (error) {
       setApiError(error instanceof Error ? error.message : "세션 연결 실패");
@@ -559,7 +547,6 @@ function ViewerApp() {
         deviceId: secureConnect.device.id,
       });
       setSession(result.session);
-      setInputLog(result.inputLog);
       setSecureConnect(null);
       setApiError("");
     } catch (error) {
@@ -653,7 +640,6 @@ function ViewerApp() {
         await closeSession(session.id);
         setSession(null);
         window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
-        setInputLog([]);
       }
       await deleteRemoteDevice(device.id);
       const remainingDevices = devices.filter((item) => item.id !== device.id);
@@ -786,7 +772,6 @@ function ViewerApp() {
             device={activeDevice}
             sessionId={session?.id ?? ""}
             session={session}
-            inputLog={inputLog}
             onInputEvent={(action, options) => markInput(action, options)}
             onCloseSession={handleCloseSession}
           />
@@ -1525,14 +1510,12 @@ function RemoteSessionPanel({
   device,
   sessionId,
   session,
-  inputLog,
   onInputEvent: sendInputEvent,
   onCloseSession,
 }: {
   device: ManagedDevice | null;
   sessionId: string;
   session: RemoteSession | null;
-  inputLog: string[];
   onInputEvent: (action: string, options?: { localOnly?: boolean }) => void | Promise<void>;
   onCloseSession: () => void;
 }) {
@@ -1567,9 +1550,7 @@ function RemoteSessionPanel({
   const [pingState, setPingState] = useState<{ start: number } | null>(null);
   const [zoom, setZoom] = useState(1);
   const [streamTransportState, setStreamTransportState] = useState("idle");
-  const [streamFrameCount, setStreamFrameCount] = useState(0);
-  const [streamLastFrameAt, setStreamLastFrameAt] = useState("");
-  const [fallbackPollErrors, setFallbackPollErrors] = useState(0);
+  const [isSessionFullscreen, setIsSessionFullscreen] = useState(false);
   const [streamPerformanceMode, setStreamPerformanceMode] = useState<StreamPerformanceMode>(() =>
     normalizeStreamPerformanceMode(window.localStorage.getItem("wonremote-stream-performance-mode")),
   );
@@ -1589,6 +1570,38 @@ function RemoteSessionPanel({
   const [chatInput, setChatInput] = useState("");
   const [isClipboardSyncOn, setIsClipboardSyncOn] = useState(false);
   const [isChatOpen, setIsChatOpen] = useState(false);
+
+  useEffect(() => {
+    if ((window as any).__TAURI_INTERNALS__) {
+      void getCurrentWindow().isFullscreen().then(setIsSessionFullscreen).catch(() => {});
+      return;
+    }
+
+    const syncBrowserFullscreen = () => setIsSessionFullscreen(Boolean(document.fullscreenElement));
+    syncBrowserFullscreen();
+    document.addEventListener("fullscreenchange", syncBrowserFullscreen);
+    return () => document.removeEventListener("fullscreenchange", syncBrowserFullscreen);
+  }, [sessionId]);
+
+  async function toggleSessionFullscreen() {
+    try {
+      if ((window as any).__TAURI_INTERNALS__) {
+        const appWindow = getCurrentWindow();
+        const nextFullscreen = !(await appWindow.isFullscreen());
+        await appWindow.setFullscreen(nextFullscreen);
+        setIsSessionFullscreen(nextFullscreen);
+        return;
+      }
+
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else {
+        await panelRef.current?.requestFullscreen();
+      }
+    } catch {
+      // Fullscreen can be denied by browser policy or a restricted desktop shell.
+    }
+  }
 
   const sendClipboardImage = React.useCallback(async (image: Blob, knownSha256?: string) => {
     if (!sessionId) {
@@ -1812,9 +1825,6 @@ function RemoteSessionPanel({
     }
 
     setStreamTransportState("starting");
-    setStreamFrameCount(0);
-    setStreamLastFrameAt("");
-    setFallbackPollErrors(0);
     tileSequenceRef.current.clear();
     receivedFrameSequenceRef.current = 0;
     let active = true;
@@ -1915,9 +1925,6 @@ function RemoteSessionPanel({
 
       if (data.tiles && data.tiles.length > 0) {
         const frameSequence = resolveFrameSequence(data);
-        const frameRenderedAt = new Date().toLocaleTimeString();
-        setStreamFrameCount((value) => value + 1);
-        setStreamLastFrameAt(frameRenderedAt);
         let loadedCount = 0;
         for (const tile of data.tiles) {
           const img = new Image();
@@ -1978,8 +1985,6 @@ function RemoteSessionPanel({
               }
             }
           }
-          setStreamFrameCount((value) => value + 1);
-          setStreamLastFrameAt(new Date().toLocaleTimeString());
           if (visibleContext) {
             measurePresentedPing(visibleContext);
           }
@@ -2083,9 +2088,8 @@ function RemoteSessionPanel({
           );
         }
         drawTileFrame(tileData);
-        setFallbackPollErrors(0);
-      } catch (e) {
-        setFallbackPollErrors((value) => value + 1);
+      } catch {
+        // Diagnostic fallback retries on the next interval.
       }
     };
 
@@ -2650,13 +2654,6 @@ function RemoteSessionPanel({
     );
   }
 
-  const streamDiagnosticLines = formatStreamDiagnostics(
-    device.streamDiagnostics,
-    streamTransportState,
-    streamFrameCount,
-    fallbackPollErrors,
-  );
-  const controlDiagnosticLines = formatControlDiagnostics(device.controlDiagnostics);
   const controlLimited = shouldWarnAboutControlLimit(device.controlDiagnostics);
 
   return (
@@ -2669,38 +2666,30 @@ function RemoteSessionPanel({
       onKeyDown={handleKeyDown}
       onKeyUp={handleKeyUp}
     >
-      <div className="section-heading">
-        <h2>원격 세션 (실시간 스트림)</h2>
-        <span>{device.desktopName}</span>
-      </div>
-
       <div className="remote-work-area" style={{ display: "flex", flex: 1, gap: "16px", minHeight: "450px" }}>
         {/* 원격 스크린 영역 */}
         <div className="remote-screen connected" style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
           <div className="remote-titlebar">
-            <span>{device.deviceName}</span>
-            <span>{device.businessNumber}</span>
-            <span className="status-pill" style={{ marginLeft: "auto", background: "rgba(14, 165, 233, 0.16)", color: "#38bdf8" }}>
-              {streamTransportState}
-            </span>
-            <span className="status-pill" style={{ background: "rgba(15, 23, 42, 0.45)", color: "#cbd5e1" }}>
-              frames {streamFrameCount}
-            </span>
-            {streamLastFrameAt && (
-              <span className="status-pill" style={{ background: "rgba(15, 23, 42, 0.45)", color: "#cbd5e1" }}>
-                last {streamLastFrameAt}
+            <div className="remote-titlebar-identity">
+              <span>{device.deviceName}</span>
+              <span>{device.businessNumber}</span>
+            </div>
+            <div className="remote-titlebar-status">
+              <strong>{device.desktopName}</strong>
+              <span className="status-pill" style={{ background: "rgba(14, 165, 233, 0.16)", color: "#38bdf8" }}>
+                {streamTransportState}
               </span>
-            )}
-            {controlLimited && (
-              <span className="status-pill" style={{ background: "rgba(239, 68, 68, 0.16)", color: "#fca5a5" }}>
-                input limited
-              </span>
-            )}
-            {latencyReport && (
-              <span className="status-pill" style={{ background: "rgba(99, 102, 241, 0.2)", color: "#818cf8" }}>
-                {latencyReport}
-              </span>
-            )}
+              {controlLimited && (
+                <span className="status-pill" style={{ background: "rgba(239, 68, 68, 0.16)", color: "#fca5a5" }}>
+                  input limited
+                </span>
+              )}
+              {latencyReport && (
+                <span className="status-pill" style={{ background: "rgba(99, 102, 241, 0.2)", color: "#818cf8" }}>
+                  {latencyReport}
+                </span>
+              )}
+            </div>
           </div>
           <div
             ref={remotePreviewRef}
@@ -2725,13 +2714,6 @@ function RemoteSessionPanel({
                 transformOrigin: "center center",
               }}
             />
-          </div>
-          <div className="session-diagnostics">
-            {[...streamDiagnosticLines, ...controlDiagnosticLines].map((line, index) => (
-              <span key={`${index}-${line}`} className={line.includes("error") || line.includes("win32=") ? "diagnostic-pill warning" : "diagnostic-pill"}>
-                {line}
-              </span>
-            ))}
           </div>
         </div>
 
@@ -2775,7 +2757,7 @@ function RemoteSessionPanel({
       </div>
 
       {/* 액션 컨트롤러 영역 */}
-      <div className="session-actions" style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "12px", alignItems: "center" }}>
+      <div className="session-actions session-actions-top">
         <div className="stream-mode-control" role="group" aria-label="화면 반응 속도">
           <button
             type="button"
@@ -2796,6 +2778,10 @@ function RemoteSessionPanel({
             보통
           </button>
         </div>
+        <button className="secondary-button" type="button" onClick={toggleSessionFullscreen} title="전체화면 전환">
+          {isSessionFullscreen ? <Minimize2 size={17} /> : <Maximize2 size={17} />}
+          <span>{isSessionFullscreen ? "전체화면 종료" : "전체화면"}</span>
+        </button>
         <button className="secondary-button" type="button" onClick={setFitZoom} title="Fit">
           <Maximize2 size={17} />
           <span>Fit</span>
@@ -2954,12 +2940,6 @@ function RemoteSessionPanel({
           <LogOut size={17} />
           <span>세션 종료</span>
         </button>
-      </div>
-
-      <div className="input-log">
-        {inputLog.map((line, idx) => (
-          <div key={idx}>{line}</div>
-        ))}
       </div>
     </section>
   );

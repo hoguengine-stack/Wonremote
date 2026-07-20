@@ -303,8 +303,10 @@ describe("desktop packaging scaffold", () => {
 
     expect(stylesSource).toContain("height: 100vh;");
     expect(stylesSource).toContain("max-height: 100vh;");
-    expect(stylesSource).toContain(".remote-focus-mode .session-actions");
-    expect(stylesSource).toContain("max-height: 140px;");
+    expect(stylesSource).toContain(".remote-focus-mode .session-actions-top");
+    expect(stylesSource).toContain("max-height: none;");
+    expect(stylesSource).toContain("order: -1;");
+    expect(stylesSource).toContain("overflow: visible;");
     expect(stylesSource).toContain("max-width: 100%;");
     expect(stylesSource).toContain("width: auto !important;");
   });
