@@ -35,6 +35,8 @@ describe("Agent command execution", () => {
     "system taskmgr",
     "switch-monitor 2",
     "set-sleep 50",
+    "set-stream-mode fast",
+    "set-stream-mode normal",
     "clipboard-request",
     "ping-color-change",
   ])("allows WebRTC control action %s", (action) => {
@@ -104,6 +106,24 @@ describe("Agent command execution", () => {
     await expect(executeAgentCommand("set-sleep 1001", "poll", runtime)).resolves.toBe("ignored");
     expect(runtime.switchMonitor).not.toHaveBeenCalled();
     expect(runtime.setSleep).not.toHaveBeenCalled();
+  });
+
+  it("applies stream performance mode from poll and WebRTC commands", async () => {
+    const runtime = createRuntime();
+
+    await expect(executeAgentCommand("set-stream-mode fast", "poll", runtime)).resolves.toBe("executed");
+    await expect(executeAgentCommand("set-stream-mode normal", "webrtc", runtime)).resolves.toBe("executed");
+
+    expect(runtime.setStreamMode).toHaveBeenNthCalledWith(1, "fast");
+    expect(runtime.setStreamMode).toHaveBeenNthCalledWith(2, "normal");
+  });
+
+  it("ignores malformed polled mode and rejects malformed WebRTC mode", async () => {
+    const runtime = createRuntime();
+
+    await expect(executeAgentCommand("set-stream-mode turbo", "poll", runtime)).resolves.toBe("ignored");
+    await expect(executeAgentCommand("set-stream-mode turbo", "webrtc", runtime)).resolves.toBe("rejected");
+    expect(runtime.setStreamMode).not.toHaveBeenCalled();
   });
 
   it("uses the same injection callback for poll fallback and WebRTC controls", async () => {
@@ -314,6 +334,7 @@ function createRuntime(): AgentCommandRuntime {
     sendWakeOnLan: vi.fn(async () => undefined),
     setClipboardText: vi.fn(async () => undefined),
     setSleep: vi.fn(async () => undefined),
+    setStreamMode: vi.fn(async () => undefined),
     showSecurityCode: vi.fn(async () => undefined),
     startStream: vi.fn(async () => undefined),
     stopStream: vi.fn(async () => undefined),

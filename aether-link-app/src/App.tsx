@@ -75,6 +75,11 @@ import {
 } from "./domain/updatePolicy";
 import { shouldPollViewerTileFallback } from "./domain/realtimeTransportPolicy";
 import {
+  buildSetStreamModeCommand,
+  normalizeStreamPerformanceMode,
+  type StreamPerformanceMode,
+} from "./domain/streamPerformanceMode";
+import {
   ACTIVE_SESSION_STORAGE_KEY,
   parseActiveSession,
   serializeActiveSession,
@@ -1565,6 +1570,9 @@ function RemoteSessionPanel({
   const [streamFrameCount, setStreamFrameCount] = useState(0);
   const [streamLastFrameAt, setStreamLastFrameAt] = useState("");
   const [fallbackPollErrors, setFallbackPollErrors] = useState(0);
+  const [streamPerformanceMode, setStreamPerformanceMode] = useState<StreamPerformanceMode>(() =>
+    normalizeStreamPerformanceMode(window.localStorage.getItem("wonremote-stream-performance-mode")),
+  );
   const [selectedDisplayIndex, setSelectedDisplayIndex] = useState(0);
   const [transferProgress, setTransferProgress] = useState<{
     fileName: string;
@@ -1636,6 +1644,13 @@ function RemoteSessionPanel({
       panelRef.current?.focus();
     }
   }, [session?.id, session?.state]);
+
+  useEffect(() => {
+    if (!sessionId || session?.state !== "connected") {
+      return;
+    }
+    void onInputEvent(buildSetStreamModeCommand(streamPerformanceMode));
+  }, [sessionId, session?.state, streamPerformanceMode]);
 
   useEffect(() => {
     pingStateRef.current = pingState;
@@ -1873,14 +1888,10 @@ function RemoteSessionPanel({
           return { r: imgData[0], g: imgData[1], b: imgData[2] };
         },
         nowMs: () => performance.now(),
-        onPresented: ({ latencyMs, sleepCommand }) => {
+        onPresented: ({ latencyMs }) => {
           if (!active) return;
           setLatencyReport(`E2E Latency: ${latencyMs.toFixed(1)}ms`);
           setPingState(null);
-          if (sleepCommand === "set-sleep 100") {
-            console.log(`Latency ${latencyMs.toFixed(1)}ms > 150ms. Switching to low FPS (sleep 100ms)`);
-          }
-          onInputEvent(sleepCommand);
         },
       });
     };
@@ -2307,6 +2318,11 @@ function RemoteSessionPanel({
   const startVisualPing = () => {
     setPingState({ start: performance.now() });
     onInputEvent("ping-color-change");
+  };
+
+  const selectStreamPerformanceMode = (mode: StreamPerformanceMode) => {
+    setStreamPerformanceMode(mode);
+    window.localStorage.setItem("wonremote-stream-performance-mode", mode);
   };
 
   // Recording
@@ -2760,6 +2776,26 @@ function RemoteSessionPanel({
 
       {/* 액션 컨트롤러 영역 */}
       <div className="session-actions" style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "12px", alignItems: "center" }}>
+        <div className="stream-mode-control" role="group" aria-label="화면 반응 속도">
+          <button
+            type="button"
+            className={streamPerformanceMode === "fast" ? "active" : ""}
+            aria-pressed={streamPerformanceMode === "fast"}
+            onClick={() => selectStreamPerformanceMode("fast")}
+            title="스크롤과 새 창 표시를 우선합니다"
+          >
+            반응속도 빠름
+          </button>
+          <button
+            type="button"
+            className={streamPerformanceMode === "normal" ? "active" : ""}
+            aria-pressed={streamPerformanceMode === "normal"}
+            onClick={() => selectStreamPerformanceMode("normal")}
+            title="화질과 네트워크 안정성을 우선합니다"
+          >
+            보통
+          </button>
+        </div>
         <button className="secondary-button" type="button" onClick={setFitZoom} title="Fit">
           <Maximize2 size={17} />
           <span>Fit</span>

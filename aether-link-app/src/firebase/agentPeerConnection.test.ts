@@ -279,7 +279,7 @@ describe("Agent data-channel backpressure", () => {
     expect(parsed.flatMap((frame) => frame.tiles)).toEqual(tiles);
   });
 
-  it("checks backpressure before the full frame and before every chunk", () => {
+  it("drops a frame only when queued data would exceed the limit and never sends partial frames", () => {
     const frame = {
       tiles: Array.from({ length: 4 }, (_, index) => ({ index, image: "b".repeat(8_000) })),
       width: 800,
@@ -313,7 +313,17 @@ describe("Agent data-channel backpressure", () => {
         maxBufferedAmount: 90_000,
         maxMessageBytes: 20_000,
       }),
-    ).toBe("backpressure");
-    expect(chunkSend).toHaveBeenCalledTimes(1);
+    ).toBe("sent");
+    expect(chunkSend.mock.calls.length).toBeGreaterThan(1);
+
+    const oversizedSend = vi.fn();
+    expect(
+      sendFrameWithBackpressure(
+        { readyState: "open", bufferedAmount: 1_024, send: oversizedSend },
+        frame,
+        { maxBufferedAmount: 20_000, maxMessageBytes: 20_000 },
+      ),
+    ).toBe("sent");
+    expect(oversizedSend.mock.calls.length).toBeGreaterThan(1);
   });
 });

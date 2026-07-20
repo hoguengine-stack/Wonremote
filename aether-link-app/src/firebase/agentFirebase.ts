@@ -68,7 +68,10 @@ type AgentFirebaseEnv = Record<string, string | undefined>;
 export interface AgentWebRtcTransport {
   close: () => Promise<void>;
   getBufferedAmount: () => number;
-  sendFrame: (frame: { tiles: any[]; width: number; height: number; sequence: number; keyframe: boolean }) => "backpressure" | "sent" | "unavailable";
+  sendFrame: (
+    frame: { tiles: any[]; width: number; height: number; sequence: number; keyframe: boolean },
+    maxBufferedAmountOverride?: number,
+  ) => "backpressure" | "sent" | "unavailable";
 }
 
 export interface AgentWebRtcTransportHandlers {
@@ -88,6 +91,15 @@ export interface ActiveFirebaseSession {
 
 export function isAgentFirebaseEnabled(env: AgentFirebaseEnv = process.env): boolean {
   return resolveFirebaseConfig(env) !== null;
+}
+
+export function resolveAgentFrameMaxBufferedAmount(
+  override: unknown,
+  env: AgentFirebaseEnv = process.env,
+): number {
+  return typeof override === "number" && Number.isFinite(override) && override > 0
+    ? override
+    : resolveWebRtcMaxBufferedAmount(env);
 }
 
 export async function authenticateAgentWithFirebase(
@@ -414,7 +426,6 @@ export async function startAgentWebRtcTransportWithFirebase(
   const viewerCandidates = collection(services.db, "sessions", sessionId, "viewerCandidates");
   const recentNegotiationIds = new Set<string>();
   const appliedViewerCandidates = new Set<string>();
-  const maxBufferedAmount = resolveWebRtcMaxBufferedAmount(env);
   const maxMessageBytes = resolveWebRtcMaxMessageBytes(env);
   let activeNegotiationId: string | null = null;
   let activePeer: AgentPeerConnectionLike | null = null;
@@ -808,7 +819,14 @@ export async function startAgentWebRtcTransportWithFirebase(
       await closeActivePeer();
     },
     getBufferedAmount: () => dataChannelBufferedAmount(tileChannel),
-    sendFrame: (frame) => sendFrameWithBackpressure(tileChannel, frame, { maxBufferedAmount, maxMessageBytes }),
+    sendFrame: (frame, maxBufferedAmountOverride) => sendFrameWithBackpressure(
+      tileChannel,
+      frame,
+      {
+        maxBufferedAmount: resolveAgentFrameMaxBufferedAmount(maxBufferedAmountOverride, env),
+        maxMessageBytes,
+      },
+    ),
   };
 }
 

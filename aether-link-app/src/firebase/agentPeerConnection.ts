@@ -296,15 +296,18 @@ export function sendFrameWithBackpressure(
     return "unavailable";
   }
   const totalPayloadBytes = payloads.reduce((total, payload) => total + Buffer.byteLength(payload), 0);
-  if (isDataChannelBackpressured(channel, totalPayloadBytes, options.maxBufferedAmount)) {
+  const queuedBytes = dataChannelBufferedAmount(channel);
+  const oversizedFrame = totalPayloadBytes > options.maxBufferedAmount;
+  if (
+    queuedBytes >= options.maxBufferedAmount ||
+    (!oversizedFrame && queuedBytes + totalPayloadBytes > options.maxBufferedAmount)
+  ) {
     return "backpressure";
   }
 
   try {
+    // A chunked frame must be sent in full; a partial frame cannot be rendered.
     for (const payload of payloads) {
-      if (isDataChannelBackpressured(channel, Buffer.byteLength(payload), options.maxBufferedAmount)) {
-        return "backpressure";
-      }
       channel.send(payload);
     }
     return "sent";

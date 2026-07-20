@@ -79,6 +79,8 @@ pub struct BenchmarkConfig {
     pub snapshot_path: String,
     pub loop_sleep_ms: u64,
     pub capture_timeout_ms: u32,
+    pub jpeg_quality: i32,
+    pub max_merge_width: usize,
     pub run_mode: RunMode,
     pub output_index: u32,
 }
@@ -293,6 +295,10 @@ mod tests {
             "0",
             "--capture-timeout-ms",
             "8",
+            "--jpeg-quality",
+            "75",
+            "--max-merge-width",
+            "512",
         ])
         .unwrap();
 
@@ -300,6 +306,14 @@ mod tests {
         assert_eq!(config.output_path.as_deref(), Some("custom.json"));
         assert_eq!(config.loop_sleep_ms, 0);
         assert_eq!(config.capture_timeout_ms, 8);
+        assert_eq!(config.jpeg_quality, 75);
+        assert_eq!(config.max_merge_width, 512);
+    }
+
+    #[test]
+    fn parse_benchmark_config_rejects_unsafe_stream_encoder_options() {
+        assert!(parse_benchmark_config(["aether-link-poc", "--jpeg-quality", "0",]).is_err());
+        assert!(parse_benchmark_config(["aether-link-poc", "--max-merge-width", "31",]).is_err());
     }
 
     #[test]
@@ -917,6 +931,8 @@ impl Default for BenchmarkConfig {
             snapshot_path: "screenshot_poc_tiles.png".to_string(),
             loop_sleep_ms: 1,
             capture_timeout_ms: 16,
+            jpeg_quality: 85,
+            max_merge_width: 256,
             run_mode: RunMode::Benchmark,
             output_index: 0,
         }
@@ -950,6 +966,16 @@ where
                 let value = parse_positive_u64_arg("--capture-timeout-ms", args.next())?;
                 config.capture_timeout_ms = u32::try_from(value)
                     .map_err(|_| "--capture-timeout-ms is too large".to_string())?;
+            }
+            "--jpeg-quality" => {
+                let value = parse_bounded_u64_arg("--jpeg-quality", args.next(), 1, 100)?;
+                config.jpeg_quality =
+                    i32::try_from(value).map_err(|_| "--jpeg-quality is too large".to_string())?;
+            }
+            "--max-merge-width" => {
+                let value = parse_bounded_u64_arg("--max-merge-width", args.next(), 32, 2048)?;
+                config.max_merge_width = usize::try_from(value)
+                    .map_err(|_| "--max-merge-width is too large".to_string())?;
             }
             "--mode" => {
                 let mode_str = parse_string_arg("--mode", args.next())?;
@@ -1022,8 +1048,25 @@ fn parse_positive_u64_arg(name: &str, value: Option<String>) -> Result<u64, Stri
     }
 }
 
+fn parse_bounded_u64_arg(
+    name: &str,
+    value: Option<String>,
+    minimum: u64,
+    maximum: u64,
+) -> Result<u64, String> {
+    let value = parse_u64_arg(name, value)?;
+    if value < minimum || value > maximum {
+        Err(format!(
+            "{} must be between {} and {}",
+            name, minimum, maximum
+        ))
+    } else {
+        Ok(value)
+    }
+}
+
 fn benchmark_usage() -> String {
-    "usage: aether-link-poc [--duration seconds] [--output file.json] [--snapshot file.png] [--loop-sleep-ms ms] [--capture-timeout-ms ms] [--mode benchmark|diagnostics|inject-input|input-server|list-displays|stream] [--action command] [--output-index index]".to_string()
+    "usage: aether-link-poc [--duration seconds] [--output file.json] [--snapshot file.png] [--loop-sleep-ms ms] [--capture-timeout-ms ms] [--jpeg-quality 1..100] [--max-merge-width 32..2048] [--mode benchmark|diagnostics|inject-input|input-server|list-displays|stream] [--action command] [--output-index index]".to_string()
 }
 
 fn benchmark_output_path(
@@ -1895,7 +1938,7 @@ async fn run_streaming_loop(config: BenchmarkConfig) {
     let mut tile_diff = TileDiff::new(width, height, tile_size);
 
     let mut compressor = Compressor::new().unwrap();
-    let _ = compressor.set_quality(85);
+    let _ = compressor.set_quality(config.jpeg_quality);
     let _ = compressor.set_subsamp(Subsamp::Sub2x2);
 
     let mut tile_rgb24 = vec![0u8; (width * tile_size * 3) as usize];
@@ -1948,47 +1991,8 @@ async fn run_streaming_loop(config: BenchmarkConfig) {
                     let h = height as usize;
                     let ts = tile_size as usize;
 
-                    let merged_tiles = merge_dirty_tiles(&dirty_tiles, cols, w, h, ts, 256);
-
-                    let before_tile_count = dirty_tiles.len();
-                    let mut before_jpeg_bytes = 0;
-                    let before_start = Instant::now();
-
-                    for &tile_idx in &dirty_tiles {
-                        let tx = tile_idx % cols;
-                        let ty = tile_idx / cols;
-                        let x_start = ts * tx;
-                        let y_start = ts * ty;
-                        let tile_w = ts.min(w - x_start);
-                        let tile_h = ts.min(h - y_start);
-
-                        convert_tile_rgb565_to_rgb24(
-                            &rgb565,
-                            w,
-                            x_start,
-                            y_start,
-                            tile_w,
-                            tile_h,
-                            &mut tile_rgb24,
-                        );
-
-                        let image = Image {
-                            pixels: &tile_rgb24[0..(tile_w * tile_h * 3)],
-                            width: tile_w,
-                            pitch: tile_w * 3,
-                            height: tile_h,
-                            format: PixelFormat::RGB,
-                        };
-
-                        if let Ok(compressed) = compressor.compress_to_vec(image) {
-                            before_jpeg_bytes += compressed.len();
-                        }
-                    }
-                    let before_latency_us = before_start.elapsed().as_micros();
-
-                    let after_tile_count = merged_tiles.len();
-                    let mut after_jpeg_bytes = 0;
-                    let after_start = Instant::now();
+                    let merged_tiles =
+                        merge_dirty_tiles(&dirty_tiles, cols, w, h, ts, config.max_merge_width);
 
                     for tile in &merged_tiles {
                         convert_tile_rgb565_to_rgb24(
@@ -2010,7 +2014,6 @@ async fn run_streaming_loop(config: BenchmarkConfig) {
                         };
 
                         if let Ok(compressed) = compressor.compress_to_vec(image) {
-                            after_jpeg_bytes += compressed.len();
                             let encoded = base64_encode(&compressed);
                             base64_tiles.push(serde_json::json!({
                                 "x": tile.tx,
@@ -2021,19 +2024,6 @@ async fn run_streaming_loop(config: BenchmarkConfig) {
                             }));
                         }
                     }
-                    let after_latency_us = after_start.elapsed().as_micros();
-
-                    eprintln!(
-                        "[Tile Merge Stats] Before -> After | Tiles: {} -> {} | JPEG Encodes: {} -> {} | Payload Bytes: {} -> {} | Encode Latency: {:.3}ms -> {:.3}ms",
-                        before_tile_count,
-                        after_tile_count,
-                        before_tile_count,
-                        after_tile_count,
-                        before_jpeg_bytes,
-                        after_jpeg_bytes,
-                        before_latency_us as f64 / 1000.0,
-                        after_latency_us as f64 / 1000.0
-                    );
 
                     if !base64_tiles.is_empty() {
                         let msg = serde_json::json!({

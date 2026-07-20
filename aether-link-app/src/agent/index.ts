@@ -71,6 +71,10 @@ import { processWebRtcFileChunk } from "./webrtcFileReceiver";
 import { copyPngFileToWindowsClipboardAndRemove } from "./clipboardImage";
 import { runAgentWebRtcRuntimeSmoke } from "./agentWebRtcRuntimeSmoke";
 import {
+  getStreamPerformanceProfile,
+  type StreamPerformanceMode,
+} from "../domain/streamPerformanceMode";
+import {
   authenticateAgentWithFirebase,
   type AgentWebRtcTransport,
   fetchActiveFirebaseSessionsForAgent,
@@ -172,7 +176,8 @@ let sessionGeneration = 0;
 let webRtcTransport: AgentWebRtcTransport | null = null;
 let webRtcTransportStartGeneration: number | null = null;
 let currentOutputIndex = 0;
-let currentLoopSleepMs = 33;
+let currentStreamMode: StreamPerformanceMode = "normal";
+let currentLoopSleepMs = getStreamPerformanceProfile(currentStreamMode).loopSleepMs;
 let streamRestartCount = 0;
 let lastStreamFrameAt: string | undefined;
 let lastStreamError: string | undefined;
@@ -273,14 +278,21 @@ async function startStreaming(
   }
 
   const pocPath = POC_PATH;
+  const streamProfile = getStreamPerformanceProfile(currentStreamMode);
   ensureSessionWebRtcTransport(deviceId, sessionId, transportGeneration);
   
   const env = {
     ...process.env,
     ...(backend === "gdi" ? { WONREMOTE_CAPTURE_BACKEND: "gdi" } : {}),
   };
-  console.log(`Starting capture stream from: ${pocPath} (monitor: ${outputIndex}, sleep: ${loopSleepMs}ms, backend: ${backend})`);
-  const child = spawn(pocPath, ["--mode", "stream", "--loop-sleep-ms", String(loopSleepMs), "--output-index", String(outputIndex)], {
+  console.log(`Starting capture stream from: ${pocPath} (monitor: ${outputIndex}, mode: ${currentStreamMode}, sleep: ${loopSleepMs}ms, quality: ${streamProfile.jpegQuality}, merge: ${streamProfile.maxMergeWidth}px, backend: ${backend})`);
+  const child = spawn(pocPath, [
+    "--mode", "stream",
+    "--loop-sleep-ms", String(loopSleepMs),
+    "--jpeg-quality", String(streamProfile.jpegQuality),
+    "--max-merge-width", String(streamProfile.maxMergeWidth),
+    "--output-index", String(outputIndex),
+  ], {
     env,
     windowsHide: true,
   });
@@ -312,7 +324,7 @@ async function startStreaming(
               height: data.height,
               sequence: streamFrameSequence,
               keyframe: data.keyframe === true,
-            })
+            }, data.keyframe === true ? undefined : streamProfile.maxBufferedAmount)
           : undefined;
         if (sendResult === "sent") {
           streamTransport = "webrtc";
@@ -1606,6 +1618,18 @@ function createAgentCommandRuntime(deviceId: string): AgentCommandRuntime {
       }
       currentLoopSleepMs = milliseconds;
       console.log(`Adjusting stream loop sleep to: ${currentLoopSleepMs}ms`);
+      if (activeSessionId) {
+        await startStreaming(deviceId, activeSessionId, currentOutputIndex, currentLoopSleepMs);
+      }
+    },
+    setStreamMode: async (mode) => {
+      const profile = getStreamPerformanceProfile(mode);
+      if (mode === currentStreamMode && currentLoopSleepMs === profile.loopSleepMs) {
+        return;
+      }
+      currentStreamMode = mode;
+      currentLoopSleepMs = profile.loopSleepMs;
+      console.log(`Switching stream performance mode to ${mode} (sleep: ${profile.loopSleepMs}ms, quality: ${profile.jpegQuality}, merge: ${profile.maxMergeWidth}px)`);
       if (activeSessionId) {
         await startStreaming(deviceId, activeSessionId, currentOutputIndex, currentLoopSleepMs);
       }

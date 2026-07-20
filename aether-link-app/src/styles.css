@@ -831,6 +831,34 @@ input:focus {
   gap: 8px;
 }
 
+.stream-mode-control {
+  align-items: stretch;
+  border: 1px solid #b8c4d2;
+  border-radius: 6px;
+  display: inline-flex;
+  height: 38px;
+  overflow: hidden;
+}
+
+.stream-mode-control button {
+  background: #edf2f5;
+  border: 0;
+  color: #263244;
+  font-size: 13px;
+  font-weight: 700;
+  min-width: 74px;
+  padding: 0 11px;
+}
+
+.stream-mode-control button + button {
+  border-left: 1px solid #b8c4d2;
+}
+
+.stream-mode-control button.active {
+  background: #176d62;
+  color: #ffffff;
+}
+
 .input-log {
   background: #f7f9fb;
   border: 1px solid #e1e7ef;

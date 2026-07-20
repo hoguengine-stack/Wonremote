@@ -11,6 +11,7 @@ import {
   stopStreamTargetFromCommand,
 } from "./agentSessionLifecycle";
 import { parseWakeOnLanCommand } from "./wakeOnLan";
+import { parseSetStreamModeCommand } from "../domain/streamPerformanceMode";
 
 type MaybePromise<T = void> = T | Promise<T>;
 
@@ -34,6 +35,7 @@ export interface AgentCommandRuntime {
   sendWakeOnLan: (macAddress: string) => MaybePromise;
   setClipboardText: (text: string) => MaybePromise;
   setSleep: (milliseconds: number) => MaybePromise;
+  setStreamMode: (mode: "fast" | "normal") => MaybePromise;
   showSecurityCode: (code: string) => MaybePromise;
   startStream: (sessionId: string) => MaybePromise;
   stopStream: () => MaybePromise;
@@ -126,6 +128,16 @@ export async function executeAgentCommand(
     return "executed";
   }
 
+  if (normalizedAction === "set-stream-mode" || normalizedAction.startsWith("set-stream-mode ")) {
+    const mode = parseSetStreamModeCommand(normalizedAction);
+    if (!mode) {
+      runtime.warn?.(`Ignoring invalid set-stream-mode command: ${normalizedAction}`);
+      return "ignored";
+    }
+    await runtime.setStreamMode(mode);
+    return "executed";
+  }
+
   if (normalizedAction === "clipboard-request") {
     const sessionId = currentSessionId(runtime.getActiveSessionId(), {
       deviceId: runtime.deviceId,
@@ -214,6 +226,10 @@ export function isAllowedWebRtcAgentControlAction(action: string): boolean {
       MIN_AGENT_STREAM_SLEEP_MS,
       MAX_AGENT_STREAM_SLEEP_MS,
     ) !== null;
+  }
+  const streamMode = parseSetStreamModeCommand(normalized);
+  if (streamMode) {
+    return true;
   }
   const systemMatch = /^system\s+(.+)$/.exec(normalized);
   return Boolean(
