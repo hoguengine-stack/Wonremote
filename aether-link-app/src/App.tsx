@@ -1,6 +1,5 @@
 import {
   CircleDot,
-  Keyboard,
   LogIn,
   LogOut,
   Monitor,
@@ -97,6 +96,7 @@ import {
   buildSystemCommand,
   buildUnicodeTextCommand,
   formatTransferStats,
+  isHangulToggleKey,
   mapCanvasPointToVirtualDesktopAbsolute,
   type MouseButtonCode,
 } from "./domain/remoteControlCommands";
@@ -2257,8 +2257,11 @@ function RemoteSessionPanel({
       return;
     }
 
-    event.preventDefault();
-    const command = buildKeyboardCommand("keydown", event.key, event.code);
+    const hangulToggle = isHangulToggleKey(event.key, event.code, event.keyCode);
+    if (!hangulToggle) {
+      event.preventDefault();
+    }
+    const command = buildKeyboardCommand("keydown", event.key, event.code, event.keyCode);
     pressedKeysRef.current.add(command.slice("key-down ".length));
     onInputEvent(command);
   };
@@ -2267,11 +2270,13 @@ function RemoteSessionPanel({
     if (isEditableTarget(event.target)) {
       return;
     }
-    event.preventDefault();
+    if (!isHangulToggleKey(event.key, event.code, event.keyCode)) {
+      event.preventDefault();
+    }
     if (suppressedKeyUpsRef.current.delete(event.key)) {
       return;
     }
-    const command = buildKeyboardCommand("keyup", event.key, event.code);
+    const command = buildKeyboardCommand("keyup", event.key, event.code, event.keyCode);
     pressedKeysRef.current.delete(command.slice("key-up ".length));
     onInputEvent(command);
   };
@@ -2815,10 +2820,6 @@ function RemoteSessionPanel({
         <button className="secondary-button" type="button" onClick={startVisualPing}>
           <MousePointerClick size={17} />
           <span>{latencyReport || "Visual Ping 측정"}</span>
-        </button>
-        <button className="secondary-button" type="button" onClick={() => onInputEvent("keypress A")}>
-          <Keyboard size={17} />
-          <span>키 입력 A</span>
         </button>
         {(device.displays?.length ? device.displays : [
           { index: 0, name: "Fallback", width: 0, height: 0, primary: true },

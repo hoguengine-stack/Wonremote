@@ -8,6 +8,7 @@ import {
   decodeUtf8Base64,
   encodeUtf8Base64,
   formatTransferStats,
+  isHangulToggleKey,
   mapCanvasPointToAbsolute,
   mapCanvasPointToVirtualDesktopAbsolute,
   normalizeRemoteKey,
@@ -71,6 +72,12 @@ describe("remote control command helpers", () => {
     expect(buildKeyboardCommand("keyup", "A")).toBe("key-up A");
     expect(buildKeyboardCommand("keydown", "Process", "Lang1")).toBe("key-down Hangul");
     expect(buildKeyboardCommand("keyup", "HangulMode", "Lang1")).toBe("key-up Hangul");
+    expect(buildKeyboardCommand("keydown", "Process", "", 0x15)).toBe("key-down Hangul");
+    expect(buildKeyboardCommand("keyup", "Process", "", 0x15)).toBe("key-up Hangul");
+    expect(isHangulToggleKey("Process", "Lang1")).toBe(true);
+    expect(isHangulToggleKey("HangulMode", "")).toBe(true);
+    expect(isHangulToggleKey("Process", "", 0x15)).toBe(true);
+    expect(isHangulToggleKey("A", "KeyA", 65)).toBe(false);
   });
 
   it("builds mouse commands without changing the existing absolute coordinate mechanism", () => {

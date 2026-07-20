@@ -26,6 +26,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL,
     MOUSEINPUT, VIRTUAL_KEY,
 };
+use windows::Win32::UI::Input::Ime::{
+    ImmGetContext, ImmGetOpenStatus, ImmReleaseContext, ImmSetOpenStatus,
+};
+use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct BenchmarkReport {
@@ -462,6 +466,13 @@ mod tests {
         assert_eq!(key.wScan, 0);
         assert_eq!(key.dwFlags.0 & KEYEVENTF_SCANCODE.0, 0);
         assert_eq!(key.dwFlags.0 & KEYEVENTF_UNICODE.0, 0);
+    }
+
+    #[test]
+    fn hangul_keydown_uses_the_foreground_ime_toggle_path_once() {
+        assert!(should_toggle_foreground_ime(VIRTUAL_KEY(0x15), false));
+        assert!(!should_toggle_foreground_ime(VIRTUAL_KEY(0x15), true));
+        assert!(!should_toggle_foreground_ime(VIRTUAL_KEY(0x19), false));
     }
 
     #[test]
@@ -1488,16 +1499,14 @@ fn inject_input(action: &str) -> std::result::Result<(), String> {
                 return Err("Usage: keypress <key_char_or_vk>".to_string());
             }
             let vk = virtual_key_from_token(parts[1])?;
-            let inputs = [keyboard_input(vk, false), keyboard_input(vk, true)];
-            send_inputs(&inputs)?;
+            press_virtual_key(vk)?;
         }
         "key-down" | "key-up" => {
             if parts.len() != 2 {
                 return Err("Usage: key-down/key-up <key>".to_string());
             }
             let vk = virtual_key_from_token(parts[1])?;
-            let inputs = [keyboard_input(vk, parts[0] == "key-up")];
-            send_inputs(&inputs)?;
+            set_virtual_key_state(vk, parts[0] == "key-up")?;
         }
         "text-base64" => {
             if parts.len() != 2 {
@@ -1690,6 +1699,56 @@ fn keyboard_input(vk: VIRTUAL_KEY, key_up: bool) -> INPUT {
             },
         },
     }
+}
+
+fn should_toggle_foreground_ime(vk: VIRTUAL_KEY, key_up: bool) -> bool {
+    vk.0 == 0x15 && !key_up
+}
+
+fn press_virtual_key(vk: VIRTUAL_KEY) -> std::result::Result<(), String> {
+    if should_toggle_foreground_ime(vk, false) {
+        if toggle_foreground_ime().is_ok() {
+            return Ok(());
+        }
+    }
+
+    let inputs = [keyboard_input(vk, false), keyboard_input(vk, true)];
+    send_inputs(&inputs)
+}
+
+fn set_virtual_key_state(vk: VIRTUAL_KEY, key_up: bool) -> std::result::Result<(), String> {
+    if vk.0 == 0x15 {
+        return if should_toggle_foreground_ime(vk, key_up) {
+            press_virtual_key(vk)
+        } else {
+            Ok(())
+        };
+    }
+
+    send_inputs(&[keyboard_input(vk, key_up)])
+}
+
+fn toggle_foreground_ime() -> std::result::Result<(), String> {
+    unsafe {
+        let foreground = GetForegroundWindow();
+        if foreground.0 == 0 {
+            return Err("No foreground window is available for IME toggle".to_string());
+        }
+
+        let context = ImmGetContext(foreground);
+        if context.0 == 0 {
+            return Err("The foreground window has no IME context".to_string());
+        }
+
+        let next_open = !ImmGetOpenStatus(context).as_bool();
+        let changed = ImmSetOpenStatus(context, next_open).as_bool();
+        let _ = ImmReleaseContext(foreground, context);
+        if !changed {
+            return Err("ImmSetOpenStatus rejected the IME toggle".to_string());
+        }
+    }
+
+    Ok(())
 }
 
 fn unicode_keyboard_inputs(text: &str) -> Vec<INPUT> {

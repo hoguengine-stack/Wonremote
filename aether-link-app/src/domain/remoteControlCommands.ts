@@ -106,8 +106,12 @@ export function mapCanvasPointToVirtualDesktopAbsolute(
   };
 }
 
-export function normalizeRemoteKey(key: string, code = ""): string {
-  if (code === "Lang1" || key === "HangulMode") {
+export function isHangulToggleKey(key: string, code = "", legacyKeyCode = 0): boolean {
+  return code === "Lang1" || key === "HangulMode" || legacyKeyCode === 0x15;
+}
+
+export function normalizeRemoteKey(key: string, code = "", legacyKeyCode = 0): string {
+  if (isHangulToggleKey(key, code, legacyKeyCode)) {
     return "Hangul";
   }
   if (code === "Lang2" || key === "HanjaMode") {
@@ -122,8 +126,8 @@ export function normalizeRemoteKey(key: string, code = ""): string {
   return key.length === 1 ? key : key.replace(/\s+/g, "");
 }
 
-export function buildKeyboardCommand(type: KeyboardCommandType, key: string, code = ""): string {
-  return `${type === "keydown" ? "key-down" : "key-up"} ${normalizeRemoteKey(key, code)}`;
+export function buildKeyboardCommand(type: KeyboardCommandType, key: string, code = "", legacyKeyCode = 0): string {
+  return `${type === "keydown" ? "key-down" : "key-up"} ${normalizeRemoteKey(key, code, legacyKeyCode)}`;
 }
 
 export function buildMouseCommand(

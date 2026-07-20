@@ -25,6 +25,11 @@ describe("connected remote session layout", () => {
     expect(block).not.toContain("session-diagnostics");
     expect(block).not.toContain("input-log");
     expect(block).not.toContain("inputLog.map");
+    expect(block).not.toContain('onInputEvent("keypress A")');
+    expect(appSource).toContain("buildKeyboardCommand(\"keydown\", event.key, event.code, event.keyCode)");
+    expect(appSource).toContain("buildKeyboardCommand(\"keyup\", event.key, event.code, event.keyCode)");
+    expect(appSource).toContain("isHangulToggleKey(event.key, event.code, event.keyCode)");
+    expect(appSource.match(/isHangulToggleKey\(event\.key, event\.code, event\.keyCode\)/g)).toHaveLength(2);
   });
 
   it("places actions before the remote work area and exposes fullscreen control", () => {
