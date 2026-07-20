@@ -30,7 +30,7 @@ describe("Firebase deploy readiness", () => {
     expect(packageJson.scripts?.["firebase:verify"]).toBe("node scripts/verify-firebase-deploy-readiness.js");
     expect(deployScript).toContain("WONREMOTE_FIREBASE_DEPLOY_APPROVED");
     expect(readinessScript).toContain("realtimeTransportPolicy.ts");
-    expect(readinessScript).toContain("diagnostic-fallback-polling");
+    expect(readinessScript).toContain("shouldPollViewerTileFallback");
     expect(readinessScript).toContain("webrtc-unavailable");
     expect(firebaseJson.firestore?.rules).toBe("firestore.rules");
     expect(firebaseJson.storage?.rules).toBe("storage.rules");

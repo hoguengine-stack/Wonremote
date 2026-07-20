@@ -46,7 +46,12 @@ export function verifyFirebaseDeployReadiness(root = repoRoot) {
 
   expectContains(realtimePolicy, 'value?.trim().toLowerCase() === "diagnostic"', "Viewer Firestore tile fallback must be diagnostic-only.", failures);
   expectContains(agentSource, "WONREMOTE_ALLOW_FIRESTORE_STREAM_FALLBACK=diagnostic", "Agent must document diagnostic-only Firestore tile fallback.", failures);
-  expectContains(viewerSource, "diagnostic-fallback-polling", "Viewer must label diagnostic fallback polling explicitly.", failures);
+  expectContains(
+    viewerSource,
+    "const shouldPollTiles = shouldPollViewerTileFallback(",
+    "Viewer Firestore tile polling must stay gated by the diagnostic fallback policy.",
+    failures,
+  );
   expectContains(viewerSource, "webrtc-unavailable", "Viewer must surface WebRTC unavailable states.", failures);
 
   return failures;

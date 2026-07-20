@@ -17,6 +17,8 @@ import {
   ZoomOut,
   Maximize2,
   Minimize2,
+  ChevronDown,
+  ChevronUp,
   RotateCcw,
   Power,
   Trash2,
@@ -63,9 +65,6 @@ import { resolveViewerOfflineAfterMs } from "./domain/viewerDeviceList";
 import {
   scheduleVisualPingPresentedMeasurement,
 } from "./domain/visualPing";
-import {
-  shouldWarnAboutControlLimit,
-} from "./domain/sessionDiagnostics";
 import { getViewerVersion } from "./domain/versioning";
 import {
   resolveViewerUpdateIntervalMs,
@@ -1549,8 +1548,8 @@ function RemoteSessionPanel({
   const [latencyReport, setLatencyReport] = useState<string>("");
   const [pingState, setPingState] = useState<{ start: number } | null>(null);
   const [zoom, setZoom] = useState(1);
-  const [streamTransportState, setStreamTransportState] = useState("idle");
   const [isSessionFullscreen, setIsSessionFullscreen] = useState(false);
+  const [isFullscreenToolbarOpen, setIsFullscreenToolbarOpen] = useState(false);
   const [streamPerformanceMode, setStreamPerformanceMode] = useState<StreamPerformanceMode>(() =>
     normalizeStreamPerformanceMode(window.localStorage.getItem("wonremote-stream-performance-mode")),
   );
@@ -1572,34 +1571,38 @@ function RemoteSessionPanel({
   const [isChatOpen, setIsChatOpen] = useState(false);
 
   useEffect(() => {
-    if ((window as any).__TAURI_INTERNALS__) {
-      void getCurrentWindow().isFullscreen().then(setIsSessionFullscreen).catch(() => {});
-      return;
-    }
-
-    const syncBrowserFullscreen = () => setIsSessionFullscreen(Boolean(document.fullscreenElement));
-    syncBrowserFullscreen();
-    document.addEventListener("fullscreenchange", syncBrowserFullscreen);
-    return () => document.removeEventListener("fullscreenchange", syncBrowserFullscreen);
+    setIsSessionFullscreen(false);
+    setIsFullscreenToolbarOpen(false);
   }, [sessionId]);
 
+  useEffect(() => {
+    if ((window as any).__TAURI_INTERNALS__) return;
+
+    const syncBrowserFullscreen = () => {
+      if (!document.fullscreenElement) setIsSessionFullscreen(false);
+    };
+    document.addEventListener("fullscreenchange", syncBrowserFullscreen);
+    return () => document.removeEventListener("fullscreenchange", syncBrowserFullscreen);
+  }, []);
+
   async function toggleSessionFullscreen() {
+    const nextFullscreen = !isSessionFullscreen;
+    setIsSessionFullscreen(nextFullscreen);
+    setIsFullscreenToolbarOpen(false);
+
     try {
       if ((window as any).__TAURI_INTERNALS__) {
-        const appWindow = getCurrentWindow();
-        const nextFullscreen = !(await appWindow.isFullscreen());
-        await appWindow.setFullscreen(nextFullscreen);
-        setIsSessionFullscreen(nextFullscreen);
+        await getCurrentWindow().setFullscreen(nextFullscreen);
         return;
       }
 
-      if (document.fullscreenElement) {
+      if (!nextFullscreen && document.fullscreenElement) {
         await document.exitFullscreen();
-      } else {
+      } else if (nextFullscreen && !document.fullscreenElement) {
         await panelRef.current?.requestFullscreen();
       }
     } catch {
-      // Fullscreen can be denied by browser policy or a restricted desktop shell.
+      // The fixed immersive layout remains usable when native fullscreen is unavailable.
     }
   }
 
@@ -1824,7 +1827,6 @@ function RemoteSessionPanel({
       return;
     }
 
-    setStreamTransportState("starting");
     tileSequenceRef.current.clear();
     receivedFrameSequenceRef.current = 0;
     let active = true;
@@ -2015,13 +2017,12 @@ function RemoteSessionPanel({
 
     const firebaseEnabled = isViewerFirebaseEnabled();
     if (firebaseEnabled) {
-      const scheduleWebRtcReconnect = (reason: string) => {
+      const scheduleWebRtcReconnect = () => {
         if (!active || webRtcReconnectTimer !== null) {
           return;
         }
         const delayMs = webRtcReconnectDelayMs(webRtcReconnectAttempt);
         webRtcReconnectAttempt += 1;
-        setStreamTransportState(`webrtc-retrying in ${Math.ceil(delayMs / 1000)}s: ${reason}`);
         webRtcReconnectTimer = window.setTimeout(() => {
           webRtcReconnectTimer = null;
           void startWebRtc();
@@ -2036,13 +2037,11 @@ function RemoteSessionPanel({
         webRtcTransport?.close();
         webRtcTransport = null;
         webRtcTransportRef.current = null;
-        setStreamTransportState(webRtcReconnectAttempt > 0 ? "webrtc-reconnecting" : "webrtc-starting");
         try {
           const transport = await startFirebaseViewerWebRtcTransport(sessionId, {
             onFrame: drawTileFrame,
             onState: (state) => {
               if (!active) return;
-              setStreamTransportState(state);
               if (state === "webrtc-open") {
                 webRtcReconnectAttempt = 0;
               }
@@ -2050,7 +2049,7 @@ function RemoteSessionPanel({
             onError: (error) => {
               if (!active) return;
               console.warn("[WebRTC Viewer]", error.message);
-              scheduleWebRtcReconnect(error.message);
+              scheduleWebRtcReconnect();
             },
           });
           if (!active) {
@@ -2062,7 +2061,7 @@ function RemoteSessionPanel({
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           console.warn("[WebRTC Viewer] transport unavailable:", message);
-          scheduleWebRtcReconnect(message);
+          scheduleWebRtcReconnect();
         } finally {
           webRtcStartInFlight = false;
         }
@@ -2082,11 +2081,6 @@ function RemoteSessionPanel({
       }
       try {
         const tileData = await fetchTiles(sessionId);
-        if (tileData.tiles?.length) {
-          setStreamTransportState((state) =>
-            state.startsWith("webrtc-connected") ? state : "diagnostic-fallback-polling",
-          );
-        }
         drawTileFrame(tileData);
       } catch {
         // Diagnostic fallback retries on the next interval.
@@ -2654,12 +2648,10 @@ function RemoteSessionPanel({
     );
   }
 
-  const controlLimited = shouldWarnAboutControlLimit(device.controlDiagnostics);
-
   return (
     <section
       ref={panelRef}
-      className="session-panel"
+      className={`session-panel${isSessionFullscreen ? " session-fullscreen-active" : ""}${isSessionFullscreen && isFullscreenToolbarOpen ? " session-fullscreen-tools-open" : ""}`}
       style={{ display: "flex", flexDirection: "column", position: "relative", outline: "none" }}
       tabIndex={0}
       onBlur={handlePanelBlur}
@@ -2669,28 +2661,6 @@ function RemoteSessionPanel({
       <div className="remote-work-area" style={{ display: "flex", flex: 1, gap: "16px", minHeight: "450px" }}>
         {/* 원격 스크린 영역 */}
         <div className="remote-screen connected" style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
-          <div className="remote-titlebar">
-            <div className="remote-titlebar-identity">
-              <span>{device.deviceName}</span>
-              <span>{device.businessNumber}</span>
-            </div>
-            <div className="remote-titlebar-status">
-              <strong>{device.desktopName}</strong>
-              <span className="status-pill" style={{ background: "rgba(14, 165, 233, 0.16)", color: "#38bdf8" }}>
-                {streamTransportState}
-              </span>
-              {controlLimited && (
-                <span className="status-pill" style={{ background: "rgba(239, 68, 68, 0.16)", color: "#fca5a5" }}>
-                  input limited
-                </span>
-              )}
-              {latencyReport && (
-                <span className="status-pill" style={{ background: "rgba(99, 102, 241, 0.2)", color: "#818cf8" }}>
-                  {latencyReport}
-                </span>
-              )}
-            </div>
-          </div>
           <div
             ref={remotePreviewRef}
             className="remote-preview"
@@ -2719,7 +2689,7 @@ function RemoteSessionPanel({
 
         {/* 접이식 채팅 패널 */}
         {isChatOpen && (
-          <div style={{ width: "260px", background: "#151522", border: "1px solid #2d2d3f", borderRadius: "8px", display: "flex", flexDirection: "column", padding: "12px" }}>
+          <div className="remote-chat-panel" style={{ width: "260px", background: "#151522", border: "1px solid #2d2d3f", borderRadius: "8px", display: "flex", flexDirection: "column", padding: "12px" }}>
             <div style={{ borderBottom: "1px solid #2d2d3f", paddingBottom: "8px", marginBottom: "8px", fontWeight: "bold", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <span>실시간 채팅</span>
               <button
@@ -2756,6 +2726,30 @@ function RemoteSessionPanel({
         )}
       </div>
 
+      {isSessionFullscreen && (
+        <>
+          <button
+            className="session-fullscreen-toolbar-toggle"
+            type="button"
+            aria-expanded={isFullscreenToolbarOpen}
+            aria-label={isFullscreenToolbarOpen ? "작업 도구 닫기" : "작업 도구 열기"}
+            title={isFullscreenToolbarOpen ? "작업 도구 닫기" : "작업 도구 열기"}
+            onClick={() => setIsFullscreenToolbarOpen((open) => !open)}
+          >
+            {isFullscreenToolbarOpen ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
+          </button>
+          <button
+            className="session-fullscreen-exit"
+            type="button"
+            aria-label="전체화면 종료"
+            title="전체화면 종료"
+            onClick={toggleSessionFullscreen}
+          >
+            <Minimize2 size={20} />
+          </button>
+        </>
+      )}
+
       {/* 액션 컨트롤러 영역 */}
       <div className="session-actions session-actions-top">
         <div className="stream-mode-control" role="group" aria-label="화면 반응 속도">
@@ -2778,7 +2772,13 @@ function RemoteSessionPanel({
             보통
           </button>
         </div>
-        <button className="secondary-button" type="button" onClick={toggleSessionFullscreen} title="전체화면 전환">
+        <button
+          className="secondary-button"
+          type="button"
+          aria-pressed={isSessionFullscreen}
+          onClick={toggleSessionFullscreen}
+          title="전체화면 전환"
+        >
           {isSessionFullscreen ? <Minimize2 size={17} /> : <Maximize2 size={17} />}
           <span>{isSessionFullscreen ? "전체화면 종료" : "전체화면"}</span>
         </button>
@@ -2814,7 +2814,7 @@ function RemoteSessionPanel({
         )}
         <button className="secondary-button" type="button" onClick={startVisualPing}>
           <MousePointerClick size={17} />
-          <span>Visual Ping 측정</span>
+          <span>{latencyReport || "Visual Ping 측정"}</span>
         </button>
         <button className="secondary-button" type="button" onClick={() => onInputEvent("keypress A")}>
           <Keyboard size={17} />
