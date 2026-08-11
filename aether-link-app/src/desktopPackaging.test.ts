@@ -513,18 +513,19 @@ describe("desktop packaging scaffold", () => {
     expect(styles).not.toContain(".firebase-agent-panel label:has");
   });
 
-  it("can package separate viewer and agent portable executables", () => {
+  it("packages only the four supported Viewer and Agent installers", () => {
     const packageReleaseScript = readFileSync(path.join(projectRoot, "scripts", "package-release-exes.js"), "utf8");
 
-    expect(packageReleaseScript).toContain("WonRemote Viewer.exe");
-    expect(packageReleaseScript).toContain("WonRemote Agent.exe");
     expect(packageReleaseScript).toContain("WonRemote-Agent-Setup.exe");
+    expect(packageReleaseScript).toContain("WonRemote-Viewer-Setup-x86.exe");
+    expect(packageReleaseScript).toContain("WonRemote-Agent-Setup-x86.exe");
     expect(packageReleaseScript).toContain("createProductInstaller");
     expect(packageReleaseScript).toContain("makensis.exe");
     expect(packageReleaseScript).not.toContain("copyInstaller(viewerInstallerPath, stableFullInstallerName)");
+    expect(packageReleaseScript).not.toContain("Portable.zip");
+    expect(packageReleaseScript).not.toContain("Compress-Archive");
     expect(packageReleaseScript).toContain("expectedOutputs");
     expect(packageReleaseScript).toContain("WONREMOTE_DEFAULT_APP_MODE");
-    expect(packageReleaseScript).toContain("Compress-Archive");
     expect(packageReleaseScript).toContain("server");
     expect(packageReleaseScript).toContain("runtime");
   });
@@ -553,6 +554,15 @@ describe("desktop packaging scaffold", () => {
 
     expect(redirects["/download/viewer-x86"]).toContain("WonRemote-Viewer-Setup-x86.exe");
     expect(redirects["/download/agent-x86"]).toContain("WonRemote-Agent-Setup-x86.exe");
+    expect(firebaseConfig.hosting.redirects).toHaveLength(4);
+    for (const obsoletePath of [
+      "/download/viewer-agent",
+      "/download/portable",
+      "/download/viewer-agent-x86",
+      "/download/portable-x86",
+    ]) {
+      expect(redirects[obsoletePath]).toBeUndefined();
+    }
   });
 
   it("can create a signed production update manifest for a GitHub release installer", () => {

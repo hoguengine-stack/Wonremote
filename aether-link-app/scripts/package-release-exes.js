@@ -9,7 +9,6 @@ const outputDir = path.join(appRoot, "release-exe");
 const packageJson = JSON.parse(fs.readFileSync(path.join(appRoot, "package.json"), "utf8"));
 const requiredResourceDirs = ["server", "agent", "runtime", "bin", "node_modules"];
 const x86WebRtcRuntimeMarker = "wonremote-webrtc-runtime:werift";
-const portableMarkerName = "wonremote-portable.json";
 
 const TARGET_ARCHITECTURES = [
   {
@@ -22,9 +21,6 @@ const TARGET_ARCHITECTURES = [
     stageDir: outputDir,
     stableInstallerName: "WonRemote-Viewer-Setup.exe",
     stableAgentInstallerName: "WonRemote-Agent-Setup.exe",
-    stableFullInstallerName: "WonRemote-Viewer-Agent-Setup.exe",
-    stablePortableZipName: "WonRemote-Viewer-Agent-Portable.zip",
-    stableAgentZipName: "WonRemote-Agent-Portable.zip",
   },
   {
     key: "x86",
@@ -36,9 +32,6 @@ const TARGET_ARCHITECTURES = [
     stageDir: path.join(outputDir, "x86"),
     stableInstallerName: "WonRemote-Viewer-Setup-x86.exe",
     stableAgentInstallerName: "WonRemote-Agent-Setup-x86.exe",
-    stableFullInstallerName: "WonRemote-Viewer-Agent-Setup-x86.exe",
-    stablePortableZipName: "WonRemote-Viewer-Agent-Portable-x86.zip",
-    stableAgentZipName: "WonRemote-Agent-Portable-x86.zip",
   },
 ];
 
@@ -103,85 +96,6 @@ function buildAgentDefaultInstaller(target) {
   runShell(buildTauriCommand(target, target.agentConfig), buildEnvFor(target, {
     WONREMOTE_DEFAULT_APP_MODE: "agent",
   }));
-}
-
-function copyDirectory(sourceRoot, destinationRoot, name) {
-  const source = path.join(sourceRoot, name);
-  const destination = path.join(destinationRoot, name);
-  ensureExists(source, `${name} resource directory`);
-  fs.rmSync(destination, { recursive: true, force: true });
-  fs.cpSync(source, destination, { recursive: true });
-}
-
-function writeReadme(baseDir) {
-  const content = `# WonRemote Portable EXE Package
-
-Run these files from this folder:
-
-- WonRemote Viewer.exe: opens the Viewer UI.
-- WonRemote Agent.exe: starts Agent tray/background mode. On first run, it opens the registration screen.
-
-Do not move the EXE files away from the server/, agent/, runtime/, and bin/ folders.
-`;
-  fs.writeFileSync(path.join(baseDir, "README.txt"), content, "utf8");
-}
-
-function quotePowerShellLiteral(value) {
-  return `'${value.replace(/'/g, "''")}'`;
-}
-
-function createZip(zipName, entries, baseDir) {
-  const zipPath = path.join(outputDir, zipName);
-  const portableEntries = entries.map((entry) => path.join(baseDir, entry));
-  const literalPaths = portableEntries.map(quotePowerShellLiteral).join(", ");
-  const command = [
-    `$ErrorActionPreference = 'Stop'`,
-    `Compress-Archive -LiteralPath @(${literalPaths}) -DestinationPath ${quotePowerShellLiteral(zipPath)} -CompressionLevel Optimal -Force`,
-  ].join("; ");
-
-  fs.rmSync(zipPath, { force: true });
-  execFileSync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command], {
-    stdio: "pipe",
-    windowsHide: true,
-  });
-}
-
-function createPortableZip(target) {
-  withPortableMarker(target, "portable", () => {
-    createZip(target.stablePortableZipName, [
-      "WonRemote Viewer.exe",
-      "WonRemote Agent.exe",
-      "README.txt",
-      portableMarkerName,
-      ...requiredResourceDirs,
-    ], target.stageDir);
-  });
-}
-
-function createAgentPortableZip(target) {
-  withPortableMarker(target, "portable-agent", () => {
-    createZip(target.stableAgentZipName, [
-      "WonRemote Agent.exe",
-      "README.txt",
-      portableMarkerName,
-      ...requiredResourceDirs,
-    ], target.stageDir);
-  });
-}
-
-export function withPortableMarker(target, packageKind, createArchive) {
-  const markerPath = path.join(target.stageDir, portableMarkerName);
-  const marker = {
-    schemaVersion: 1,
-    packageKind,
-    version: packageJson.version,
-  };
-  fs.writeFileSync(markerPath, `${JSON.stringify(marker, null, 2)}\n`, "utf8");
-  try {
-    createArchive();
-  } finally {
-    fs.rmSync(markerPath, { force: true });
-  }
 }
 
 function escapeNsisString(value) {
@@ -273,28 +187,6 @@ SectionEnd
   });
   fs.rmSync(scriptPath, { force: true });
   ensureExists(outputPath, `${target.key} WonRemote ${defaultMode} installer wrapper`);
-}
-
-function copyInstaller(sourcePath, targetName) {
-  fs.copyFileSync(sourcePath, path.join(outputDir, targetName));
-}
-
-function copyViewerPortablePayload(target, sourceRoot) {
-  const viewerSource = path.join(sourceRoot, "wonremote-viewer.exe");
-  ensureExists(viewerSource, `${target.key} Tauri viewer executable`);
-  verifyTargetAgentRuntime(target, sourceRoot);
-  fs.mkdirSync(target.stageDir, { recursive: true });
-  fs.copyFileSync(viewerSource, path.join(target.stageDir, "WonRemote Viewer.exe"));
-  for (const directory of requiredResourceDirs) {
-    copyDirectory(sourceRoot, target.stageDir, directory);
-  }
-  writeReadme(target.stageDir);
-}
-
-function copyAgentPortableExecutable(target, sourceRoot) {
-  const agentSource = path.join(sourceRoot, "wonremote-viewer.exe");
-  ensureExists(agentSource, `${target.key} Tauri Agent executable`);
-  fs.copyFileSync(agentSource, path.join(target.stageDir, "WonRemote Agent.exe"));
 }
 
 function verifyTargetAgentRuntime(target, sourceRoot) {

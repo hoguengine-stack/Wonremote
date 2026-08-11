@@ -14,9 +14,8 @@ Expected local assets:
 - `release-exe/WonRemote Viewer_<version>_x64-setup.exe`
 - `release-exe/WonRemote-Viewer-Setup.exe`
 - `release-exe/WonRemote-Agent-Setup.exe`
-- `release-exe/WonRemote-Viewer-Agent-Setup.exe`
-- `release-exe/WonRemote-Viewer-Agent-Portable.zip`
-- `release-exe/WonRemote-Agent-Portable.zip`
+- `release-exe/WonRemote-Viewer-Setup-x86.exe`
+- `release-exe/WonRemote-Agent-Setup-x86.exe`
 
 ## Publish Release Gate
 
@@ -73,21 +72,18 @@ https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote
 
 Upload these files to the same GitHub Release tag:
 
-- `WonRemote.Viewer_<version>_x64-setup.exe`
 - `WonRemote-Viewer-Setup.exe`
 - `WonRemote-Agent-Setup.exe`
-- `WonRemote-Viewer-Agent-Setup.exe`
-- `WonRemote-Viewer-Agent-Portable.zip`
-- `WonRemote-Agent-Portable.zip`
+- `WonRemote-Viewer-Setup-x86.exe`
+- `WonRemote-Agent-Setup-x86.exe`
 - `wonremote-update-manifest.json`
 
 User-facing Firebase Hosting download links:
 
 - Viewer installer: `https://wonremote-a7fd3.web.app/download/viewer`
 - Agent installer: `https://wonremote-a7fd3.web.app/download/agent`
-- Viewer + Agent installer: `https://wonremote-a7fd3.web.app/download/viewer-agent`
-- Viewer + Agent portable zip: `https://wonremote-a7fd3.web.app/download/portable`
-- Agent portable zip: `https://wonremote-a7fd3.web.app/download/agent-portable`
+- Viewer x86 installer: `https://wonremote-a7fd3.web.app/download/viewer-x86`
+- Agent x86 installer: `https://wonremote-a7fd3.web.app/download/agent-x86`
 
 ## Runtime Verification Key
 
