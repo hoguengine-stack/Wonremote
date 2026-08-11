@@ -1,0 +1,56 @@
+name: Publish WonRemote release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "aether-link-app/package.json"
+      - "aether-link-app/package-lock.json"
+      - "aether-link-app/src/domain/appVersion.ts"
+      - "aether-link-app/src-tauri/Cargo.toml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: aether-link-app
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      WONREMOTE_RELEASE_GATE_APPROVED: "YES"
+      WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY: ${{ secrets.WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: aether-link-app/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install x86 Rust target
+        run: rustup target add i686-pc-windows-msvc
+
+      - name: Verify release signing key
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY)) {
+            throw "WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY GitHub Actions secret is missing."
+          }
+
+      - name: Build four installers and signed manifest
+        run: |
+          npm run release:exes
+          npm run release:manifest
+
+      - name: Publish GitHub release
+        run: npm run release:publish
