@@ -57,6 +57,26 @@ describe("connected remote session layout", () => {
     expect(stylesSource).not.toContain("remote-titlebar-status");
   });
 
+  it("adds a compact Viewer update action that uses the native updater", () => {
+    expect(appSource).toContain('className="viewer-update-button"');
+    expect(appSource).toContain('invoke("start_installer_update", { restartMode: "viewer" })');
+    expect(appSource).toContain("isManualUpdateChecking");
+    expect(stylesSource).toContain(".viewer-update-button");
+  });
+
+  it("keeps hover movement for remote menus while rate limiting it", () => {
+    const start = appSource.indexOf("const handleCanvasMouseMove");
+    const end = appSource.indexOf("const handleCanvasWheel", start);
+    const moveBlock = appSource.slice(start, end);
+
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    expect(moveBlock).not.toContain("pressedButtonsRef.current.size === 0");
+    expect(moveBlock).toContain("moveDelayTimerRef.current");
+    expect(moveBlock).toContain("33 - (performance.now() - lastMoveSentAtRef.current)");
+    expect(moveBlock).toContain("requestAnimationFrame");
+  });
+
   it("defines flexible focus-mode layout hooks without legacy log panels", () => {
     expect(stylesSource).toContain(".session-actions-top");
     expect(stylesSource).toContain(".remote-focus-mode .remote-work-area");

@@ -277,6 +277,40 @@ input:focus {
   width: 36px;
 }
 
+.viewer-update-button {
+  align-items: center;
+  background: transparent;
+  border: 1px solid #415067;
+  border-radius: 6px;
+  color: #d6dee8;
+  display: inline-flex;
+  height: 30px;
+  justify-content: center;
+  margin-left: auto;
+  padding: 0;
+  width: 30px;
+}
+
+.viewer-update-button:hover:not(:disabled) {
+  background: #263244;
+  color: #ffffff;
+}
+
+.viewer-update-button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.viewer-update-button .is-spinning {
+  animation: viewer-update-spin 0.8s linear infinite;
+}
+
+@keyframes viewer-update-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .group-list {
   display: grid;
   gap: 8px;

@@ -149,15 +149,20 @@ describe("Firebase security deployment policy", () => {
     expect(enqueueCommandBlock).toContain('requireString(request.data?.sessionId, "sessionId")');
     expect(enqueueCommandBlock).toContain("readOwnedConnectedSession(transaction, sessionId, uid)");
     expect(enqueueCommandBlock).toContain("db.runTransaction");
+    expect(enqueueCommandBlock).toContain("sessionId,");
     expect(enqueueCommandBlock).not.toContain("request.data?.deviceId");
   });
 
-  it("creates a unique Firebase session and targets start/stop commands to that session", () => {
+  it("creates a unique Firebase session and clears pending commands for that session on close", () => {
     const functionsSource = readFileSync(resolve(repoRoot, "functions/src/index.ts"), "utf8");
 
     expect(functionsSource).toContain('const sessionRef = db.collection("sessions").doc();');
     expect(functionsSource).toContain('action: `start-stream ${session.id}`');
+    expect(functionsSource).toContain("sessionId: session.id");
     expect(functionsSource).toContain('action: `stop-stream ${sessionId}`');
+    expect(functionsSource).toContain('.where("sessionId", "==", sessionId)');
+    expect(functionsSource).toContain('.where("state", "==", "pending")');
+    expect(functionsSource).toContain("pendingCommands.docs.forEach((commandDoc) => transaction.delete(commandDoc.ref))");
     expect(functionsSource).not.toContain("firebaseSessionIdForDevice");
   });
 

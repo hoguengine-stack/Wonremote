@@ -251,7 +251,7 @@ export async function pollAgentCommandsWithFirebase(
   const commands: AgentCommand[] = [];
 
   snapshot.docs.forEach((commandDoc) => {
-    const command = commandDoc.data() as { action?: unknown; createdAt?: unknown };
+    const command = commandDoc.data() as { action?: unknown; createdAt?: unknown; sessionId?: unknown };
     const action = typeof command.action === "string" ? command.action : "";
     if (!action) {
       safeBatchUpdate(batch, commandDoc.ref, {
@@ -266,6 +266,7 @@ export async function pollAgentCommandsWithFirebase(
       action,
       createdAt: coerceCreatedAt(command.createdAt),
       deviceId: input.deviceId,
+      ...(typeof command.sessionId === "string" ? { sessionId: command.sessionId } : {}),
     });
     safeBatchUpdate(batch, commandDoc.ref, {
       state: "delivered",
@@ -320,7 +321,7 @@ export async function subscribeAgentCommandsWithFirebase(
         const batch = writeBatch(services.db);
         const commands: AgentCommand[] = [];
         snapshot.docs.forEach((commandDoc) => {
-          const command = commandDoc.data() as { action?: unknown; createdAt?: unknown };
+          const command = commandDoc.data() as { action?: unknown; createdAt?: unknown; sessionId?: unknown };
           const action = typeof command.action === "string" ? command.action : "";
           if (!action) {
             safeBatchUpdate(batch, commandDoc.ref, {
@@ -334,6 +335,7 @@ export async function subscribeAgentCommandsWithFirebase(
             action,
             createdAt: coerceCreatedAt(command.createdAt),
             deviceId: input.deviceId,
+            ...(typeof command.sessionId === "string" ? { sessionId: command.sessionId } : {}),
           });
           safeBatchUpdate(batch, commandDoc.ref, {
             state: "delivered",

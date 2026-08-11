@@ -1063,7 +1063,7 @@ async function openFirebaseSessionDirect(
     },
     { merge: true },
   );
-  await enqueueFirebaseDeviceCommandDirect(deviceId, `start-stream ${session.id}`, env);
+  await enqueueFirebaseDeviceCommandDirect(deviceId, `start-stream ${session.id}`, env, session.id);
   return {
     inputLog: [`${new Date().toLocaleTimeString()} start-stream queued via Firestore fallback`],
     session,
@@ -1183,7 +1183,7 @@ async function recordFirebaseInputDirect(
   env: ViewerFirebaseEnv,
 ): Promise<{ inputLog: string[] }> {
   const session = await readOwnedConnectedFirebaseSession(sessionId, env);
-  await enqueueFirebaseDeviceCommandDirect(session.deviceId, action, env);
+  await enqueueFirebaseDeviceCommandDirect(session.deviceId, action, env, sessionId);
   return {
     inputLog: [`${new Date().toLocaleTimeString()} ${action}`],
   };
@@ -1197,7 +1197,8 @@ async function closeFirebaseSessionDirect(sessionId: string, env: ViewerFirebase
     state: "closed",
     updatedAt: serverTimestamp(),
   });
-  await enqueueFirebaseDeviceCommandDirect(session.deviceId, "stop-stream", env);
+  await purgePendingFirebaseSessionCommands(session.deviceId, sessionId, env);
+  await enqueueFirebaseDeviceCommandDirect(session.deviceId, `stop-stream ${sessionId}`, env, sessionId);
   return null;
 }
 
@@ -1236,13 +1237,36 @@ async function enqueueFirebaseDeviceCommandDirect(
   deviceId: string,
   action: string,
   env: ViewerFirebaseEnv,
+  sessionId?: string,
 ): Promise<void> {
   const services = getViewerFirebaseServices(env);
   await safeAddDoc(collection(services.db, "devices", deviceId, "commands"), {
     action,
     createdAt: serverTimestamp(),
     state: "pending",
+    ...(sessionId ? { sessionId } : {}),
   });
+}
+
+async function purgePendingFirebaseSessionCommands(
+  deviceId: string,
+  sessionId: string,
+  env: ViewerFirebaseEnv,
+): Promise<void> {
+  const services = getViewerFirebaseServices(env);
+  const commandSnapshot = await getDocs(query(
+    collection(services.db, "devices", deviceId, "commands"),
+    where("sessionId", "==", sessionId),
+    where("state", "==", "pending"),
+    limit(100),
+  ));
+  if (commandSnapshot.empty) {
+    return;
+  }
+
+  const batch = writeBatch(services.db);
+  commandSnapshot.docs.forEach((commandDoc) => batch.delete(commandDoc.ref));
+  await batch.commit();
 }
 
 function buildConnectedSession(deviceId: string): RemoteSession {

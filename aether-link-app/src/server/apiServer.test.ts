@@ -262,8 +262,9 @@ describe("WonRemote local API server", () => {
     expect(await prePoll.json()).toMatchObject({
       commands: [
         {
-          action: "start-stream",
+          action: `start-stream ${sessionBody.session.id}`,
           deviceId: "123-45-67890:AGENT-COMMAND-01",
+          sessionId: sessionBody.session.id,
         },
       ],
     });
@@ -292,6 +293,43 @@ describe("WonRemote local API server", () => {
       installId: "agent-command-01",
     });
     expect(await emptyPoll.json()).toEqual({ commands: [] });
+  });
+
+  it("drops pending session input commands when a local session closes", async () => {
+    const registered = await postJson("/api/agent/first-run", {
+      businessNumber: "1234567890",
+      password: "1234",
+      installId: "agent-close-queue",
+    });
+    const registeredBody = await registered.json();
+
+    const session = await postJson("/api/sessions", {
+      deviceId: registeredBody.device.id,
+    });
+    const sessionBody = await session.json();
+    const encodedSessionId = encodeURIComponent(sessionBody.session.id);
+
+    await postJson(`/api/sessions/${encodedSessionId}/input`, {
+      action: "mouse-down 100 100 left",
+    });
+    await postJson(`/api/sessions/${encodedSessionId}/input`, {
+      action: "mouse-up 100 100 left",
+    });
+    const close = await postJson(`/api/sessions/${encodedSessionId}/close`, {});
+    expect(close.status).toBe(200);
+
+    const polled = await postJson("/api/agent/commands", {
+      deviceId: registeredBody.device.id,
+      installId: "agent-close-queue",
+    });
+    expect(await polled.json()).toMatchObject({
+      commands: [
+        {
+          action: `stop-stream ${sessionBody.session.id}`,
+          sessionId: sessionBody.session.id,
+        },
+      ],
+    });
   });
 
   it("allows session data channels immediately after opening an owned online agent", async () => {
@@ -664,7 +702,8 @@ describe("WonRemote local API server", () => {
       deviceId,
     });
     expect(connected.status).toBe(200);
-    expect(await connected.json()).toMatchObject({
+    const connectedBody = await connected.json();
+    expect(connectedBody).toMatchObject({
       session: {
         deviceId,
         state: "connected",
@@ -676,7 +715,10 @@ describe("WonRemote local API server", () => {
       installId: "agent-secure-01",
     });
     expect(await streamPoll.json()).toMatchObject({
-      commands: [expect.objectContaining({ action: "start-stream" })],
+      commands: [expect.objectContaining({
+        action: `start-stream ${connectedBody.session.id}`,
+        sessionId: connectedBody.session.id,
+      })],
     });
   });
 

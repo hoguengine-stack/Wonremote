@@ -10,7 +10,10 @@ use std::{
 };
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex, Once,
+};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use tauri::{
@@ -72,6 +75,8 @@ const WIN32_AGENT_TRAY_ID: u32 = 37;
 #[cfg(target_arch = "x86")]
 const WM_WONREMOTE_AGENT_TRAY: u32 = WM_APP + 37;
 static PANIC_LOGGER: Once = Once::new();
+static VIEWER_UPDATE_CHECK_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+static VIEWER_RESTART_AFTER_CHECK_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 struct SingleInstanceGuard {
     handle: HANDLE,
@@ -1235,7 +1240,11 @@ fn normalize_installer_restart_mode(restart_mode: &str) -> Result<&str, String> 
 }
 
 #[tauri::command]
-fn start_installer_update(app: tauri::AppHandle, restart_mode: String) -> Result<(), String> {
+fn start_installer_update(
+    app: tauri::AppHandle,
+    restart_mode: String,
+    restart_after_check: Option<bool>,
+) -> Result<(), String> {
     let restart_mode = normalize_installer_restart_mode(&restart_mode)?;
     let resource_dir = app
         .path()
@@ -1251,6 +1260,14 @@ fn start_installer_update(app: tauri::AppHandle, restart_mode: String) -> Result
     let build_arch = runtime_build_arch();
     let package_kind = packaged_update_kind(&resource_dir);
     let restart_executable = env::current_exe().map_err(|error| error.to_string())?;
+    let is_viewer_update = restart_mode == "viewer";
+    if is_viewer_update && restart_after_check.unwrap_or(false) {
+        VIEWER_RESTART_AFTER_CHECK_REQUESTED.store(true, Ordering::Release);
+    }
+    if is_viewer_update && VIEWER_UPDATE_CHECK_IN_FLIGHT.swap(true, Ordering::AcqRel) {
+        append_runtime_log("viewer-native-update", "signed update check already running");
+        return Ok(());
+    }
     let mut command = Command::new(&node_path);
     command
         .arg(&agent_path)
@@ -1268,22 +1285,29 @@ fn start_installer_update(app: tauri::AppHandle, restart_mode: String) -> Result
         .stderr(std::process::Stdio::piped());
     add_no_window(&mut command);
 
-    let mut child = command.spawn().map_err(|error| {
-        append_runtime_log("updater", &format!("spawn failed: {error}"));
-        error.to_string()
-    })?;
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            if is_viewer_update {
+                VIEWER_UPDATE_CHECK_IN_FLIGHT.store(false, Ordering::Release);
+            }
+            append_runtime_log("updater", &format!("spawn failed: {error}"));
+            return Err(error.to_string());
+        }
+    };
+    let update_handoff_started = Arc::new(AtomicBool::new(false));
     if let Some(stdout) = child.stdout.take() {
+        let update_handoff_started = Arc::clone(&update_handoff_started);
         thread::spawn(move || {
-            let mut update_handoff_started = false;
             for line in BufReader::new(stdout).lines() {
                 match line {
                     Ok(line) => {
                         append_runtime_log("updater-stdout", &line);
-                        if !update_handoff_started {
+                        if !update_handoff_started.load(Ordering::Acquire) {
                             match parse_update_handoff_request(&line).and_then(|request| {
                                 request.map_or(Ok(false), launch_brokered_update_handoff)
                             }) {
-                                Ok(true) => update_handoff_started = true,
+                                Ok(true) => update_handoff_started.store(true, Ordering::Release),
                                 Ok(false) => {}
                                 Err(error) => append_runtime_log("updater-broker", &error),
                             }
@@ -1310,9 +1334,21 @@ fn start_installer_update(app: tauri::AppHandle, restart_mode: String) -> Result
             }
         });
     }
-    thread::spawn(move || match child.wait() {
-        Ok(status) => append_runtime_log("updater", &format!("process exited: {status}")),
-        Err(error) => append_runtime_log("updater", &format!("wait failed: {error}")),
+    let restart_app = app.clone();
+    thread::spawn(move || {
+        match child.wait() {
+            Ok(status) => append_runtime_log("updater", &format!("process exited: {status}")),
+            Err(error) => append_runtime_log("updater", &format!("wait failed: {error}")),
+        }
+        if is_viewer_update {
+            VIEWER_UPDATE_CHECK_IN_FLIGHT.store(false, Ordering::Release);
+            if VIEWER_RESTART_AFTER_CHECK_REQUESTED.swap(false, Ordering::AcqRel)
+                && !update_handoff_started.load(Ordering::Acquire)
+            {
+                append_runtime_log("tray-menu", "viewer restart after update check completed");
+                restart_app.restart();
+            }
+        }
     });
     append_runtime_log(
         "updater",
@@ -1327,7 +1363,7 @@ fn start_viewer_update_watcher(app: tauri::AppHandle) {
     thread::spawn(move || {
         thread::sleep(VIEWER_UPDATE_INITIAL_DELAY);
         loop {
-            if let Err(error) = start_installer_update(app.clone(), "viewer".to_string()) {
+            if let Err(error) = start_installer_update(app.clone(), "viewer".to_string(), None) {
                 append_runtime_log(
                     "viewer-native-update",
                     &format!("failed to start signed update check: {error}"),
@@ -1884,15 +1920,18 @@ pub fn run() {
                 show_main_window_with_log(app.handle(), "viewer-startup");
 
                 // System Tray Menu Setup for Viewer
-                let quit_i = MenuItemBuilder::new("Exit").id("quit").build(app)?;
                 let open_i = MenuItemBuilder::new("Open Viewer").id("open").build(app)?;
+                let restart_i = MenuItemBuilder::new("Restart Viewer")
+                    .id("restart")
+                    .build(app)?;
                 let startup_i = CheckMenuItemBuilder::new("Run at Startup")
                     .id("toggle_startup")
                     .checked(is_startup_registered(false))
                     .build(app)?;
+                let quit_i = MenuItemBuilder::new("Exit").id("quit").build(app)?;
 
                 let menu = MenuBuilder::new(app)
-                    .items(&[&open_i, &startup_i, &quit_i])
+                    .items(&[&open_i, &restart_i, &startup_i, &quit_i])
                     .build()?;
 
                 let startup_i_clone = startup_i.clone();
@@ -1909,6 +1948,19 @@ pub fn run() {
                                 run_logged_action("tray-menu", "viewer-open", || {
                                     show_main_window_with_log(app, "viewer-menu-open");
                                 });
+                            }
+                            "restart" => {
+                                append_runtime_log("tray-menu", "viewer restart with update check requested");
+                                if let Err(error) = start_installer_update(
+                                    app.clone(),
+                                    "viewer".to_string(),
+                                    Some(true),
+                                ) {
+                                    append_runtime_log(
+                                        "tray-menu",
+                                        &format!("viewer restart update check failed: {error}"),
+                                    );
+                                }
                             }
                             "toggle_startup" => {
                                 let is_checked = startup_i_clone.is_checked().unwrap_or(false);

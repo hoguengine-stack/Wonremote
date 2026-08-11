@@ -128,6 +128,7 @@ export const enqueueCommand = onCall(async (request) => {
     transaction.set(db.collection("devices").doc(session.deviceId!).collection("commands").doc(), {
       action,
       createdAt: FieldValue.serverTimestamp(),
+      sessionId,
       state: "pending",
     });
   });
@@ -154,14 +155,23 @@ export const closeSession = onCall(async (request) => {
       throw new HttpsError("failed-precondition", "Only connected sessions can be closed.");
     }
 
+    const pendingCommands = await transaction.get(
+      db.collection("devices")
+        .doc(session.deviceId)
+        .collection("commands")
+        .where("sessionId", "==", sessionId)
+        .where("state", "==", "pending"),
+    );
     transaction.update(sessionRef, {
       closedAt: FieldValue.serverTimestamp(),
       state: "closed",
       updatedAt: FieldValue.serverTimestamp(),
     });
+    pendingCommands.docs.forEach((commandDoc) => transaction.delete(commandDoc.ref));
     transaction.set(db.collection("devices").doc(session.deviceId).collection("commands").doc(), {
       action: `stop-stream ${sessionId}`,
       createdAt: FieldValue.serverTimestamp(),
+      sessionId,
       state: "pending",
     });
   });
@@ -269,6 +279,7 @@ function queueOpenSession(
   transaction.set(db.collection("devices").doc(deviceId).collection("commands").doc(), {
     action: `start-stream ${session.id}`,
     createdAt: FieldValue.serverTimestamp(),
+    sessionId: session.id,
     state: "pending",
   });
   return {

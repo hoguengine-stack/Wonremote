@@ -601,7 +601,7 @@ async function routeRequest(
         ...(state.inputLogs.get(sessionId) ?? []),
       ].slice(0, 6);
       state.inputLogs.set(sessionId, nextLog);
-      enqueueAgentCommand(state, session.deviceId, action);
+      enqueueAgentCommand(state, session.deviceId, action, sessionId);
       writeJson(response, 200, { inputLog: nextLog });
       return;
     }
@@ -617,7 +617,8 @@ async function routeRequest(
         return;
       }
       state.sessions.delete(sessionId);
-      enqueueAgentCommand(state, session.deviceId, "stop-stream");
+      purgePendingSessionCommands(state, session.deviceId, sessionId);
+      enqueueAgentCommand(state, session.deviceId, `stop-stream ${sessionId}`, sessionId);
 
       // Connection history update
       const histories = await state.historyStore.readHistory();
@@ -777,7 +778,7 @@ async function routeRequest(
           `${new Date().toLocaleTimeString()} 세션 연결 승인 완료`,
           ...(state.inputLogs.get(sessionId) ?? [])
         ]);
-        enqueueAgentCommand(state, session.deviceId, "start-stream");
+        enqueueAgentCommand(state, session.deviceId, `start-stream ${sessionId}`, sessionId);
 
         if (device) {
           await state.historyStore.addHistoryEntry({
@@ -1075,7 +1076,7 @@ async function openConnectedSession(
 
   state.sessions.set(session.id, session);
   state.inputLogs.set(session.id, inputLog);
-  enqueueAgentCommand(state, session.deviceId, "start-stream");
+  enqueueAgentCommand(state, session.deviceId, `start-stream ${session.id}`, session.id);
 
   await state.historyStore.addHistoryEntry({
     id: `hist-${session.id}-${Date.now()}`,
@@ -1089,7 +1090,7 @@ async function openConnectedSession(
   return { session, inputLog };
 }
 
-function enqueueAgentCommand(state: ApiState, deviceId: string, action: string): void {
+function enqueueAgentCommand(state: ApiState, deviceId: string, action: string, sessionId?: string): void {
   const commands = state.commandQueues.get(deviceId) ?? [];
   state.commandQueues.set(
     deviceId,
@@ -1100,8 +1101,17 @@ function enqueueAgentCommand(state: ApiState, deviceId: string, action: string):
         createdAt: nowIso(state),
         deviceId,
         id: `cmd-${commands.length + 1}-${Date.now()}`,
+        ...(sessionId ? { sessionId } : {}),
       },
     ].slice(-50),
+  );
+}
+
+function purgePendingSessionCommands(state: ApiState, deviceId: string, sessionId: string): void {
+  const commands = state.commandQueues.get(deviceId) ?? [];
+  state.commandQueues.set(
+    deviceId,
+    commands.filter((command) => command.sessionId !== sessionId),
   );
 }
 

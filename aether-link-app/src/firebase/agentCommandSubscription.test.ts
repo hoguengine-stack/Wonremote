@@ -60,10 +60,10 @@ describe("Agent Firebase command subscription", () => {
       { deviceId: "device-1", installId: "install-1" }, onCommands, onError,
     );
     expect(getDoc).toHaveBeenCalledOnce();
-    state.snapshotHandler?.({ docs: [{ id: "command-1", ref: { id: "command-1" }, data: () => ({ action: "paste", createdAt: "now" }) }] });
+    state.snapshotHandler?.({ docs: [{ id: "command-1", ref: { id: "command-1" }, data: () => ({ action: "paste", createdAt: "now", sessionId: "session-1" }) }] });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(state.batch.commit).toHaveBeenCalledOnce();
-    expect(onCommands).toHaveBeenCalledWith([{ id: "command-1", action: "paste", createdAt: "now", deviceId: "device-1" }]);
+    expect(onCommands).toHaveBeenCalledWith([{ id: "command-1", action: "paste", createdAt: "now", deviceId: "device-1", sessionId: "session-1" }]);
     unsubscribe();
     expect(state.unsubscribe).toHaveBeenCalledOnce();
   });

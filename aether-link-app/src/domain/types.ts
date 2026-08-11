@@ -85,6 +85,7 @@ export interface AgentCommand {
   action: string;
   createdAt: string;
   deviceId: string;
+  sessionId?: string;
 }
 
 export interface AgentCommandPollInput {

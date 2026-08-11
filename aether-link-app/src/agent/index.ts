@@ -1567,13 +1567,30 @@ async function executeReceivedCommands(config: AgentLocalConfig, commands: Agent
   for (const command of commands) {
     console.log(`Command received: ${command.action}`);
     try {
-      await agentCommandQueue.enqueue(() =>
-        executeAgentCommand(command.action, "poll", createAgentCommandRuntime(config.registeredDeviceId!)),
-      );
+      await agentCommandQueue.enqueue(() => {
+        if (isStaleSessionInputCommand(command)) {
+          console.warn(
+            `Ignoring stale command for session ${command.sessionId}; active session is ${activeSessionId ?? "none"}.`,
+          );
+          return "ignored";
+        }
+        return executeAgentCommand(command.action, "poll", createAgentCommandRuntime(config.registeredDeviceId!));
+      });
     } catch (error) {
       console.error(`[Inject Failed] ${error instanceof Error ? error.message : error}`);
     }
   }
+}
+
+function isStaleSessionInputCommand(command: AgentCommand): boolean {
+  if (!command.sessionId) {
+    return false;
+  }
+  const action = command.action.trim();
+  if (action.startsWith("start-stream") || action.startsWith("stop-stream")) {
+    return false;
+  }
+  return command.sessionId !== activeSessionId;
 }
 
 function createAgentCommandRuntime(deviceId: string): AgentCommandRuntime {

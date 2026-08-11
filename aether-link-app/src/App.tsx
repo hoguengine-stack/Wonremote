@@ -203,6 +203,7 @@ function ViewerApp() {
   const [query, setQuery] = useState("");
   const [selectedStore, setSelectedStore] = useState("전체");
   const [updateAlert, setUpdateAlert] = useState<string | null>(null);
+  const [isManualUpdateChecking, setIsManualUpdateChecking] = useState(false);
   const sessionRestoreAttemptedRef = useRef(false);
   const [editTarget, setEditTarget] = useState<DeviceEditTarget | null>(null);
   const [secureConnect, setSecureConnect] = useState<SecureConnectState | null>(null);
@@ -284,6 +285,32 @@ function ViewerApp() {
     };
   }, []);
 
+
+  const handleManualViewerUpdate = async () => {
+    if (isManualUpdateChecking) {
+      return;
+    }
+    setIsManualUpdateChecking(true);
+    try {
+      if ((window as any).__TAURI_INTERNALS__) {
+        await invoke("start_installer_update", { restartMode: "viewer" });
+        return;
+      }
+
+      const update = await fetchViewerUpdateMetadata(import.meta.env);
+      const currentViewerVersion = getViewerVersion(import.meta.env);
+      if (update && shouldNotifyUpdate(update, currentViewerVersion)) {
+        setUpdateAlert(update.latestVersion!);
+        if (shouldReloadViewerForUpdate(update, currentViewerVersion)) {
+          window.setTimeout(() => window.location.reload(), 1500);
+        }
+      }
+    } catch {
+      // The native updater writes its failure details to the runtime log.
+    } finally {
+      setIsManualUpdateChecking(false);
+    }
+  };
 
   const groups = useMemo(() => groupDevicesByStore(devices), [devices]);
   const filteredDevices = useMemo(() => {
@@ -695,6 +722,16 @@ function ViewerApp() {
             <strong>WonRemote</strong>
             <span>Viewer Console</span>
           </div>
+          <button
+            className="viewer-update-button"
+            type="button"
+            onClick={() => void handleManualViewerUpdate()}
+            disabled={isManualUpdateChecking}
+            title="Check for updates"
+            aria-label="Check for updates"
+          >
+            <RotateCcw size={16} className={isManualUpdateChecking ? "is-spinning" : undefined} />
+          </button>
         </div>
 
         <button
@@ -1525,6 +1562,8 @@ function RemoteSessionPanel({
   const suppressedKeyUpsRef = React.useRef<Set<string>>(new Set());
   const pressedButtonsRef = React.useRef<Set<MouseButtonCode>>(new Set());
   const moveFrameRef = React.useRef<number | null>(null);
+  const moveDelayTimerRef = React.useRef<number | null>(null);
+  const lastMoveSentAtRef = React.useRef(0);
   const pendingMoveRef = React.useRef<{ dx: number; dy: number } | null>(null);
   const lastClipboardTextRef = React.useRef<string>("");
   const lastClipboardImageHashRef = React.useRef<string>("");
@@ -2170,16 +2209,29 @@ function RemoteSessionPanel({
 
     const rect = canvas.getBoundingClientRect();
     pendingMoveRef.current = mapRemotePoint(e.clientX, e.clientY, rect);
-    if (moveFrameRef.current !== null) {
+    if (moveFrameRef.current !== null || moveDelayTimerRef.current !== null) {
       return;
     }
-    moveFrameRef.current = window.requestAnimationFrame(() => {
-      moveFrameRef.current = null;
-      const point = pendingMoveRef.current;
-      if (point) {
-        onInputEvent(buildMouseCommand("move", point.dx, point.dy));
-      }
-    });
+
+    const sendLatestMove = () => {
+      moveFrameRef.current = window.requestAnimationFrame(() => {
+        moveFrameRef.current = null;
+        const point = pendingMoveRef.current;
+        if (point) {
+          lastMoveSentAtRef.current = performance.now();
+          onInputEvent(buildMouseCommand("move", point.dx, point.dy));
+        }
+      });
+    };
+    const waitMs = Math.max(0, 33 - (performance.now() - lastMoveSentAtRef.current));
+    if (waitMs === 0) {
+      sendLatestMove();
+      return;
+    }
+    moveDelayTimerRef.current = window.setTimeout(() => {
+      moveDelayTimerRef.current = null;
+      sendLatestMove();
+    }, waitMs);
   };
 
   const handleCanvasWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
@@ -2313,6 +2365,10 @@ function RemoteSessionPanel({
       if (moveFrameRef.current !== null) {
         window.cancelAnimationFrame(moveFrameRef.current);
         moveFrameRef.current = null;
+      }
+      if (moveDelayTimerRef.current !== null) {
+        window.clearTimeout(moveDelayTimerRef.current);
+        moveDelayTimerRef.current = null;
       }
       releaseAllInputs();
     };
