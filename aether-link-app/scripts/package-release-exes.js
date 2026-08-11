@@ -41,6 +41,17 @@ function ensureExists(targetPath, label) {
   }
 }
 
+function waitForExists(targetPath, label, timeoutMs = 10 * 60 * 1000) {
+  const sleepBuffer = new Int32Array(new SharedArrayBuffer(4));
+  const deadline = Date.now() + timeoutMs;
+  while (!fs.existsSync(targetPath)) {
+    if (Date.now() >= deadline) {
+      throw new Error(`${label} was not created within ${timeoutMs / 1000}s: ${targetPath}`);
+    }
+    Atomics.wait(sleepBuffer, 0, 0, 250);
+  }
+}
+
 function runShell(command, env = process.env) {
   const shell = process.platform === "win32" ? "cmd.exe" : "sh";
   const args = process.platform === "win32"
@@ -210,10 +221,10 @@ function packageTarget(target) {
   const expectedAgentInstaller = `WonRemote Agent_${packageJson.version}_${target.installerArch}-setup.exe`;
   const expectedInstallerPath = path.join(installerDir, expectedInstaller);
   const expectedAgentInstallerPath = path.join(installerDir, expectedAgentInstaller);
-  ensureExists(expectedInstallerPath, `${target.key} WonRemote Viewer NSIS installer`);
+  waitForExists(expectedInstallerPath, `${target.key} WonRemote Viewer NSIS installer`);
 
   buildAgentDefaultInstaller(target);
-  ensureExists(expectedAgentInstallerPath, `${target.key} Agent-default WonRemote NSIS installer`);
+  waitForExists(expectedAgentInstallerPath, `${target.key} Agent-default WonRemote NSIS installer`);
   verifyTargetAgentRuntime(target, targetRelease);
   createProductInstaller(expectedInstallerPath, expectedAgentInstallerPath, target, "viewer");
   createProductInstaller(expectedInstallerPath, expectedAgentInstallerPath, target, "agent");
