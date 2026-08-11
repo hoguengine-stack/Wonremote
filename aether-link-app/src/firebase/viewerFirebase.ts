@@ -174,7 +174,9 @@ export function subscribeFirebaseDevices(
     devicesCollection,
     (snapshot) => {
       onDevices(prepareViewerDeviceList(
-        snapshot.docs.map((deviceDoc) => mapFirestoreDevice(deviceDoc.id, deviceDoc.data())),
+        snapshot.docs
+          .filter((deviceDoc) => !isDeletedDeviceDocument(deviceDoc.data()))
+          .map((deviceDoc) => mapFirestoreDevice(deviceDoc.id, deviceDoc.data())),
         new Date().toISOString(),
         resolveViewerOfflineAfterMs(env),
       ));
@@ -188,7 +190,9 @@ export async function fetchFirebaseDevices(env: ViewerFirebaseEnv = import.meta.
   requireCurrentUserId(services.auth.currentUser?.uid);
   const snapshot = await getDocs(collection(services.db, "devices"));
   return prepareViewerDeviceList(
-    snapshot.docs.map((deviceDoc) => mapFirestoreDevice(deviceDoc.id, deviceDoc.data())),
+    snapshot.docs
+      .filter((deviceDoc) => !isDeletedDeviceDocument(deviceDoc.data()))
+      .map((deviceDoc) => mapFirestoreDevice(deviceDoc.id, deviceDoc.data())),
     new Date().toISOString(),
     resolveViewerOfflineAfterMs(env),
   );
@@ -265,14 +269,36 @@ export async function deleteFirebaseDevice(
   }
 
   const commandSnapshot = await getDocs(collection(services.db, "devices", deviceId, "commands"));
-  const references = [...commandSnapshot.docs.map((commandDoc) => commandDoc.ref), deviceRef];
+  const references = commandSnapshot.docs.map((commandDoc) => commandDoc.ref);
   const maxBatchDeletes = 450;
+
+  if (references.length === 0) {
+    const batch = writeBatch(services.db);
+    batch.update(deviceRef, {
+      deletedAt: serverTimestamp(),
+      status: "offline",
+      updatedAt: serverTimestamp(),
+    });
+    await batch.commit();
+    return;
+  }
 
   for (let offset = 0; offset < references.length; offset += maxBatchDeletes) {
     const batch = writeBatch(services.db);
     references.slice(offset, offset + maxBatchDeletes).forEach((reference) => batch.delete(reference));
+    if (offset + maxBatchDeletes >= references.length) {
+      batch.update(deviceRef, {
+        deletedAt: serverTimestamp(),
+        status: "offline",
+        updatedAt: serverTimestamp(),
+      });
+    }
     await batch.commit();
   }
+}
+
+function isDeletedDeviceDocument(data: Record<string, unknown>): boolean {
+  return data.deletedAt !== undefined && data.deletedAt !== null;
 }
 
 export async function registerFirstRunAgentWithFirebase(
@@ -318,6 +344,7 @@ export async function registerFirstRunAgentWithFirebase(
     deviceRef,
     {
       ...deviceDocument,
+      deletedAt: null,
       installId: input.installId,
       ownerUid: credential.user.uid,
     },

@@ -98,6 +98,8 @@ service cloud.firestore {
           "storeNameSource",
           "deviceName",
           "desktopName",
+          "deletedAt",
+          "status",
           "updatedAt"
         ]);
     }

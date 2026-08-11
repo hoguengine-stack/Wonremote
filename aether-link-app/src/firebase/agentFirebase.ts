@@ -161,6 +161,7 @@ export async function registerAgentFirstRunWithFirebase(
     deviceRef,
     {
       ...deviceDocument,
+      deletedAt: null,
       installId: input.installId,
       ownerUid: credential.user.uid,
       updatedAt: serverTimestamp(),
@@ -191,6 +192,7 @@ export async function sendAgentHeartbeatWithFirebase(
       lastSeenAt: nowIso,
       macAddresses: input.macAddresses ?? [],
       controlDiagnostics: input.controlDiagnostics ?? null,
+      deletedAt: null,
       streamDiagnostics: input.streamDiagnostics ?? null,
       status: "online",
       updatedAt: serverTimestamp(),
