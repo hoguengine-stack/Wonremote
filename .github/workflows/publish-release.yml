@@ -47,6 +47,16 @@ jobs:
             throw "WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY GitHub Actions secret is missing."
           }
 
+      - name: Verify version metadata is aligned
+        run: |
+          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $appVersion = (Select-String -Path src/domain/appVersion.ts -Pattern '"([0-9.]+)"').Matches[0].Groups[1].Value
+          $cargoVersion = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version\s*=\s*"([0-9.]+)"').Matches[0].Groups[1].Value
+          $tauriVersion = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          if (@($appVersion, $cargoVersion, $tauriVersion) | Where-Object { $_ -ne $packageVersion }) {
+            throw "Release version metadata must match package.json ($packageVersion)."
+          }
+
       - name: Build four installers and signed manifest
         run: |
           npm run release:exes
