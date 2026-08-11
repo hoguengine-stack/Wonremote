@@ -1239,6 +1239,27 @@ fn normalize_installer_restart_mode(restart_mode: &str) -> Result<&str, String> 
     }
 }
 
+fn schedule_viewer_restart(executable: &Path) -> Result<(), String> {
+    let executable = executable
+        .to_string_lossy()
+        .replace('\'', "''");
+    let script = format!(
+        "Start-Sleep -Milliseconds 750; Start-Process -FilePath '{executable}'"
+    );
+    let mut command = Command::new("powershell.exe");
+    command
+        .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command"])
+        .arg(script)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    add_no_window(&mut command);
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("failed to schedule Viewer restart: {error}"))
+}
+
 #[tauri::command]
 fn start_installer_update(
     app: tauri::AppHandle,
@@ -1346,7 +1367,15 @@ fn start_installer_update(
                 && !update_handoff_started.load(Ordering::Acquire)
             {
                 append_runtime_log("tray-menu", "viewer restart after update check completed");
-                restart_app.restart();
+                match env::current_exe().map_err(|error| error.to_string()).and_then(|executable| {
+                    schedule_viewer_restart(&executable)
+                }) {
+                    Ok(()) => restart_app.exit(0),
+                    Err(error) => {
+                        append_runtime_log("tray-menu", &error);
+                        show_main_window_with_log(&restart_app, "viewer-restart-schedule-failed");
+                    }
+                }
             }
         }
     });
