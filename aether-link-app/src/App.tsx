@@ -128,6 +128,11 @@ type SecureConnectState = {
   isSubmitting: boolean;
 };
 
+type ViewerUpdateDialogState =
+  | { kind: "available"; version: string }
+  | { kind: "current"; version: string }
+  | { kind: "error" };
+
 function playBeepSound() {
   try {
     const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -204,6 +209,8 @@ function ViewerApp() {
   const [selectedStore, setSelectedStore] = useState("전체");
   const [updateAlert, setUpdateAlert] = useState<string | null>(null);
   const [isManualUpdateChecking, setIsManualUpdateChecking] = useState(false);
+  const [viewerUpdateDialog, setViewerUpdateDialog] = useState<ViewerUpdateDialogState | null>(null);
+  const [isRefreshingDevices, setIsRefreshingDevices] = useState(false);
   const sessionRestoreAttemptedRef = useRef(false);
   const [editTarget, setEditTarget] = useState<DeviceEditTarget | null>(null);
   const [secureConnect, setSecureConnect] = useState<SecureConnectState | null>(null);
@@ -292,23 +299,41 @@ function ViewerApp() {
     }
     setIsManualUpdateChecking(true);
     try {
-      if ((window as any).__TAURI_INTERNALS__) {
-        await invoke("start_installer_update", { restartMode: "viewer" });
-        return;
-      }
-
       const update = await fetchViewerUpdateMetadata(import.meta.env);
       const currentViewerVersion = getViewerVersion(import.meta.env);
       if (update && shouldNotifyUpdate(update, currentViewerVersion)) {
-        setUpdateAlert(update.latestVersion!);
-        if (shouldReloadViewerForUpdate(update, currentViewerVersion)) {
-          window.setTimeout(() => window.location.reload(), 1500);
-        }
+        setViewerUpdateDialog({ kind: "available", version: update.latestVersion! });
+      } else {
+        setViewerUpdateDialog({ kind: "current", version: currentViewerVersion });
       }
     } catch {
-      // The native updater writes its failure details to the runtime log.
+      setViewerUpdateDialog({ kind: "error" });
     } finally {
       setIsManualUpdateChecking(false);
+    }
+  };
+
+  const handleConfirmViewerUpdate = async () => {
+    setViewerUpdateDialog(null);
+    if ((window as any).__TAURI_INTERNALS__) {
+      await invoke("start_installer_update", { restartMode: "viewer" });
+      return;
+    }
+    window.location.reload();
+  };
+
+  const handleRefreshDeviceList = async () => {
+    if (isRefreshingDevices) {
+      return;
+    }
+    setIsRefreshingDevices(true);
+    try {
+      setDevices(await fetchDevices());
+      setApiError("");
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : "Device list refresh failed.");
+    } finally {
+      setIsRefreshingDevices(false);
     }
   };
 
@@ -800,6 +825,8 @@ function ViewerApp() {
               onEdit={(device) => setEditTarget({ mode: "device", devices: [device] })}
               onSecureConnect={handleSecureConnectRequest}
               onWake={handleWakeDevice}
+              onRefresh={handleRefreshDeviceList}
+              isRefreshing={isRefreshingDevices}
             />
             <ConnectionHistorySection />
           </section>
@@ -827,6 +854,13 @@ function ViewerApp() {
           onCancel={() => setSecureConnect(null)}
           onCodeChange={(code) => setSecureConnect({ ...secureConnect, code })}
           onSubmit={handleSecureConnectSubmit}
+        />
+      )}
+      {viewerUpdateDialog && (
+        <ViewerUpdateDialog
+          state={viewerUpdateDialog}
+          onClose={() => setViewerUpdateDialog(null)}
+          onConfirm={() => void handleConfirmViewerUpdate()}
         />
       )}
     </div>
@@ -1046,6 +1080,45 @@ function SecureConnectDialog({
           </button>
         </div>
       </form>
+    </div>
+  );
+}
+
+function ViewerUpdateDialog({
+  state,
+  onClose,
+  onConfirm,
+}: {
+  state: ViewerUpdateDialogState;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const isAvailable = state.kind === "available";
+  const title = isAvailable ? "Update available" : state.kind === "current" ? "Already up to date" : "Update check failed";
+  const message = isAvailable
+    ? `Version ${state.version} is ready. Install it now?`
+    : state.kind === "current"
+      ? `This Viewer is already on version ${state.version}.`
+      : "Could not check the update server. Please try again later.";
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="modal-panel compact-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="section-heading">
+          <h2>{title}</h2>
+        </div>
+        <p className="modal-help">{message}</p>
+        <div className="modal-actions">
+          <button className="secondary-button" type="button" onClick={onClose}>
+            {isAvailable ? "Cancel" : "Close"}
+          </button>
+          {isAvailable && (
+            <button className="primary-button compact" type="button" onClick={onConfirm}>
+              Update now
+            </button>
+          )}
+        </div>
+      </section>
     </div>
   );
 }
@@ -1395,6 +1468,8 @@ function DeviceTable({
   onEdit,
   onSecureConnect,
   onWake,
+  onRefresh,
+  isRefreshing,
 }: {
   activeDeviceId: string;
   devices: ManagedDevice[];
@@ -1402,9 +1477,21 @@ function DeviceTable({
   onEdit: (device: ManagedDevice) => void;
   onSecureConnect: (device: ManagedDevice) => void | Promise<void>;
   onWake: (device: ManagedDevice) => void | Promise<void>;
+  onRefresh: () => void | Promise<void>;
+  isRefreshing: boolean;
 }) {
   return (
     <section className="device-section">
+      <button
+        className="section-refresh-button"
+        type="button"
+        onClick={() => void onRefresh()}
+        disabled={isRefreshing}
+        title="Refresh device list"
+        aria-label="Refresh device list"
+      >
+        <RotateCcw size={15} className={isRefreshing ? "is-spinning" : undefined} />
+      </button>
       <div className="section-heading">
         <h2>장비 리스트</h2>
         <span>{devices.length}대</span>

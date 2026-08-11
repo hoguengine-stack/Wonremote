@@ -1,13 +1,6 @@
 name: Publish WonRemote release
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "aether-link-app/package.json"
-      - "aether-link-app/package-lock.json"
-      - "aether-link-app/src/domain/appVersion.ts"
-      - "aether-link-app/src-tauri/Cargo.toml"
   workflow_dispatch:
 
 permissions:

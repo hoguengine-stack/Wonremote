@@ -57,11 +57,19 @@ describe("connected remote session layout", () => {
     expect(stylesSource).not.toContain("remote-titlebar-status");
   });
 
-  it("adds a compact Viewer update action that uses the native updater", () => {
+  it("checks for a Viewer update before asking the user to install it", () => {
     expect(appSource).toContain('className="viewer-update-button"');
     expect(appSource).toContain('invoke("start_installer_update", { restartMode: "viewer" })');
     expect(appSource).toContain("isManualUpdateChecking");
+    expect(appSource).toContain('setViewerUpdateDialog({ kind: "available"');
+    expect(appSource).toContain("function ViewerUpdateDialog");
     expect(stylesSource).toContain(".viewer-update-button");
+  });
+
+  it("provides a device-list refresh action without a build-time dependency", () => {
+    expect(appSource).toContain("const handleRefreshDeviceList");
+    expect(appSource).toContain('className="section-refresh-button"');
+    expect(stylesSource).toContain(".section-refresh-button");
   });
 
   it("keeps hover movement for remote menus while rate limiting it", () => {
