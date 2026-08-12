@@ -367,7 +367,8 @@ function Wait-WonRemoteViewer {
 
 try {
   Stop-WonRemoteProcesses
-  $env:WONREMOTE_RESTART_MODE = $RestartMode
+  # The handoff owns restart after a silent install. Do not let the wrapper start a second visible app.
+  Remove-Item Env:WONREMOTE_RESTART_MODE -ErrorAction SilentlyContinue
   Write-HandoffLog "Starting installer update: $InstallerPath $($InstallerArgs -join ' ')"
   $process = Start-Process -FilePath $InstallerPath -ArgumentList $InstallerArgs -WindowStyle Hidden -PassThru
   Write-HandoffLog "Installer PID: $($process.Id)"

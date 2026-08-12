@@ -876,7 +876,7 @@ fn launch_brokered_update_handoff(script_path: PathBuf) -> Result<bool, String> 
     let script_path = validate_update_handoff_script_path(&script_path)?;
     let mut command = Command::new("powershell.exe");
     command
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+        .args(brokered_update_powershell_args())
         .arg(&script_path)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -890,6 +890,18 @@ fn launch_brokered_update_handoff(script_path: PathBuf) -> Result<bool, String> 
         &format!("started verified handoff script={}", script_path.display()),
     );
     Ok(true)
+}
+
+fn brokered_update_powershell_args() -> [&'static str; 7] {
+    [
+        "-NoProfile",
+        "-NonInteractive",
+        "-WindowStyle",
+        "Hidden",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+    ]
 }
 
 #[tauri::command]
@@ -2140,6 +2152,22 @@ mod registry_tests {
         );
         assert!(parse_update_handoff_request(UPDATE_HANDOFF_PREFIX).is_err());
         assert!(parse_update_handoff_request(&format!("{UPDATE_HANDOFF_PREFIX}%%%")).is_err());
+    }
+
+    #[test]
+    fn test_brokered_update_handoff_uses_a_hidden_noninteractive_powershell_window() {
+        assert_eq!(
+            brokered_update_powershell_args(),
+            [
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+            ]
+        );
     }
 
     #[test]

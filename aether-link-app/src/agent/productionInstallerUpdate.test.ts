@@ -118,7 +118,7 @@ describe("production installer update", () => {
       expect(script).not.toContain("taskkill");
       expect(script).toContain("Another WonRemote update is already in progress");
       expect(script).toContain("[System.IO.FileShare]::None");
-      expect(script).toContain("$env:WONREMOTE_RESTART_MODE = $RestartMode");
+      expect(script).toContain("Remove-Item Env:WONREMOTE_RESTART_MODE -ErrorAction SilentlyContinue");
       expect(script).toContain("Start-WonRemoteAgent");
       expect(script).toContain("Join-Path $root \"wonremote-viewer.exe\"");
       expect(script).toContain("Test-WonRemoteAgentRunning");
