@@ -10,6 +10,24 @@ const packageJson = JSON.parse(fs.readFileSync(path.join(appRoot, "package.json"
 const requiredResourceDirs = ["server", "agent", "runtime", "bin", "node_modules"];
 const x86WebRtcRuntimeMarker = "wonremote-webrtc-runtime:werift";
 
+export function assertReleaseVersionConsistency() {
+  const cargoToml = fs.readFileSync(path.join(appRoot, "src-tauri", "Cargo.toml"), "utf8");
+  const tauriConfig = JSON.parse(fs.readFileSync(path.join(appRoot, "src-tauri", "tauri.conf.json"), "utf8"));
+  const appVersionSource = fs.readFileSync(path.join(appRoot, "src", "domain", "appVersion.ts"), "utf8");
+  const cargoVersion = cargoToml.match(/^version\s*=\s*"([^"]+)"/m)?.[1];
+  const appVersion = appVersionSource.match(/WONREMOTE_APP_VERSION\s*=\s*"([^"]+)"/)?.[1];
+  const versions = {
+    "package.json": packageJson.version,
+    "src-tauri/Cargo.toml": cargoVersion,
+    "src-tauri/tauri.conf.json": tauriConfig.version,
+    "src/domain/appVersion.ts": appVersion,
+  };
+  const distinctVersions = new Set(Object.values(versions));
+  if (distinctVersions.size !== 1 || [...distinctVersions].includes(undefined)) {
+    throw new Error(`Release version mismatch: ${Object.entries(versions).map(([file, version]) => `${file}=${version ?? "missing"}`).join(", ")}`);
+  }
+}
+
 const TARGET_ARCHITECTURES = [
   {
     key: "x64",
@@ -38,17 +56,6 @@ const TARGET_ARCHITECTURES = [
 function ensureExists(targetPath, label) {
   if (!fs.existsSync(targetPath)) {
     throw new Error(`${label} is missing: ${targetPath}`);
-  }
-}
-
-function waitForExists(targetPath, label, timeoutMs = 10 * 60 * 1000) {
-  const sleepBuffer = new Int32Array(new SharedArrayBuffer(4));
-  const deadline = Date.now() + timeoutMs;
-  while (!fs.existsSync(targetPath)) {
-    if (Date.now() >= deadline) {
-      throw new Error(`${label} was not created within ${timeoutMs / 1000}s: ${targetPath}`);
-    }
-    Atomics.wait(sleepBuffer, 0, 0, 250);
   }
 }
 
@@ -221,16 +228,17 @@ function packageTarget(target) {
   const expectedAgentInstaller = `WonRemote Agent_${packageJson.version}_${target.installerArch}-setup.exe`;
   const expectedInstallerPath = path.join(installerDir, expectedInstaller);
   const expectedAgentInstallerPath = path.join(installerDir, expectedAgentInstaller);
-  waitForExists(expectedInstallerPath, `${target.key} WonRemote Viewer NSIS installer`);
+  ensureExists(expectedInstallerPath, `${target.key} WonRemote Viewer NSIS installer`);
 
   buildAgentDefaultInstaller(target);
-  waitForExists(expectedAgentInstallerPath, `${target.key} Agent-default WonRemote NSIS installer`);
+  ensureExists(expectedAgentInstallerPath, `${target.key} Agent-default WonRemote Agent NSIS installer`);
   verifyTargetAgentRuntime(target, targetRelease);
   createProductInstaller(expectedInstallerPath, expectedAgentInstallerPath, target, "viewer");
   createProductInstaller(expectedInstallerPath, expectedAgentInstallerPath, target, "agent");
 }
 
 function main() {
+  assertReleaseVersionConsistency();
   fs.rmSync(outputDir, { recursive: true, force: true });
   fs.mkdirSync(outputDir, { recursive: true });
 
