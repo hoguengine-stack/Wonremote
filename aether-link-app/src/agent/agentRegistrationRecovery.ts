@@ -16,6 +16,13 @@ export async function recoverMissingAgentRegistration(
   config: AgentLocalConfig,
   deps: AgentRegistrationRecoveryDeps,
 ): Promise<AgentLocalConfig> {
+  return reconcileAgentRegistration(config, deps);
+}
+
+export async function reconcileAgentRegistration(
+  config: AgentLocalConfig,
+  deps: AgentRegistrationRecoveryDeps,
+): Promise<AgentLocalConfig> {
   if (!canRecoverMissingAgentRegistration(config)) {
     throw new Error("Agent registration cannot be recovered without businessNumber and installId.");
   }

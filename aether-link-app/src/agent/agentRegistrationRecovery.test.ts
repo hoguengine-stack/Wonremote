@@ -3,6 +3,7 @@ import { WONREMOTE_APP_VERSION } from "../domain/appVersion";
 import type { ManagedDevice } from "../domain/types";
 import {
   canRecoverMissingAgentRegistration,
+  reconcileAgentRegistration,
   recoverMissingAgentRegistration,
 } from "./agentRegistrationRecovery";
 
@@ -59,5 +60,29 @@ describe("agent registration recovery", () => {
   it("refuses recovery when the local config does not contain enough identity", () => {
     expect(canRecoverMissingAgentRegistration({ installId: "82220F6D" })).toBe(false);
     expect(canRecoverMissingAgentRegistration({ businessNumber: "123-45-67890", installId: "82220F6D" })).toBe(true);
+  });
+
+  it("replaces a stale registered device ID with the ID derived from the local install ID", async () => {
+    const registerFirstRun = vi.fn(async () => ({
+      device: recoveredDevice,
+      devices: [recoveredDevice],
+    }));
+    const writeConfig = vi.fn(async () => undefined);
+
+    const reconciled = await reconcileAgentRegistration(
+      {
+        businessNumber: "123-45-67890",
+        installId: "82220F6D",
+        registeredDeviceId: "123-45-67890:AGENT-CBFFB65C",
+      },
+      {
+        nowIso: () => "2026-08-12T00:00:00.000Z",
+        registerFirstRun,
+        writeConfig,
+      },
+    );
+
+    expect(reconciled.registeredDeviceId).toBe("123-45-67890:AGENT-82220F6D");
+    expect(writeConfig).toHaveBeenCalledWith(reconciled);
   });
 });

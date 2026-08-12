@@ -11,6 +11,7 @@ import { pollAgentCommands, postAgentSessionApproval, sendAgentHeartbeat } from 
 import { waitForApiHealth } from "./agentHealth";
 import {
   canRecoverMissingAgentRegistration,
+  reconcileAgentRegistration,
   recoverMissingAgentRegistration,
 } from "./agentRegistrationRecovery";
 import { resolveAgentAppDir, resolveAgentPocPath } from "./agentPaths";
@@ -890,6 +891,7 @@ async function main() {
 
   // Check version updates on start
   await ensureFirebaseAgentAuth(activeConfig);
+  activeConfig = await reconcileFirebaseRegistrationOnStart(activeConfig);
   await checkUpdate(activeConfig);
 
   try {
@@ -1511,6 +1513,24 @@ async function recoverConfigAfterMissingDevice(config: AgentLocalConfig): Promis
     registerFirstRun,
     writeConfig: (nextConfig) => writeAgentConfig(getAgentConfigPath(), nextConfig),
   });
+}
+
+async function reconcileFirebaseRegistrationOnStart(config: AgentLocalConfig): Promise<AgentLocalConfig> {
+  if (!USE_FIREBASE || !canRecoverMissingAgentRegistration(config)) {
+    return config;
+  }
+
+  try {
+    console.log("[Agent] Reconciling Firebase registration with local install identity.");
+    return await reconcileAgentRegistration(config, {
+      nowIso: () => new Date().toISOString(),
+      registerFirstRun,
+      writeConfig: (nextConfig) => writeAgentConfig(getAgentConfigPath(), nextConfig),
+    });
+  } catch (error) {
+    console.error("[Agent] Firebase registration reconciliation failed; keeping current registration.", error);
+    return config;
+  }
 }
 
 async function ensureFirebaseAgentAuth(config: AgentLocalConfig): Promise<void> {
