@@ -86,6 +86,14 @@ struct ViewerUpdateCheck {
     latest_version: String,
 }
 
+struct NodeResourcePaths {
+    root: PathBuf,
+    node: PathBuf,
+    agent: PathBuf,
+    server: PathBuf,
+    poc: PathBuf,
+}
+
 struct SingleInstanceGuard {
     handle: HANDLE,
 }
@@ -667,29 +675,26 @@ fn spawn_agent_only_process(
         cmd.current_dir(&cwd);
         cmd
     } else {
-        let node_resource_dir = node_compatible_path(resource_dir);
-        let node_path = bundled_node_path(&node_resource_dir);
-        let agent_path = node_resource_dir.join("agent").join("index.mjs");
-        let poc_path = node_resource_dir.join("bin").join("wonremote-poc.exe");
+        let resources = node_resource_paths(resource_dir);
         append_runtime_log(
             "agent-process",
             &format!(
                 "production resources node={} agent={} poc={}",
-                node_path.display(),
-                agent_path.display(),
-                poc_path.display()
+                resources.node.display(),
+                resources.agent.display(),
+                resources.poc.display()
             ),
         );
 
-        ensure_resource_exists(&node_path, "bundled Node runtime")?;
-        ensure_resource_exists(&agent_path, "bundled Agent")?;
-        ensure_resource_exists(&poc_path, "bundled Rust PoC")?;
+        ensure_resource_exists(&resources.node, "bundled Node runtime")?;
+        ensure_resource_exists(&resources.agent, "bundled Agent")?;
+        ensure_resource_exists(&resources.poc, "bundled Rust PoC")?;
 
-        let mut cmd = Command::new(&node_path);
-        cmd.arg(&agent_path);
+        let mut cmd = Command::new(&resources.node);
+        cmd.arg(&resources.agent);
         cmd.arg("--watch");
-        cmd.env("WONREMOTE_POC_PATH", &poc_path);
-        cmd.env("WONREMOTE_APP_DIR", &node_resource_dir);
+        cmd.env("WONREMOTE_POC_PATH", &resources.poc);
+        cmd.env("WONREMOTE_APP_DIR", &resources.root);
         cmd.env("NODE_ENV", "production");
         cmd
     };
@@ -1219,6 +1224,17 @@ fn bundled_agent_path(resource_dir: &Path) -> PathBuf {
     resource_dir.join("agent").join("index.mjs")
 }
 
+fn node_resource_paths(resource_dir: &Path) -> NodeResourcePaths {
+    let root = node_compatible_path(resource_dir);
+    NodeResourcePaths {
+        node: bundled_node_path(&root),
+        agent: bundled_agent_path(&root),
+        server: root.join("server").join("index.mjs"),
+        poc: root.join("bin").join("wonremote-poc.exe"),
+        root,
+    }
+}
+
 fn node_compatible_path(path: &Path) -> PathBuf {
     let raw = path.to_string_lossy();
     if let Some(unc_path) = raw.strip_prefix(r"\\?\UNC\") {
@@ -1299,19 +1315,17 @@ fn start_installer_update(
     restart_after_check: Option<bool>,
 ) -> Result<(), String> {
     let restart_mode = normalize_installer_restart_mode(&restart_mode)?;
-    let resource_dir = node_compatible_path(&app
+    let resources = node_resource_paths(&app
         .path()
         .resource_dir()
         .map_err(|error| error.to_string())?);
-    let node_path = bundled_node_path(&resource_dir);
-    let agent_path = bundled_agent_path(&resource_dir);
 
-    ensure_resource_exists(&node_path, "bundled Node runtime")
+    ensure_resource_exists(&resources.node, "bundled Node runtime")
         .map_err(|error| error.to_string())?;
-    ensure_resource_exists(&agent_path, "bundled updater").map_err(|error| error.to_string())?;
+    ensure_resource_exists(&resources.agent, "bundled updater").map_err(|error| error.to_string())?;
 
     let build_arch = runtime_build_arch();
-    let package_kind = packaged_update_kind(&resource_dir);
+    let package_kind = packaged_update_kind(&resources.root);
     let restart_executable = node_compatible_path(&env::current_exe().map_err(|error| error.to_string())?);
     let is_viewer_update = restart_mode == "viewer";
     if is_viewer_update && restart_after_check.unwrap_or(false) {
@@ -1321,14 +1335,14 @@ fn start_installer_update(
         append_runtime_log("viewer-native-update", "signed update check already running");
         return Ok(());
     }
-    let mut command = Command::new(&node_path);
+    let mut command = Command::new(&resources.node);
     command
-        .arg(&agent_path)
+        .arg(&resources.agent)
         .args(["--update-once", "--restart-mode", restart_mode])
         .arg("--restart-executable")
         .arg(&restart_executable)
         .env("NODE_ENV", "production")
-        .env("WONREMOTE_APP_DIR", &resource_dir)
+        .env("WONREMOTE_APP_DIR", &resources.root)
         .env("WONREMOTE_BUILD_ARCH", build_arch)
         .env("WONREMOTE_PACKAGE_KIND", package_kind)
         .env("WONREMOTE_UPDATE_PRODUCT", restart_mode)
@@ -1422,24 +1436,22 @@ fn start_installer_update(
 
 #[tauri::command]
 fn check_installer_update(app: tauri::AppHandle) -> Result<ViewerUpdateCheck, String> {
-    let resource_dir = node_compatible_path(&app
+    let resources = node_resource_paths(&app
         .path()
         .resource_dir()
         .map_err(|error| error.to_string())?);
-    let node_path = bundled_node_path(&resource_dir);
-    let agent_path = bundled_agent_path(&resource_dir);
-    ensure_resource_exists(&node_path, "bundled Node runtime")
+    ensure_resource_exists(&resources.node, "bundled Node runtime")
         .map_err(|error| error.to_string())?;
-    ensure_resource_exists(&agent_path, "bundled updater").map_err(|error| error.to_string())?;
+    ensure_resource_exists(&resources.agent, "bundled updater").map_err(|error| error.to_string())?;
 
-    let mut command = Command::new(&node_path);
+    let mut command = Command::new(&resources.node);
     command
-        .arg(&agent_path)
+        .arg(&resources.agent)
         .arg("--check-update")
         .env("NODE_ENV", "production")
-        .env("WONREMOTE_APP_DIR", &resource_dir)
+        .env("WONREMOTE_APP_DIR", &resources.root)
         .env("WONREMOTE_BUILD_ARCH", runtime_build_arch())
-        .env("WONREMOTE_PACKAGE_KIND", packaged_update_kind(&resource_dir))
+        .env("WONREMOTE_PACKAGE_KIND", packaged_update_kind(&resources.root))
         .env("WONREMOTE_UPDATE_PRODUCT", "viewer")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -1705,18 +1717,16 @@ fn start_production_api_server_if_needed(job: &Job, resource_dir: &Path) -> Resu
         return Ok(());
     }
 
-    let node_resource_dir = node_compatible_path(resource_dir);
-    let node_path = bundled_node_path(&node_resource_dir);
-    let server_path = node_resource_dir.join("server").join("index.mjs");
+    let resources = node_resource_paths(resource_dir);
 
-    ensure_resource_exists(&node_path, "bundled Node runtime")?;
-    ensure_resource_exists(&server_path, "bundled API server")?;
+    ensure_resource_exists(&resources.node, "bundled Node runtime")?;
+    ensure_resource_exists(&resources.server, "bundled API server")?;
 
-    let mut server_cmd = Command::new(&node_path);
-    server_cmd.arg(&server_path);
+    let mut server_cmd = Command::new(&resources.node);
+    server_cmd.arg(&resources.server);
     server_cmd.env("WONREMOTE_API_PORT", LOCAL_API_PORT.to_string());
     server_cmd.env("NODE_ENV", "production");
-    server_cmd.env("WONREMOTE_APP_DIR", &node_resource_dir);
+    server_cmd.env("WONREMOTE_APP_DIR", &resources.root);
     add_no_window(&mut server_cmd);
     spawn_managed(job, &mut server_cmd, "production API server")?;
 
@@ -2564,14 +2574,17 @@ mod registry_tests {
     }
 
     #[test]
-    fn test_node_compatible_path_removes_verbatim_prefixes() {
-        assert_eq!(
-            node_compatible_path(Path::new(r"\\?\C:\Program Files\WonRemote\agent\index.mjs")),
-            PathBuf::from(r"C:\Program Files\WonRemote\agent\index.mjs"),
-        );
-        assert_eq!(
-            node_compatible_path(Path::new(r"\\?\UNC\server\share\WonRemote\agent\index.mjs")),
-            PathBuf::from(r"\\server\share\WonRemote\agent\index.mjs"),
-        );
+    fn test_node_resource_paths_remove_verbatim_prefixes() {
+        for (input, expected_root) in [
+            (r"\\?\C:\Program Files\WonRemote", r"C:\Program Files\WonRemote"),
+            (r"\\?\UNC\server\share\WonRemote", r"\\server\share\WonRemote"),
+        ] {
+            let resources = node_resource_paths(Path::new(input));
+            assert_eq!(resources.root, PathBuf::from(expected_root));
+            for path in [&resources.node, &resources.agent, &resources.server, &resources.poc] {
+                assert!(!path.to_string_lossy().starts_with(r"\\?\"));
+                assert!(path.starts_with(&resources.root));
+            }
+        }
     }
 }

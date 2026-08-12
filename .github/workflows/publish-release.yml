@@ -52,6 +52,11 @@ jobs:
             throw "Release version metadata must match package.json ($packageVersion)."
           }
 
+      - name: Verify update regression guards
+        run: |
+          npm test -- src/desktopPackaging.test.ts src/agent/productionUpdateCheck.test.ts
+          cargo test --manifest-path src-tauri/Cargo.toml test_node_resource_paths
+
       - name: Build four installers and signed manifest
         run: |
           npm run release:exes

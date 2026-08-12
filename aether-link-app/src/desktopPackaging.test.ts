@@ -713,7 +713,19 @@ describe("desktop packaging scaffold", () => {
     expect(tauriLib).toContain('.env("WONREMOTE_UPDATE_PRODUCT", restart_mode)');
     expect(tauriLib).toContain('.env("WONREMOTE_TAURI_UPDATE_BROKER", "1")');
     expect(tauriLib).toContain("launch_brokered_update_handoff");
-    expect(appTsx).toContain('invoke<{ available: boolean; latestVersion: string }>("check_installer_update")');
+    expect(tauriLib).toContain("fn check_installer_update");
+    expect(tauriLib).toContain("check_installer_update,");
+    const manualCheck = appTsx.slice(
+      appTsx.indexOf("const handleManualViewerUpdate"),
+      appTsx.indexOf("const handleConfirmViewerUpdate"),
+    );
+    const nativeBranch = manualCheck.slice(
+      manualCheck.indexOf("(window as any).__TAURI_INTERNALS__"),
+      manualCheck.indexOf(": await fetchViewerUpdateMetadata"),
+    );
+    expect(nativeBranch).toContain('invoke<{ available: boolean; latestVersion: string }>("check_installer_update")');
+    expect(nativeBranch).not.toContain("fetchViewerUpdateMetadata");
+    expect(nativeBranch).not.toContain("github.com");
     expect(appTsx).toContain('invoke("start_installer_update", { restartMode: "viewer" })');
     expect(appTsx).toContain("Native Viewer shell owns installed-app updates");
   });
