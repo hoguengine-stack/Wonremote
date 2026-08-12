@@ -424,6 +424,10 @@ input:focus {
   padding: 18px;
 }
 
+.content-grid-dashboard {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .control-panel,
 .session-panel,
 .agent-form,

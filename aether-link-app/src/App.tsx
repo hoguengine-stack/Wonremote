@@ -816,7 +816,7 @@ function ViewerApp() {
           </label>
         </header>
 
-        <section className="content-grid">
+        <section className={session && activeDevice ? "content-grid" : "content-grid content-grid-dashboard"}>
           <section className="control-panel">
             <DeviceTable
               devices={filteredDevices}
@@ -2758,17 +2758,7 @@ function RemoteSessionPanel({
   };
 
   if (!device || !session) {
-    return (
-      <section className="session-panel">
-        <div className="section-heading">
-          <h2>원격 세션 (실시간 스트림)</h2>
-          <span>대기</span>
-        </div>
-        <div className="remote-screen">
-          <div className="remote-placeholder">세션 없음</div>
-        </div>
-      </section>
-    );
+    return null;
   }
 
   if (session.state === "pending") {
