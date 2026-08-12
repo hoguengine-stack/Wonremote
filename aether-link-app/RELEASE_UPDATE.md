@@ -31,6 +31,25 @@ Remove-Item Env:\WONREMOTE_RELEASE_GATE_APPROVED -ErrorAction SilentlyContinue
 
 For update/rollback E2E testing, use a local fixture/update server instead of publishing a production GitHub Release.
 
+## Mandatory Failure Rules
+
+- Any failed, timed-out, hung, or skipped build, test, signing, upload, or verification step blocks all later release steps.
+- Never retry a failed release step until its root cause and focused regression proof are recorded.
+- A release is incomplete until one tag contains exactly these five assets: Viewer x64, Agent x64, Viewer x86, Agent x86, and `wonremote-update-manifest.json`.
+- Do not delete, replace, retag, or publish over exposed release assets without explicit user approval.
+- Record the failed stage, tag, commit, uploaded assets, and recovery decision before retrying.
+
+## Required Release Evidence
+
+Before declaring a release usable, collect fresh evidence for the same commit and tag:
+
+1. The four installer filenames, sizes, SHA-256 values, architecture, and product role.
+2. The manifest version, signed asset URLs, checksums, signatures, and tag match.
+3. All four Firebase download redirects resolve to the intended installer assets.
+4. A previous installed Viewer and Agent can discover the release, verify it, install it, restart, and report the target version.
+
+Build success alone is not release success. An update failure must retain the current installation and configuration, clear any update-in-flight lock, emit a stage-specific runtime log, and never execute an unverified installer.
+
 ## Create Signing Keys
 
 Run once per signing-key rotation:

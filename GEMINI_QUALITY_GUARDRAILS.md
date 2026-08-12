@@ -424,6 +424,21 @@ CodeX가 Gemini 또는 Antigravity에 검증 요청을 보낸 경우, Gemini 응
 - 사용자가 명시적으로 요청하지 않는 한 미완성 빌드를 final release로 게시하지 않는다.
 - 이미 게시한 검증용 릴리스는 final로 주장하지 말고, 필요한 경우 `RC`, `검증 빌드`, `미완성 기능 있음`으로 구분한다.
 
+## 17. Failure And Recurrence Prevention Gate
+
+These rules apply to every production defect, test failure, installer failure, update failure, crash, timeout, or unexpected runtime behavior.
+
+1. Stop release mutation immediately after a failed command, crash, timeout, skipped test, missing artifact, or partial publish. Do not create or move a tag, upload a manifest, or claim success until the failure has a recorded root cause and a fresh passing proof.
+2. A retry is not a fix. Re-running a command until it passes is prohibited unless the root cause, changed files, and the focused regression proof are recorded first.
+3. Every fixed production defect requires a focused regression test that exercises the original failure boundary. A unit test for a helper is insufficient when the defect occurred at an integration boundary.
+4. Every release proof must state the exact commit, tag, working directory, command, exit code, UTC timestamp, artifact filenames, file sizes, and SHA-256 values. Old reports, screenshots, and remembered test counts are never evidence.
+5. A build only proves that an artifact was produced. It does not prove installation, startup, update discovery, download, verification, restart, or runtime behavior.
+6. A release is incomplete until the same GitHub tag contains exactly four installers (Viewer and Agent, x64 and x86) plus one signed manifest. Partial release assets must not be treated as `latest`; deletion or replacement of exposed assets requires explicit user approval.
+7. Update failures must fail closed: never run an unsigned, malformed, wrong-architecture, or checksum-mismatched installer. Preserve the active installation and configuration, clear in-flight locks on every terminal path, and write a durable stage-specific log.
+8. The installed Tauri Viewer must perform manual update checks through the native signed updater. WebView direct fetch of GitHub release assets is forbidden for installed-app update checks because redirect CORS behavior is not a stable runtime contract.
+9. Every path passed to bundled Node.js must be derived from the normalized Node resource root. Windows verbatim paths (`\\?\\`) must never reach Node executable, script, restart, or environment arguments.
+10. Before a release is declared usable, verify the published manifest and all four Firebase download redirects against the same tag. Viewer and Agent, x64 and x86, are independent installation/update contracts.
+
 ## Mandatory Current Baseline Protocol
 
 Before every report, run these commands from `C:\Users\qpalz\Documents\remote` and paste the actual values into the report:
