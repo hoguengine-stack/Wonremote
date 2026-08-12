@@ -66,6 +66,7 @@ export interface AgentFirstRunInput {
   businessNumber: string;
   password: string;
   installId: string;
+  previousDeviceId?: string;
   version?: string;
 }
 

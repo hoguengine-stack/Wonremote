@@ -11,6 +11,14 @@ const mockState = vi.hoisted(() => ({
     functions: {},
     storage: {},
   },
+  transaction: {
+    get: vi.fn(async () => ({
+      data: () => undefined,
+      exists: () => false,
+    })),
+    set: vi.fn(),
+    update: vi.fn(),
+  },
 }));
 
 vi.mock("./firebaseConfig", () => ({
@@ -49,6 +57,8 @@ vi.mock("firebase/firestore", () => ({
   onSnapshot: vi.fn(),
   orderBy: vi.fn(),
   query: vi.fn(),
+  runTransaction: vi.fn(async (_db: unknown, update: (transaction: typeof mockState.transaction) => unknown) =>
+    update(mockState.transaction)),
   serverTimestamp: vi.fn(() => "server-time"),
   setDoc: vi.fn(async () => undefined),
   updateDoc: vi.fn(),
@@ -79,8 +89,46 @@ describe("Firebase first-run registration payloads", () => {
     });
 
     expect(signInWithEmailAndPassword).toHaveBeenCalled();
-    const payload = vi.mocked(setDoc).mock.calls[0][1] as Record<string, unknown>;
+    const payload = vi.mocked(mockState.transaction.set).mock.calls[0][1] as Record<string, unknown>;
     expect(payload).not.toHaveProperty("version");
+  });
+
+  it("moves a user store name and retires only the previous Agent document during reconciliation", async () => {
+    mockState.transaction.get.mockImplementation(async (reference: { segments: string[] }) => {
+      if (reference.segments[1] === "123-45-67890:AGENT-CBFFB65C") {
+        return {
+          data: () => ({
+            businessNumber: "123-45-67890",
+            installId: "CBFFB65C",
+            ownerUid: "uid-1",
+            storeName: "Gangnam Store",
+            storeNameSource: "user",
+          }),
+          exists: () => true,
+        };
+      }
+      return {
+        data: () => undefined,
+        exists: () => false,
+      };
+    });
+
+    await registerAgentFirstRunWithFirebase({
+      businessNumber: "123-45-67890",
+      installId: "82220F6D",
+      password: "1234",
+      previousDeviceId: "123-45-67890:AGENT-CBFFB65C",
+    });
+
+    const targetPayload = vi.mocked(mockState.transaction.set).mock.calls[0][1] as Record<string, unknown>;
+    expect(targetPayload).toMatchObject({
+      storeName: "Gangnam Store",
+      storeNameSource: "user",
+    });
+    expect(mockState.transaction.update).toHaveBeenCalledWith(
+      expect.objectContaining({ segments: ["devices", "123-45-67890:AGENT-CBFFB65C"] }),
+      expect.objectContaining({ status: "offline" }),
+    );
   });
 
   it("omits undefined version when the Viewer first-run registration path is used", async () => {

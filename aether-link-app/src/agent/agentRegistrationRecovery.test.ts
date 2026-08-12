@@ -83,6 +83,9 @@ describe("agent registration recovery", () => {
     );
 
     expect(reconciled.registeredDeviceId).toBe("123-45-67890:AGENT-82220F6D");
+    expect(registerFirstRun).toHaveBeenCalledWith(expect.objectContaining({
+      previousDeviceId: "123-45-67890:AGENT-CBFFB65C",
+    }));
     expect(writeConfig).toHaveBeenCalledWith(reconciled);
   });
 });

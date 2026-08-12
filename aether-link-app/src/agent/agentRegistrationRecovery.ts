@@ -1,5 +1,6 @@
 import { WONREMOTE_APP_VERSION } from "../domain/appVersion";
 import type { AgentFirstRunInput, AgentFirstRunResult } from "../domain/types";
+import { buildFirebaseDeviceId } from "../firebase/firebaseIdentity";
 import type { AgentLocalConfig } from "./agentBootstrap";
 
 export interface AgentRegistrationRecoveryDeps {
@@ -31,6 +32,10 @@ export async function reconcileAgentRegistration(
     businessNumber: config.businessNumber!,
     installId: config.installId,
     password: "1234",
+    ...(config.registeredDeviceId?.trim() &&
+    config.registeredDeviceId.trim() !== buildFirebaseDeviceId(config.businessNumber!, config.installId)
+      ? { previousDeviceId: config.registeredDeviceId.trim() }
+      : {}),
     version: WONREMOTE_APP_VERSION,
   });
   const recoveredConfig: AgentLocalConfig = {

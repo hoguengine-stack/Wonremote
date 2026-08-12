@@ -8,6 +8,7 @@ import {
   onSnapshot,
   orderBy,
   query,
+  runTransaction,
   serverTimestamp,
   where,
   writeBatch,
@@ -151,29 +152,71 @@ export async function registerAgentFirstRunWithFirebase(
     version: input.version,
   });
   const deviceRef = doc(services.db, "devices", device.id);
-  const existingSnapshot = await getDoc(deviceRef);
-  const deviceDocument = mergeFirstRunDeviceDocument(
-    device,
-    existingSnapshot.exists() ? existingSnapshot.data() : undefined,
-  );
+  const previousDeviceId = input.previousDeviceId?.trim();
+  const previousDeviceRef = previousDeviceId && previousDeviceId !== device.id
+    ? doc(services.db, "devices", previousDeviceId)
+    : null;
+  let deviceDocument = device;
 
-  await safeSetDoc(
-    deviceRef,
-    {
-      ...deviceDocument,
-      deletedAt: null,
-      installId: input.installId,
-      ownerUid: credential.user.uid,
-      updatedAt: serverTimestamp(),
-    },
-    { merge: true },
-  );
+  await runTransaction(services.db, async (transaction) => {
+    const existingSnapshot = await transaction.get(deviceRef);
+    const previousSnapshot = previousDeviceRef ? await transaction.get(previousDeviceRef) : null;
+    deviceDocument = mergeFirstRunDeviceDocument(
+      device,
+      existingSnapshot.exists() ? existingSnapshot.data() : undefined,
+    );
+
+    if (previousSnapshot?.exists()) {
+      const previous = previousSnapshot.data() as Record<string, unknown>;
+      if (canRetirePreviousDevice(previous, device, credential.user.uid, input.installId)) {
+        const previousStoreName = typeof previous.storeName === "string" ? previous.storeName.trim() : "";
+        if (deviceDocument.storeNameSource !== "user" && previous.storeNameSource === "user" && previousStoreName) {
+          deviceDocument = {
+            ...deviceDocument,
+            storeName: previousStoreName,
+            storeNameSource: "user",
+          };
+        }
+        transaction.update(previousDeviceRef!, {
+          deletedAt: serverTimestamp(),
+          status: "offline",
+          updatedAt: serverTimestamp(),
+        });
+      }
+    }
+
+    transaction.set(
+      deviceRef,
+      {
+        ...deviceDocument,
+        deletedAt: null,
+        installId: input.installId,
+        ownerUid: credential.user.uid,
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true },
+    );
+  });
 
   const resultDevice = mapFirestoreDevice(device.id, deviceDocument);
   return {
     devices: [resultDevice],
     device: resultDevice,
   };
+}
+
+function canRetirePreviousDevice(
+  previous: Record<string, unknown>,
+  device: { businessNumber: string },
+  ownerUid: string,
+  installId: string,
+): boolean {
+  return previous.ownerUid === ownerUid
+    && typeof previous.businessNumber === "string"
+    && previous.businessNumber.replace(/\D/g, "") === device.businessNumber.replace(/\D/g, "")
+    && typeof previous.installId === "string"
+    && previous.installId.trim() !== installId.trim()
+    && (previous.deletedAt === undefined || previous.deletedAt === null);
 }
 
 export async function sendAgentHeartbeatWithFirebase(
