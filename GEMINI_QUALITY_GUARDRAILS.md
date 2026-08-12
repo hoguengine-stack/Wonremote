@@ -439,6 +439,7 @@ These rules apply to every production defect, test failure, installer failure, u
 9. Every path passed to bundled Node.js must be derived from the normalized Node resource root. Windows verbatim paths (`\\?\\`) must never reach Node executable, script, restart, or environment arguments.
 10. Before a release is declared usable, verify the published manifest and all four Firebase download redirects against the same tag. Viewer and Agent, x64 and x86, are independent installation/update contracts.
 11. Before declaring any production defect fixed, append an entry to `INCIDENT_REGISTRY.md` using its required format. The entry must name the original symptom, root cause, fix commit, focused regression proof, release evidence, and verification status. This is mandatory for new incidents and must not be replaced by a chat summary.
+12. Before Codex edits code, follow `CODEX_IMPLEMENTATION_PROTOCOL.md`. It is mandatory to distinguish source, build, release, and installed-runtime evidence and to complete the affected mode/architecture matrix.
 
 ## Mandatory Current Baseline Protocol
 
