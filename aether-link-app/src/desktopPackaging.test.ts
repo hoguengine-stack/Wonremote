@@ -713,7 +713,8 @@ describe("desktop packaging scaffold", () => {
     expect(tauriLib).toContain('.env("WONREMOTE_UPDATE_PRODUCT", restart_mode)');
     expect(tauriLib).toContain('.env("WONREMOTE_TAURI_UPDATE_BROKER", "1")');
     expect(tauriLib).toContain("launch_brokered_update_handoff");
-    expect(appTsx).not.toContain('invoke("start_installer_update"');
+    expect(appTsx).toContain('invoke<{ available: boolean; latestVersion: string }>("check_installer_update")');
+    expect(appTsx).toContain('invoke("start_installer_update", { restartMode: "viewer" })');
     expect(appTsx).toContain("Native Viewer shell owns installed-app updates");
   });
 

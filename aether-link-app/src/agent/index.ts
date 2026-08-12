@@ -56,6 +56,7 @@ import {
   preparePortableHandoff,
   type SafePortableUpdateMetadata,
 } from "./portableUpdate";
+import { checkProductionUpdate } from "./productionUpdateCheck";
 import { sendWakeOnLanMagicPacket } from "./wakeOnLan";
 import { parseAgentDisplayInventory } from "./agentDisplayInventory";
 import { PersistentInputInjector } from "./persistentInputInjector";
@@ -803,6 +804,18 @@ async function main() {
     const runtime = await runAgentWebRtcRuntimeSmoke();
     console.log(`Agent runtime smoke passed: arch=${process.arch}, webrtc=${runtime}`);
     return;
+  }
+
+  if (process.argv.includes("--check-update")) {
+    try {
+      const result = await checkProductionUpdate();
+      console.log(`[WonRemoteUpdateCheck]${JSON.stringify(result)}`);
+      return;
+    } catch (error) {
+      console.error(`[WonRemote Updater] ${error instanceof Error ? error.message : String(error)}`);
+      process.exitCode = 3;
+      return;
+    }
   }
 
   if (process.argv.includes("--update-once")) {

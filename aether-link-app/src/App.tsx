@@ -131,7 +131,7 @@ type SecureConnectState = {
 type ViewerUpdateDialogState =
   | { kind: "available"; version: string }
   | { kind: "current"; version: string }
-  | { kind: "error" };
+  | { kind: "error"; message: string };
 
 function playBeepSound() {
   try {
@@ -299,15 +299,23 @@ function ViewerApp() {
     }
     setIsManualUpdateChecking(true);
     try {
-      const update = await fetchViewerUpdateMetadata(import.meta.env);
       const currentViewerVersion = getViewerVersion(import.meta.env);
-      if (update && shouldNotifyUpdate(update, currentViewerVersion)) {
+      const update = (window as any).__TAURI_INTERNALS__
+        ? await invoke<{ available: boolean; latestVersion: string }>("check_installer_update")
+        : await fetchViewerUpdateMetadata(import.meta.env);
+      const isAvailable = update && ("available" in update
+        ? update.available
+        : shouldNotifyUpdate(update, currentViewerVersion));
+      if (isAvailable) {
         setViewerUpdateDialog({ kind: "available", version: update.latestVersion! });
       } else {
         setViewerUpdateDialog({ kind: "current", version: currentViewerVersion });
       }
-    } catch {
-      setViewerUpdateDialog({ kind: "error" });
+    } catch (error) {
+      const message = error instanceof Error && error.message.trim()
+        ? error.message.trim()
+        : "The signed update server could not be reached.";
+      setViewerUpdateDialog({ kind: "error", message });
     } finally {
       setIsManualUpdateChecking(false);
     }
@@ -1099,7 +1107,7 @@ function ViewerUpdateDialog({
     ? `Version ${state.version} is ready. Install it now?`
     : state.kind === "current"
       ? `This Viewer is already on version ${state.version}.`
-      : "Could not check the update server. Please try again later.";
+      : state.message;
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>

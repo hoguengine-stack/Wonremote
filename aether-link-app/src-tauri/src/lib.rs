@@ -68,6 +68,7 @@ const PUBLIC_FIREBASE_STORAGE_BUCKET: &str = "wonremote-a7fd3.appspot.com";
 const PUBLIC_FIREBASE_MESSAGING_SENDER_ID: &str = "52940136204";
 const PORTABLE_MARKER_FILENAME: &str = "wonremote-portable.json";
 const UPDATE_HANDOFF_PREFIX: &str = "[WonRemoteUpdateHandoff]";
+const UPDATE_CHECK_PREFIX: &str = "[WonRemoteUpdateCheck]";
 const VIEWER_UPDATE_INITIAL_DELAY: Duration = Duration::from_secs(3);
 const VIEWER_UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(15 * 60);
 #[cfg(target_arch = "x86")]
@@ -77,6 +78,13 @@ const WM_WONREMOTE_AGENT_TRAY: u32 = WM_APP + 37;
 static PANIC_LOGGER: Once = Once::new();
 static VIEWER_UPDATE_CHECK_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 static VIEWER_RESTART_AFTER_CHECK_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct ViewerUpdateCheck {
+    available: bool,
+    #[serde(rename = "latestVersion")]
+    latest_version: String,
+}
 
 struct SingleInstanceGuard {
     handle: HANDLE,
@@ -659,9 +667,10 @@ fn spawn_agent_only_process(
         cmd.current_dir(&cwd);
         cmd
     } else {
-        let node_path = bundled_node_path(resource_dir);
-        let agent_path = resource_dir.join("agent").join("index.mjs");
-        let poc_path = resource_dir.join("bin").join("wonremote-poc.exe");
+        let node_resource_dir = node_compatible_path(resource_dir);
+        let node_path = bundled_node_path(&node_resource_dir);
+        let agent_path = node_resource_dir.join("agent").join("index.mjs");
+        let poc_path = node_resource_dir.join("bin").join("wonremote-poc.exe");
         append_runtime_log(
             "agent-process",
             &format!(
@@ -680,7 +689,7 @@ fn spawn_agent_only_process(
         cmd.arg(&agent_path);
         cmd.arg("--watch");
         cmd.env("WONREMOTE_POC_PATH", &poc_path);
-        cmd.env("WONREMOTE_APP_DIR", resource_dir);
+        cmd.env("WONREMOTE_APP_DIR", &node_resource_dir);
         cmd.env("NODE_ENV", "production");
         cmd
     };
@@ -690,7 +699,7 @@ fn spawn_agent_only_process(
     command.env("WONREMOTE_UPDATE_PRODUCT", "agent");
     command.env("WONREMOTE_TAURI_UPDATE_BROKER", "1");
     if let Ok(host_exe_path) = env::current_exe() {
-        command.env("WONREMOTE_HOST_EXE_PATH", host_exe_path);
+        command.env("WONREMOTE_HOST_EXE_PATH", node_compatible_path(&host_exe_path));
     }
     if let Some(url) = api_url {
         command.env("WONREMOTE_API_URL", url);
@@ -1210,6 +1219,17 @@ fn bundled_agent_path(resource_dir: &Path) -> PathBuf {
     resource_dir.join("agent").join("index.mjs")
 }
 
+fn node_compatible_path(path: &Path) -> PathBuf {
+    let raw = path.to_string_lossy();
+    if let Some(unc_path) = raw.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{unc_path}"));
+    }
+    if let Some(drive_path) = raw.strip_prefix(r"\\?\") {
+        return PathBuf::from(drive_path);
+    }
+    path.to_path_buf()
+}
+
 fn runtime_build_arch() -> &'static str {
     if env::consts::ARCH == "x86" {
         "x86"
@@ -1279,10 +1299,10 @@ fn start_installer_update(
     restart_after_check: Option<bool>,
 ) -> Result<(), String> {
     let restart_mode = normalize_installer_restart_mode(&restart_mode)?;
-    let resource_dir = app
+    let resource_dir = node_compatible_path(&app
         .path()
         .resource_dir()
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.to_string())?);
     let node_path = bundled_node_path(&resource_dir);
     let agent_path = bundled_agent_path(&resource_dir);
 
@@ -1292,7 +1312,7 @@ fn start_installer_update(
 
     let build_arch = runtime_build_arch();
     let package_kind = packaged_update_kind(&resource_dir);
-    let restart_executable = env::current_exe().map_err(|error| error.to_string())?;
+    let restart_executable = node_compatible_path(&env::current_exe().map_err(|error| error.to_string())?);
     let is_viewer_update = restart_mode == "viewer";
     if is_viewer_update && restart_after_check.unwrap_or(false) {
         VIEWER_RESTART_AFTER_CHECK_REQUESTED.store(true, Ordering::Release);
@@ -1398,6 +1418,57 @@ fn start_installer_update(
         ),
     );
     Ok(())
+}
+
+#[tauri::command]
+fn check_installer_update(app: tauri::AppHandle) -> Result<ViewerUpdateCheck, String> {
+    let resource_dir = node_compatible_path(&app
+        .path()
+        .resource_dir()
+        .map_err(|error| error.to_string())?);
+    let node_path = bundled_node_path(&resource_dir);
+    let agent_path = bundled_agent_path(&resource_dir);
+    ensure_resource_exists(&node_path, "bundled Node runtime")
+        .map_err(|error| error.to_string())?;
+    ensure_resource_exists(&agent_path, "bundled updater").map_err(|error| error.to_string())?;
+
+    let mut command = Command::new(&node_path);
+    command
+        .arg(&agent_path)
+        .arg("--check-update")
+        .env("NODE_ENV", "production")
+        .env("WONREMOTE_APP_DIR", &resource_dir)
+        .env("WONREMOTE_BUILD_ARCH", runtime_build_arch())
+        .env("WONREMOTE_PACKAGE_KIND", packaged_update_kind(&resource_dir))
+        .env("WONREMOTE_UPDATE_PRODUCT", "viewer")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    add_no_window(&mut command);
+    let output = command.output().map_err(|error| error.to_string())?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() {
+        let detail = stderr.trim();
+        return Err(if detail.is_empty() {
+            format!("update checker exited with {}", output.status)
+        } else {
+            detail.to_string()
+        });
+    }
+    let result = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix(UPDATE_CHECK_PREFIX))
+        .ok_or_else(|| "update checker returned no result".to_string())
+        .and_then(|payload| serde_json::from_str::<ViewerUpdateCheck>(payload).map_err(|error| error.to_string()))?;
+    if result.latest_version.trim().is_empty() {
+        return Err("update checker returned an empty version".to_string());
+    }
+    append_runtime_log(
+        "viewer-native-update",
+        &format!("manual check completed: version={} available={}", result.latest_version, result.available),
+    );
+    Ok(result)
 }
 
 fn start_viewer_update_watcher(app: tauri::AppHandle) {
@@ -1634,8 +1705,9 @@ fn start_production_api_server_if_needed(job: &Job, resource_dir: &Path) -> Resu
         return Ok(());
     }
 
-    let node_path = bundled_node_path(resource_dir);
-    let server_path = resource_dir.join("server").join("index.mjs");
+    let node_resource_dir = node_compatible_path(resource_dir);
+    let node_path = bundled_node_path(&node_resource_dir);
+    let server_path = node_resource_dir.join("server").join("index.mjs");
 
     ensure_resource_exists(&node_path, "bundled Node runtime")?;
     ensure_resource_exists(&server_path, "bundled API server")?;
@@ -1644,7 +1716,7 @@ fn start_production_api_server_if_needed(job: &Job, resource_dir: &Path) -> Resu
     server_cmd.arg(&server_path);
     server_cmd.env("WONREMOTE_API_PORT", LOCAL_API_PORT.to_string());
     server_cmd.env("NODE_ENV", "production");
-    server_cmd.env("WONREMOTE_APP_DIR", resource_dir);
+    server_cmd.env("WONREMOTE_APP_DIR", &node_resource_dir);
     add_no_window(&mut server_cmd);
     spawn_managed(job, &mut server_cmd, "production API server")?;
 
@@ -1780,6 +1852,7 @@ pub fn run() {
             get_agent_config,
             get_or_create_agent_install_id,
             restart_agent_process,
+            check_installer_update,
             start_installer_update,
             wake_device
         ])
@@ -2488,5 +2561,17 @@ mod registry_tests {
         assert!(content.contains("double-click failure probe"));
 
         let _ = std::fs::remove_dir_all(root.join("WonRemote"));
+    }
+
+    #[test]
+    fn test_node_compatible_path_removes_verbatim_prefixes() {
+        assert_eq!(
+            node_compatible_path(Path::new(r"\\?\C:\Program Files\WonRemote\agent\index.mjs")),
+            PathBuf::from(r"C:\Program Files\WonRemote\agent\index.mjs"),
+        );
+        assert_eq!(
+            node_compatible_path(Path::new(r"\\?\UNC\server\share\WonRemote\agent\index.mjs")),
+            PathBuf::from(r"\\server\share\WonRemote\agent\index.mjs"),
+        );
     }
 }
