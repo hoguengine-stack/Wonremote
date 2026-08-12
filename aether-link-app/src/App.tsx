@@ -1150,14 +1150,15 @@ function ConnectionHistorySection() {
       <div className="device-table" style={{ maxHeight: "250px", overflowY: "auto" }}>
         <div className="table-row table-head" style={{ gridTemplateColumns: "1.2fr 2fr 2fr 3fr 1.5fr" }}>
           <span>상태</span>
-          <span>업장명</span>
-          <span>장비</span>
+          <span>정보</span>
+          <span>에이전트 식별코드</span>
           <span>시작 시각</span>
           <span>소요시간</span>
         </div>
         {history.map((entry) => {
           const start = new Date(entry.startedAt);
           const end = entry.endedAt ? new Date(entry.endedAt) : null;
+          const [businessNumber, agentIdentifier] = entry.deviceId.split(":");
           const duration = end ? `${Math.round((end.getTime() - start.getTime()) / 1000)}초` : "-";
           
           let statusColor = "#10b981";
@@ -1169,8 +1170,11 @@ function ConnectionHistorySection() {
               <span className="status-pill" style={{ background: statusColor + "20", color: statusColor }}>
                 {entry.status}
               </span>
-              <span>{entry.storeName}</span>
-              <span>{entry.deviceName}</span>
+              <span className="store-cell">
+                <b>{entry.storeName}</b>
+                <small>{businessNumber}</small>
+              </span>
+              <span><b>{agentIdentifier || entry.deviceName}</b></span>
               <span style={{ fontSize: "11px" }}>{start.toLocaleTimeString()}</span>
               <span>{duration}</span>
             </div>
@@ -1499,8 +1503,8 @@ function DeviceTable({
       <div className="device-table">
         <div className="table-row table-head">
           <span>상태</span>
-          <span>업장</span>
-          <span>장비</span>
+          <span>정보</span>
+          <span>에이전트 식별코드</span>
           <span>데스크탑</span>
           <span>접속</span>
         </div>
@@ -1528,7 +1532,6 @@ function DeviceTable({
               </span>
               <span>
                 <b>{device.deviceNumber}</b>
-                <small>{device.deviceName}</small>
               </span>
               <span>
                 <b>{device.desktopName}</b>
