@@ -50,6 +50,8 @@ Before declaring a release usable, collect fresh evidence for the same commit an
 
 Build success alone is not release success. An update failure must retain the current installation and configuration, clear any update-in-flight lock, emit a stage-specific runtime log, and never execute an unverified installer.
 
+Every resolved production defect must be appended to `../INCIDENT_REGISTRY.md` before a release is declared usable. The entry must include the symptom, root cause, fix commit, focused regression command, release evidence, and whether physical verification remains required.
+
 ## Create Signing Keys
 
 Run once per signing-key rotation:
