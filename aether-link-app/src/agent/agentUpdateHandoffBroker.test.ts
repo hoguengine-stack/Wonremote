@@ -3,6 +3,7 @@ import {
   encodeUpdateHandoffScriptPath,
   formatUpdateHandoffBrokerRequest,
   isUpdateHandoffBrokerEnabled,
+  updateHandoffAcknowledgementPath,
   UPDATE_HANDOFF_BROKER_PREFIX,
 } from "./agentUpdateHandoffBroker";
 
@@ -20,6 +21,7 @@ describe("agent update handoff broker", () => {
     const request = formatUpdateHandoffBrokerRequest(scriptPath);
 
     expect(request).toBe(`${UPDATE_HANDOFF_BROKER_PREFIX}${encodeUpdateHandoffScriptPath(scriptPath)}`);
+    expect(updateHandoffAcknowledgementPath(scriptPath)).toBe(`${scriptPath}.accepted`);
     expect(request).not.toContain(scriptPath);
     expect(Buffer.from(request.slice(UPDATE_HANDOFF_BROKER_PREFIX.length), "base64url").toString("utf8")).toBe(scriptPath);
   });

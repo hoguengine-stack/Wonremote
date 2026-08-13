@@ -40,7 +40,11 @@ import { WONREMOTE_APP_VERSION } from "../domain/appVersion";
 import { computeSha256 } from "./checksum";
 import { saveTransferredFileChunk } from "./fileTransferReceiver";
 import { downloadFirebaseStorageFile } from "./firebaseStorageDownload";
-import { resolveAgentUpdateCheckIntervalMs, shouldAttemptAgentUpdateCheck } from "./agentUpdatePollPolicy";
+import {
+  resolveAgentUpdateCheckIntervalMs,
+  resolveAgentUpdateFailureRetryMs,
+  shouldAttemptAgentUpdateCheck,
+} from "./agentUpdatePollPolicy";
 import { isSourceTreeUpdateTarget } from "./updateSafety";
 import {
   downloadInstallerUpdate,
@@ -63,6 +67,7 @@ import { PersistentInputInjector } from "./persistentInputInjector";
 import {
   formatUpdateHandoffBrokerRequest,
   isUpdateHandoffBrokerEnabled,
+  updateHandoffAcknowledgementPath,
 } from "./agentUpdateHandoffBroker";
 import {
   releasePressedInput,
@@ -163,9 +168,23 @@ async function releaseInputAndCompleteUpdateHandoff(scriptPath: string, reason: 
         else resolve();
       });
     });
+    await waitForUpdateHandoffAcknowledgement(updateHandoffAcknowledgementPath(scriptPath));
   }
   process.exit(0);
   throw new Error("process.exit returned unexpectedly");
+}
+
+async function waitForUpdateHandoffAcknowledgement(acknowledgementPath: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    try {
+      await access(acknowledgementPath);
+      return;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+  throw new Error("Tauri update broker did not acknowledge the handoff; Agent remains running.");
 }
 
 let streamProcess: any = null;
@@ -1059,6 +1078,12 @@ async function main() {
 let isUpdating = false;
 let lastUpdateCheckAttemptAtMs: number | null = null;
 
+function scheduleAgentUpdateRetry(): void {
+  const retryAfterMs = resolveAgentUpdateFailureRetryMs(UPDATE_CHECK_INTERVAL_MS);
+  lastUpdateCheckAttemptAtMs = Date.now() - UPDATE_CHECK_INTERVAL_MS + retryAfterMs;
+  console.error(`[WonRemote Agent] Update retry scheduled in ${retryAfterMs}ms.`);
+}
+
 async function checkUpdate(config: AgentLocalConfig) {
   if (isUpdating) return;
   const attemptAtMs = Date.now();
@@ -1071,11 +1096,12 @@ async function checkUpdate(config: AgentLocalConfig) {
   try {
     const data = await loadUpdateCheckData();
     if (!data) {
+      scheduleAgentUpdateRetry();
       isUpdating = false;
       return;
     }
 
-    if (data.latestVersion && isHigherVersion(data.latestVersion, currentVersion)) {
+    if (data.latestVersion && (data.forceUpdate || isHigherVersion(data.latestVersion, currentVersion))) {
       if (isPortableUpdateMetadata(data)) {
         await handoffToPortableUpdate(data);
         return;
@@ -1259,6 +1285,7 @@ if exist "${path.join(baseDir, "WonRemote", ".update_success")}" (
     }
   } catch (e) {
     console.error("[Update Failed]:", e instanceof Error ? e.message : e);
+    scheduleAgentUpdateRetry();
     isUpdating = false;
   }
 }

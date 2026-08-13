@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_AGENT_UPDATE_CHECK_INTERVAL_MS,
+  AGENT_UPDATE_FAILURE_RETRY_MS,
   MIN_AGENT_UPDATE_CHECK_INTERVAL_MS,
   MIN_TEST_AGENT_UPDATE_CHECK_INTERVAL_MS,
   resolveAgentUpdateCheckIntervalMs,
+  resolveAgentUpdateFailureRetryMs,
   shouldAttemptAgentUpdateCheck,
 } from "./agentUpdatePollPolicy";
 
@@ -56,12 +58,10 @@ describe("Agent update polling policy", () => {
     expect(shouldAttemptAgentUpdateCheck(Date.now(), lastAttemptAtMs, DEFAULT_AGENT_UPDATE_CHECK_INTERVAL_MS)).toBe(true);
   });
 
-  it("keeps a failed attempt throttled instead of retrying on the next heartbeat", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-07-11T00:00:00.000Z"));
-    const failedAttemptAtMs = Date.now();
-
-    vi.advanceTimersByTime(10_000);
-    expect(shouldAttemptAgentUpdateCheck(Date.now(), failedAttemptAtMs, DEFAULT_AGENT_UPDATE_CHECK_INTERVAL_MS)).toBe(false);
+  it("retries an update failure after one minute instead of waiting fifteen minutes", () => {
+    expect(resolveAgentUpdateFailureRetryMs(DEFAULT_AGENT_UPDATE_CHECK_INTERVAL_MS)).toBe(
+      AGENT_UPDATE_FAILURE_RETRY_MS,
+    );
+    expect(resolveAgentUpdateFailureRetryMs(30_000)).toBe(30_000);
   });
 });

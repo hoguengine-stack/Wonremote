@@ -103,6 +103,7 @@ describe("production installer update", () => {
       expect(script).toContain("Start-Process -FilePath");
       expect(script).toContain("WaitForExit()");
       expect(script).toContain("Installer exit code");
+      expect(script).toContain("Installer failed; restarting the previous $RestartMode process.");
       expect(script).toContain("WonRemote-Viewer-Agent-Setup.exe");
       expect(script).toContain("/D=C:\\Users\\Tester\\WonRemote Agent");
       expect(script).toContain("$explicitInstallRoots = @('C:\\Users\\Tester\\WonRemote Agent')");

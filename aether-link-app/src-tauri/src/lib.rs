@@ -71,6 +71,8 @@ const UPDATE_HANDOFF_PREFIX: &str = "[WonRemoteUpdateHandoff]";
 const UPDATE_CHECK_PREFIX: &str = "[WonRemoteUpdateCheck]";
 const VIEWER_UPDATE_INITIAL_DELAY: Duration = Duration::from_secs(3);
 const VIEWER_UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(15 * 60);
+const VIEWER_UPDATE_FAILURE_RETRY_DELAY: Duration = Duration::from_secs(60);
+const VIEWER_UPDATE_WAIT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 #[cfg(target_arch = "x86")]
 const WIN32_AGENT_TRAY_ID: u32 = 37;
 #[cfg(target_arch = "x86")]
@@ -78,6 +80,7 @@ const WM_WONREMOTE_AGENT_TRAY: u32 = WM_APP + 37;
 static PANIC_LOGGER: Once = Once::new();
 static VIEWER_UPDATE_CHECK_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 static VIEWER_RESTART_AFTER_CHECK_REQUESTED: AtomicBool = AtomicBool::new(false);
+static VIEWER_UPDATE_RETRY_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(serde::Deserialize, serde::Serialize)]
 struct ViewerUpdateCheck {
@@ -888,6 +891,7 @@ fn validate_update_handoff_script_path_in_root(
 
 fn launch_brokered_update_handoff(script_path: PathBuf) -> Result<bool, String> {
     let script_path = validate_update_handoff_script_path(&script_path)?;
+    let acknowledgement_path = update_handoff_acknowledgement_path(&script_path);
     let mut command = Command::new("powershell.exe");
     command
         .args(brokered_update_powershell_args())
@@ -899,11 +903,17 @@ fn launch_brokered_update_handoff(script_path: PathBuf) -> Result<bool, String> 
     command
         .spawn()
         .map_err(|error| format!("Agent update broker failed to start PowerShell: {error}"))?;
+    std::fs::write(&acknowledgement_path, b"accepted")
+        .map_err(|error| format!("Agent update broker failed to acknowledge handoff: {error}"))?;
     append_runtime_log(
         "updater-broker",
         &format!("started verified handoff script={}", script_path.display()),
     );
     Ok(true)
+}
+
+fn update_handoff_acknowledgement_path(script_path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.accepted", script_path.display()))
 }
 
 fn brokered_update_powershell_args() -> [&'static str; 7] {
@@ -1357,6 +1367,7 @@ fn start_installer_update(
         Err(error) => {
             if is_viewer_update {
                 VIEWER_UPDATE_CHECK_IN_FLIGHT.store(false, Ordering::Release);
+                VIEWER_UPDATE_RETRY_REQUESTED.store(true, Ordering::Release);
             }
             append_runtime_log("updater", &format!("spawn failed: {error}"));
             return Err(error.to_string());
@@ -1404,8 +1415,25 @@ fn start_installer_update(
     let restart_app = app.clone();
     thread::spawn(move || {
         match child.wait() {
-            Ok(status) => append_runtime_log("updater", &format!("process exited: {status}")),
-            Err(error) => append_runtime_log("updater", &format!("wait failed: {error}")),
+            Ok(status) => {
+                append_runtime_log("updater", &format!("process exited: {status}"));
+                if is_viewer_update
+                    && !status.success()
+                    && !update_handoff_started.load(Ordering::Acquire)
+                {
+                    VIEWER_UPDATE_RETRY_REQUESTED.store(true, Ordering::Release);
+                    append_runtime_log(
+                        "viewer-native-update",
+                        "updater failed before a handoff; retry requested in 60 seconds",
+                    );
+                }
+            }
+            Err(error) => {
+                append_runtime_log("updater", &format!("wait failed: {error}"));
+                if is_viewer_update && !update_handoff_started.load(Ordering::Acquire) {
+                    VIEWER_UPDATE_RETRY_REQUESTED.store(true, Ordering::Release);
+                }
+            }
         }
         if is_viewer_update {
             VIEWER_UPDATE_CHECK_IN_FLIGHT.store(false, Ordering::Release);
@@ -1493,9 +1521,27 @@ fn start_viewer_update_watcher(app: tauri::AppHandle) {
                     &format!("failed to start signed update check: {error}"),
                 );
             }
-            thread::sleep(VIEWER_UPDATE_CHECK_INTERVAL);
+            wait_for_next_viewer_update_attempt();
         }
     });
+}
+
+fn wait_for_next_viewer_update_attempt() {
+    let started_at = Instant::now();
+    loop {
+        if VIEWER_UPDATE_RETRY_REQUESTED.swap(false, Ordering::AcqRel) {
+            append_runtime_log(
+                "viewer-native-update",
+                "transient update failure; retrying signed update check in 60 seconds",
+            );
+            thread::sleep(VIEWER_UPDATE_FAILURE_RETRY_DELAY);
+            return;
+        }
+        if started_at.elapsed() >= VIEWER_UPDATE_CHECK_INTERVAL {
+            return;
+        }
+        thread::sleep(VIEWER_UPDATE_WAIT_POLL_INTERVAL);
+    }
 }
 
 fn app_root_from_manifest() -> PathBuf {
@@ -2220,6 +2266,18 @@ mod registry_tests {
     }
 
     #[test]
+    fn test_node_compatible_path_removes_extended_windows_prefixes() {
+        assert_eq!(
+            node_compatible_path(Path::new(r"\\?\C:\Program Files\WonRemote\wonremote-viewer.exe")),
+            PathBuf::from(r"C:\Program Files\WonRemote\wonremote-viewer.exe"),
+        );
+        assert_eq!(
+            node_compatible_path(Path::new(r"\\?\UNC\server\share\WonRemote\wonremote-viewer.exe")),
+            PathBuf::from(r"\\server\share\WonRemote\wonremote-viewer.exe"),
+        );
+    }
+
+    #[test]
     fn test_update_handoff_request_requires_prefix_and_base64url_utf8() {
         assert_eq!(
             parse_update_handoff_request("ordinary Agent output"),
@@ -2235,6 +2293,15 @@ mod registry_tests {
         );
         assert!(parse_update_handoff_request(UPDATE_HANDOFF_PREFIX).is_err());
         assert!(parse_update_handoff_request(&format!("{UPDATE_HANDOFF_PREFIX}%%%")).is_err());
+    }
+
+    #[test]
+    fn test_update_handoff_acknowledgement_path_is_adjacent_to_the_owned_script() {
+        let script = Path::new(r"C:\Users\Tester\AppData\Roaming\WonRemote\updates\run-installer-update-123.ps1");
+        assert_eq!(
+            update_handoff_acknowledgement_path(script),
+            PathBuf::from(r"C:\Users\Tester\AppData\Roaming\WonRemote\updates\run-installer-update-123.ps1.accepted"),
+        );
     }
 
     #[test]

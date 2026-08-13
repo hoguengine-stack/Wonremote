@@ -1,4 +1,5 @@
 export const DEFAULT_AGENT_UPDATE_CHECK_INTERVAL_MS = 15 * 60 * 1_000;
+export const AGENT_UPDATE_FAILURE_RETRY_MS = 60 * 1_000;
 export const MIN_AGENT_UPDATE_CHECK_INTERVAL_MS = 60 * 1_000;
 export const MIN_TEST_AGENT_UPDATE_CHECK_INTERVAL_MS = 100;
 
@@ -30,4 +31,8 @@ export function shouldAttemptAgentUpdateCheck(
     return true;
   }
   return nowMs - lastAttemptAtMs >= intervalMs;
+}
+
+export function resolveAgentUpdateFailureRetryMs(intervalMs: number): number {
+  return Math.min(Math.max(AGENT_UPDATE_FAILURE_RETRY_MS, MIN_AGENT_UPDATE_CHECK_INTERVAL_MS), intervalMs);
 }

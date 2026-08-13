@@ -12,3 +12,7 @@ export function encodeUpdateHandoffScriptPath(scriptPath: string): string {
 export function formatUpdateHandoffBrokerRequest(scriptPath: string): string {
   return `${UPDATE_HANDOFF_BROKER_PREFIX}${encodeUpdateHandoffScriptPath(scriptPath)}`;
 }
+
+export function updateHandoffAcknowledgementPath(scriptPath: string): string {
+  return `${scriptPath}.accepted`;
+}

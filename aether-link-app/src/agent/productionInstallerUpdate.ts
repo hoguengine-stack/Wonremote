@@ -381,6 +381,9 @@ try {
     } else {
       Wait-WonRemoteViewer
     }
+  } else {
+    Write-HandoffLog "Installer failed; restarting the previous $RestartMode process."
+    ${restartCommand}
   }
   Close-UpdateLock
   exit $process.ExitCode
