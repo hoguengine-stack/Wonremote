@@ -12,7 +12,7 @@ const mockState = vi.hoisted(() => ({
     storage: {},
   },
   transaction: {
-    get: vi.fn(async () => ({
+    get: vi.fn<(reference: { segments: string[] }) => Promise<{ data: () => unknown; exists: () => boolean }>>(async (_reference) => ({
       data: () => undefined,
       exists: () => false,
     })),
