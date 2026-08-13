@@ -36,7 +36,9 @@ For update/rollback E2E testing, use a local fixture/update server instead of pu
 - Any failed, timed-out, hung, or skipped build, test, signing, upload, or verification step blocks all later release steps.
 - Never retry a failed release step until its root cause and focused regression proof are recorded.
 - A release is incomplete until one tag contains exactly these five assets: Viewer x64, Agent x64, Viewer x86, Agent x86, and `wonremote-update-manifest.json`.
-- Do not delete, replace, retag, or publish over exposed release assets without explicit user approval.
+- A published version is immutable. Never delete, replace, retag, or publish over exposed release assets. Every changed installer requires a strictly new version and tag so installed clients can detect it.
+- The publisher must keep the release private until the exact five uploaded asset names and byte sizes match the local signed assets.
+- Before publication, the publisher downloads every uploaded asset from GitHub's asset API and verifies the remote manifest, signatures, and installer checksums again. A failed remote check leaves the release private.
 - Record the failed stage, tag, commit, uploaded assets, and recovery decision before retrying.
 
 ## Required Release Evidence

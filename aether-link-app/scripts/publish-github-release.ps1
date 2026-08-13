@@ -46,10 +46,17 @@ $StableAgentInstallerPath = Join-Path $ReleaseDir $StableAgentInstallerAssetName
 $StableInstallerPathX86 = Join-Path $ReleaseDir $StableInstallerAssetNameX86
 $StableAgentInstallerPathX86 = Join-Path $ReleaseDir $StableAgentInstallerAssetNameX86
 $ManifestPath = Join-Path $ReleaseDir $ManifestName
+$ExpectedAssets = @(
+  @{ Name = $StableInstallerAssetName; Path = $StableInstallerPath }
+  @{ Name = $StableAgentInstallerAssetName; Path = $StableAgentInstallerPath }
+  @{ Name = $StableInstallerAssetNameX86; Path = $StableInstallerPathX86 }
+  @{ Name = $StableAgentInstallerAssetNameX86; Path = $StableAgentInstallerPathX86 }
+  @{ Name = $ManifestName; Path = $ManifestPath }
+)
 
-foreach ($RequiredPath in @($StableInstallerPath, $StableAgentInstallerPath, $StableInstallerPathX86, $StableAgentInstallerPathX86, $ManifestPath)) {
-  if (-not (Test-Path -LiteralPath $RequiredPath)) {
-    throw "Required release asset is missing: $RequiredPath"
+foreach ($ExpectedAsset in $ExpectedAssets) {
+  if (-not (Test-Path -LiteralPath $ExpectedAsset.Path)) {
+    throw "Required release asset is missing: $($ExpectedAsset.Path)"
   }
 }
 
@@ -95,10 +102,7 @@ try {
   $Release = Invoke-GitHubJson "Get" "$ReleaseApi/tags/$Tag"
   Write-Host "Found existing GitHub Release $Tag."
   if (-not $Release.draft) {
-    Write-Host "Temporarily moving $Tag back to draft so stable download links never expose a partial asset set."
-    $Release = Invoke-GitHubJson "Patch" "$ReleaseApi/$($Release.id)" @{
-      draft = $true
-    }
+    throw "Refusing to replace published release $Tag. Bump the version before publishing so installed clients can detect the update."
   }
 } catch {
   if ((Get-StatusCode $_) -ne 404) {
@@ -133,6 +137,59 @@ Publish-Asset $StableAgentInstallerPath $StableAgentInstallerAssetName "applicat
 Publish-Asset $StableInstallerPathX86 $StableInstallerAssetNameX86 "application/octet-stream"
 Publish-Asset $StableAgentInstallerPathX86 $StableAgentInstallerAssetNameX86 "application/octet-stream"
 Publish-Asset $ManifestPath $ManifestName "application/json"
+
+# Keep a partial or wrong upload private. Installed clients only see the tag after this exact set matches.
+$PublishedAssets = @(Invoke-GitHubJson "Get" $AssetsApi)
+if ($PublishedAssets.Count -ne $ExpectedAssets.Count) {
+  throw "Release upload verification failed: expected $($ExpectedAssets.Count) assets, found $($PublishedAssets.Count)."
+}
+foreach ($ExpectedAsset in $ExpectedAssets) {
+  $MatchingAssets = @($PublishedAssets | Where-Object { $_.name -eq $ExpectedAsset.Name })
+  if ($MatchingAssets.Count -ne 1) {
+    throw "Release upload verification failed: expected exactly one $($ExpectedAsset.Name)."
+  }
+  $LocalSize = (Get-Item -LiteralPath $ExpectedAsset.Path).Length
+  if ([int64]$MatchingAssets[0].size -ne [int64]$LocalSize) {
+    throw "Release upload verification failed: $($ExpectedAsset.Name) size differs from the local signed asset."
+  }
+}
+
+# Verify the bytes GitHub stored, rather than trusting a successful upload response.
+$RemoteVerificationDirectory = Join-Path ([System.IO.Path]::GetTempPath()) ("wonremote-release-verify-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Path $RemoteVerificationDirectory -Force | Out-Null
+try {
+  $DownloadHeaders = @{}
+  foreach ($HeaderName in $Headers.Keys) {
+    $DownloadHeaders[$HeaderName] = $Headers[$HeaderName]
+  }
+  $DownloadHeaders["Accept"] = "application/octet-stream"
+  $RemoteAssetPaths = @{}
+  foreach ($ExpectedAsset in $ExpectedAssets) {
+    $RemoteAsset = @($PublishedAssets | Where-Object { $_.name -eq $ExpectedAsset.Name })[0]
+    $RemotePath = Join-Path $RemoteVerificationDirectory $ExpectedAsset.Name
+    Invoke-WebRequest -Uri $RemoteAsset.url -Headers $DownloadHeaders -OutFile $RemotePath
+    if ((Get-Item -LiteralPath $RemotePath).Length -ne (Get-Item -LiteralPath $ExpectedAsset.Path).Length) {
+      throw "Release download verification failed: $($ExpectedAsset.Name) bytes differ from the uploaded asset."
+    }
+    $RemoteAssetPaths[$ExpectedAsset.Name] = $RemotePath
+  }
+  & node (Join-Path $ScriptDir "verify-release-manifest.js") `
+    --manifest $RemoteAssetPaths[$ManifestName] `
+    --version $Version `
+    --viewer-x64 $RemoteAssetPaths[$StableInstallerAssetName] `
+    --viewer-x86 $RemoteAssetPaths[$StableInstallerAssetNameX86] `
+    --agent-x64 $RemoteAssetPaths[$StableAgentInstallerAssetName] `
+    --agent-x86 $RemoteAssetPaths[$StableAgentInstallerAssetNameX86] `
+    --viewer-asset-name-x64 $StableInstallerAssetName `
+    --viewer-asset-name-x86 $StableInstallerAssetNameX86 `
+    --agent-asset-name-x64 $StableAgentInstallerAssetName `
+    --agent-asset-name-x86 $StableAgentInstallerAssetNameX86
+  if ($LASTEXITCODE -ne 0) {
+    throw "Release download verification failed with exit code $LASTEXITCODE."
+  }
+} finally {
+  Remove-Item -LiteralPath $RemoteVerificationDirectory -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 if (-not $RequestedDraft) {
   Write-Host "Publishing GitHub Release $Tag after every required asset was uploaded."

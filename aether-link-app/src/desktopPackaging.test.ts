@@ -669,11 +669,28 @@ describe("desktop packaging scaffold", () => {
     expect(packageMain).toContain("Four WonRemote product installers created");
     expect(publishScript).toContain("Publish-Asset $ManifestPath $ManifestName");
     expect(publishScript.match(/^Publish-Asset /gm)?.length).toBe(5);
+    expect(publishScript).toContain("Refusing to replace published release");
+    expect(publishScript).toContain("Bump the version before publishing");
+    expect(publishScript).toContain("Release upload verification failed");
+    expect(publishScript).toContain("size differs from the local signed asset");
+    expect(publishScript).toContain("Release download verification failed");
+    expect(publishScript).toContain("verify-release-manifest.js");
     expect(manifestScript).toContain("viewerWindows");
     expect(manifestScript).toContain("agentWindows");
     expect(manifestScript).toContain("release-tag");
     expect(manifestScript).not.toContain("latest/download");
     expect(packageReleaseScript).toContain("WONREMOTE_RESTART_MODE");
+  });
+
+  it("binds tag publication and update regression tests to the release version", () => {
+    const releaseWorkflow = readFileSync(path.join(projectRoot, "..", ".github", "workflows", "publish-release.yml"), "utf8");
+
+    expect(releaseWorkflow).toContain('$env:GITHUB_REF_NAME -ne "v$packageVersion"');
+    expect(releaseWorkflow).toContain("src/agent/productionInstallerUpdate.test.ts");
+    expect(releaseWorkflow).toContain("src/agent/agentUpdateOnce.test.ts");
+    expect(releaseWorkflow).toContain("src/agent/productionUpdateMetadata.test.ts");
+    expect(releaseWorkflow).toContain("src/domain/updateManifestScript.test.ts");
+    expect(releaseWorkflow).toContain("test_update_handoff_acknowledgement_path_is_adjacent_to_the_owned_script");
   });
 
   it("does not require a system Node installation at runtime", () => {

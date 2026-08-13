@@ -51,11 +51,15 @@ jobs:
           if (@($appVersion, $cargoVersion, $tauriVersion) | Where-Object { $_ -ne $packageVersion }) {
             throw "Release version metadata must match package.json ($packageVersion)."
           }
+          if ($env:GITHUB_REF_TYPE -eq "tag" -and $env:GITHUB_REF_NAME -ne "v$packageVersion") {
+            throw "Release tag must match package.json: expected v$packageVersion, got $env:GITHUB_REF_NAME."
+          }
 
       - name: Verify update regression guards
         run: |
-          npm test -- src/desktopPackaging.test.ts src/agent/productionUpdateCheck.test.ts
+          npm test -- src/desktopPackaging.test.ts src/agent/productionUpdateCheck.test.ts src/agent/productionInstallerUpdate.test.ts src/agent/agentUpdateOnce.test.ts src/agent/productionUpdateMetadata.test.ts src/domain/updateManifestScript.test.ts
           cargo test --manifest-path src-tauri/Cargo.toml test_node_resource_paths
+          cargo test --manifest-path src-tauri/Cargo.toml test_update_handoff_acknowledgement_path_is_adjacent_to_the_owned_script
 
       - name: Build four installers and signed manifest
         run: |
