@@ -12,9 +12,7 @@ set "os_arch="
 for /f "tokens=2 delims==" %%A in ('wmic os get OSArchitecture /value 2^>nul ^| find "="') do set "os_arch=%%A"
 if defined os_arch (
     echo OSArchitecture: %os_arch%
-    if /i not "%os_arch%"=="64-bit" (
-        echo [BLOCKER] Current WonRemote release requires 64-bit Windows.
-    )
+    echo [INFO] Current release uses the x86 installer and supports 32-bit and 64-bit Windows.
 ) else (
     echo [WARN] Could not read OSArchitecture through WMIC.
 )

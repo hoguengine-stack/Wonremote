@@ -28,12 +28,12 @@
       },
       {
         "source": "/download/viewer-x86",
-        "destination": "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Viewer-Setup-x86.exe",
+        "destination": "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Viewer-Setup.exe",
         "type": 302
       },
       {
         "source": "/download/agent-x86",
-        "destination": "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Agent-Setup-x86.exe",
+        "destination": "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Agent-Setup.exe",
         "type": 302
       }
     ],

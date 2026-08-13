@@ -16,7 +16,7 @@ describe("production update metadata loader", () => {
     const manifest = {
       version: "0.1.10",
       windows: {
-        x64: {
+        x86: {
           name: "WonRemote-Viewer-Setup.exe",
           url: "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Viewer-Setup.exe",
           sha256: "a".repeat(64),
@@ -24,17 +24,17 @@ describe("production update metadata loader", () => {
       },
     };
     const signaturePayload = buildProductionUpdateSignaturePayload({
-      assetName: manifest.windows.x64.name,
-      checksum: manifest.windows.x64.sha256,
-      downloadUrl: manifest.windows.x64.url,
+      assetName: manifest.windows.x86.name,
+      checksum: manifest.windows.x86.sha256,
+      downloadUrl: manifest.windows.x86.url,
       latestVersion: manifest.version,
     });
     const signature = sign(null, Buffer.from(signaturePayload, "utf8"), privateKey).toString("base64");
     const signatureV2 = sign(null, Buffer.from(buildProductionUpdateSignaturePayloadV2({
-      arch: "x64",
-      assetName: manifest.windows.x64.name,
-      checksum: manifest.windows.x64.sha256,
-      downloadUrl: manifest.windows.x64.url,
+      arch: "x86",
+      assetName: manifest.windows.x86.name,
+      checksum: manifest.windows.x86.sha256,
+      downloadUrl: manifest.windows.x86.url,
       forceUpdate: false,
       latestVersion: manifest.version,
       updateKind: "installer",
@@ -43,6 +43,7 @@ describe("production update metadata loader", () => {
 
     const metadata = await loadProductionInstallerUpdateMetadata(
       {
+        WONREMOTE_BUILD_ARCH: "x86",
         WONREMOTE_UPDATE_MANIFEST_PUBLIC_KEY: publicKey.export({ format: "pem", type: "spki" }).toString(),
         WONREMOTE_UPDATE_MANIFEST_URL: manifestUrl,
       },
@@ -52,8 +53,8 @@ describe("production update metadata loader", () => {
           JSON.stringify({
             ...manifest,
             windows: {
-              x64: {
-                ...manifest.windows.x64,
+              x86: {
+                ...manifest.windows.x86,
                 signature,
                 signatureV2,
               },
@@ -152,7 +153,7 @@ describe("production update metadata loader", () => {
       latestVersion: "0.1.47",
     }), "utf8"), privateKey).toString("base64");
     const signatureV2 = sign(null, Buffer.from(buildProductionUpdateSignaturePayloadV2({
-      arch: "x64",
+      arch: "x86",
       assetName: asset.name,
       checksum: asset.sha256,
       downloadUrl: asset.url,
@@ -162,12 +163,13 @@ describe("production update metadata loader", () => {
     }), "utf8"), privateKey).toString("base64");
     const metadata = await loadProductionInstallerUpdateMetadata(
       {
+        WONREMOTE_BUILD_ARCH: "x86",
         WONREMOTE_UPDATE_MANIFEST_PUBLIC_KEY: publicKey.export({ format: "pem", type: "spki" }).toString(),
         WONREMOTE_UPDATE_MANIFEST_URL: "https://updates.example.com/manifest.json",
       },
       async () => new Response(JSON.stringify({
         version: "0.1.47",
-        agentWindows: { x64: { ...asset, signature, signatureV2 } },
+        agentWindows: { x86: { ...asset, signature, signatureV2 } },
         windows: { x64: { name: "legacy.exe", url: "https://updates.example.com/legacy.exe", sha256: "f".repeat(64) } },
       }), { status: 200 }),
     );

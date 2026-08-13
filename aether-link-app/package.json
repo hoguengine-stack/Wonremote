@@ -14,7 +14,7 @@
     "desktop:dev": "tauri dev",
     "agent:package": "node scripts/package-agent.js",
     "release:keypair": "node scripts/generate-update-keypair.js",
-    "release:manifest": "node scripts/create-update-manifest.js",
+    "release:manifest": "node scripts/create-update-manifest.js --architecture-migration=x64-to-x86",
     "release:publish": "powershell -ExecutionPolicy Bypass -File scripts/publish-github-release.ps1",
     "firebase:deploy": "powershell -ExecutionPolicy Bypass -File scripts/deploy-firebase.ps1",
     "firebase:deploy:spark": "powershell -ExecutionPolicy Bypass -File scripts/deploy-firebase.ps1 -SparkOnly",

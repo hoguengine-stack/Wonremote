@@ -41,7 +41,7 @@ $version = $pkg.version
 Write-Host "Detected package version: $version" -ForegroundColor Green
 
 # Verify Installers
-$viewerInstallerPath = "release-exe/WonRemote Viewer_${version}_x64-setup.exe"
+$viewerInstallerPath = "release-exe/WonRemote-Viewer-Setup.exe"
 $agentInstallerPath = "release-exe/WonRemote-Agent-Setup.exe"
 $installerPath = $agentInstallerPath
 if (-not (Test-Path $viewerInstallerPath)) {

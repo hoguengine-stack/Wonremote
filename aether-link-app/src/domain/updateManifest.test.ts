@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { generateKeyPairSync, sign } from "node:crypto";
 import {
+  buildArchitectureMigrationSignaturePayload,
   buildProductionUpdateSignaturePayload,
   buildProductionUpdateSignaturePayloadV2,
   parseProductionUpdateManifest,
@@ -62,6 +63,37 @@ describe("production update manifest", () => {
     });
   });
 
+  it("requires a signed migration before an x64 client selects x86 installer metadata", () => {
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    const viewer = {
+      name: "WonRemote-Viewer-Setup.exe",
+      url: "https://github.com/hoguengine-stack/Wonremote/releases/download/v9.9.9/WonRemote-Viewer-Setup.exe",
+      sha256: "f".repeat(64),
+    };
+    const agent = { ...viewer, name: "WonRemote-Agent-Setup.exe", sha256: "e".repeat(64), url: viewer.url.replace("Viewer", "Agent") };
+    const signedAsset = (asset: typeof viewer, arch: "x64" | "x86") => ({
+      ...asset,
+      signature: sign(null, Buffer.from(buildProductionUpdateSignaturePayload({ assetName: asset.name, checksum: asset.sha256, downloadUrl: asset.url, latestVersion: "9.9.9" }), "utf8"), privateKey).toString("base64"),
+      signatureV2: sign(null, Buffer.from(buildProductionUpdateSignaturePayloadV2({ arch, assetName: asset.name, checksum: asset.sha256, downloadUrl: asset.url, forceUpdate: false, latestVersion: "9.9.9", updateKind: "installer" }), "utf8"), privateKey).toString("base64"),
+    });
+    const manifest = {
+      version: "9.9.9",
+      viewerWindows: { x64: signedAsset(viewer, "x64"), x86: signedAsset(viewer, "x86") },
+      agentWindows: { x64: signedAsset(agent, "x64"), x86: signedAsset(agent, "x86") },
+    };
+    const publicKeyPem = publicKey.export({ format: "pem", type: "spki" }).toString();
+    const signature = sign(null, Buffer.from(buildArchitectureMigrationSignaturePayload({
+      agent: { assetName: agent.name, checksum: agent.sha256, downloadUrl: agent.url },
+      forceUpdate: false,
+      latestVersion: "9.9.9",
+      viewer: { assetName: viewer.name, checksum: viewer.sha256, downloadUrl: viewer.url },
+    }), "utf8"), privateKey).toString("base64");
+
+    expect(() => parseProductionUpdateManifest(manifest, { arch: "x64", product: "viewer", publicKeyPem })).toThrow("require a signed x64 to x86 architecture migration");
+    expect(() => parseProductionUpdateManifest({ ...manifest, architectureMigration: { from: "x64", to: "x86", signature: "invalid" } }, { arch: "x64", product: "viewer", publicKeyPem })).toThrow("migration signature verification failed");
+    expect(parseProductionUpdateManifest({ ...manifest, architectureMigration: { from: "x64", to: "x86", signature } }, { arch: "x64", product: "viewer", publicKeyPem })).toMatchObject({ assetName: viewer.name, latestVersion: "9.9.9" });
+  });
+
   it.each([
     ["portable", "portable", "WonRemote-Viewer-Agent-Portable-x86.zip"],
     ["portable-agent", "portableAgent", "WonRemote-Agent-Portable-x86.zip"],
@@ -106,7 +138,7 @@ describe("production update manifest", () => {
     const manifest = {
       version: "0.1.8",
       windows: {
-        x64: {
+        x86: {
           name: "WonRemote Viewer_0.1.8_x64-setup.exe",
           url: "https://github.com/hoguengine-stack/Wonremote/releases/download/v0.1.8/WonRemote.exe",
           sha256: "c".repeat(64),
@@ -114,17 +146,17 @@ describe("production update manifest", () => {
       },
     };
     const payload = buildProductionUpdateSignaturePayload({
-      assetName: manifest.windows.x64.name,
-      checksum: manifest.windows.x64.sha256,
-      downloadUrl: manifest.windows.x64.url,
+      assetName: manifest.windows.x86.name,
+      checksum: manifest.windows.x86.sha256,
+      downloadUrl: manifest.windows.x86.url,
       latestVersion: manifest.version,
     });
     const signature = sign(null, Buffer.from(payload, "utf8"), privateKey).toString("base64");
     const payloadV2 = buildProductionUpdateSignaturePayloadV2({
-      arch: "x64",
-      assetName: manifest.windows.x64.name,
-      checksum: manifest.windows.x64.sha256,
-      downloadUrl: manifest.windows.x64.url,
+      arch: "x86",
+      assetName: manifest.windows.x86.name,
+      checksum: manifest.windows.x86.sha256,
+      downloadUrl: manifest.windows.x86.url,
       forceUpdate: false,
       latestVersion: manifest.version,
       updateKind: "installer",
@@ -137,14 +169,14 @@ describe("production update manifest", () => {
         {
           ...manifest,
           windows: {
-            x64: {
-              ...manifest.windows.x64,
+            x86: {
+              ...manifest.windows.x86,
               signature,
               signatureV2,
             },
           },
         },
-        { publicKeyPem },
+        { arch: "x86", publicKeyPem },
       ).signature,
     ).toBe(signature);
 
@@ -153,15 +185,15 @@ describe("production update manifest", () => {
         {
           ...manifest,
           windows: {
-            x64: {
-              ...manifest.windows.x64,
+            x86: {
+              ...manifest.windows.x86,
               sha256: "d".repeat(64),
               signature,
               signatureV2,
             },
           },
         },
-        { publicKeyPem },
+        { arch: "x86", publicKeyPem },
       ),
     ).toThrow("signature verification failed");
 
@@ -171,14 +203,14 @@ describe("production update manifest", () => {
           ...manifest,
           forceUpdate: true,
           windows: {
-            x64: {
-              ...manifest.windows.x64,
+            x86: {
+              ...manifest.windows.x86,
               signature,
               signatureV2,
             },
           },
         },
-        { publicKeyPem },
+        { arch: "x86", publicKeyPem },
       ),
     ).toThrow("v2 signature verification failed");
   });

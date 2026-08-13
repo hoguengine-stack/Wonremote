@@ -6,9 +6,7 @@ import { fileURLToPath } from "node:url";
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const packageJson = JSON.parse(fs.readFileSync(path.join(appRoot, "package.json"), "utf8"));
 const stableViewerAssetName = "WonRemote-Viewer-Setup.exe";
-const stableViewerAssetNameX86 = "WonRemote-Viewer-Setup-x86.exe";
 const stableAgentAssetName = "WonRemote-Agent-Setup.exe";
-const stableAgentAssetNameX86 = "WonRemote-Agent-Setup-x86.exe";
 
 function readArgs(argv) {
   const args = new Map();
@@ -76,10 +74,6 @@ function defaultInstallerPath(version) {
   return path.join(appRoot, "release-exe", stableViewerAssetName);
 }
 
-function defaultInstallerPathX86() {
-  return path.join(appRoot, "release-exe", stableViewerAssetNameX86);
-}
-
 function defaultReleaseAssetPath(assetName) {
   return path.join(appRoot, "release-exe", assetName);
 }
@@ -110,25 +104,45 @@ function buildSignaturePayloadV2(input) {
   ].join("\n");
 }
 
+function buildArchitectureMigrationSignaturePayload(input) {
+  return [
+    "signatureVersion=3",
+    `version=${input.latestVersion}`,
+    `forceUpdate=${input.forceUpdate ? "true" : "false"}`,
+    "from=x64",
+    "to=x86",
+    `viewer.url=${input.viewer.url}`,
+    `viewer.sha256=${input.viewer.sha256.toLowerCase()}`,
+    `viewer.assetName=${input.viewer.name}`,
+    `agent.url=${input.agent.url}`,
+    `agent.sha256=${input.agent.sha256.toLowerCase()}`,
+    `agent.assetName=${input.agent.name}`,
+  ].join("\n");
+}
+
 const args = readArgs(process.argv.slice(2));
 const version = args.get("--version") || packageJson.version;
 const forceUpdate = args.get("--force-update") === "true";
+const architectureMigration = args.get("--architecture-migration") || "";
+if (architectureMigration && architectureMigration !== "x64-to-x86") {
+  throw new Error("Only --architecture-migration=x64-to-x86 is supported.");
+}
 const viewerPath = path.resolve(args.get("--viewer-x64") || args.get("--installer") || defaultInstallerPath(version));
-const viewerPathX86 = path.resolve(args.get("--viewer-x86") || args.get("--installer-x86") || defaultInstallerPathX86(version));
+const viewerPathX86 = path.resolve(args.get("--viewer-x86") || args.get("--installer-x86") || viewerPath);
 const agentPath = path.resolve(args.get("--agent-x64") || defaultReleaseAssetPath(stableAgentAssetName));
-const agentPathX86 = path.resolve(args.get("--agent-x86") || defaultReleaseAssetPath(stableAgentAssetNameX86));
+const agentPathX86 = path.resolve(args.get("--agent-x86") || agentPath);
 const outPath = path.resolve(args.get("--out") || defaultOutputPath());
 const viewerAssetName = normalizeGitHubAssetName(
   args.get("--viewer-asset-name-x64") || args.get("--asset-name") || stableViewerAssetName,
 );
 const viewerAssetNameX86 = normalizeGitHubAssetName(
-  args.get("--viewer-asset-name-x86") || args.get("--asset-name-x86") || stableViewerAssetNameX86,
+  args.get("--viewer-asset-name-x86") || args.get("--asset-name-x86") || viewerAssetName,
 );
 const agentAssetName = normalizeGitHubAssetName(
   args.get("--agent-asset-name-x64") || stableAgentAssetName,
 );
 const agentAssetNameX86 = normalizeGitHubAssetName(
-  args.get("--agent-asset-name-x86") || stableAgentAssetNameX86,
+  args.get("--agent-asset-name-x86") || agentAssetName,
 );
 const viewerDownloadUrl = buildDownloadUrl(args, version, viewerAssetName, "--viewer-download-url-x64");
 const viewerDownloadUrlX86 = buildDownloadUrl(args, version, viewerAssetNameX86, "--viewer-download-url-x86");
@@ -208,6 +222,23 @@ const manifest = {
     x86: agentX86,
   },
 };
+
+if (architectureMigration === "x64-to-x86") {
+  if (viewerX64.name !== viewerX86.name || viewerX64.url !== viewerX86.url || viewerX64.sha256 !== viewerX86.sha256 ||
+      agentX64.name !== agentX86.name || agentX64.url !== agentX86.url || agentX64.sha256 !== agentX86.sha256) {
+    throw new Error("x64-to-x86 migration requires x64 metadata to alias the exact x86 Viewer and Agent installers.");
+  }
+  manifest.architectureMigration = {
+    from: "x64",
+    to: "x86",
+    signature: sign(null, Buffer.from(buildArchitectureMigrationSignaturePayload({
+      agent: agentX86,
+      forceUpdate,
+      latestVersion: version,
+      viewer: viewerX86,
+    }), "utf8"), privateKeyPem).toString("base64"),
+  };
+}
 
 fs.mkdirSync(path.dirname(outPath), { recursive: true });
 fs.writeFileSync(outPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");

@@ -57,11 +57,11 @@ jobs:
 
       - name: Verify update regression guards
         run: |
-          npm test -- src/desktopPackaging.test.ts src/agent/productionUpdateCheck.test.ts src/agent/productionInstallerUpdate.test.ts src/agent/agentUpdateOnce.test.ts src/agent/productionUpdateMetadata.test.ts src/domain/updateManifestScript.test.ts
+          npm test -- src/desktopPackaging.test.ts src/agent/productionUpdateCheck.test.ts src/agent/productionInstallerUpdate.test.ts src/agent/agentUpdateOnce.test.ts src/agent/productionUpdateMetadata.test.ts src/domain/updateManifest.test.ts src/domain/updateManifestScript.test.ts
           cargo test --manifest-path src-tauri/Cargo.toml test_node_resource_paths
           cargo test --manifest-path src-tauri/Cargo.toml test_update_handoff_acknowledgement_path_is_adjacent_to_the_owned_script
 
-      - name: Build four installers and signed manifest
+      - name: Build two x86 installers and signed manifest
         run: |
           npm run release:exes
           npm run release:manifest

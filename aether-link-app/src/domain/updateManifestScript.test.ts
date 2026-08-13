@@ -9,10 +9,8 @@ const manifestScript = path.join(projectRoot, "scripts", "create-update-manifest
 
 function fixtureFiles(root: string) {
   const files = {
-    viewerX64: path.join(root, "WonRemote-Viewer-Setup.exe"),
-    viewerX86: path.join(root, "WonRemote-Viewer-Setup-x86.exe"),
-    agentX64: path.join(root, "WonRemote-Agent-Setup.exe"),
-    agentX86: path.join(root, "WonRemote-Agent-Setup-x86.exe"),
+    viewer: path.join(root, "WonRemote-Viewer-Setup.exe"),
+    agent: path.join(root, "WonRemote-Agent-Setup.exe"),
   };
   for (const [name, file] of Object.entries(files)) {
     writeFileSync(file, `${name}-bytes`);
@@ -21,7 +19,7 @@ function fixtureFiles(root: string) {
 }
 
 describe("production update manifest scripts", () => {
-  it("creates viewerWindows, agentWindows, and legacy windows from four signed installers", () => {
+  it("creates x64-compatible and x86 update metadata from two x86 installers", () => {
     const root = mkdtempSync(path.join(tmpdir(), "wonremote-manifest-contract-"));
     try {
       const files = fixtureFiles(root);
@@ -31,17 +29,19 @@ describe("production update manifest scripts", () => {
       execFileSync(process.execPath, [path.join(projectRoot, "scripts", "generate-update-keypair.js"), `--private-key=${key}`, `--public-key=${publicKey}`], { cwd: projectRoot });
       execFileSync(process.execPath, [
         manifestScript,
-        `--viewer-x64=${files.viewerX64}`,
-        `--viewer-x86=${files.viewerX86}`,
-        `--agent-x64=${files.agentX64}`,
-        `--agent-x86=${files.agentX86}`,
+        `--viewer-x64=${files.viewer}`,
+        `--agent-x64=${files.agent}`,
+        "--architecture-migration=x64-to-x86",
         "--version=9.9.9",
         `--private-key=${key}`,
         `--out=${out}`,
       ], { cwd: projectRoot });
       const manifest = JSON.parse(readFileSync(out, "utf8"));
       expect(manifest.viewerWindows.x64.name).toBe("WonRemote-Viewer-Setup.exe");
-      expect(manifest.agentWindows.x86.name).toBe("WonRemote-Agent-Setup-x86.exe");
+      expect(manifest.viewerWindows.x86.name).toBe("WonRemote-Viewer-Setup.exe");
+      expect(manifest.agentWindows.x64.name).toBe("WonRemote-Agent-Setup.exe");
+      expect(manifest.agentWindows.x86.name).toBe("WonRemote-Agent-Setup.exe");
+      expect(manifest.architectureMigration).toMatchObject({ from: "x64", to: "x86" });
       expect(manifest.windows).toEqual(manifest.viewerWindows);
       expect(manifest.viewerWindows.x64.url).toContain("/download/v9.9.9/");
       expect(manifest.viewerWindows.x64.url).not.toContain("latest/download");
@@ -49,10 +49,8 @@ describe("production update manifest scripts", () => {
         path.join(projectRoot, "scripts", "verify-release-manifest.js"),
         "--manifest", out,
         "--version", "9.9.9",
-        "--viewer-x64", files.viewerX64,
-        "--viewer-x86", files.viewerX86,
-        "--agent-x64", files.agentX64,
-        "--agent-x86", files.agentX86,
+        "--viewer-x64", files.viewer,
+        "--agent-x64", files.agent,
       ], {
         cwd: projectRoot,
         env: {
@@ -65,24 +63,24 @@ describe("production update manifest scripts", () => {
     }
   });
 
-  it("fails when any of the four installer inputs is missing", () => {
+  it("fails when either required x86 installer input is missing", () => {
     const root = mkdtempSync(path.join(tmpdir(), "wonremote-manifest-missing-"));
     try {
       const files = fixtureFiles(root);
-      rmSync(files.agentX86);
-      expect(() => execFileSync(process.execPath, [manifestScript, `--viewer-x64=${files.viewerX64}`, `--viewer-x86=${files.viewerX86}`, `--agent-x64=${files.agentX64}`, `--agent-x86=${files.agentX86}`, "--version=9.9.9", `--out=${path.join(root, "out.json")}`], { cwd: projectRoot })).toThrow();
+      rmSync(files.agent);
+      expect(() => execFileSync(process.execPath, [manifestScript, `--viewer-x64=${files.viewer}`, `--agent-x64=${files.agent}`, "--version=9.9.9", `--out=${path.join(root, "out.json")}`], { cwd: projectRoot })).toThrow();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it("publishes exactly four installers and one manifest after the draft gate", () => {
+  it("publishes exactly two x86 installers and one manifest after the draft gate", () => {
     const script = readFileSync(path.join(projectRoot, "scripts", "publish-github-release.ps1"), "utf8");
-    expect(script.match(/^Publish-Asset /gm)?.length).toBe(5);
+    expect(script.match(/^Publish-Asset /gm)?.length).toBe(3);
     expect(script).toContain("draft = $true");
     expect(script).toContain("draft = $false");
     expect(script).toContain("Publish-Asset $StableInstallerPath $StableInstallerAssetName");
-    expect(script).toContain("Publish-Asset $StableAgentInstallerPathX86 $StableAgentInstallerAssetNameX86");
+    expect(script).toContain("Publish-Asset $StableAgentInstallerPath $StableAgentInstallerAssetName");
     expect(script).toContain("Publish-Asset $ManifestPath $ManifestName");
     expect(script).not.toContain("Portable");
     expect(script).not.toContain("_${Version}_");

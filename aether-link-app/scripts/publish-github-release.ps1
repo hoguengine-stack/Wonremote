@@ -38,19 +38,13 @@ $RequestedPrerelease = [bool]$Prerelease
 $ReleaseDir = Join-Path $AppRoot "release-exe"
 $StableInstallerAssetName = "WonRemote-Viewer-Setup.exe"
 $StableAgentInstallerAssetName = "WonRemote-Agent-Setup.exe"
-$StableInstallerAssetNameX86 = "WonRemote-Viewer-Setup-x86.exe"
-$StableAgentInstallerAssetNameX86 = "WonRemote-Agent-Setup-x86.exe"
 $ManifestName = "wonremote-update-manifest.json"
 $StableInstallerPath = Join-Path $ReleaseDir $StableInstallerAssetName
 $StableAgentInstallerPath = Join-Path $ReleaseDir $StableAgentInstallerAssetName
-$StableInstallerPathX86 = Join-Path $ReleaseDir $StableInstallerAssetNameX86
-$StableAgentInstallerPathX86 = Join-Path $ReleaseDir $StableAgentInstallerAssetNameX86
 $ManifestPath = Join-Path $ReleaseDir $ManifestName
 $ExpectedAssets = @(
   @{ Name = $StableInstallerAssetName; Path = $StableInstallerPath }
   @{ Name = $StableAgentInstallerAssetName; Path = $StableAgentInstallerPath }
-  @{ Name = $StableInstallerAssetNameX86; Path = $StableInstallerPathX86 }
-  @{ Name = $StableAgentInstallerAssetNameX86; Path = $StableAgentInstallerPathX86 }
   @{ Name = $ManifestName; Path = $ManifestPath }
 )
 
@@ -64,13 +58,9 @@ foreach ($ExpectedAsset in $ExpectedAssets) {
   --manifest $ManifestPath `
   --version $Version `
   --viewer-x64 $StableInstallerPath `
-  --viewer-x86 $StableInstallerPathX86 `
   --agent-x64 $StableAgentInstallerPath `
-  --agent-x86 $StableAgentInstallerPathX86 `
   --viewer-asset-name-x64 $StableInstallerAssetName `
-  --viewer-asset-name-x86 $StableInstallerAssetNameX86 `
-  --agent-asset-name-x64 $StableAgentInstallerAssetName `
-  --agent-asset-name-x86 $StableAgentInstallerAssetNameX86
+  --agent-asset-name-x64 $StableAgentInstallerAssetName
 if ($LASTEXITCODE -ne 0) {
   throw "Release manifest preflight failed with exit code $LASTEXITCODE."
 }
@@ -134,8 +124,6 @@ function Publish-Asset($FilePath, $AssetName, $ContentType) {
 
 Publish-Asset $StableInstallerPath $StableInstallerAssetName "application/octet-stream"
 Publish-Asset $StableAgentInstallerPath $StableAgentInstallerAssetName "application/octet-stream"
-Publish-Asset $StableInstallerPathX86 $StableInstallerAssetNameX86 "application/octet-stream"
-Publish-Asset $StableAgentInstallerPathX86 $StableAgentInstallerAssetNameX86 "application/octet-stream"
 Publish-Asset $ManifestPath $ManifestName "application/json"
 
 # Keep a partial or wrong upload private. Installed clients only see the tag after this exact set matches.
@@ -177,13 +165,9 @@ try {
     --manifest $RemoteAssetPaths[$ManifestName] `
     --version $Version `
     --viewer-x64 $RemoteAssetPaths[$StableInstallerAssetName] `
-    --viewer-x86 $RemoteAssetPaths[$StableInstallerAssetNameX86] `
     --agent-x64 $RemoteAssetPaths[$StableAgentInstallerAssetName] `
-    --agent-x86 $RemoteAssetPaths[$StableAgentInstallerAssetNameX86] `
     --viewer-asset-name-x64 $StableInstallerAssetName `
-    --viewer-asset-name-x86 $StableInstallerAssetNameX86 `
-    --agent-asset-name-x64 $StableAgentInstallerAssetName `
-    --agent-asset-name-x86 $StableAgentInstallerAssetNameX86
+    --agent-asset-name-x64 $StableAgentInstallerAssetName
   if ($LASTEXITCODE -ne 0) {
     throw "Release download verification failed with exit code $LASTEXITCODE."
   }

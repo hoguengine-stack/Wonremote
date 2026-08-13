@@ -45,7 +45,7 @@ describe("desktop packaging scaffold", () => {
       startMenuFolder: "WonRemote",
     });
     expect(readFileSync(agentHookPath, "utf8")).toContain('StrCpy $INSTDIR "$LOCALAPPDATA\\WonRemote\\Agent"');
-    expect(packageReleaseScript).toContain("tauri.agent.conf.json");
+    expect(packageReleaseScript).toContain("tauri.agent.x86.conf.json");
   });
 
   it("keeps x64 and x86 Agent registration windows compact and non-resizable", () => {
@@ -122,7 +122,7 @@ describe("desktop packaging scaffold", () => {
     expect(processStopper).not.toContain("taskkill");
   });
 
-  it("blocks the x64-only installers before installing on 32-bit Windows", () => {
+  it("keeps legacy x64 installers guarded while the consolidated wrapper stays x86-compatible", () => {
     const viewerHook = readFileSync(path.join(projectRoot, "src-tauri", "windows", "viewer-install-hooks.nsh"), "utf8");
     const agentHook = readFileSync(path.join(projectRoot, "src-tauri", "windows", "agent-install-hooks.nsh"), "utf8");
     const packageReleaseScript = readFileSync(path.join(projectRoot, "scripts", "package-release-exes.js"), "utf8");
@@ -138,9 +138,12 @@ describe("desktop packaging scaffold", () => {
       );
     }
 
-    expect(packageReleaseScript).toContain("!include x64.nsh");
-    expect(packageReleaseScript).toContain("\\${IfNot} \\${RunningX64}");
-    expect(packageReleaseScript).toContain("requires 64-bit Windows");
+    const createProductInstaller = packageReleaseScript.slice(
+      packageReleaseScript.indexOf("function createProductInstaller"),
+      packageReleaseScript.indexOf("function verifyTargetAgentRuntime"),
+    );
+    expect(createProductInstaller).not.toContain("!include x64.nsh");
+    expect(createProductInstaller).not.toContain("requires 64-bit Windows");
   });
 
   it("allows installer update handoff to break away from the tray process job object", () => {
@@ -247,7 +250,7 @@ describe("desktop packaging scaffold", () => {
       "firebase:deploy:spark:no-storage": "powershell -ExecutionPolicy Bypass -File scripts/deploy-firebase.ps1 -SparkOnly -SkipStorage",
       "firebase:verify": "node scripts/verify-firebase-deploy-readiness.js",
       "release:exes": "node scripts/package-release-exes.js",
-      "release:manifest": "node scripts/create-update-manifest.js",
+      "release:manifest": "node scripts/create-update-manifest.js --architecture-migration=x64-to-x86",
       "release:keypair": "node scripts/generate-update-keypair.js",
       "release:publish": "powershell -ExecutionPolicy Bypass -File scripts/publish-github-release.ps1",
     });
@@ -513,12 +516,12 @@ describe("desktop packaging scaffold", () => {
     expect(styles).not.toContain(".firebase-agent-panel label:has");
   });
 
-  it("packages only the four supported Viewer and Agent installers", () => {
+  it("packages only the two x86 Viewer and Agent installers", () => {
     const packageReleaseScript = readFileSync(path.join(projectRoot, "scripts", "package-release-exes.js"), "utf8");
 
     expect(packageReleaseScript).toContain("WonRemote-Agent-Setup.exe");
-    expect(packageReleaseScript).toContain("WonRemote-Viewer-Setup-x86.exe");
-    expect(packageReleaseScript).toContain("WonRemote-Agent-Setup-x86.exe");
+    expect(packageReleaseScript).toContain("Two x86 WonRemote product installers created");
+    expect(packageReleaseScript).toContain('key: "x86"');
     expect(packageReleaseScript).toContain("createProductInstaller");
     expect(packageReleaseScript).toContain("makensis.exe");
     expect(packageReleaseScript).not.toContain("copyInstaller(viewerInstallerPath, stableFullInstallerName)");
@@ -530,7 +533,7 @@ describe("desktop packaging scaffold", () => {
     expect(packageReleaseScript).toContain("runtime");
   });
 
-  it("defines a dedicated 32-bit Windows release lane alongside the existing x64 assets", () => {
+  it("uses one x86 release lane while preserving x64 client update aliases", () => {
     const packageReleaseScript = readFileSync(path.join(projectRoot, "scripts", "package-release-exes.js"), "utf8");
     const publishScript = readFileSync(path.join(projectRoot, "scripts", "publish-github-release.ps1"), "utf8");
     const firebaseConfig = JSON.parse(readFileSync(path.join(projectRoot, "..", "firebase.json"), "utf8"));
@@ -544,16 +547,12 @@ describe("desktop packaging scaffold", () => {
     expect(packageReleaseScript).toContain("TARGET_ARCHITECTURES");
     expect(packageReleaseScript).toContain("i686-pc-windows-msvc");
     expect(packageReleaseScript).toContain("WONREMOTE_BUILD_ARCH");
-    expect(packageReleaseScript).toContain("WonRemote-Viewer-Setup-x86.exe");
-    expect(packageReleaseScript).toContain("WonRemote-Agent-Setup-x86.exe");
+    expect(packageReleaseScript).toContain("Two x86 WonRemote product installers created");
+    expect(publishScript).not.toContain("$StableInstallerPathX86");
+    expect(publishScript).not.toContain("$StableAgentInstallerPathX86");
 
-    expect(publishScript).toContain("WonRemote-Viewer-Setup-x86.exe");
-    expect(publishScript).toContain("WonRemote-Agent-Setup-x86.exe");
-    expect(publishScript).toContain("Publish-Asset $StableInstallerPathX86 $StableInstallerAssetNameX86");
-    expect(publishScript).toContain("Publish-Asset $StableAgentInstallerPathX86 $StableAgentInstallerAssetNameX86");
-
-    expect(redirects["/download/viewer-x86"]).toContain("WonRemote-Viewer-Setup-x86.exe");
-    expect(redirects["/download/agent-x86"]).toContain("WonRemote-Agent-Setup-x86.exe");
+    expect(redirects["/download/viewer-x86"]).toContain("WonRemote-Viewer-Setup.exe");
+    expect(redirects["/download/agent-x86"]).toContain("WonRemote-Agent-Setup.exe");
     expect(firebaseConfig.hosting.redirects).toHaveLength(4);
     for (const obsoletePath of [
       "/download/viewer-agent",
@@ -576,7 +575,7 @@ describe("desktop packaging scaffold", () => {
     expect(manifestScript).toContain("sha256=");
     expect(manifestScript).toContain("assetName=");
     expect(manifestScript).toContain("WonRemote-Viewer-Setup.exe");
-    expect(manifestScript).toContain("WonRemote-Agent-Setup-x86.exe");
+    expect(manifestScript).toContain("viewerPathX86");
     expect(manifestScript).toContain("viewerWindows");
     expect(manifestScript).toContain("agentWindows");
     expect(manifestScript).toContain("WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY");
@@ -609,13 +608,11 @@ describe("desktop packaging scaffold", () => {
     expect(publishScript).toContain("WonRemote-Viewer-Setup.exe");
     expect(publishScript).toContain("WonRemote-Agent-Setup.exe");
     expect(publishScript).toContain("$StableAgentInstallerPath");
-    expect(publishScript).toContain("$StableInstallerPathX86");
-    expect(publishScript).toContain("$StableAgentInstallerPathX86");
     expect(publishScript).toContain("Publish-Asset $StableAgentInstallerPath $StableAgentInstallerAssetName");
     expect(publishScript).toContain("wonremote-update-manifest.json");
   });
 
-  it("exposes exactly four canonical public download redirects", () => {
+  it("keeps x86 download routes as compatibility aliases to the two installers", () => {
     const firebaseConfig = JSON.parse(readFileSync(path.join(projectRoot, "..", "firebase.json"), "utf8"));
     const redirects = Object.fromEntries(
       firebaseConfig.hosting.redirects.map((redirect: { source: string; destination: string }) => [
@@ -626,8 +623,8 @@ describe("desktop packaging scaffold", () => {
 
     expect(redirects["/download/viewer"]).toContain("WonRemote-Viewer-Setup.exe");
     expect(redirects["/download/agent"]).toContain("WonRemote-Agent-Setup.exe");
-    expect(redirects["/download/viewer-x86"]).toContain("WonRemote-Viewer-Setup-x86.exe");
-    expect(redirects["/download/agent-x86"]).toContain("WonRemote-Agent-Setup-x86.exe");
+    expect(redirects["/download/viewer-x86"]).toContain("WonRemote-Viewer-Setup.exe");
+    expect(redirects["/download/agent-x86"]).toContain("WonRemote-Agent-Setup.exe");
     expect(Object.keys(redirects).filter((key) => key.startsWith("/download/")).sort()).toEqual([
       "/download/agent",
       "/download/agent-x86",
@@ -641,6 +638,9 @@ describe("desktop packaging scaffold", () => {
 
     expect(verifyDeliveryScript).toContain("$env:LOCALAPPDATA\\WonRemote\\Viewer");
     expect(verifyDeliveryScript).toContain("$env:LOCALAPPDATA\\WonRemote\\Agent");
+    expect(verifyDeliveryScript).toContain("release-exe/WonRemote-Viewer-Setup.exe");
+    expect(verifyDeliveryScript).toContain("release-exe/WonRemote-Agent-Setup.exe");
+    expect(verifyDeliveryScript).not.toContain("_x64-setup.exe");
     expect(verifyDeliveryScript).not.toContain("$env:LOCALAPPDATA\\WonRemote Viewer");
   });
 
@@ -649,26 +649,24 @@ describe("desktop packaging scaffold", () => {
 
     expect(registryStatusScript).toContain("wmic os get OSArchitecture");
     expect(registryStatusScript).toContain("OSArchitecture:");
-    expect(registryStatusScript).toContain("requires 64-bit Windows");
+    expect(registryStatusScript).toContain("supports 32-bit and 64-bit Windows");
   });
 
-  it("enforces the four-installer release contract and restart-mode wrapper", () => {
+  it("enforces the two-installer x86 release contract and restart-mode wrapper", () => {
     const packageReleaseScript = readFileSync(path.join(projectRoot, "scripts", "package-release-exes.js"), "utf8");
     const publishScript = readFileSync(path.join(projectRoot, "scripts", "publish-github-release.ps1"), "utf8");
     const manifestScript = readFileSync(path.join(projectRoot, "scripts", "create-update-manifest.js"), "utf8");
     for (const asset of [
       "WonRemote-Viewer-Setup.exe",
       "WonRemote-Agent-Setup.exe",
-      "WonRemote-Viewer-Setup-x86.exe",
-      "WonRemote-Agent-Setup-x86.exe",
     ]) {
       expect(publishScript).toContain(asset);
     }
     const packageMain = packageReleaseScript.slice(packageReleaseScript.indexOf("function main()"));
     expect(packageMain).toContain("expectedOutputs");
-    expect(packageMain).toContain("Four WonRemote product installers created");
+    expect(packageMain).toContain("Two x86 WonRemote product installers created");
     expect(publishScript).toContain("Publish-Asset $ManifestPath $ManifestName");
-    expect(publishScript.match(/^Publish-Asset /gm)?.length).toBe(5);
+    expect(publishScript.match(/^Publish-Asset /gm)?.length).toBe(3);
     expect(publishScript).toContain("Refusing to replace published release");
     expect(publishScript).toContain("Bump the version before publishing");
     expect(publishScript).toContain("Release upload verification failed");

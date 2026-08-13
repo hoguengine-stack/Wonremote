@@ -30,17 +30,6 @@ export function assertReleaseVersionConsistency() {
 
 const TARGET_ARCHITECTURES = [
   {
-    key: "x64",
-    buildArch: "x64",
-    rustTarget: null,
-    viewerConfig: null,
-    agentConfig: "src-tauri/tauri.agent.conf.json",
-    installerArch: "x64",
-    stageDir: outputDir,
-    stableInstallerName: "WonRemote-Viewer-Setup.exe",
-    stableAgentInstallerName: "WonRemote-Agent-Setup.exe",
-  },
-  {
     key: "x86",
     buildArch: "ia32",
     rustTarget: "i686-pc-windows-msvc",
@@ -48,8 +37,8 @@ const TARGET_ARCHITECTURES = [
     agentConfig: "src-tauri/tauri.agent.x86.conf.json",
     installerArch: "x86",
     stageDir: path.join(outputDir, "x86"),
-    stableInstallerName: "WonRemote-Viewer-Setup-x86.exe",
-    stableAgentInstallerName: "WonRemote-Agent-Setup-x86.exe",
+    stableInstallerName: "WonRemote-Viewer-Setup.exe",
+    stableAgentInstallerName: "WonRemote-Agent-Setup.exe",
   },
 ];
 
@@ -136,24 +125,11 @@ function resolveMakensisPath() {
   throw new Error("makensis.exe is missing. Build with Tauri once or set WONREMOTE_MAKENSIS_PATH.");
 }
 
-function x64OnlyNsisGuard(target) {
-  if (target.key !== "x64") {
-    return "";
-  }
-  return `  \${IfNot} \${RunningX64}
-    MessageBox MB_ICONSTOP "WonRemote requires 64-bit Windows. This installer cannot run on 32-bit Windows."
-    Abort
-  \${EndIf}
-
-`;
-}
-
 function createProductInstaller(viewerInstallerPath, agentInstallerPath, target, defaultMode) {
   const outputName = defaultMode === "agent" ? target.stableAgentInstallerName : target.stableInstallerName;
   const outputPath = path.join(outputDir, outputName);
   const scriptPath = path.join(outputDir, `WonRemote-${defaultMode}-Setup-${target.key}.nsi`);
   const script = `!include LogicLib.nsh
-!include x64.nsh
 Unicode true
 Name "WonRemote ${defaultMode === "agent" ? "Agent" : "Viewer"}"
 OutFile "${escapeNsisString(outputPath)}"
@@ -161,7 +137,7 @@ RequestExecutionLevel user
 Page instfiles
 
 Section "Install"
-${x64OnlyNsisGuard(target)}  InitPluginsDir
+  InitPluginsDir
   SetOutPath "$PLUGINSDIR"
   File /oname=viewer-installer.exe "${escapeNsisString(viewerInstallerPath)}"
   File /oname=agent-installer.exe "${escapeNsisString(agentInstallerPath)}"
@@ -252,9 +228,9 @@ function main() {
   ]).sort();
   const actualOutputs = fs.readdirSync(outputDir).filter((name) => /\.exe$/i.test(name)).sort();
   if (JSON.stringify(actualOutputs) !== JSON.stringify(expectedOutputs)) {
-    throw new Error(`Release output must contain exactly four product installers; found: ${actualOutputs.join(", ")}`);
+    throw new Error(`Release output must contain exactly two x86 product installers; found: ${actualOutputs.join(", ")}`);
   }
-  console.log(`Four WonRemote product installers created at ${outputDir}`);
+  console.log(`Two x86 WonRemote product installers created at ${outputDir}`);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

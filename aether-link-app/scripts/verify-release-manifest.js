@@ -38,6 +38,51 @@ function readAsset(manifest, section, arch) {
   return asset;
 }
 
+function buildArchitectureMigrationSignaturePayload(input) {
+  return [
+    "signatureVersion=3",
+    `version=${input.latestVersion}`,
+    `forceUpdate=${input.forceUpdate ? "true" : "false"}`,
+    "from=x64",
+    "to=x86",
+    `viewer.url=${input.viewer.url}`,
+    `viewer.sha256=${input.viewer.sha256.toLowerCase()}`,
+    `viewer.assetName=${input.viewer.name}`,
+    `agent.url=${input.agent.url}`,
+    `agent.sha256=${input.agent.sha256.toLowerCase()}`,
+    `agent.assetName=${input.agent.name}`,
+  ].join("\n");
+}
+
+function verifyArchitectureMigration(manifest) {
+  const migration = manifest.architectureMigration;
+  if (!migration || typeof migration !== "object") {
+    throw new Error("Release manifest must include a signed x64-to-x86 architecture migration.");
+  }
+  if (migration.from !== "x64" || migration.to !== "x86" || typeof migration.signature !== "string") {
+    throw new Error("Release manifest architecture migration must be x64-to-x86 with a signature.");
+  }
+  const viewerX64 = readAsset(manifest, "viewerWindows", "x64");
+  const viewerX86 = readAsset(manifest, "viewerWindows", "x86");
+  const agentX64 = readAsset(manifest, "agentWindows", "x64");
+  const agentX86 = readAsset(manifest, "agentWindows", "x86");
+  for (const [label, x64, x86] of [["viewer", viewerX64, viewerX86], ["agent", agentX64, agentX86]]) {
+    if (x64.name !== x86.name || x64.url !== x86.url || x64.sha256 !== x86.sha256) {
+      throw new Error(`Release manifest ${label} x64 metadata must alias the x86 installer during migration.`);
+    }
+  }
+  const payload = buildArchitectureMigrationSignaturePayload({
+    agent: agentX86,
+    forceUpdate: manifest.forceUpdate === true,
+    latestVersion: manifest.version,
+    viewer: viewerX86,
+  });
+  const publicKey = process.env.WONREMOTE_UPDATE_MANIFEST_PUBLIC_KEY?.trim() || BUNDLED_UPDATE_MANIFEST_PUBLIC_KEY;
+  if (!verify(null, Buffer.from(payload, "utf8"), publicKey, Buffer.from(migration.signature, "base64"))) {
+    throw new Error("Release manifest architecture migration signature does not match the trusted update public key.");
+  }
+}
+
 function urlAssetName(value, fieldName) {
   try {
     const url = new URL(value);
@@ -140,8 +185,8 @@ await verifyAsset(manifest, {
 await verifyAsset(manifest, {
   arch: "x86",
   section: "viewerWindows",
-  filePath: path.resolve(requiredArg(args, "--viewer-x86")),
-  expectedName: args.get("--viewer-asset-name-x86") || "WonRemote-Viewer-Setup-x86.exe",
+  filePath: path.resolve(args.get("--viewer-x86") || requiredArg(args, "--viewer-x64")),
+  expectedName: args.get("--viewer-asset-name-x86") || args.get("--viewer-asset-name-x64") || "WonRemote-Viewer-Setup.exe",
 });
 await verifyAsset(manifest, {
   arch: "x64",
@@ -152,8 +197,8 @@ await verifyAsset(manifest, {
 await verifyAsset(manifest, {
   arch: "x86",
   section: "agentWindows",
-  filePath: path.resolve(requiredArg(args, "--agent-x86")),
-  expectedName: args.get("--agent-asset-name-x86") || "WonRemote-Agent-Setup-x86.exe",
+  filePath: path.resolve(args.get("--agent-x86") || requiredArg(args, "--agent-x64")),
+  expectedName: args.get("--agent-asset-name-x86") || args.get("--agent-asset-name-x64") || "WonRemote-Agent-Setup.exe",
 });
 
 for (const arch of ["x64", "x86"]) {
@@ -162,4 +207,6 @@ for (const arch of ["x64", "x86"]) {
   }
 }
 
-console.log(`Verified release manifest ${manifestPath} for ${version} (four Viewer/Agent installers, x64 and x86).`);
+verifyArchitectureMigration(manifest);
+
+console.log(`Verified release manifest ${manifestPath} for ${version} (two x86 installers with signed x64 migration aliases).`);
