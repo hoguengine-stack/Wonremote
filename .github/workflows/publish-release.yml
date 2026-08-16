@@ -76,10 +76,10 @@ jobs:
         run: npm run test:update-e2e
 
       - name: Verify Tauri resource paths
-        run: cargo test --manifest-path src-tauri/Cargo.toml test_node_resource_paths
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib test_node_resource_paths
 
       - name: Verify updater acknowledgement ownership
-        run: cargo test --manifest-path src-tauri/Cargo.toml test_update_handoff_acknowledgement_path_is_adjacent_to_the_owned_script
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib test_update_handoff_acknowledgement_path_is_adjacent_to_the_owned_script
 
       - name: Build two x86 installers and signed compatibility manifest
         run: |
