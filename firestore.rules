@@ -83,7 +83,9 @@ service cloud.firestore {
         && request.resource.data.ownerUid == resource.data.ownerUid
         && request.resource.data.businessNumber == resource.data.businessNumber
         && request.resource.data.deviceNumber == resource.data.deviceNumber
-        && request.resource.data.installId == resource.data.installId;
+        && request.resource.data.installId == resource.data.installId
+        && request.resource.data.get("updateRing", null) == resource.data.get("updateRing", null)
+        && request.resource.data.get("updatePaused", false) == resource.data.get("updatePaused", false);
     }
 
     function isCentralViewerDeviceUpdate() {
@@ -100,7 +102,9 @@ service cloud.firestore {
           "desktopName",
           "deletedAt",
           "status",
-          "updatedAt"
+          "updatedAt",
+          "updatePaused",
+          "updateRing"
         ]);
     }
 
@@ -205,6 +209,18 @@ service cloud.firestore {
         allow update: if ownsDevice(deviceId);
         allow delete: if isCentralViewer();
       }
+    }
+
+    match /configuration/{configId} {
+      allow read: if signedIn();
+      allow create, update: if isCentralViewer()
+        && configId == "updateRollout"
+        && request.resource.data.targetVersion is string
+        && request.resource.data.stage in ["canary", "pilot", "general"]
+        && request.resource.data.percentage is number
+        && request.resource.data.percentage >= 0
+        && request.resource.data.percentage <= 100;
+      allow delete: if false;
     }
 
     match /sessions/{sessionId} {

@@ -37,6 +37,7 @@ import {
   type StreamCaptureBackend,
 } from "./agentStreamPolicy";
 import { WONREMOTE_APP_VERSION } from "../domain/appVersion";
+import { decideUpdateEligibility } from "../domain/updateFleetPolicy";
 import { computeSha256 } from "./checksum";
 import { saveTransferredFileChunk } from "./fileTransferReceiver";
 import { downloadFirebaseStorageFile } from "./firebaseStorageDownload";
@@ -77,6 +78,7 @@ import { createAgentPointerState, recordSuccessfulPointerAction } from "./agentP
 import { processWebRtcFileChunk } from "./webrtcFileReceiver";
 import { copyPngFileToWindowsClipboardAndRemove } from "./clipboardImage";
 import { runAgentWebRtcRuntimeSmoke } from "./agentWebRtcRuntimeSmoke";
+import { loadInstallerUpdateResult } from "./updateResult";
 import {
   getStreamPerformanceProfile,
   type StreamPerformanceMode,
@@ -87,9 +89,11 @@ import {
   fetchActiveFirebaseSessionsForAgent,
   fetchSessionDataWithFirebase,
   isAgentFirebaseEnabled,
+  loadAgentUpdateRolloutWithFirebase,
   postChatWithFirebase,
   postClipboardWithFirebase,
   postFileTransferReceiptWithFirebase,
+  reportAgentUpdateTelemetryWithFirebase,
   postSessionTilesWithFirebase,
   registerAgentFirstRunWithFirebase,
   resolveFirebaseStorageDownloadUrl,
@@ -106,6 +110,7 @@ import type {
   AgentCommand,
   AgentFirstRunResult,
   AgentStreamDiagnostics,
+  AgentUpdateTelemetry,
   DeviceDisplayInfo,
   FileTransferReceipt,
 } from "../domain/types";
@@ -897,6 +902,8 @@ async function main() {
     console.log("[Agent] Firebase mode enabled. Skipping local API health gate.");
   }
 
+  const updateResultPath = path.join(process.env.APPDATA ?? process.cwd(), "WonRemote", "updates", "last-update-result.json");
+  currentUpdateTelemetry = await loadInstallerUpdateResult(updateResultPath, WONREMOTE_APP_VERSION) ?? currentUpdateTelemetry;
   console.log("[Status] Online");
 
   const configPath = getAgentConfigPath();
@@ -1077,6 +1084,29 @@ async function main() {
 
 let isUpdating = false;
 let lastUpdateCheckAttemptAtMs: number | null = null;
+let currentUpdateTelemetry: AgentUpdateTelemetry = {
+  currentVersion: WONREMOTE_APP_VERSION,
+  progress: 100,
+  state: "healthy",
+  updatedAt: new Date().toISOString(),
+};
+
+async function setUpdateTelemetry(
+  config: AgentLocalConfig,
+  patch: Partial<AgentUpdateTelemetry>,
+): Promise<void> {
+  currentUpdateTelemetry = {
+    ...currentUpdateTelemetry,
+    ...patch,
+    currentVersion: WONREMOTE_APP_VERSION,
+    updatedAt: new Date().toISOString(),
+  };
+  if (USE_FIREBASE && config.registeredDeviceId) {
+    await reportAgentUpdateTelemetryWithFirebase(config.registeredDeviceId, currentUpdateTelemetry).catch((error) => {
+      console.error("[WonRemote Agent] Update telemetry report failed:", error instanceof Error ? error.message : error);
+    });
+  }
+}
 
 function scheduleAgentUpdateRetry(): void {
   const retryAfterMs = resolveAgentUpdateFailureRetryMs(UPDATE_CHECK_INTERVAL_MS);
@@ -1094,20 +1124,62 @@ async function checkUpdate(config: AgentLocalConfig) {
   isUpdating = true;
   const currentVersion = WONREMOTE_APP_VERSION;
   try {
+    const retainedFailure = currentUpdateTelemetry.state === "rollback" || currentUpdateTelemetry.state === "failed";
+    if (!retainedFailure) {
+      await setUpdateTelemetry(config, { error: undefined, progress: 0, state: "checking", targetVersion: undefined });
+    }
     const data = await loadUpdateCheckData();
     if (!data) {
+      await setUpdateTelemetry(config, { error: "Update metadata is unavailable.", state: "failed" });
       scheduleAgentUpdateRetry();
       isUpdating = false;
       return;
     }
 
+    if (retainedFailure && currentUpdateTelemetry.targetVersion === data.latestVersion) {
+      console.error(`[WonRemote Agent] Automatic retry blocked for failed update ${data.latestVersion}.`);
+      isUpdating = false;
+      return;
+    }
+    if (retainedFailure) {
+      await setUpdateTelemetry(config, { error: undefined, progress: 0, state: "checking", targetVersion: undefined });
+    }
+
     if (data.latestVersion && (data.forceUpdate || isHigherVersion(data.latestVersion, currentVersion))) {
+      if (USE_FIREBASE && config.registeredDeviceId) {
+        const rolloutControl = await loadAgentUpdateRolloutWithFirebase(config.registeredDeviceId);
+        if (rolloutControl) {
+          const decision = decideUpdateEligibility({
+            id: config.registeredDeviceId,
+            updateCurrentVersion: currentVersion,
+            updatePaused: rolloutControl.updatePaused,
+            updateRing: rolloutControl.updateRing,
+          }, rolloutControl.rollout);
+          if (rolloutControl.rollout.targetVersion !== data.latestVersion || !decision.eligible) {
+            await setUpdateTelemetry(config, {
+              error: undefined,
+              progress: 0,
+              state: "idle",
+              targetVersion: data.latestVersion,
+            });
+            console.log(`[WonRemote Agent] Update ${data.latestVersion} deferred by rollout policy: ${decision.reason}`);
+            isUpdating = false;
+            return;
+          }
+        }
+      }
+      await setUpdateTelemetry(config, {
+        error: undefined,
+        progress: 0,
+        state: "downloading",
+        targetVersion: data.latestVersion,
+      });
       if (isPortableUpdateMetadata(data)) {
         await handoffToPortableUpdate(data);
         return;
       }
       if (isInstallerUpdateMetadata(data)) {
-        await handoffToProductionInstallerUpdate(data);
+        await handoffToProductionInstallerUpdate(data, config);
         return;
       }
 
@@ -1281,10 +1353,15 @@ if exist "${path.join(baseDir, "WonRemote", ".update_success")}" (
       ));
       process.exit(0);
     } else {
+      await setUpdateTelemetry(config, { error: undefined, progress: 100, state: "healthy", targetVersion: currentVersion });
       isUpdating = false;
     }
   } catch (e) {
     console.error("[Update Failed]:", e instanceof Error ? e.message : e);
+    await setUpdateTelemetry(config, {
+      error: e instanceof Error ? e.message : String(e),
+      state: "failed",
+    });
     scheduleAgentUpdateRetry();
     isUpdating = false;
   }
@@ -1302,13 +1379,30 @@ async function loadUpdateCheckData(): Promise<any | null> {
   return res.json();
 }
 
-async function handoffToProductionInstallerUpdate(data: SafeInstallerUpdateMetadata): Promise<void> {
+async function handoffToProductionInstallerUpdate(
+  data: SafeInstallerUpdateMetadata,
+  config: AgentLocalConfig,
+): Promise<void> {
   const baseDir = process.env.APPDATA ?? process.cwd();
-  const download = await downloadInstallerUpdate(data, { baseDir });
+  const download = await downloadInstallerUpdate(data, {
+    baseDir,
+    onProgress: ({ downloadedBytes, totalBytes }) => {
+      currentUpdateTelemetry = {
+        ...currentUpdateTelemetry,
+        progress: totalBytes && totalBytes > 0
+          ? Math.min(99, Math.floor((downloadedBytes / totalBytes) * 100))
+          : undefined,
+        state: "downloading",
+        updatedAt: new Date().toISOString(),
+      };
+    },
+  });
+  await setUpdateTelemetry(config, { progress: 100, state: "installing" });
   const handoff = await prepareInstallerHandoff(download, {
     baseDir,
     restartExecutablePath: process.env.WONREMOTE_HOST_EXE_PATH,
     restartMode: "agent",
+    targetVersion: data.latestVersion,
   });
   const { installerArgs, installerPath } = download;
   console.log(`[WonRemote Agent] Verified installer update downloaded: ${installerPath}`);
@@ -1332,6 +1426,7 @@ async function handoffToProductionInstallerUpdate(data: SafeInstallerUpdateMetad
   }
 
   console.log("[WonRemote Agent] Handed off to production installer and exiting current Agent.");
+  await setUpdateTelemetry(config, { progress: 100, state: "restarting" });
   await new Promise((resolve) => setTimeout(resolve, 500));
   await releaseInputAndCompleteUpdateHandoff(handoff.scriptPath, "Agent update handoff started.");
 }
@@ -1605,6 +1700,7 @@ async function sendHeartbeat(config: AgentLocalConfig): Promise<void> {
     macAddresses,
     controlDiagnostics,
     streamDiagnostics,
+    updateTelemetry: currentUpdateTelemetry,
   });
   console.log(`Heartbeat accepted: ${result.device.id}`);
 }

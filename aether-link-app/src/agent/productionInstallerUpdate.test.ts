@@ -1,10 +1,11 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   INSTALLER_HANDOFF_CREATION_FLAGS,
+  cleanupInstallerUpdateArtifacts,
   prepareInstallerHandoff,
   downloadInstallerUpdate,
   installerArgsForUpdate,
@@ -37,13 +38,85 @@ describe("production installer update", () => {
       );
 
       expect(path.dirname(result.installerPath)).toBe(path.join(baseDir, "WonRemote", "updates"));
-      expect(path.basename(result.installerPath)).toMatch(
-        /^WonRemote Viewer_0\.1\.9_x64-setup-[0-9a-f]{8}-[0-9a-f-]{27}\.exe$/,
+      expect(path.basename(result.installerPath)).toBe(
+        `WonRemote Viewer_0.1.9_x64-setup-${checksum.slice(0, 12)}.exe`,
       );
       expect(await readFile(result.installerPath)).toEqual(body);
       expect(result.installerArgs).toEqual(["/S"]);
     } finally {
       await rm(baseDir, { recursive: true, force: true });
+    }
+  });
+
+  it("resumes a partial installer download with an HTTP Range request", async () => {
+    const baseDir = path.join(os.tmpdir(), `wonremote-installer-resume-${process.pid}-${Date.now()}`);
+    const body = Buffer.from("complete-installer-binary");
+    const checksum = createHash("sha256").update(body).digest("hex");
+    const updatesDir = path.join(baseDir, "WonRemote", "updates");
+    const installerPath = path.join(updatesDir, `WonRemote-Agent-Setup-${checksum.slice(0, 12)}.exe`);
+    const partialPath = `${installerPath}.part`;
+    const firstPart = body.subarray(0, 9);
+    const requestedRanges: Array<string | null> = [];
+
+    try {
+      await mkdir(updatesDir, { recursive: true });
+      await writeFile(partialPath, firstPart);
+      const result = await downloadInstallerUpdate(
+        {
+          assetName: "WonRemote-Agent-Setup.exe",
+          checksum,
+          downloadUrl: "https://example.com/WonRemote-Agent-Setup.exe",
+          latestVersion: "0.1.9",
+          updateKind: "installer",
+        },
+        {
+          baseDir,
+          fetchImpl: async (_url, init) => {
+            const range = new Headers(init?.headers).get("Range");
+            requestedRanges.push(range);
+            return new Response(body.subarray(firstPart.length), {
+              headers: {
+                "content-length": String(body.length - firstPart.length),
+                "content-range": `bytes ${firstPart.length}-${body.length - 1}/${body.length}`,
+              },
+              status: 206,
+            });
+          },
+        },
+      );
+
+      expect(requestedRanges).toEqual([`bytes=${firstPart.length}-`]);
+      expect(result.installerPath).toBe(installerPath);
+      expect(await readFile(installerPath)).toEqual(body);
+    } finally {
+      await rm(baseDir, { recursive: true, force: true });
+    }
+  });
+
+  it("cleans stale update artifacts but retains rollback-failure backups", async () => {
+    const updatesDir = path.join(os.tmpdir(), `wonremote-installer-cleanup-${process.pid}-${Date.now()}`);
+    const staleInstaller = path.join(updatesDir, "old-installer.exe");
+    const staleRollback = path.join(updatesDir, "rollback-stale");
+    const failedRollback = path.join(updatesDir, "rollback-failed");
+    const old = new Date(Date.now() - 10 * 24 * 60 * 60 * 1_000);
+    try {
+      await mkdir(staleRollback, { recursive: true });
+      await mkdir(failedRollback, { recursive: true });
+      await writeFile(staleInstaller, "old");
+      await writeFile(path.join(failedRollback, "ROLLBACK_FAILED"), "retain");
+      await Promise.all([
+        utimes(staleInstaller, old, old),
+        utimes(staleRollback, old, old),
+        utimes(failedRollback, old, old),
+      ]);
+
+      await cleanupInstallerUpdateArtifacts(updatesDir);
+
+      await expect(readFile(staleInstaller)).rejects.toThrow();
+      await expect(stat(staleRollback)).rejects.toThrow();
+      expect(await readFile(path.join(failedRollback, "ROLLBACK_FAILED"), "utf8")).toBe("retain");
+    } finally {
+      await rm(updatesDir, { recursive: true, force: true });
     }
   });
 
@@ -127,7 +200,12 @@ describe("production installer update", () => {
       expect(script).toContain("Backup-WonRemoteInstall\n  Stop-WonRemoteProcesses\n  Write-HandoffLog");
       expect(script).toContain("throw 'No previous WonRemote installation was available to back up.'");
       expect(script).toContain("Rollback backup retained for manual recovery");
-      expect(script).toContain("Remove-WonRemoteRollback\n  Close-UpdateLock");
+      expect(script).toContain("ROLLBACK_FAILED");
+      expect(script).toContain("last-update-result.json");
+      expect(script).toContain("Write-UpdateResult 'healthy'");
+      expect(script).toContain("Write-UpdateResult 'rollback'");
+      expect(script).toContain("Write-UpdateResult 'failed'");
+      expect(script).toContain("Remove-WonRemoteRollback\n  Write-UpdateResult 'healthy' ''\n  Close-UpdateLock");
       expect(script).not.toContain("WONREMOTE_RESTART_MODE");
       expect(script).toContain("Start-WonRemoteAgent");
       expect(script).toContain("Join-Path $root \"wonremote-viewer.exe\"");

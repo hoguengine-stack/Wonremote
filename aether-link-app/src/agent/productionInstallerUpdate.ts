@@ -1,6 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { createReadStream, createWriteStream } from "node:fs";
+import { mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 
 export type InstallerUpdateMetadata = {
   assetName?: unknown;
@@ -34,12 +37,14 @@ export type SafeInstallerUpdateMetadata = InstallerUpdateMetadata & {
 type DownloadInstallerOptions = {
   baseDir: string;
   fetchImpl?: typeof fetch;
+  onProgress?: (progress: { downloadedBytes: number; totalBytes?: number }) => void;
 };
 
 type PrepareInstallerHandoffOptions = {
   baseDir: string;
   restartExecutablePath?: string;
   restartMode?: InstallerRestartMode;
+  targetVersion?: string;
 };
 
 export type InstallerRestartMode = "agent" | "viewer";
@@ -47,6 +52,8 @@ export type InstallerRestartMode = "agent" | "viewer";
 const CREATE_NO_WINDOW = 0x08000000;
 const CREATE_BREAKAWAY_FROM_JOB = 0x01000000;
 export const INSTALLER_HANDOFF_CREATION_FLAGS = CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB;
+export const UPDATE_ARTIFACT_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
+const FAILED_ROLLBACK_MARKER = "ROLLBACK_FAILED";
 
 export function isInstallerUpdateMetadata(value: unknown): value is SafeInstallerUpdateMetadata {
   if (!isRecord(value)) {
@@ -71,29 +78,108 @@ export async function downloadInstallerUpdate(
     throw new Error("Installer update metadata is incomplete or unsafe.");
   }
 
-  const fetchImpl = options.fetchImpl ?? fetch;
-  const response = await fetchImpl(metadata.downloadUrl);
-  if (!response.ok) {
-    throw new Error(`Installer download failed: HTTP ${response.status}`);
-  }
-
-  const installerBuffer = Buffer.from(await response.arrayBuffer());
-  const actualChecksum = createHash("sha256").update(installerBuffer).digest("hex");
   const expectedChecksum = metadata.checksum.toLowerCase();
-  if (actualChecksum !== expectedChecksum) {
-    throw new Error(`Installer checksum mismatch: expected ${expectedChecksum}, got ${actualChecksum}`);
-  }
-
   const updatesDir = path.join(options.baseDir, "WonRemote", "updates");
   await mkdir(updatesDir, { recursive: true });
+  await cleanupInstallerUpdateArtifacts(updatesDir);
   const safeName = safeInstallerName(metadata);
-  const installerPath = path.join(updatesDir, `${safeName.slice(0, -4)}-${randomUUID()}.exe`);
-  await writeFile(installerPath, installerBuffer);
+  const installerPath = path.join(updatesDir, `${safeName.slice(0, -4)}-${expectedChecksum.slice(0, 12)}.exe`);
+  const partialPath = `${installerPath}.part`;
+
+  if (await fileMatchesChecksum(installerPath, expectedChecksum)) {
+    return { installerArgs: installerArgsForUpdate(metadata), installerPath };
+  }
+  await rm(installerPath, { force: true });
+
+  const existingBytes = await fileSize(partialPath);
+  await downloadToPartialFile(metadata.downloadUrl, partialPath, existingBytes, options);
+  const actualChecksum = await sha256File(partialPath);
+  if (actualChecksum !== expectedChecksum) {
+    await rm(partialPath, { force: true });
+    throw new Error(`Installer checksum mismatch: expected ${expectedChecksum}, got ${actualChecksum}`);
+  }
+  await rename(partialPath, installerPath);
 
   return {
     installerArgs: installerArgsForUpdate(metadata),
     installerPath,
   };
+}
+
+async function downloadToPartialFile(
+  downloadUrl: string,
+  partialPath: string,
+  existingBytes: number,
+  options: DownloadInstallerOptions,
+): Promise<void> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const headers = existingBytes > 0 ? { Range: `bytes=${existingBytes}-` } : undefined;
+  let response = await fetchImpl(downloadUrl, { headers });
+  if (response.status === 416 && existingBytes > 0) {
+    await rm(partialPath, { force: true });
+    response = await fetchImpl(downloadUrl);
+    existingBytes = 0;
+  }
+  if (!response.ok || !response.body) {
+    throw new Error(`Installer download failed: HTTP ${response.status}`);
+  }
+
+  const isResumed = existingBytes > 0 && response.status === 206;
+  if (response.status === 206 && !contentRangeStartsAt(response.headers.get("content-range"), existingBytes)) {
+    throw new Error("Installer resume response had an invalid Content-Range.");
+  }
+  const startingBytes = isResumed ? existingBytes : 0;
+  const contentLength = Number(response.headers.get("content-length"));
+  const totalBytes = Number.isFinite(contentLength) ? startingBytes + contentLength : undefined;
+  let downloadedBytes = startingBytes;
+  const source = Readable.fromWeb(response.body as never);
+  source.on("data", (chunk: Buffer) => {
+    downloadedBytes += chunk.length;
+    options.onProgress?.({ downloadedBytes, totalBytes });
+  });
+  await pipeline(source, createWriteStream(partialPath, { flags: isResumed ? "a" : "w" }));
+}
+
+export async function cleanupInstallerUpdateArtifacts(
+  updatesDir: string,
+  nowMs = Date.now(),
+  retentionMs = UPDATE_ARTIFACT_RETENTION_MS,
+): Promise<void> {
+  const entries = await readdir(updatesDir, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    const entryPath = path.join(updatesDir, entry.name);
+    const info = await stat(entryPath).catch(() => null);
+    if (!info || nowMs - info.mtimeMs < retentionMs) continue;
+    if (entry.isDirectory() && entry.name.startsWith("rollback-")) {
+      const retained = await stat(path.join(entryPath, FAILED_ROLLBACK_MARKER)).then(() => true).catch(() => false);
+      if (!retained) await rm(entryPath, { recursive: true, force: true });
+      continue;
+    }
+    if (entry.isFile() && /\.(?:part|exe|ps1|log|accepted)$/i.test(entry.name)) {
+      await rm(entryPath, { force: true });
+    }
+  }
+}
+
+async function fileMatchesChecksum(filePath: string, expectedChecksum: string): Promise<boolean> {
+  return sha256File(filePath).then((value) => value === expectedChecksum).catch(() => false);
+}
+
+async function sha256File(filePath: string): Promise<string> {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(filePath)) {
+    hash.update(chunk);
+  }
+  return hash.digest("hex");
+}
+
+async function fileSize(filePath: string): Promise<number> {
+  return stat(filePath).then((value) => value.size).catch(() => 0);
+}
+
+function contentRangeStartsAt(value: string | null, expectedStart: number): boolean {
+  const match = /^bytes (\d+)-\d+\/\d+$/.exec(value ?? "");
+  return Boolean(match && Number(match[1]) === expectedStart);
 }
 
 export async function prepareInstallerHandoff(
@@ -115,6 +201,7 @@ export async function prepareInstallerHandoff(
       logPath,
       restartExecutablePath: options.restartExecutablePath,
       restartMode: options.restartMode ?? "agent",
+      targetVersion: options.targetVersion,
     }),
     "utf8",
   );
@@ -143,6 +230,7 @@ function buildInstallerHandoffScript(input: {
   logPath: string;
   restartExecutablePath?: string;
   restartMode: InstallerRestartMode;
+  targetVersion?: string;
 }): string {
   const quotedArgs = input.installerArgs.map((arg) => `'${escapePowerShellSingleQuoted(arg)}'`).join(", ");
   const quotedExplicitInstallRoots = installerInstallRootsForHandoff(input.installerArgs)
@@ -157,6 +245,8 @@ $InstallerArgs = @(${quotedArgs})
 $LockPath = '${escapePowerShellSingleQuoted(input.lockPath)}'
 $RestartMode = '${escapePowerShellSingleQuoted(input.restartMode)}'
 $RestartExecutablePath = '${escapePowerShellSingleQuoted(input.restartExecutablePath ?? "")}'
+$TargetVersion = '${escapePowerShellSingleQuoted(input.targetVersion ?? "")}'
+$ResultPath = Join-Path (Split-Path -Parent $InstallerPath) 'last-update-result.json'
 $explicitInstallRoots = @(${quotedExplicitInstallRoots})
 $RollbackRoot = Join-Path (Split-Path -Parent $InstallerPath) ('rollback-' + [guid]::NewGuid().ToString())
 $script:RollbackEntries = @()
@@ -164,6 +254,12 @@ $FailureExitCode = 1
 function Write-HandoffLog([string]$Message) {
   $stamp = Get-Date -Format o
   Add-Content -LiteralPath $LogPath -Encoding UTF8 -Value "[$stamp] $Message"
+}
+
+function Write-UpdateResult([string]$State, [string]$ErrorMessage) {
+  @{ state = $State; error = $ErrorMessage; targetVersion = $TargetVersion; updatedAt = (Get-Date -Format o) } |
+    ConvertTo-Json -Compress |
+    Set-Content -LiteralPath $ResultPath -Encoding UTF8
 }
 
 $UpdateLock = $null
@@ -446,6 +542,7 @@ try {
     Wait-WonRemoteViewer
   }
   Remove-WonRemoteRollback
+  Write-UpdateResult 'healthy' ''
   Close-UpdateLock
   exit 0
 } catch {
@@ -457,13 +554,17 @@ try {
       $rollbackCompleted = $true
     } catch {
       Write-HandoffLog "Installer rollback failed: $($_.Exception.Message)"
+      Set-Content -LiteralPath (Join-Path $RollbackRoot '${FAILED_ROLLBACK_MARKER}') -Encoding UTF8 -Value (Get-Date -Format o) -ErrorAction SilentlyContinue
       Write-HandoffLog "Rollback backup retained for manual recovery: $RollbackRoot"
     }
   } else {
     Write-HandoffLog 'Installer was not started because no complete rollback backup was available.'
   }
   if ($rollbackCompleted) {
+    Write-UpdateResult 'rollback' 'The new runtime failed and the previous version was restored.'
     Remove-WonRemoteRollback
+  } elseif ($script:RollbackEntries.Count -gt 0) {
+    Write-UpdateResult 'failed' 'The installer and automatic rollback both failed.'
   }
   Close-UpdateLock
   exit $FailureExitCode

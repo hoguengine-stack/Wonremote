@@ -43,6 +43,19 @@ describe("Firebase security deployment policy", () => {
     expect(rules).toContain("request.resource.data.businessNumber == resource.data.businessNumber");
     expect(rules).toContain("request.resource.data.deviceNumber == resource.data.deviceNumber");
     expect(rules).toContain("request.resource.data.installId == resource.data.installId");
+    expect(rules).toContain('request.resource.data.get("updateRing", null) == resource.data.get("updateRing", null)');
+    expect(rules).toContain('request.resource.data.get("updatePaused", false) == resource.data.get("updatePaused", false)');
+  });
+
+  it("limits staged update controls to the central Viewer while Agents can read the policy", () => {
+    const rules = readFileSync(resolve(repoRoot, "firestore.rules"), "utf8");
+
+    expect(rules).toContain("match /configuration/{configId}");
+    expect(rules).toContain("allow read: if signedIn();");
+    expect(rules).toContain('configId == "updateRollout"');
+    expect(rules).toContain('request.resource.data.stage in ["canary", "pilot", "general"]');
+    expect(rules).toContain('"updatePaused",');
+    expect(rules).toContain('"updateRing",');
   });
 
   it("authorizes central Viewer device list queries while keeping Agent ownership checks", () => {

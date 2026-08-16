@@ -21,6 +21,12 @@ import {
   RotateCcw,
   Power,
   Trash2,
+  LayoutDashboard,
+  Wifi,
+  WifiOff,
+  TriangleAlert,
+  Pencil,
+  SlidersHorizontal,
 } from "lucide-react";
 import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -57,6 +63,9 @@ import {
   startFirebaseViewerWebRtcTransport,
   subscribeFirebaseDevices,
   subscribeViewerAuthState,
+  loadFirebaseUpdateRollout,
+  saveFirebaseUpdateRollout,
+  updateFirebaseDeviceRollout,
   type ViewerWebRtcTransport,
 } from "./firebase/viewerFirebase";
 import { groupDevicesByStore, resolveDeviceStatuses } from "./domain/agentRegistry";
@@ -114,7 +123,9 @@ import type {
   TransferredFile,
   ConnectionHistoryEntry,
   DeviceMetadataUpdateInput,
+  DeviceUpdateRing,
 } from "./domain/types";
+import type { UpdateFleetRollout } from "./domain/updateFleetPolicy";
 
 type DeviceEditTarget =
   | { mode: "device"; devices: [ManagedDevice] }
@@ -132,6 +143,54 @@ type ViewerUpdateDialogState =
   | { kind: "available"; version: string }
   | { kind: "current"; version: string }
   | { kind: "error"; message: string };
+
+type DeviceUpdateInfo = {
+  kind: "current" | "active" | "attention" | "unknown";
+  label: string;
+};
+
+function resolveDeviceUpdateInfo(device: ManagedDevice): DeviceUpdateInfo {
+  // These fields are accepted from newer Agents before ManagedDevice is expanded.
+  const candidate = device as ManagedDevice & Record<string, unknown>;
+  const state = [candidate.updateState, candidate.updateStatus]
+    .find((value): value is string => typeof value === "string")
+    ?.toLowerCase();
+  const targetVersion = [candidate.updateTargetVersion, candidate.availableVersion, candidate.latestVersion]
+    .find((value): value is string => typeof value === "string" && value.trim().length > 0);
+  const currentVersion = [candidate.updateCurrentVersion, device.version]
+    .find((value): value is string => typeof value === "string" && value.trim().length > 0);
+  const needsUpdate = candidate.updateAvailable === true
+    || ["available", "required", "outdated", "pending", "failed", "rollback"].includes(state ?? "");
+  if (["checking", "downloading", "installing", "restarting"].includes(state ?? "")) {
+    const progress = typeof candidate.updateProgress === "number" ? ` ${candidate.updateProgress}%` : "";
+    return { kind: "active", label: state === "downloading" ? `다운로드${progress}` : "업데이트 진행 중" };
+  }
+
+  if (state === "failed") {
+    return { kind: "attention", label: "업데이트 실패" };
+  }
+  if (state === "rollback") {
+    return { kind: "attention", label: "이전 버전 복원" };
+  }
+
+  if (needsUpdate) {
+    return { kind: "attention", label: targetVersion ? `업데이트 ${targetVersion}` : "업데이트 필요" };
+  }
+  if (currentVersion) {
+    return { kind: "current", label: `v${currentVersion}` };
+  }
+  return { kind: "unknown", label: "버전 미확인" };
+}
+
+function useModalEscape(onClose: () => void) {
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+}
 
 function playBeepSound() {
   try {
@@ -214,6 +273,9 @@ function ViewerApp() {
   const sessionRestoreAttemptedRef = useRef(false);
   const [editTarget, setEditTarget] = useState<DeviceEditTarget | null>(null);
   const [secureConnect, setSecureConnect] = useState<SecureConnectState | null>(null);
+  const [rolloutDraft, setRolloutDraft] = useState<UpdateFleetRollout | null>(null);
+  const [isRolloutOpen, setIsRolloutOpen] = useState(false);
+  const [isRolloutSaving, setIsRolloutSaving] = useState(false);
 
   useEffect(() => {
     if (!isViewerFirebaseEnabled()) {
@@ -345,6 +407,39 @@ function ViewerApp() {
     }
   };
 
+  const handleOpenRollout = async () => {
+    setIsRolloutOpen(true);
+    if (!rolloutDraft) {
+      const current = isViewerFirebaseEnabled() ? await loadFirebaseUpdateRollout().catch(() => null) : null;
+      setRolloutDraft(current ?? { targetVersion: "", stage: "canary", percentage: 10, paused: true });
+    }
+  };
+
+  const handleSaveRollout = async (rollout: UpdateFleetRollout) => {
+    if (!rollout.targetVersion.trim()) {
+      setApiError("배포 대상 버전을 입력해야 합니다.");
+      return;
+    }
+    setIsRolloutSaving(true);
+    try {
+      await saveFirebaseUpdateRollout(rollout);
+      setRolloutDraft(rollout);
+      setIsRolloutOpen(false);
+      setApiError("");
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : "배포 정책 저장에 실패했습니다.");
+    } finally {
+      setIsRolloutSaving(false);
+    }
+  };
+
+  const handleSaveDeviceRollout = async (deviceId: string, ring: DeviceUpdateRing, paused: boolean) => {
+    await updateFirebaseDeviceRollout(deviceId, ring, paused);
+    setDevices((current) => current.map((device) => device.id === deviceId
+      ? { ...device, updatePaused: paused, updateRing: ring }
+      : device));
+  };
+
   const groups = useMemo(() => groupDevicesByStore(devices), [devices]);
   const filteredDevices = useMemo(() => {
     return devices.filter((device) => {
@@ -365,6 +460,13 @@ function ViewerApp() {
       return matchesStore && matchesQuery;
     });
   }, [devices, query, selectedStore]);
+  const fleetSummary = useMemo(() => {
+    const online = devices.filter((device) => device.status === "online").length;
+    const updateAttention = devices.filter(
+      (device) => ["active", "attention"].includes(resolveDeviceUpdateInfo(device).kind),
+    ).length;
+    return { online, offline: devices.length - online, updateAttention };
+  }, [devices]);
 
   const activeDevice = session
     ? devices.find((device) => device.id === session.deviceId) ?? null
@@ -731,21 +833,9 @@ function ViewerApp() {
   return (
     <div className={`app-shell${isRemoteFocusMode ? " remote-focus-mode" : ""}`}>
       {updateAlert && (
-        <div style={{
-          position: "fixed",
-          top: "16px",
-          left: "50%",
-          transform: "translateX(-50%)",
-          background: "#4f46e5",
-          color: "#fff",
-          padding: "12px 24px",
-          borderRadius: "8px",
-          boxShadow: "0 10px 15px -3px rgba(0, 0, 0, 0.3)",
-          zIndex: 9999,
-          fontWeight: "bold",
-          fontSize: "14px"
-        }}>
-          새로운 뷰어 업데이트가 존재합니다. {updateAlert} 버전으로 갱신하는 중...
+        <div className="update-notice" role="status">
+          <TriangleAlert size={17} />
+          새 Viewer 업데이트가 있습니다. {updateAlert} 버전으로 갱신하는 중입니다.
         </div>
       )}
       <aside className="sidebar">
@@ -753,18 +843,8 @@ function ViewerApp() {
           <div className="brand-mark">W</div>
           <div>
             <strong>WonRemote</strong>
-            <span>Viewer Console</span>
+            <span>Viewer 운영 콘솔</span>
           </div>
-          <button
-            className="viewer-update-button"
-            type="button"
-            onClick={() => void handleManualViewerUpdate()}
-            disabled={isManualUpdateChecking}
-            title="Check for updates"
-            aria-label="Check for updates"
-          >
-            <RotateCcw size={16} className={isManualUpdateChecking ? "is-spinning" : undefined} />
-          </button>
         </div>
 
         <button
@@ -772,12 +852,17 @@ function ViewerApp() {
           type="button"
           onClick={() => setSelectedStore("전체")}
         >
-          <Monitor size={17} />
+          <LayoutDashboard size={17} />
           <span>전체 장비</span>
           <b>{devices.length}</b>
         </button>
 
-        <div className="group-list">
+        <section className="sidebar-section" aria-label="매장 그룹">
+          <div className="sidebar-section-heading">
+            <span>매장 그룹</span>
+            <b>{groups.length}</b>
+          </div>
+          <div className="group-list">
           {groups.map((group) => (
             <button
               className={`group-button ${selectedStore === group.storeName ? "active" : ""}`}
@@ -799,7 +884,8 @@ function ViewerApp() {
               <b>{group.devices.length}</b>
             </button>
           ))}
-        </div>
+          </div>
+        </section>
 
         <button className="logout-button" type="button" onClick={handleLogout}>
           <LogOut size={17} />
@@ -809,23 +895,58 @@ function ViewerApp() {
 
       <main className="workspace">
         <header className="topbar">
-          <div>
+          <div className="workspace-title">
+            <span className="eyebrow">운영 콘솔</span>
             <h1>원격 장비 관리</h1>
             <p>{devices.length}대 등록 · {session ? "세션 연결됨" : "대기"}</p>
             {apiError && <p className="topbar-error">{apiError}</p>}
           </div>
+          <div className="topbar-tools">
           <label className="search-box">
             <Search size={17} />
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="업장, 장비명, 사업자번호 검색"
+              placeholder="매장, 장비명, 사업자번호 검색"
             />
           </label>
+          <button
+            className="viewer-update-button"
+            type="button"
+            onClick={() => void handleManualViewerUpdate()}
+            disabled={isManualUpdateChecking}
+            title="Viewer 업데이트 확인"
+            aria-label="Viewer 업데이트 확인"
+          >
+            <RotateCcw size={16} className={isManualUpdateChecking ? "is-spinning" : undefined} />
+            <span>업데이트</span>
+          </button>
+          {isViewerFirebaseEnabled() && <button className="rollout-button" type="button" onClick={() => void handleOpenRollout()}>
+            <SlidersHorizontal size={16} />
+            <span>단계 배포</span>
+          </button>}
+          </div>
         </header>
 
         <section className={session && activeDevice ? "content-grid" : "content-grid content-grid-dashboard"}>
           <section className="control-panel">
+            <section className="fleet-summary" aria-label="장비 상태 요약">
+              <div className="summary-item online">
+                <Wifi size={18} />
+                <span>온라인</span>
+                <strong>{fleetSummary.online}</strong>
+              </div>
+              <div className="summary-item offline">
+                <WifiOff size={18} />
+                <span>오프라인</span>
+                <strong>{fleetSummary.offline}</strong>
+              </div>
+              <div className="summary-item attention">
+                <TriangleAlert size={18} />
+                <span>업데이트 확인</span>
+                <strong>{fleetSummary.updateAttention}</strong>
+              </div>
+            </section>
             <DeviceTable
               devices={filteredDevices}
               activeDeviceId={session?.deviceId ?? ""}
@@ -853,6 +974,7 @@ function ViewerApp() {
           target={editTarget}
           onClose={() => setEditTarget(null)}
           onDelete={handleDeleteDevice}
+          onSaveRollout={handleSaveDeviceRollout}
           onSave={handleSaveDeviceMetadata}
         />
       )}
@@ -869,6 +991,14 @@ function ViewerApp() {
           state={viewerUpdateDialog}
           onClose={() => setViewerUpdateDialog(null)}
           onConfirm={() => void handleConfirmViewerUpdate()}
+        />
+      )}
+      {isRolloutOpen && rolloutDraft && (
+        <RolloutDialog
+          initial={rolloutDraft}
+          isSaving={isRolloutSaving}
+          onClose={() => setIsRolloutOpen(false)}
+          onSave={handleSaveRollout}
         />
       )}
     </div>
@@ -898,13 +1028,16 @@ function DeviceEditDialog({
   onClose,
   onDelete,
   onSave,
+  onSaveRollout,
   target,
 }: {
   onClose: () => void;
   onDelete: () => Promise<void>;
   onSave: (input: Omit<DeviceMetadataUpdateInput, "deviceId">) => Promise<void>;
+  onSaveRollout: (deviceId: string, ring: DeviceUpdateRing, paused: boolean) => Promise<void>;
   target: DeviceEditTarget;
 }) {
+  useModalEscape(onClose);
   const primaryDevice = target.devices[0];
   const isGroupEdit = target.mode === "group";
   const [form, setForm] = useState({
@@ -916,6 +1049,8 @@ function DeviceEditDialog({
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isDeleteArmed, setIsDeleteArmed] = useState(false);
+  const [updateRing, setUpdateRing] = useState<DeviceUpdateRing>(primaryDevice.updateRing ?? "general");
+  const [updatePaused, setUpdatePaused] = useState(primaryDevice.updatePaused ?? false);
 
   useEffect(() => {
     setForm({
@@ -925,6 +1060,8 @@ function DeviceEditDialog({
       storeName: primaryDevice.storeName,
     });
     setIsDeleteArmed(false);
+    setUpdateRing(primaryDevice.updateRing ?? "general");
+    setUpdatePaused(primaryDevice.updatePaused ?? false);
   }, [primaryDevice.id]);
 
   async function saveCurrentForm() {
@@ -934,6 +1071,9 @@ function DeviceEditDialog({
     setIsSaving(true);
     try {
       await onSave(form);
+      if (!isGroupEdit && isViewerFirebaseEnabled()) {
+        await onSaveRollout(primaryDevice.id, updateRing, updatePaused);
+      }
     } finally {
       setIsSaving(false);
     }
@@ -965,7 +1105,7 @@ function DeviceEditDialog({
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <form className="modal-panel" onMouseDown={(event) => event.stopPropagation()} onSubmit={handleSubmit}>
+      <form className="modal-panel" role="dialog" aria-modal="true" aria-label="등록 장비 수정" onMouseDown={(event) => event.stopPropagation()} onSubmit={handleSubmit}>
         <div className="section-heading">
           <h2>{isGroupEdit ? "장비 그룹 수정" : "등록 장비 수정"}</h2>
           <span>{isGroupEdit ? `${target.devices.length}대 적용` : primaryDevice.deviceNumber}</span>
@@ -974,6 +1114,7 @@ function DeviceEditDialog({
           <label>
             가맹점 상호명
             <input
+              autoFocus
               value={form.storeName}
               onChange={(event) => setForm((prev) => ({ ...prev, storeName: event.target.value }))}
               placeholder="가맹점 상호명"
@@ -1005,6 +1146,18 @@ function DeviceEditDialog({
                   placeholder="데스크탑명"
                 />
               </label>
+              <label>
+                업데이트 그룹
+                <select value={updateRing} onChange={(event) => setUpdateRing(event.target.value as DeviceUpdateRing)}>
+                  <option value="canary">Canary</option>
+                  <option value="pilot">Pilot</option>
+                  <option value="general">General</option>
+                </select>
+              </label>
+              <label className="toggle-field">
+                <input type="checkbox" checked={updatePaused} onChange={(event) => setUpdatePaused(event.target.checked)} />
+                이 장비 업데이트 일시 중지
+              </label>
             </>
           )}
         </div>
@@ -1031,12 +1184,7 @@ function DeviceEditDialog({
           <button
             className="primary-button compact"
             disabled={isSaving || isDeleting}
-            type="button"
-            onClick={() => void saveCurrentForm()}
-            onMouseDown={(event) => {
-              event.preventDefault();
-              void saveCurrentForm();
-            }}
+            type="submit"
           >
             저장
           </button>
@@ -1057,9 +1205,10 @@ function SecureConnectDialog({
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   state: SecureConnectState;
 }) {
+  useModalEscape(onCancel);
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onCancel}>
-      <form className="modal-panel compact-modal" onMouseDown={(event) => event.stopPropagation()} onSubmit={onSubmit}>
+      <form className="modal-panel compact-modal" role="dialog" aria-modal="true" aria-label="보안 접속" onMouseDown={(event) => event.stopPropagation()} onSubmit={onSubmit}>
         <div className="section-heading">
           <h2>보안접속</h2>
           <span>{state.device.desktopName}</span>
@@ -1092,6 +1241,62 @@ function SecureConnectDialog({
   );
 }
 
+function RolloutDialog({
+  initial,
+  isSaving,
+  onClose,
+  onSave,
+}: {
+  initial: UpdateFleetRollout;
+  isSaving: boolean;
+  onClose: () => void;
+  onSave: (rollout: UpdateFleetRollout) => Promise<void>;
+}) {
+  useModalEscape(onClose);
+  const [draft, setDraft] = useState(initial);
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <form
+        className="modal-panel rollout-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-label="단계 배포 제어"
+        onMouseDown={(event) => event.stopPropagation()}
+        onSubmit={(event) => { event.preventDefault(); void onSave(draft); }}
+      >
+        <div className="section-heading">
+          <div><span className="section-kicker">안전한 업데이트</span><h2>단계 배포 제어</h2></div>
+          <span>{draft.paused ? "전체 중지" : "배포 활성"}</span>
+        </div>
+        <label>
+          대상 버전
+          <input autoFocus value={draft.targetVersion} onChange={(event) => setDraft({ ...draft, targetVersion: event.target.value })} placeholder="예: 0.1.62" />
+        </label>
+        <div className="rollout-stage" role="group" aria-label="배포 단계">
+          {(["canary", "pilot", "general"] as const).map((stage) => (
+            <button className={draft.stage === stage ? "active" : ""} key={stage} type="button" onClick={() => setDraft({ ...draft, stage })}>
+              {stage === "canary" ? "Canary" : stage === "pilot" ? "Pilot" : "General"}
+            </button>
+          ))}
+        </div>
+        <label className="range-field">
+          <span>단계 내 배포 비율 <strong>{draft.percentage ?? 100}%</strong></span>
+          <input type="range" min="0" max="100" step="5" value={draft.percentage ?? 100} onChange={(event) => setDraft({ ...draft, percentage: Number(event.target.value) })} />
+        </label>
+        <label className="toggle-field rollout-pause">
+          <input type="checkbox" checked={draft.paused === true} onChange={(event) => setDraft({ ...draft, paused: event.target.checked })} />
+          전체 업데이트 일시 중지
+        </label>
+        <p className="modal-help">Canary부터 Pilot, General 순서로 확장됩니다. 장비별 업데이트 그룹과 중지 설정이 우선 적용됩니다.</p>
+        <div className="modal-actions">
+          <button className="secondary-button" type="button" onClick={onClose}>취소</button>
+          <button className="primary-button compact" disabled={isSaving} type="submit">{isSaving ? "저장 중..." : "정책 저장"}</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function ViewerUpdateDialog({
   state,
   onClose,
@@ -1101,28 +1306,29 @@ function ViewerUpdateDialog({
   onClose: () => void;
   onConfirm: () => void;
 }) {
+  useModalEscape(onClose);
   const isAvailable = state.kind === "available";
-  const title = isAvailable ? "Update available" : state.kind === "current" ? "Already up to date" : "Update check failed";
+  const title = isAvailable ? "업데이트 준비 완료" : state.kind === "current" ? "최신 버전입니다" : "업데이트 확인 실패";
   const message = isAvailable
-    ? `Version ${state.version} is ready. Install it now?`
+    ? `${state.version} 버전을 설치할 수 있습니다. 지금 업데이트할까요?`
     : state.kind === "current"
-      ? `This Viewer is already on version ${state.version}.`
+      ? `현재 Viewer는 ${state.version} 버전입니다.`
       : state.message;
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <section className="modal-panel compact-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+      <section className="modal-panel compact-modal" role="dialog" aria-modal="true" aria-labelledby="viewer-update-title" onMouseDown={(event) => event.stopPropagation()}>
         <div className="section-heading">
-          <h2>{title}</h2>
+          <h2 id="viewer-update-title">{title}</h2>
         </div>
         <p className="modal-help">{message}</p>
         <div className="modal-actions">
           <button className="secondary-button" type="button" onClick={onClose}>
-            {isAvailable ? "Cancel" : "Close"}
+            {isAvailable ? "취소" : "닫기"}
           </button>
           {isAvailable && (
             <button className="primary-button compact" type="button" onClick={onConfirm}>
-              Update now
+              지금 업데이트
             </button>
           )}
         </div>
@@ -1414,7 +1620,7 @@ function LoginScreen({
           <ShieldCheck size={20} />
           <span>Viewer</span>
         </div>
-        <h1>관리자 로그인</h1>
+        <h1>Viewer 관리자 로그인</h1>
         <label>
           아이디 <input autoComplete="username" name="username" />
         </label>
@@ -1425,7 +1631,7 @@ function LoginScreen({
         {error && <p className="error-text">{error}</p>}
         <button className="primary-button" type="submit">
           <LogIn size={17} />
-          <span>진입</span>
+          <span>로그인</span>
         </button>
       </form>
     </main>
@@ -1440,8 +1646,8 @@ function AutoLoginScreen() {
           <ShieldCheck size={20} />
           <span>Viewer</span>
         </div>
-        <h1>Auto login</h1>
-        <p>Checking saved Viewer session...</p>
+        <h1>자동 로그인</h1>
+        <p>저장된 Viewer 세션을 확인하고 있습니다.</p>
       </div>
     </main>
   );
@@ -1494,30 +1700,36 @@ function DeviceTable({
 }) {
   return (
     <section className="device-section">
-      <button
-        className="section-refresh-button"
-        type="button"
-        onClick={() => void onRefresh()}
-        disabled={isRefreshing}
-        title="Refresh device list"
-        aria-label="Refresh device list"
-      >
-        <RotateCcw size={15} className={isRefreshing ? "is-spinning" : undefined} />
-      </button>
       <div className="section-heading">
-        <h2>장비 리스트</h2>
-        <span>{devices.length}대</span>
+        <div>
+          <span className="section-kicker">기기 인벤토리</span>
+          <h2>등록 장비</h2>
+        </div>
+        <div className="section-heading-actions">
+          <span><strong>{devices.length}</strong>대 표시</span>
+          <button
+            className="section-refresh-button"
+            type="button"
+            onClick={() => void onRefresh()}
+            disabled={isRefreshing}
+            title="장비 목록 새로고침"
+            aria-label="장비 목록 새로고침"
+          >
+            <RotateCcw size={15} className={isRefreshing ? "is-spinning" : undefined} />
+          </button>
+        </div>
       </div>
       <div className="device-table">
         <div className="table-row table-head">
           <span>상태</span>
-          <span>정보</span>
-          <span>에이전트 식별코드</span>
-          <span>데스크탑</span>
-          <span>접속</span>
+          <span>장비</span>
+          <span>매장</span>
+          <span>소프트웨어</span>
+          <span>작업</span>
         </div>
         {sortDevicesForDisplay(devices).map((device) => {
           const isOnline = device.status === "online";
+          const updateInfo = resolveDeviceUpdateInfo(device);
           return (
             <div
               className="table-row"
@@ -1533,53 +1745,56 @@ function DeviceTable({
               }}
               title={isOnline ? "더블클릭하면 바로 접속합니다." : "오프라인 장비입니다."}
             >
-              <span className={`status-pill ${isOnline ? "online" : "offline"}`}>{device.status}</span>
+              <span className={`status-pill ${isOnline ? "online" : "offline"}`}>
+                {isOnline ? <Wifi size={14} /> : <WifiOff size={14} />}
+                {isOnline ? "온라인" : "오프라인"}
+              </span>
+              <span className="device-identity-cell">
+                <b>{device.desktopName}</b>
+                <small>{device.deviceName} · {device.deviceNumber}</small>
+              </span>
               <span className="store-cell">
                 <b>{device.storeName}</b>
                 <small>{device.businessNumber}</small>
               </span>
-              <span>
-                <b>{device.deviceNumber}</b>
-              </span>
-              <span>
-                <b>{device.desktopName}</b>
+              <span className="software-cell">
+                <span className={`version-badge ${updateInfo.kind}`}>{updateInfo.label}</span>
                 {device.controlDiagnostics && (
-                  <small>
-                    {device.controlDiagnostics.elevated ? "Admin" : "User"} · {device.controlDiagnostics.integrityLevel ?? "Unknown"}
-                  </small>
+                  <small>{device.controlDiagnostics.elevated ? "관리자 권한" : "사용자 권한"}</small>
                 )}
               </span>
               <span className="device-actions">
                 <button
-                  className={activeDeviceId === device.id ? "connect-button active" : "connect-button"}
+                  className={activeDeviceId === device.id ? "connect-button connect-icon active" : "connect-button connect-icon"}
                   disabled={!isOnline}
                   type="button"
                   title={isOnline ? "접속" : "오프라인"}
+                  aria-label={isOnline ? "접속" : "오프라인"}
                   onClick={() => onConnect(device)}
                 >
                   <PlugZap size={16} />
-                  <span>접속</span>
                 </button>
                 <button
-                  className="connect-button secure"
+                  className="connect-button connect-icon secure"
                   disabled={!isOnline}
                   type="button"
                   title={isOnline ? "보안접속" : "오프라인"}
+                  aria-label={isOnline ? "보안접속" : "오프라인"}
                   onClick={() => onSecureConnect(device)}
                 >
                   <ShieldCheck size={16} />
-                  <span>보안</span>
                 </button>
                 <button
-                  className="connect-button edit"
+                  className="connect-button connect-icon edit"
                   type="button"
                   title="장비 정보 수정"
+                  aria-label="장비 정보 수정"
                   onClick={() => onEdit(device)}
                 >
-                  수정
+                  <Pencil size={15} />
                 </button>
                 <button
-                  className="connect-button wake"
+                  className="connect-button connect-icon wake"
                   disabled={isOnline || !device.macAddresses?.length}
                   type="button"
                   title={
@@ -1587,10 +1802,10 @@ function DeviceTable({
                       ? "Wake-on-LAN"
                       : "Agent heartbeat에 MAC 주소가 아직 없습니다"
                   }
+                  aria-label="Wake-on-LAN"
                   onClick={() => onWake(device)}
                 >
                   <Power size={16} />
-                  <span>Wake</span>
                 </button>
               </span>
             </div>

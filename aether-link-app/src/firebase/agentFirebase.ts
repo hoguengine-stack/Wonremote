@@ -22,6 +22,7 @@ import type {
   AgentFirstRunResult,
   AgentHeartbeatInput,
   AgentHeartbeatResult,
+  AgentUpdateTelemetry,
   ChatMessage,
   ClipboardData,
   FileTransferReceipt,
@@ -63,6 +64,8 @@ import {
   rememberNegotiationAttempt,
 } from "./agentWebRtcNegotiation";
 import { safeAddDoc, safeBatchUpdate, safeSetDoc, safeUpdateDoc } from "./firestoreWrite";
+import type { UpdateFleetRollout } from "../domain/updateFleetPolicy";
+import type { DeviceUpdateRing } from "../domain/types";
 
 type AgentFirebaseEnv = Record<string, string | undefined>;
 
@@ -240,6 +243,7 @@ export async function sendAgentHeartbeatWithFirebase(
       status: "online",
       updatedAt: serverTimestamp(),
       version: input.version,
+      ...(input.updateTelemetry ? updateTelemetryDocument(input.updateTelemetry) : {}),
     });
   } catch (error) {
     if (isFirebaseNotFoundError(error)) {
@@ -268,6 +272,60 @@ export async function sendAgentHeartbeatWithFirebase(
     devices: [device],
     device,
   };
+}
+
+export async function reportAgentUpdateTelemetryWithFirebase(
+  deviceId: string,
+  telemetry: AgentUpdateTelemetry,
+  env: AgentFirebaseEnv = process.env,
+): Promise<void> {
+  const services = getAgentFirebaseServices(env);
+  await safeUpdateDoc(doc(services.db, "devices", deviceId), {
+    ...updateTelemetryDocument(telemetry),
+    updatedAt: serverTimestamp(),
+  });
+}
+
+export async function loadAgentUpdateRolloutWithFirebase(
+  deviceId: string,
+  env: AgentFirebaseEnv = process.env,
+): Promise<{ rollout: UpdateFleetRollout; updatePaused: boolean; updateRing: DeviceUpdateRing } | null> {
+  const services = getAgentFirebaseServices(env);
+  const [deviceSnapshot, rolloutSnapshot] = await Promise.all([
+    getDoc(doc(services.db, "devices", deviceId)),
+    getDoc(doc(services.db, "configuration", "updateRollout")),
+  ]);
+  if (!deviceSnapshot.exists() || !rolloutSnapshot.exists()) return null;
+  const device = deviceSnapshot.data() as Record<string, unknown>;
+  const rollout = rolloutSnapshot.data() as Record<string, unknown>;
+  const targetVersion = typeof rollout.targetVersion === "string" ? rollout.targetVersion.trim() : "";
+  const stage = sanitizeUpdateRing(rollout.stage);
+  if (!targetVersion || !stage) return null;
+  return {
+    rollout: {
+      targetVersion,
+      stage,
+      paused: rollout.paused === true,
+      percentage: typeof rollout.percentage === "number" ? rollout.percentage : 100,
+    },
+    updatePaused: device.updatePaused === true,
+    updateRing: sanitizeUpdateRing(device.updateRing) ?? "general",
+  };
+}
+
+function updateTelemetryDocument(telemetry: AgentUpdateTelemetry): Record<string, unknown> {
+  return {
+    updateCurrentVersion: telemetry.currentVersion,
+    updateError: telemetry.error?.trim() || null,
+    updateProgress: Number.isFinite(telemetry.progress) ? Math.max(0, Math.min(100, Math.trunc(telemetry.progress!))) : null,
+    updateState: telemetry.state,
+    updateTargetVersion: telemetry.targetVersion?.trim() || null,
+    updateUpdatedAt: telemetry.updatedAt,
+  };
+}
+
+function sanitizeUpdateRing(value: unknown): DeviceUpdateRing | undefined {
+  return value === "canary" || value === "pilot" || value === "general" ? value : undefined;
 }
 
 export async function pollAgentCommandsWithFirebase(

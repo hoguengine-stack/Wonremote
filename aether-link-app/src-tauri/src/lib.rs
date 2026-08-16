@@ -11,7 +11,7 @@ use std::{
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex, Once,
 };
 
@@ -243,6 +243,8 @@ pub struct AgentState {
     pub child_process: Arc<Mutex<Option<std::process::Child>>>,
     pub status: Arc<Mutex<String>>,
     pub status_menu_item: Arc<Mutex<Option<tauri::menu::MenuItem<tauri::Wry>>>>,
+    pub spawn_generation: Arc<AtomicU64>,
+    pub watchdog_failure_count: Arc<AtomicU64>,
     #[cfg(target_arch = "x86")]
     win32_tray: Arc<Mutex<Option<Win32AgentTray>>>,
 }
@@ -253,6 +255,8 @@ impl AgentState {
             child_process: Arc::new(Mutex::new(None)),
             status: Arc::new(Mutex::new("Offline".to_string())),
             status_menu_item: Arc::new(Mutex::new(None)),
+            spawn_generation: Arc::new(AtomicU64::new(0)),
+            watchdog_failure_count: Arc::new(AtomicU64::new(0)),
             #[cfg(target_arch = "x86")]
             win32_tray: Arc::new(Mutex::new(None)),
         }
@@ -646,6 +650,7 @@ fn spawn_agent_only_process(
     resource_dir: &Path,
     api_url: Option<&str>,
 ) -> Result<(), io::Error> {
+    let spawn_generation = agent_state.spawn_generation.fetch_add(1, Ordering::AcqRel) + 1;
     append_runtime_log(
         "agent-process",
         &format!(
@@ -770,14 +775,17 @@ fn spawn_agent_only_process(
         append_runtime_log("agent-stderr", "stderr pipe unavailable");
     }
 
+    let update_handoff_started = Arc::new(AtomicBool::new(false));
+    let unregistered_detected = Arc::new(AtomicBool::new(false));
     if let Some(stdout) = stdout {
         let status_clone = agent_state.status.clone();
         let status_menu_item_clone = agent_state.status_menu_item.clone();
         let app_handle_clone = app_handle.clone();
+        let watchdog_failure_count = agent_state.watchdog_failure_count.clone();
+        let update_handoff_started_clone = update_handoff_started.clone();
+        let unregistered_detected_clone = unregistered_detected.clone();
         std::thread::spawn(move || {
             let reader = BufReader::new(stdout);
-            let mut unregistered_detected = false;
-            let mut update_handoff_started = false;
             for line in reader.lines() {
                 let line_str = match line {
                     Ok(value) => value,
@@ -788,17 +796,17 @@ fn spawn_agent_only_process(
                 };
                 println!("[Agent Output] {}", line_str);
                 append_runtime_log("agent-stdout", &line_str);
-                if !update_handoff_started {
+                if !update_handoff_started_clone.load(Ordering::Acquire) {
                     match parse_update_handoff_request(&line_str).and_then(|request| {
                         request.map_or(Ok(false), launch_brokered_update_handoff)
                     }) {
-                        Ok(true) => update_handoff_started = true,
+                        Ok(true) => update_handoff_started_clone.store(true, Ordering::Release),
                         Ok(false) => {}
                         Err(error) => append_runtime_log("updater-broker", &error),
                     }
                 }
                 if line_str.contains("[Error] Agent unregistered") {
-                    unregistered_detected = true;
+                    unregistered_detected_clone.store(true, Ordering::Release);
                 }
                 let new_status = if line_str.contains("[Status] Connecting") {
                     Some("Connecting")
@@ -811,6 +819,9 @@ fn spawn_agent_only_process(
                 };
 
                 if let Some(status_str) = new_status {
+                    if status_str == "Online" {
+                        watchdog_failure_count.store(0, Ordering::Release);
+                    }
                     *status_clone.lock().unwrap() = status_str.to_string();
                     if let Some(menu_item) = &*status_menu_item_clone.lock().unwrap() {
                         let _ = menu_item.set_text(format!("Status: {status_str}"));
@@ -818,7 +829,7 @@ fn spawn_agent_only_process(
                 }
             }
             append_runtime_log("agent-stdout", "reader ended");
-            if unregistered_detected {
+            if unregistered_detected_clone.load(Ordering::Acquire) {
                 show_main_window_with_log(&app_handle_clone, "agent-unregistered");
             }
         });
@@ -826,7 +837,104 @@ fn spawn_agent_only_process(
         append_runtime_log("agent-stdout", "stdout pipe unavailable");
     }
 
+    start_agent_watchdog(
+        app_handle,
+        agent_state.child_process.clone(),
+        agent_state.spawn_generation.clone(),
+        agent_state.watchdog_failure_count.clone(),
+        resource_dir.to_path_buf(),
+        api_url.map(str::to_string),
+        spawn_generation,
+        update_handoff_started,
+        unregistered_detected,
+    );
+
     Ok(())
+}
+
+fn start_agent_watchdog(
+    app_handle: tauri::AppHandle,
+    child_process: Arc<Mutex<Option<std::process::Child>>>,
+    generation: Arc<AtomicU64>,
+    failure_count: Arc<AtomicU64>,
+    resource_dir: PathBuf,
+    api_url: Option<String>,
+    watched_generation: u64,
+    update_handoff_started: Arc<AtomicBool>,
+    unregistered_detected: Arc<AtomicBool>,
+) {
+    thread::spawn(move || {
+        loop {
+            thread::sleep(Duration::from_secs(1));
+            if generation.load(Ordering::Acquire) != watched_generation {
+                return;
+            }
+            let exit_status = {
+                let mut guard = child_process.lock().unwrap();
+                let Some(child) = guard.as_mut() else { return };
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        guard.take();
+                        Some(status)
+                    }
+                    Ok(None) => None,
+                    Err(error) => {
+                        append_runtime_log("agent-watchdog", &format!("process probe failed: {error}"));
+                        None
+                    }
+                }
+            };
+            let Some(status) = exit_status else { continue };
+            append_runtime_log("agent-watchdog", &format!("Agent child exited: {status}"));
+            if update_handoff_started.load(Ordering::Acquire)
+                || unregistered_detected.load(Ordering::Acquire)
+            {
+                append_runtime_log("agent-watchdog", "expected Agent exit; restart suppressed");
+                return;
+            }
+
+            let state = app_handle.state::<AgentState>();
+            *state.status.lock().unwrap() = "Offline".to_string();
+            if let Some(menu_item) = &*state.status_menu_item.lock().unwrap() {
+                let _ = menu_item.set_text("Status: Offline");
+            }
+            let attempt = failure_count.fetch_add(1, Ordering::AcqRel) + 1;
+            let delay = agent_watchdog_restart_delay(attempt as u32);
+            append_runtime_log(
+                "agent-watchdog",
+                &format!("unexpected exit; restarting in {}ms", delay.as_millis()),
+            );
+            thread::sleep(delay);
+            if generation.load(Ordering::Acquire) != watched_generation {
+                return;
+            }
+            loop {
+                let job = app_handle.state::<Job>();
+                match spawn_agent_only_process(
+                    app_handle.clone(),
+                    &state,
+                    &job,
+                    &resource_dir,
+                    api_url.as_deref(),
+                ) {
+                    Ok(()) => return,
+                    Err(error) => append_runtime_log("agent-watchdog", &format!("restart failed: {error}")),
+                }
+                let failed_generation = generation.load(Ordering::Acquire);
+                let retry_attempt = failure_count.fetch_add(1, Ordering::AcqRel) + 1;
+                let retry_delay = agent_watchdog_restart_delay(retry_attempt as u32);
+                thread::sleep(retry_delay);
+                if generation.load(Ordering::Acquire) != failed_generation {
+                    return;
+                }
+            }
+        }
+    });
+}
+
+fn agent_watchdog_restart_delay(attempt: u32) -> Duration {
+    const DELAYS_MS: [u64; 5] = [1_000, 2_000, 5_000, 15_000, 30_000];
+    Duration::from_millis(DELAYS_MS[attempt.saturating_sub(1).min(4) as usize])
 }
 
 fn parse_update_handoff_request(line: &str) -> Result<Option<PathBuf>, String> {
@@ -2653,5 +2761,14 @@ mod registry_tests {
                 assert!(path.starts_with(&resources.root));
             }
         }
+    }
+
+    #[test]
+    fn test_agent_watchdog_restart_delay_is_bounded() {
+        assert_eq!(agent_watchdog_restart_delay(0), Duration::from_secs(1));
+        assert_eq!(agent_watchdog_restart_delay(1), Duration::from_secs(1));
+        assert_eq!(agent_watchdog_restart_delay(2), Duration::from_secs(2));
+        assert_eq!(agent_watchdog_restart_delay(3), Duration::from_secs(5));
+        assert_eq!(agent_watchdog_restart_delay(99), Duration::from_secs(30));
     }
 }

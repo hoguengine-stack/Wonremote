@@ -1,4 +1,4 @@
-import type { DeviceDisplayInfo, DeviceStatus, ManagedDevice } from "../domain/types";
+import type { DeviceDisplayInfo, DeviceStatus, DeviceUpdateRing, DeviceUpdateState, ManagedDevice } from "../domain/types";
 import { DEFAULT_STORE_NAME, normalizeStoreNameForDisplay } from "../domain/deviceDefaults";
 import {
   buildAgentDeviceNumber,
@@ -24,6 +24,14 @@ export interface FirestoreDeviceDocument {
   macAddresses?: unknown;
   controlDiagnostics?: unknown;
   streamDiagnostics?: unknown;
+  updateState?: unknown;
+  updateTargetVersion?: unknown;
+  updateCurrentVersion?: unknown;
+  updateProgress?: unknown;
+  updateError?: unknown;
+  updateUpdatedAt?: unknown;
+  updateRing?: unknown;
+  updatePaused?: unknown;
 }
 
 interface BuildFirestoreDeviceInput {
@@ -80,12 +88,19 @@ export function mergeFirstRunDeviceDocument(
   if (typeof existing.desktopName === "string" && existing.desktopName.trim()) {
     merged.desktopName = existing.desktopName.trim();
   }
+  const updateRing = sanitizeUpdateRing(existing.updateRing);
+  if (updateRing) {
+    merged.updateRing = updateRing;
+  }
+  if (typeof existing.updatePaused === "boolean") {
+    merged.updatePaused = existing.updatePaused;
+  }
 
   return merged;
 }
 
 export function mapFirestoreDevice(id: string, data: Partial<FirestoreDeviceDocument>): ManagedDevice {
-  return {
+  const device: ManagedDevice = {
     id,
     businessNumber: String(data.businessNumber ?? ""),
     storeName: normalizeStoreNameForDisplay(data.storeName, String(data.businessNumber ?? "")),
@@ -94,14 +109,28 @@ export function mapFirestoreDevice(id: string, data: Partial<FirestoreDeviceDocu
     desktopName: String(data.desktopName ?? ""),
     status: data.status === "offline" ? "offline" : "online",
     lastSeenAt: coerceTimestamp(data.lastSeenAt),
-    connectionCode: data.connectionCode,
-    version: data.version,
-    activeDisplayIndex: Number.isFinite(Number(data.activeDisplayIndex)) ? Number(data.activeDisplayIndex) : undefined,
-    displays: sanitizeDisplays(data.displays),
-    macAddresses: sanitizeMacAddresses(data.macAddresses),
-    controlDiagnostics: sanitizeControlDiagnostics(data.controlDiagnostics),
-    streamDiagnostics: sanitizeStreamDiagnostics(data.streamDiagnostics),
   };
+  assignIfDefined(device, "storeNameSource", sanitizeOptionalString(data.storeNameSource));
+  assignIfDefined(device, "connectionCode", sanitizeOptionalString(data.connectionCode));
+  assignIfDefined(device, "version", sanitizeOptionalString(data.version));
+  assignIfDefined(
+    device,
+    "activeDisplayIndex",
+    Number.isFinite(Number(data.activeDisplayIndex)) ? Number(data.activeDisplayIndex) : undefined,
+  );
+  assignIfDefined(device, "displays", sanitizeDisplays(data.displays));
+  assignIfDefined(device, "macAddresses", sanitizeMacAddresses(data.macAddresses));
+  assignIfDefined(device, "controlDiagnostics", sanitizeControlDiagnostics(data.controlDiagnostics));
+  assignIfDefined(device, "streamDiagnostics", sanitizeStreamDiagnostics(data.streamDiagnostics));
+  assignIfDefined(device, "updateState", sanitizeUpdateState(data.updateState));
+  assignIfDefined(device, "updateTargetVersion", sanitizeOptionalString(data.updateTargetVersion));
+  assignIfDefined(device, "updateCurrentVersion", sanitizeOptionalString(data.updateCurrentVersion));
+  assignIfDefined(device, "updateProgress", sanitizeUpdateProgress(data.updateProgress));
+  assignIfDefined(device, "updateError", sanitizeOptionalString(data.updateError, 500));
+  assignIfDefined(device, "updateUpdatedAt", coerceOptionalTimestamp(data.updateUpdatedAt));
+  assignIfDefined(device, "updateRing", sanitizeUpdateRing(data.updateRing));
+  assignIfDefined(device, "updatePaused", typeof data.updatePaused === "boolean" ? data.updatePaused : undefined);
+  return device;
 }
 
 function sanitizeDisplays(value: unknown): DeviceDisplayInfo[] | undefined {
@@ -215,6 +244,52 @@ function sanitizeStreamDiagnostics(value: unknown): ManagedDevice["streamDiagnos
         ? Math.max(0, Math.trunc(raw.droppedFrameCount))
         : undefined,
   };
+}
+
+function sanitizeUpdateState(value: unknown): DeviceUpdateState | undefined {
+  return value === "idle" ||
+    value === "checking" ||
+    value === "downloading" ||
+    value === "installing" ||
+    value === "restarting" ||
+    value === "healthy" ||
+    value === "rollback" ||
+    value === "failed"
+    ? value
+    : undefined;
+}
+
+function sanitizeUpdateRing(value: unknown): DeviceUpdateRing | undefined {
+  return value === "canary" || value === "pilot" || value === "general" ? value : undefined;
+}
+
+function sanitizeUpdateProgress(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.min(100, Math.trunc(value))) : undefined;
+}
+
+function sanitizeOptionalString(value: unknown, maxLength = 200): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim().slice(0, maxLength) : undefined;
+}
+
+function coerceOptionalTimestamp(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim()) {
+    return value.trim();
+  }
+  if (value && typeof value === "object" && "toDate" in value && typeof value.toDate === "function") {
+    try {
+      const date = value.toDate();
+      return date instanceof Date && Number.isFinite(date.getTime()) ? date.toISOString() : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+function assignIfDefined<T extends object, K extends keyof T>(target: T, key: K, value: T[K] | undefined): void {
+  if (value !== undefined) {
+    target[key] = value;
+  }
 }
 
 function coerceTimestamp(value: unknown): string {

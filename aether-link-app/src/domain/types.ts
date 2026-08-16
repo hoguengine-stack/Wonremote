@@ -1,5 +1,26 @@
 export type DeviceStatus = "online" | "offline";
 
+export type DeviceUpdateState =
+  | "idle"
+  | "checking"
+  | "downloading"
+  | "installing"
+  | "restarting"
+  | "healthy"
+  | "rollback"
+  | "failed";
+
+export type DeviceUpdateRing = "canary" | "pilot" | "general";
+
+export interface AgentUpdateTelemetry {
+  state: DeviceUpdateState;
+  currentVersion: string;
+  targetVersion?: string;
+  progress?: number;
+  error?: string;
+  updatedAt: string;
+}
+
 export interface ManagedDevice {
   id: string;
   businessNumber: string;
@@ -17,6 +38,14 @@ export interface ManagedDevice {
   macAddresses?: string[];
   controlDiagnostics?: AgentControlDiagnostics;
   streamDiagnostics?: AgentStreamDiagnostics;
+  updateState?: DeviceUpdateState;
+  updateTargetVersion?: string;
+  updateCurrentVersion?: string;
+  updateProgress?: number;
+  updateError?: string;
+  updateUpdatedAt?: string;
+  updateRing?: DeviceUpdateRing;
+  updatePaused?: boolean;
 }
 
 export interface AgentControlDiagnostics {
@@ -79,6 +108,7 @@ export interface AgentHeartbeatInput {
   macAddresses?: string[];
   controlDiagnostics?: AgentControlDiagnostics;
   streamDiagnostics?: AgentStreamDiagnostics;
+  updateTelemetry?: AgentUpdateTelemetry;
 }
 
 export interface AgentCommand {

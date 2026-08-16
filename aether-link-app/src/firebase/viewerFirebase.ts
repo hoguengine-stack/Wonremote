@@ -29,6 +29,7 @@ import type {
   ClipboardData,
   ConnectionHistoryEntry,
   DeviceMetadataUpdateInput,
+  DeviceUpdateRing,
   FileTransferReceipt,
   ManagedDevice,
   RemoteSession,
@@ -75,9 +76,56 @@ import { buildFirestoreDevice, mapFirestoreDevice, mergeFirstRunDeviceDocument }
 import { getWonRemoteFirebaseServices } from "./firebaseServices";
 import { throwExplainedFirebaseAuthError } from "./firebaseError";
 import { safeAddDoc, safeBatchUpdate, safeSetDoc, safeUpdateDoc } from "./firestoreWrite";
+import type { UpdateFleetRollout } from "../domain/updateFleetPolicy";
 
 type ViewerFirebaseEnv = ImportMetaEnv;
 export type ViewerFunctionMode = "auto" | "callable" | "direct";
+
+export async function loadFirebaseUpdateRollout(
+  env: ViewerFirebaseEnv = import.meta.env,
+): Promise<UpdateFleetRollout | null> {
+  const services = getViewerFirebaseServices(env);
+  const snapshot = await getDoc(doc(services.db, "configuration", "updateRollout"));
+  if (!snapshot.exists()) return null;
+  const data = snapshot.data() as Record<string, unknown>;
+  if (typeof data.targetVersion !== "string" || !data.targetVersion.trim()) return null;
+  const stage = data.stage === "canary" || data.stage === "pilot" || data.stage === "general" ? data.stage : null;
+  if (!stage) return null;
+  return {
+    targetVersion: data.targetVersion.trim(),
+    stage,
+    paused: data.paused === true,
+    percentage: typeof data.percentage === "number" ? Math.max(0, Math.min(100, Math.trunc(data.percentage))) : 100,
+  };
+}
+
+export async function saveFirebaseUpdateRollout(
+  rollout: UpdateFleetRollout,
+  env: ViewerFirebaseEnv = import.meta.env,
+): Promise<void> {
+  const services = getViewerFirebaseServices(env);
+  await safeSetDoc(doc(services.db, "configuration", "updateRollout"), {
+    targetVersion: rollout.targetVersion.trim(),
+    stage: rollout.stage,
+    paused: rollout.paused === true,
+    percentage: Math.max(0, Math.min(100, Math.trunc(rollout.percentage ?? 100))),
+    updatedAt: serverTimestamp(),
+  }, { merge: true });
+}
+
+export async function updateFirebaseDeviceRollout(
+  deviceId: string,
+  updateRing: DeviceUpdateRing,
+  updatePaused: boolean,
+  env: ViewerFirebaseEnv = import.meta.env,
+): Promise<void> {
+  const services = getViewerFirebaseServices(env);
+  await safeUpdateDoc(doc(services.db, "devices", deviceId), {
+    updatePaused,
+    updateRing,
+    updatedAt: serverTimestamp(),
+  });
+}
 const AGENT_VIEWER_LOGIN_ERROR = "사업자번호 Agent 계정은 Viewer로 로그인할 수 없습니다. 등록된 Viewer 이메일 계정을 사용해 주세요.";
 const CENTRAL_VIEWER_LOGIN_ERROR = "등록된 중앙 Viewer 관리자 계정이 아닙니다.";
 const CENTRAL_VIEWER_UIDS = new Set(["Xjjdvk0Nx1eqCvND4yIOHbM53tl1"]);

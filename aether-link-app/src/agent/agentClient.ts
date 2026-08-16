@@ -2,6 +2,7 @@ import type {
   AgentCommandPollResult,
   AgentControlDiagnostics,
   AgentHeartbeatResult,
+  AgentUpdateTelemetry,
   AgentStreamDiagnostics,
   DeviceDisplayInfo,
 } from "../domain/types";
@@ -22,6 +23,7 @@ interface SendAgentHeartbeatOptions {
   controlDiagnostics?: AgentControlDiagnostics;
   streamDiagnostics?: AgentStreamDiagnostics;
   version?: string;
+  updateTelemetry?: AgentUpdateTelemetry;
 }
 
 interface PollAgentCommandsOptions {
@@ -49,6 +51,7 @@ export async function sendAgentHeartbeat({
   controlDiagnostics,
   streamDiagnostics,
   version,
+  updateTelemetry,
 }: SendAgentHeartbeatOptions): Promise<AgentHeartbeatResult> {
   if (isAgentFirebaseEnabled(process.env)) {
     return withAgentOperationContext("firebase heartbeat", () =>
@@ -61,6 +64,7 @@ export async function sendAgentHeartbeat({
         controlDiagnostics,
         streamDiagnostics,
         version,
+        updateTelemetry,
       }),
     );
   }
@@ -77,6 +81,7 @@ export async function sendAgentHeartbeat({
         macAddresses,
         controlDiagnostics,
         streamDiagnostics,
+        updateTelemetry,
       }),
       headers: { "content-type": "application/json" },
       method: "POST",

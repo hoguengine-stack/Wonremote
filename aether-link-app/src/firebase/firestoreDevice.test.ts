@@ -88,6 +88,58 @@ describe("firestore device mapping", () => {
     });
   });
 
+  it("coerces optional update telemetry without creating undefined fields", () => {
+    const managed = mapFirestoreDevice("device-update", {
+      businessNumber: "123-45-67890",
+      storeName: "Won Chicken Gangnam",
+      storeNameSource: "user",
+      deviceNumber: "AGENT-01",
+      deviceName: "Agent AGENT-01",
+      desktopName: "DESKTOP-67890-AGENT-01",
+      status: "online",
+      lastSeenAt: "2026-06-12T09:00:00.000Z",
+      updateState: "downloading",
+      updateTargetVersion: " 1.2.0 ",
+      updateCurrentVersion: " 1.1.0 ",
+      updateProgress: 101.8,
+      updateError: `  ${"network timeout ".repeat(40)}`,
+      updateUpdatedAt: { toDate: () => new Date("2026-06-16T06:30:00.000Z") },
+      updateRing: "pilot",
+      updatePaused: true,
+    });
+
+    expect(managed).toMatchObject({
+      storeName: "Won Chicken Gangnam",
+      updateState: "downloading",
+      updateTargetVersion: "1.2.0",
+      updateCurrentVersion: "1.1.0",
+      updateProgress: 100,
+      updateError: "network timeout ".repeat(40).trim().slice(0, 500),
+      updateUpdatedAt: "2026-06-16T06:30:00.000Z",
+      updateRing: "pilot",
+      updatePaused: true,
+    });
+    expect(Object.values(managed)).not.toContain(undefined);
+
+    const invalid = mapFirestoreDevice("device-invalid-update", {
+      businessNumber: "123-45-67890",
+      storeName: "Won Chicken Gangnam",
+      deviceNumber: "AGENT-02",
+      deviceName: "Agent AGENT-02",
+      desktopName: "DESKTOP-67890-AGENT-02",
+      status: "online",
+      lastSeenAt: "2026-06-12T09:00:00.000Z",
+      updateState: "unknown",
+      updateProgress: Number.NaN,
+      updateRing: "invalid",
+      updatePaused: "true" as never,
+    });
+    expect(invalid).not.toHaveProperty("updateState");
+    expect(invalid).not.toHaveProperty("updateProgress");
+    expect(invalid).not.toHaveProperty("updateRing");
+    expect(invalid).not.toHaveProperty("updatePaused");
+  });
+
   it("preserves user-edited display fields when first-run registration repeats", () => {
     const nextDevice = buildFirestoreDevice({
       businessNumber: "1234567890",
