@@ -14,17 +14,26 @@ const packages = {
 
 describe("universal release installer wrappers", () => {
   it.each([
-    ["viewer", "viewer", "Viewer", "Agent"],
-    ["agent", "agent", "Agent", "Viewer"],
-  ])("keeps the %s wrapper product-isolated while selecting the host architecture", (mode, filename, product, otherProduct) => {
+    ["viewer", "viewer", "Viewer"],
+    ["agent", "agent", "Agent"],
+  ])("keeps the %s wrapper payload product-isolated while selecting the host architecture", (mode, filename, product) => {
     const script = createUniversalProductInstallerScript(packages, mode, `C:\\release\\WonRemote-${product}-Setup.exe`);
 
     expect(script).toContain("${RunningX64}");
     expect(script).toContain(`${filename}-x64.exe`);
     expect(script).toContain(`${filename}-x86.exe`);
-    expect(script).toContain(`WonRemote\\${product}`);
-    expect(script).not.toContain(`WonRemote\\${otherProduct}`);
+    expect(script).not.toContain(`${mode === "viewer" ? "agent" : "viewer"}-x64.exe`);
+    expect(script).not.toContain(`${mode === "viewer" ? "agent" : "viewer"}-x86.exe`);
     expect(script).not.toContain("WONREMOTE_RESTART_MODE");
     expect(script).toContain("IfSilent +2 0");
+  });
+
+  it("restarts an installed Agent after Viewer replacement without embedding an Agent installer", () => {
+    const script = createUniversalProductInstallerScript(packages, "viewer", "C:\\release\\WonRemote-Viewer-Setup.exe");
+
+    expect(script).toContain('IfFileExists "$LOCALAPPDATA\\WonRemote\\Agent\\wonremote-viewer.exe"');
+    expect(script).toContain('Exec \'"$LOCALAPPDATA\\WonRemote\\Agent\\wonremote-viewer.exe" --agent\'');
+    expect(script).not.toContain("agent-x64.exe");
+    expect(script).not.toContain("agent-x86.exe");
   });
 });

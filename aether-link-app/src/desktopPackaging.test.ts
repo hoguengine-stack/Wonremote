@@ -278,6 +278,7 @@ describe("desktop packaging scaffold", () => {
     expect(packageReleaseScript).toContain('createUniversalProductInstaller(packages, "agent")');
     expect(packageReleaseScript).toContain('WONREMOTE_BUILD_STAGE: "full"');
     expect(packageReleaseScript).toContain('WONREMOTE_BUILD_STAGE: "reuse"');
+    expect(packageReleaseScript).toContain('--assemble-only');
   });
 
   it("deploys Firebase functions, rules, and hosting only behind an explicit gate", () => {
@@ -674,9 +675,8 @@ describe("desktop packaging scaffold", () => {
     ]) {
       expect(publishScript).toContain(asset);
     }
-    const packageMain = packageReleaseScript.slice(packageReleaseScript.indexOf("function main()"));
-    expect(packageMain).toContain("expectedOutputs");
-    expect(packageMain).toContain("Two universal WonRemote product installers created");
+    expect(packageReleaseScript).toContain("expectedOutputs");
+    expect(packageReleaseScript).toContain("Two universal WonRemote product installers created");
     expect(publishScript).toContain("Publish-Asset $ManifestPath $ManifestName");
     expect(publishScript.match(/^Publish-Asset /gm)?.length).toBe(3);
     expect(publishScript).toContain("Refusing to replace published release");

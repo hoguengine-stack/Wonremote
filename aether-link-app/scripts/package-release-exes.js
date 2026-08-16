@@ -156,6 +156,10 @@ export function createUniversalProductInstallerScript(packages, defaultMode, out
   const directLaunch = defaultMode === "agent"
     ? `Exec '"$LOCALAPPDATA\\WonRemote\\Agent\\wonremote-viewer.exe" --agent'`
     : `Exec '"$LOCALAPPDATA\\WonRemote\\Viewer\\wonremote-viewer.exe"'`;
+  const companionRestart = defaultMode === "viewer"
+    ? `IfFileExists "$LOCALAPPDATA\\WonRemote\\Agent\\wonremote-viewer.exe" 0 +2
+  Exec '"$LOCALAPPDATA\\WonRemote\\Agent\\wonremote-viewer.exe" --agent'`
+    : "";
   const script = `!include LogicLib.nsh
 !include x64.nsh
 Unicode true
@@ -180,6 +184,7 @@ Section "Install"
     SetErrorLevel $0
     Abort "WonRemote ${defaultMode} installer failed."
   \${EndIf}
+  ${companionRestart}
   IfSilent +2 0
   ${directLaunch}
 SectionEnd
@@ -219,15 +224,27 @@ function packageTarget(target) {
   };
 }
 
-function main() {
-  assertReleaseVersionConsistency();
+function existingTargetPackages(target) {
+  const installerDir = path.join(releaseTargetFor(target), "bundle", "nsis");
+  const viewerInstallerPath = path.join(
+    installerDir,
+    `WonRemote Viewer_${packageJson.version}_${target.installerArch}-setup.exe`,
+  );
+  const agentInstallerPath = path.join(
+    installerDir,
+    `WonRemote Agent_${packageJson.version}_${target.installerArch}-setup.exe`,
+  );
+  ensureExists(viewerInstallerPath, `${target.key} existing Viewer installer`);
+  ensureExists(agentInstallerPath, `${target.key} existing Agent installer`);
+  return { agentInstallerPath, viewerInstallerPath };
+}
+
+function resetReleaseOutput() {
   fs.rmSync(outputDir, { recursive: true, force: true });
   fs.mkdirSync(outputDir, { recursive: true });
+}
 
-  const packages = {};
-  for (const target of TARGET_ARCHITECTURES) {
-    packages[target.key] = packageTarget(target);
-  }
+function assembleUniversalInstallers(packages) {
   createUniversalProductInstaller(packages, "viewer");
   createUniversalProductInstaller(packages, "agent");
 
@@ -239,6 +256,31 @@ function main() {
   console.log(`Two universal WonRemote product installers created at ${outputDir}`);
 }
 
+function main() {
+  assertReleaseVersionConsistency();
+  resetReleaseOutput();
+
+  const packages = {};
+  for (const target of TARGET_ARCHITECTURES) {
+    packages[target.key] = packageTarget(target);
+  }
+  assembleUniversalInstallers(packages);
+}
+
+function assembleExistingInstallers() {
+  assertReleaseVersionConsistency();
+  const packages = {};
+  for (const target of TARGET_ARCHITECTURES) {
+    packages[target.key] = existingTargetPackages(target);
+  }
+  resetReleaseOutput();
+  assembleUniversalInstallers(packages);
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main();
+  if (process.argv.includes("--assemble-only")) {
+    assembleExistingInstallers();
+  } else {
+    main();
+  }
 }
