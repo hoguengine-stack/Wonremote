@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { getIdTokenResult, onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
-import { loginViewerWithFirebase, subscribeViewerAuthState } from "./viewerFirebase";
+import { getIdTokenResult, onAuthStateChanged, sendPasswordResetEmail, signInWithEmailAndPassword, signOut } from "firebase/auth";
+import { loginViewerWithFirebase, requestViewerPasswordReset, subscribeViewerAuthState } from "./viewerFirebase";
 
 const CENTRAL_VIEWER_UID = "Xjjdvk0Nx1eqCvND4yIOHbM53tl1";
 
@@ -30,6 +30,7 @@ vi.mock("firebase/auth", () => ({
   createUserWithEmailAndPassword: vi.fn(),
   getIdTokenResult: vi.fn(async () => ({ claims: {} })),
   onAuthStateChanged: vi.fn(),
+  sendPasswordResetEmail: vi.fn(async () => undefined),
   setPersistence: vi.fn(async () => undefined),
   signInWithEmailAndPassword: vi.fn(async () => ({ user: { uid: CENTRAL_VIEWER_UID } })),
   signOut: vi.fn(async () => undefined),
@@ -108,5 +109,22 @@ describe("Viewer Firebase authentication", () => {
     await loginViewerWithFirebase("staff@example.com", "secret123");
 
     expect(signOut).not.toHaveBeenCalled();
+  });
+
+  it("sends a password reset email for a Viewer email account", async () => {
+    await requestViewerPasswordReset(" Owner@Example.com ");
+
+    expect(sendPasswordResetEmail).toHaveBeenCalledWith(mockState.services.auth, "owner@example.com");
+  });
+
+  it("does not send Viewer password resets to Agent identities", async () => {
+    await expect(requestViewerPasswordReset("123-45-67890")).rejects.toThrow("Agent 계정");
+    expect(sendPasswordResetEmail).not.toHaveBeenCalled();
+  });
+
+  it("does not reveal whether a Viewer email exists", async () => {
+    vi.mocked(sendPasswordResetEmail).mockRejectedValueOnce({ code: "auth/user-not-found" });
+
+    await expect(requestViewerPasswordReset("unknown@example.com")).resolves.toBeUndefined();
   });
 });

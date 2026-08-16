@@ -64,6 +64,36 @@ button:disabled {
   font-size: 24px;
 }
 
+.login-recovery-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+}
+
+.login-recovery-actions button {
+  background: transparent;
+  border: 0;
+  color: #176d62;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 3px 6px;
+}
+
+.login-recovery-actions button + button {
+  border-left: 1px solid #d6dee5;
+  padding-left: 14px;
+}
+
+.login-recovery-message {
+  background: #edf7f4;
+  border: 1px solid #bfe1d7;
+  border-radius: 5px;
+  color: #176d62;
+  font-size: 12px;
+  margin: 0;
+  padding: 8px 10px;
+}
+
 .agent-panel {
   align-content: start;
 }

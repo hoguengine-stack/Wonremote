@@ -3,6 +3,7 @@ import {
   createUserWithEmailAndPassword,
   getIdTokenResult,
   onAuthStateChanged,
+  sendPasswordResetEmail,
   setPersistence,
   signInWithEmailAndPassword,
   signOut,
@@ -275,6 +276,30 @@ export async function deleteViewerAccount(
 export async function logoutViewerWithFirebase(env: ViewerFirebaseEnv = import.meta.env): Promise<void> {
   const services = getViewerFirebaseServices(env);
   await signOut(services.auth);
+}
+
+export async function requestViewerPasswordReset(
+  email: string,
+  env: ViewerFirebaseEnv = import.meta.env,
+): Promise<void> {
+  const normalizedEmail = email.trim().toLowerCase();
+  if (!normalizedEmail) {
+    throw new Error("아이디(이메일)를 입력해 주세요.");
+  }
+  if (isAgentViewerIdentity(normalizedEmail)) {
+    throw new Error(AGENT_VIEWER_LOGIN_ERROR);
+  }
+  try {
+    await sendPasswordResetEmail(getViewerFirebaseServices(env).auth, normalizedEmail);
+  } catch (cause) {
+    const code = typeof cause === "object" && cause !== null && "code" in cause
+      ? String((cause as { code?: unknown }).code ?? "")
+      : "";
+    if (code === "auth/user-not-found") {
+      return;
+    }
+    throw new Error("비밀번호 재설정 메일을 보내지 못했습니다. 잠시 후 다시 시도해 주세요.");
+  }
 }
 
 export function subscribeFirebaseDevices(

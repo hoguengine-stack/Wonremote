@@ -68,6 +68,7 @@ import {
   saveFirebaseUpdateRollout,
   updateFirebaseDeviceRollout,
   isCurrentViewerAccountManager,
+  requestViewerPasswordReset,
   type ViewerWebRtcTransport,
 } from "./firebase/viewerFirebase";
 import { ViewerAccountManager } from "./components/ViewerAccountManager";
@@ -1639,6 +1640,22 @@ function LoginScreen({
   error: string;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
+  const [username, setUsername] = useState("");
+  const [recoveryMessage, setRecoveryMessage] = useState("");
+  const [isResettingPassword, setIsResettingPassword] = useState(false);
+
+  const handlePasswordReset = async () => {
+    setIsResettingPassword(true);
+    try {
+      await requestViewerPasswordReset(username);
+      setRecoveryMessage("비밀번호 재설정 메일을 보냈습니다. 메일함을 확인해 주세요.");
+    } catch (cause) {
+      setRecoveryMessage(cause instanceof Error ? cause.message : "재설정 메일을 보내지 못했습니다.");
+    } finally {
+      setIsResettingPassword(false);
+    }
+  };
+
   return (
     <main className="login-screen">
       <form className="login-panel" onSubmit={onSubmit}>
@@ -1648,17 +1665,24 @@ function LoginScreen({
         </div>
         <h1>Viewer 관리자 로그인</h1>
         <label>
-          아이디 <input autoComplete="username" name="username" />
+          아이디 <input autoComplete="username" name="username" type="email" value={username} onChange={(event) => setUsername(event.target.value)} />
         </label>
         <label>
           비밀번호
           <input autoComplete="current-password" name="password" type="password" />
         </label>
         {error && <p className="error-text">{error}</p>}
+        {recoveryMessage && <p className="login-recovery-message" role="status">{recoveryMessage}</p>}
         <button className="primary-button" type="submit">
           <LogIn size={17} />
           <span>로그인</span>
         </button>
+        <div className="login-recovery-actions">
+          <button type="button" onClick={() => setRecoveryMessage("Viewer 아이디는 가입할 때 등록한 이메일 주소입니다.")}>아이디 찾기</button>
+          <button type="button" disabled={isResettingPassword} onClick={() => void handlePasswordReset()}>
+            {isResettingPassword ? "메일 발송 중" : "비밀번호 재설정"}
+          </button>
+        </div>
       </form>
     </main>
   );
