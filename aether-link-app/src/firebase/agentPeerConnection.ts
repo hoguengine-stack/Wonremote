@@ -62,11 +62,22 @@ export interface AgentPeerConnectionLike {
   close: () => Promise<void> | void;
   connectionState?: string;
   createAnswer: () => Promise<{ sdp: string; type: string }>;
+  localDescription?: { sdp: string; type: string } | null;
   onconnectionstatechange?: () => void;
   ondatachannel?: (event: { channel: AgentDataChannelLike }) => void;
   onicecandidate?: (event: { candidate?: AgentIceCandidateLike | null }) => void;
   setLocalDescription: (description: { sdp: string; type: string }) => Promise<unknown>;
   setRemoteDescription: (description: { sdp: string; type: "offer" }) => Promise<unknown>;
+}
+
+export function resolveAgentLocalDescription(
+  peer: AgentPeerConnectionLike,
+  fallback: { sdp: string; type: string },
+): { sdp: string; type: string } {
+  const local = peer.localDescription;
+  return local && typeof local.sdp === "string" && local.sdp.length > 0
+    ? local
+    : fallback;
 }
 
 type PeerConnectionConstructor = new (config: unknown) => AgentPeerConnectionLike;

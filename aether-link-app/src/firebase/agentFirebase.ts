@@ -45,6 +45,7 @@ import {
   bindAgentFileMessages,
   createAgentPeerConnection,
   dataChannelBufferedAmount,
+  resolveAgentLocalDescription,
   routeAgentDataChannel,
   sendFrameWithBackpressure,
   resolveWebRtcMaxBufferedAmount,
@@ -854,13 +855,14 @@ export async function startAgentWebRtcTransportWithFirebase(
       });
     const answer = await peer.createAnswer();
     await peer.setLocalDescription(answer);
+    const localAnswer = resolveAgentLocalDescription(peer, answer);
     await safeSetDoc(
       signalRef,
       {
         answer: {
           negotiationId: offer.negotiationId,
-          type: answer.type,
-          sdp: answer.sdp,
+          type: localAnswer.type,
+          sdp: localAnswer.sdp,
         },
         negotiationId: offer.negotiationId,
         state: "agent-answer",

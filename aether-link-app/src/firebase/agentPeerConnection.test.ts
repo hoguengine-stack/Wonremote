@@ -17,6 +17,7 @@ import {
   createAgentPeerConnection,
   isDataChannelBackpressured,
   normalizeWeriftConfig,
+  resolveAgentLocalDescription,
   resolveWebRtcMaxBufferedAmount,
   routeAgentDataChannel,
   sendFrameWithBackpressure,
@@ -95,6 +96,17 @@ describe("Agent PeerConnection architecture adapter", () => {
     expect(typeof peer.createAnswer).toBe("function");
     expect(typeof peer.addIceCandidate).toBe("function");
     await peer.close();
+  });
+
+  it("publishes the gathered local SDP instead of the pre-gather answer", () => {
+    const localDescription = {
+      type: "answer",
+      sdp: "v=0\r\na=candidate:1 1 UDP 1 192.0.2.1 5000 typ host\r\n",
+    };
+    const peer = { localDescription } as unknown as FakePeerConnection;
+
+    expect(resolveAgentLocalDescription(peer, { type: "answer", sdp: "v=0\r\n" }))
+      .toEqual(localDescription);
   });
 });
 

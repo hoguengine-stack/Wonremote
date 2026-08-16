@@ -998,13 +998,14 @@ export async function startFirebaseViewerWebRtcTransport(
 
   const offer = await peer.createOffer();
   await peer.setLocalDescription(offer);
+  const localOffer = peer.localDescription ?? offer;
   await safeSetDoc(
     signalRef,
     {
       offer: {
         negotiationId,
-        type: offer.type,
-        sdp: offer.sdp,
+        type: localOffer.type,
+        sdp: localOffer.sdp,
       },
       negotiationId,
       state: "viewer-offer",
