@@ -162,4 +162,4 @@ for (const arch of ["x64", "x86"]) {
   }
 }
 
-console.log(`Verified release manifest ${manifestPath} for ${version} (two universal installers signed for x64 and x86 clients).`);
+console.log(`Verified release manifest ${manifestPath} for ${version} (two x86 installers signed for x64 compatibility and x86 clients).`);

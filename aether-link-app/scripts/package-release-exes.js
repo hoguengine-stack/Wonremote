@@ -28,24 +28,14 @@ export function assertReleaseVersionConsistency() {
   }
 }
 
-const TARGET_ARCHITECTURES = [
-  {
-    key: "x64",
-    buildArch: "x64",
-    rustTarget: null,
-    viewerConfig: null,
-    agentConfig: "src-tauri/tauri.agent.conf.json",
-    installerArch: "x64",
-  },
-  {
-    key: "x86",
-    buildArch: "ia32",
-    rustTarget: "i686-pc-windows-msvc",
-    viewerConfig: "src-tauri/tauri.x86.conf.json",
-    agentConfig: "src-tauri/tauri.agent.x86.conf.json",
-    installerArch: "x86",
-  },
-];
+const RELEASE_TARGET = {
+  key: "x86",
+  buildArch: "ia32",
+  rustTarget: "i686-pc-windows-msvc",
+  viewerConfig: "src-tauri/tauri.x86.conf.json",
+  agentConfig: "src-tauri/tauri.agent.x86.conf.json",
+  installerArch: "x86",
+};
 
 function ensureExists(targetPath, label) {
   if (!fs.existsSync(targetPath)) {
@@ -113,85 +103,6 @@ function buildAgentDefaultInstaller(target) {
   }));
 }
 
-function escapeNsisString(value) {
-  return value.replace(/\\/g, "\\\\").replace(/"/g, '$\\"');
-}
-
-function resolveMakensisPath() {
-  const candidates = [
-    process.env.WONREMOTE_MAKENSIS_PATH,
-    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, "tauri", "NSIS", "makensis.exe") : undefined,
-    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, "tauri", "NSIS", "Bin", "makensis.exe") : undefined,
-    "makensis.exe",
-  ].filter(Boolean);
-
-  for (const candidate of candidates) {
-    if (candidate === "makensis.exe" || fs.existsSync(candidate)) {
-      return candidate;
-    }
-  }
-  throw new Error("makensis.exe is missing. Build with Tauri once or set WONREMOTE_MAKENSIS_PATH.");
-}
-
-function createUniversalProductInstaller(packages, defaultMode) {
-  const outputName = defaultMode === "agent" ? "WonRemote-Agent-Setup.exe" : "WonRemote-Viewer-Setup.exe";
-  const outputPath = path.join(outputDir, outputName);
-  const scriptPath = path.join(outputDir, `WonRemote-${defaultMode}-Setup-universal.nsi`);
-  const script = createUniversalProductInstallerScript(packages, defaultMode, outputPath);
-
-  fs.writeFileSync(scriptPath, script, "utf8");
-  fs.rmSync(outputPath, { force: true });
-  execFileSync(resolveMakensisPath(), [scriptPath], {
-    cwd: appRoot,
-    stdio: "inherit",
-    windowsHide: true,
-  });
-  fs.rmSync(scriptPath, { force: true });
-  ensureExists(outputPath, `universal WonRemote ${defaultMode} installer wrapper`);
-}
-
-export function createUniversalProductInstallerScript(packages, defaultMode, outputPath) {
-  const installerPathKey = defaultMode === "agent" ? "agentInstallerPath" : "viewerInstallerPath";
-  const productFilename = defaultMode === "agent" ? "agent" : "viewer";
-  const directLaunch = defaultMode === "agent"
-    ? `Exec '"$LOCALAPPDATA\\WonRemote\\Agent\\wonremote-viewer.exe" --agent'`
-    : `Exec '"$LOCALAPPDATA\\WonRemote\\Viewer\\wonremote-viewer.exe"'`;
-  const companionRestart = defaultMode === "viewer"
-    ? `IfFileExists "$LOCALAPPDATA\\WonRemote\\Agent\\wonremote-viewer.exe" 0 +2
-  Exec '"$LOCALAPPDATA\\WonRemote\\Agent\\wonremote-viewer.exe" --agent'`
-    : "";
-  const script = `!include LogicLib.nsh
-!include x64.nsh
-Unicode true
-Name "WonRemote ${defaultMode === "agent" ? "Agent" : "Viewer"}"
-OutFile "${escapeNsisString(outputPath)}"
-RequestExecutionLevel user
-Page instfiles
-
-Section "Install"
-  InitPluginsDir
-  SetOutPath "$PLUGINSDIR"
-  File /oname=${productFilename}-x64.exe "${escapeNsisString(packages.x64[installerPathKey])}"
-  File /oname=${productFilename}-x86.exe "${escapeNsisString(packages.x86[installerPathKey])}"
-
-  DetailPrint "Installing WonRemote ${defaultMode === "agent" ? "Agent" : "Viewer"}..."
-  \${If} \${RunningX64}
-    ExecWait '"$PLUGINSDIR\\${productFilename}-x64.exe" /S' $0
-  \${Else}
-    ExecWait '"$PLUGINSDIR\\${productFilename}-x86.exe" /S' $0
-  \${EndIf}
-  \${If} $0 != 0
-    SetErrorLevel $0
-    Abort "WonRemote ${defaultMode} installer failed."
-  \${EndIf}
-  ${companionRestart}
-  IfSilent +2 0
-  ${directLaunch}
-SectionEnd
-`;
-  return script;
-}
-
 function verifyTargetAgentRuntime(target, sourceRoot) {
   const agentBundlePath = path.join(sourceRoot, "agent", "index.mjs");
   ensureExists(agentBundlePath, `${target.key} Agent bundle`);
@@ -244,37 +155,29 @@ function resetReleaseOutput() {
   fs.mkdirSync(outputDir, { recursive: true });
 }
 
-function assembleUniversalInstallers(packages) {
-  createUniversalProductInstaller(packages, "viewer");
-  createUniversalProductInstaller(packages, "agent");
-
+export function copyStableX86Installers(packages, destination = outputDir) {
+  fs.mkdirSync(destination, { recursive: true });
+  fs.copyFileSync(packages.viewerInstallerPath, path.join(destination, "WonRemote-Viewer-Setup.exe"));
+  fs.copyFileSync(packages.agentInstallerPath, path.join(destination, "WonRemote-Agent-Setup.exe"));
   const expectedOutputs = ["WonRemote-Agent-Setup.exe", "WonRemote-Viewer-Setup.exe"];
-  const actualOutputs = fs.readdirSync(outputDir).filter((name) => /\.exe$/i.test(name)).sort();
+  const actualOutputs = fs.readdirSync(destination).filter((name) => /\.exe$/i.test(name)).sort();
   if (JSON.stringify(actualOutputs) !== JSON.stringify(expectedOutputs)) {
-    throw new Error(`Release output must contain exactly two universal product installers; found: ${actualOutputs.join(", ")}`);
+    throw new Error(`Release output must contain exactly two x86 product installers; found: ${actualOutputs.join(", ")}`);
   }
-  console.log(`Two universal WonRemote product installers created at ${outputDir}`);
+  console.log(`Two x86 WonRemote product installers created at ${destination}`);
 }
 
 function main() {
   assertReleaseVersionConsistency();
   resetReleaseOutput();
 
-  const packages = {};
-  for (const target of TARGET_ARCHITECTURES) {
-    packages[target.key] = packageTarget(target);
-  }
-  assembleUniversalInstallers(packages);
+  copyStableX86Installers(packageTarget(RELEASE_TARGET));
 }
 
 function assembleExistingInstallers() {
   assertReleaseVersionConsistency();
-  const packages = {};
-  for (const target of TARGET_ARCHITECTURES) {
-    packages[target.key] = existingTargetPackages(target);
-  }
   resetReleaseOutput();
-  assembleUniversalInstallers(packages);
+  copyStableX86Installers(existingTargetPackages(RELEASE_TARGET));
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

@@ -62,7 +62,7 @@ describe("production update manifest", () => {
     });
   });
 
-  it("verifies the same universal installer independently for x64 and x86 clients", () => {
+  it("verifies the same x86 installer independently for legacy x64 and x86 clients", () => {
     const { privateKey, publicKey } = generateKeyPairSync("ed25519");
     const viewer = {
       name: "WonRemote-Viewer-Setup.exe",

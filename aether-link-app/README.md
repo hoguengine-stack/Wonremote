@@ -1,6 +1,6 @@
 # WonRemote App
 
-WonRemote는 Firebase 기반 장비 관리와 WebRTC P2P 화면·입력·파일 채널을 사용하는 Windows 원격 제어 프로그램이다. Viewer와 Agent는 각각 하나의 범용 설치본으로 배포하며, 설치본이 Windows 비트에 맞는 x64/x86 네이티브 구성요소를 선택한다. 로컬 API는 개발 및 격리형 회귀 테스트에만 사용한다.
+WonRemote는 Firebase 기반 장비 관리와 WebRTC P2P 화면·입력·파일 채널을 사용하는 Windows 원격 제어 프로그램이다. Viewer와 Agent는 32비트 Windows와 64비트 Windows에서 함께 실행되는 x86 설치본을 각각 하나씩 배포한다. 로컬 API는 개발 및 격리형 회귀 테스트에만 사용한다.
 
 ## 실행
 
@@ -74,7 +74,7 @@ PW: 1234
 - 작업 관리자, CMD, 탐색기, 서비스, 장치 관리자, 잠금·로그오프·재시작·종료 제어와 위험 명령 재확인
 - Wake-on-LAN 매직 패킷 및 Firebase relay 요청
 - 서명된 업데이트 매니페스트, 체크섬 검증, 실패 롤백, Agent·Viewer 자동 업데이트
-- x64 네이티브 WebRTC와 x86 `werift` 런타임을 함께 담고 OS 비트에 맞춰 선택하는 Viewer·Agent 범용 설치본
+- 32비트와 64비트 Windows에서 동일하게 실행되는 x86 Viewer·Agent 설치본
 - 서명된 불변 버전 URL, SHA-256 검증, 실패 롤백과 재시작을 포함한 설치형 자동 업데이트
 - 개발·회귀 테스트용 로컬 API와 격리형 파일 저장소
 

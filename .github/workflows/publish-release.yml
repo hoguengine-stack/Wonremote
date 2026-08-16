@@ -76,7 +76,7 @@ jobs:
           cargo test --manifest-path src-tauri/Cargo.toml test_node_resource_paths
           cargo test --manifest-path src-tauri/Cargo.toml test_update_handoff_acknowledgement_path_is_adjacent_to_the_owned_script
 
-      - name: Build two universal installers and signed manifest
+      - name: Build two x86 installers and signed compatibility manifest
         run: |
           npm run release:exes
           npm run release:manifest

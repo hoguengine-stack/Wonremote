@@ -17,8 +17,8 @@ Expected local assets:
 Build efficiency and isolation rules:
 
 - For each architecture, the Viewer build produces the frontend and architecture-specific runtime resources; the following Agent build reuses those verified resources instead of rebuilding them.
-- Do not run x64 and x86 release workers concurrently in the same checkout. They write different binaries to the same `dist-*` paths and can silently create a mixed-architecture installer.
-- GitHub Actions caches Rust targets and downloaded build tools. True x64/x86 parallel packaging is allowed only after every `dist-*`, Cargo target, and temporary release path is isolated per architecture.
+- Release packaging builds only the `i686-pc-windows-msvc` target. Do not add an x64 release worker without changing and reviewing the signed update compatibility contract.
+- GitHub Actions caches the x86 Rust target and downloaded build tools.
 
 ## Publish Release Gate
 
@@ -38,8 +38,8 @@ For update/rollback E2E testing, use a local fixture/update server instead of pu
 
 - Any failed, timed-out, hung, or skipped build, test, signing, upload, or verification step blocks all later release steps.
 - Never retry a failed release step until its root cause and focused regression proof are recorded.
-- A release is incomplete until one tag contains exactly these three assets: the universal Viewer installer, the universal Agent installer, and `wonremote-update-manifest.json`.
-- Each universal installer must contain native x64 and x86 payloads and select the matching payload at install time. The manifest signs the same stable installer asset independently for x64 and x86 clients; architecture migration directives are not used.
+- A release is incomplete until one tag contains exactly these three assets: the x86 Viewer installer, the x86 Agent installer, and `wonremote-update-manifest.json`.
+- Each installer contains only the x86 runtime and supports both 32-bit and 64-bit Windows. The manifest signs that same x86 installer independently under x64 and x86 metadata so previously installed x64 clients can migrate without losing automatic updates.
 - A published version is immutable. Never delete, replace, retag, or publish over exposed release assets. Every changed installer requires a strictly new version and tag so installed clients can detect it.
 - The publisher must keep the release private until the exact three uploaded asset names and byte sizes match the local signed assets.
 - Before publication, the publisher downloads every uploaded asset from GitHub's asset API and verifies the remote manifest, signatures, and installer checksums again. A failed remote check leaves the release private.
@@ -49,7 +49,7 @@ For update/rollback E2E testing, use a local fixture/update server instead of pu
 
 Before declaring a release usable, collect fresh evidence for the same commit and tag:
 
-1. The two universal installer filenames, sizes, SHA-256 values, embedded x64/x86 payloads, and product role.
+1. The two x86 installer filenames, sizes, SHA-256 values, x86 source payload identity, and product role.
 2. The manifest version, signed asset URLs, checksums, signatures, and tag match.
 3. The Viewer and Agent Firebase download redirects, including x86 compatibility aliases, resolve to the intended installers.
 4. A previous installed Viewer and Agent can discover the release, verify it, install it, restart, and report the target version.
@@ -107,7 +107,7 @@ User-facing Firebase Hosting download links:
 
 - Viewer installer: `https://wonremote-a7fd3.web.app/download/viewer`
 - Agent installer: `https://wonremote-a7fd3.web.app/download/agent`
-- Legacy x86 download URLs remain compatibility aliases for the same two universal installers.
+- Legacy x86 download URLs remain compatibility aliases for the same two x86 installers.
 
 ## Runtime Verification Key
 

@@ -1,39 +1,36 @@
-import { describe, expect, it } from "vitest";
-import { createUniversalProductInstallerScript } from "./package-release-exes.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { copyStableX86Installers } from "./package-release-exes.js";
 
-const packages = {
-  x64: {
-    agentInstallerPath: "C:\\build\\agent-x64.exe",
-    viewerInstallerPath: "C:\\build\\viewer-x64.exe",
-  },
-  x86: {
-    agentInstallerPath: "C:\\build\\agent-x86.exe",
-    viewerInstallerPath: "C:\\build\\viewer-x86.exe",
-  },
-};
+const temporaryDirectories = [];
 
-describe("universal release installer wrappers", () => {
-  it.each([
-    ["viewer", "viewer", "Viewer"],
-    ["agent", "agent", "Agent"],
-  ])("keeps the %s wrapper payload product-isolated while selecting the host architecture", (mode, filename, product) => {
-    const script = createUniversalProductInstallerScript(packages, mode, `C:\\release\\WonRemote-${product}-Setup.exe`);
+afterEach(() => {
+  for (const directory of temporaryDirectories.splice(0)) {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
 
-    expect(script).toContain("${RunningX64}");
-    expect(script).toContain(`${filename}-x64.exe`);
-    expect(script).toContain(`${filename}-x86.exe`);
-    expect(script).not.toContain(`${mode === "viewer" ? "agent" : "viewer"}-x64.exe`);
-    expect(script).not.toContain(`${mode === "viewer" ? "agent" : "viewer"}-x86.exe`);
-    expect(script).not.toContain("WONREMOTE_RESTART_MODE");
-    expect(script).toContain("IfSilent +2 0");
-  });
+describe("x86 release installers", () => {
+  it("copies only the x86 Viewer and Agent installers to stable release names", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "wonremote-x86-release-"));
+    temporaryDirectories.push(root);
+    const source = path.join(root, "source");
+    const output = path.join(root, "output");
+    fs.mkdirSync(source);
+    const viewerInstallerPath = path.join(source, "viewer-x86.exe");
+    const agentInstallerPath = path.join(source, "agent-x86.exe");
+    fs.writeFileSync(viewerInstallerPath, "viewer-x86");
+    fs.writeFileSync(agentInstallerPath, "agent-x86");
 
-  it("restarts an installed Agent after Viewer replacement without embedding an Agent installer", () => {
-    const script = createUniversalProductInstallerScript(packages, "viewer", "C:\\release\\WonRemote-Viewer-Setup.exe");
+    copyStableX86Installers({ viewerInstallerPath, agentInstallerPath }, output);
 
-    expect(script).toContain('IfFileExists "$LOCALAPPDATA\\WonRemote\\Agent\\wonremote-viewer.exe"');
-    expect(script).toContain('Exec \'"$LOCALAPPDATA\\WonRemote\\Agent\\wonremote-viewer.exe" --agent\'');
-    expect(script).not.toContain("agent-x64.exe");
-    expect(script).not.toContain("agent-x86.exe");
+    expect(fs.readdirSync(output).sort()).toEqual([
+      "WonRemote-Agent-Setup.exe",
+      "WonRemote-Viewer-Setup.exe",
+    ]);
+    expect(fs.readFileSync(path.join(output, "WonRemote-Viewer-Setup.exe"), "utf8")).toBe("viewer-x86");
+    expect(fs.readFileSync(path.join(output, "WonRemote-Agent-Setup.exe"), "utf8")).toBe("agent-x86");
   });
 });

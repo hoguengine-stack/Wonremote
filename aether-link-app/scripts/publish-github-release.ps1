@@ -59,9 +59,9 @@ if ($LASTEXITCODE -ne 0) {
   throw "Installer update E2E preflight failed with exit code $LASTEXITCODE."
 }
 
-& node (Join-Path $ScriptDir "verify-universal-installer-payloads.js")
+& node (Join-Path $ScriptDir "verify-x86-installer-payloads.js")
 if ($LASTEXITCODE -ne 0) {
-  throw "Universal installer payload preflight failed with exit code $LASTEXITCODE."
+  throw "x86 installer payload preflight failed with exit code $LASTEXITCODE."
 }
 
 & node (Join-Path $ScriptDir "verify-release-manifest.js") `

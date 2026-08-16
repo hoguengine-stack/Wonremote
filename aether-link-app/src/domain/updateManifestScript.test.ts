@@ -19,7 +19,7 @@ function fixtureFiles(root: string) {
 }
 
 describe("production update manifest scripts", () => {
-  it("creates independently signed x64 and x86 metadata for two universal installers", () => {
+  it("creates independently signed x64 compatibility and x86 metadata for two x86 installers", () => {
     const root = mkdtempSync(path.join(tmpdir(), "wonremote-manifest-contract-"));
     try {
       const files = fixtureFiles(root);
@@ -62,7 +62,7 @@ describe("production update manifest scripts", () => {
     }
   });
 
-  it("fails when either required universal installer input is missing", () => {
+  it("fails when either required product installer input is missing", () => {
     const root = mkdtempSync(path.join(tmpdir(), "wonremote-manifest-missing-"));
     try {
       const files = fixtureFiles(root);
@@ -73,7 +73,7 @@ describe("production update manifest scripts", () => {
     }
   });
 
-  it("publishes exactly two universal installers and one manifest after the draft gate", () => {
+  it("publishes exactly two x86 installers and one manifest after the draft gate", () => {
     const script = readFileSync(path.join(projectRoot, "scripts", "publish-github-release.ps1"), "utf8");
     expect(script.match(/^Publish-Asset /gm)?.length).toBe(3);
     expect(script).toContain("draft = $true");
