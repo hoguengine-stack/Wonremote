@@ -21,6 +21,7 @@ describe("Firebase security deployment policy", () => {
 
     expect(packageJson.scripts?.["firebase:rules:test"]).toContain("verify-firestore-rules.mjs");
     expect(verifier).toContain("Unauthorized device list");
+    expect(verifier).toContain("wonremoteViewer: true");
     expect(verifier).toContain("Agent could not read the central Viewer session for its device.");
   });
 
@@ -72,7 +73,7 @@ describe("Firebase security deployment policy", () => {
     );
 
     expect(rules).toContain("function isCentralViewer()");
-    expect(rules).toContain('request.auth.uid in [');
+    expect(rules).toContain("request.auth.token.wonremoteViewer == true");
     expect(rules).toContain('"Xjjdvk0Nx1eqCvND4yIOHbM53tl1"');
     expect(viewerFirebase).toContain('const CENTRAL_VIEWER_UIDS = new Set(["Xjjdvk0Nx1eqCvND4yIOHbM53tl1"]);');
     expect(rules).not.toContain('!request.auth.token.email.matches(".*@agents[.]wonremote[.]app")');

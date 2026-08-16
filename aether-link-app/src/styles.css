@@ -296,6 +296,123 @@ input:focus {
   color: #ffffff;
 }
 
+.account-manager-button {
+  background: #17212b;
+  border-color: #17212b;
+  color: #fff;
+  gap: 6px;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+.account-manager {
+  max-height: min(720px, 88vh);
+  max-width: 860px;
+  overflow: auto;
+  width: calc(100vw - 32px);
+}
+
+.account-manager-header,
+.account-row,
+.account-actions {
+  align-items: center;
+  display: flex;
+}
+
+.account-manager-header {
+  justify-content: space-between;
+}
+
+.account-manager-header h2 {
+  margin: 0;
+}
+
+.icon-button,
+.account-actions button {
+  align-items: center;
+  display: inline-flex;
+  justify-content: center;
+  min-height: 34px;
+  min-width: 34px;
+  padding: 0;
+}
+
+.account-create-form {
+  align-items: end;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 1.3fr 1fr 1fr auto;
+  margin: 18px 0;
+}
+
+.account-create-form label {
+  color: #536271;
+  display: grid;
+  font-size: 12px;
+  font-weight: 700;
+  gap: 5px;
+}
+
+.account-create-form button {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+}
+
+.account-manager-error {
+  background: #fff1f1;
+  border: 1px solid #f0baba;
+  color: #9c2525;
+  padding: 9px 11px;
+}
+
+.account-list {
+  border: 1px solid #d8e0e7;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.account-row {
+  border-bottom: 1px solid #e5eaee;
+  gap: 14px;
+  min-height: 62px;
+  padding: 10px 12px;
+}
+
+.account-row:last-child {
+  border-bottom: 0;
+}
+
+.account-identity {
+  display: grid;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.account-identity span {
+  color: #687786;
+  font-size: 12px;
+}
+
+.account-status {
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  padding: 4px 8px;
+}
+
+.account-status.active { background: #dff4eb; color: #14705f; }
+.account-status.disabled { background: #f4e4e4; color: #9a3030; }
+.account-actions { gap: 5px; }
+.account-actions .danger { color: #b22d2d; }
+.account-list-empty { color: #687786; margin: 0; padding: 24px; text-align: center; }
+
+@media (max-width: 760px) {
+  .account-create-form { grid-template-columns: 1fr; }
+  .account-row { align-items: flex-start; flex-wrap: wrap; }
+  .account-actions { margin-left: auto; }
+}
+
 .rollout-button {
   align-items: center;
   background: #17212b;

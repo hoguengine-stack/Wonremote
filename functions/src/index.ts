@@ -5,6 +5,13 @@ import { randomUUID } from "node:crypto";
 import { generateSecurityCode } from "./securityCode.js";
 import { normalizeWakeMac, selectWakeRelay } from "./wakeRelay.js";
 
+export {
+  createViewerAccount,
+  deleteViewerAccount,
+  listViewerAccounts,
+  updateViewerAccount,
+} from "./viewerAccounts.js";
+
 initializeApp();
 
 const db = getFirestore();

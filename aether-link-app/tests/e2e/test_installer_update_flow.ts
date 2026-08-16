@@ -14,7 +14,7 @@ import {
 type Scenario = "success" | "installer-failure" | "health-failure" | "backup-unavailable";
 
 const OLD_VERSION = "0.1.60";
-const NEW_VERSION = "0.1.61";
+const NEW_VERSION = "0.1.62";
 
 async function main(): Promise<void> {
   if (process.platform !== "win32") {

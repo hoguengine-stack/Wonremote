@@ -8,9 +8,10 @@ service cloud.firestore {
 
     function isCentralViewer() {
       return signedIn()
-        && request.auth.uid in [
-          "Xjjdvk0Nx1eqCvND4yIOHbM53tl1"
-        ];
+        && (
+          request.auth.uid == "Xjjdvk0Nx1eqCvND4yIOHbM53tl1"
+          || request.auth.token.wonremoteViewer == true
+        );
     }
 
     function deviceDoc(deviceId) {

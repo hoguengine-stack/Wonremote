@@ -30,7 +30,7 @@ if (!host || !Number.isInteger(port)) {
   throw new Error(`Invalid FIRESTORE_EMULATOR_HOST: ${emulatorHost}`);
 }
 
-function createContext(name, uid, email) {
+function createContext(name, uid, email, claims = {}) {
   const app = initializeApp({
     apiKey: "rules-test-api-key",
     appId: `rules-test-${name}`,
@@ -42,6 +42,7 @@ function createContext(name, uid, email) {
       sub: uid,
       email,
       email_verified: true,
+      ...claims,
     },
   });
   return { app, db };
@@ -61,6 +62,9 @@ async function expectPermissionDenied(operation, label) {
 
 const agent = createContext("agent", AGENT_UID, "1234567890@agents.wonremote.app");
 const viewer = createContext("viewer", CENTRAL_VIEWER_UID, "viewer@example.com");
+const managedViewer = createContext("managed-viewer", "rules-test-managed-viewer", "staff@example.com", {
+  wonremoteViewer: true,
+});
 const unauthorized = createContext("unauthorized", UNAUTHORIZED_UID, "unauthorized@example.com");
 
 try {
@@ -76,6 +80,10 @@ try {
   const viewerDevices = await getDocs(collection(viewer.db, "devices"));
   if (!viewerDevices.docs.some((snapshot) => snapshot.id === DEVICE_ID)) {
     throw new Error("Central Viewer could not list the Agent device.");
+  }
+  const managedViewerDevices = await getDocs(collection(managedViewer.db, "devices"));
+  if (!managedViewerDevices.docs.some((snapshot) => snapshot.id === DEVICE_ID)) {
+    throw new Error("Managed Viewer claim could not list the Agent device.");
   }
 
   await expectPermissionDenied(
@@ -121,9 +129,10 @@ try {
   console.log(JSON.stringify({
     agentSessionAccess: true,
     centralViewerDeviceAccess: true,
+    managedViewerDeviceAccess: true,
     unauthorizedViewerDenied: true,
     centralViewerDeviceDeletion: true,
   }));
 } finally {
-  await Promise.all([agent.app, viewer.app, unauthorized.app].map((app) => deleteApp(app)));
+  await Promise.all([agent.app, viewer.app, managedViewer.app, unauthorized.app].map((app) => deleteApp(app)));
 }

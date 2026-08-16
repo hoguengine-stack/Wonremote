@@ -27,6 +27,7 @@ import {
   TriangleAlert,
   Pencil,
   SlidersHorizontal,
+  Users,
 } from "lucide-react";
 import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -66,8 +67,10 @@ import {
   loadFirebaseUpdateRollout,
   saveFirebaseUpdateRollout,
   updateFirebaseDeviceRollout,
+  isCurrentViewerAccountManager,
   type ViewerWebRtcTransport,
 } from "./firebase/viewerFirebase";
+import { ViewerAccountManager } from "./components/ViewerAccountManager";
 import { groupDevicesByStore, resolveDeviceStatuses } from "./domain/agentRegistry";
 import { resolveViewerOfflineAfterMs } from "./domain/viewerDeviceList";
 import {
@@ -276,6 +279,8 @@ function ViewerApp() {
   const [rolloutDraft, setRolloutDraft] = useState<UpdateFleetRollout | null>(null);
   const [isRolloutOpen, setIsRolloutOpen] = useState(false);
   const [isRolloutSaving, setIsRolloutSaving] = useState(false);
+  const [canManageViewerAccounts, setCanManageViewerAccounts] = useState(false);
+  const [isAccountManagerOpen, setIsAccountManagerOpen] = useState(false);
 
   useEffect(() => {
     if (!isViewerFirebaseEnabled()) {
@@ -310,6 +315,22 @@ function ViewerApp() {
       unsubscribe();
     };
   }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated || !isViewerFirebaseEnabled()) {
+      setCanManageViewerAccounts(false);
+      return;
+    }
+    let active = true;
+    void isCurrentViewerAccountManager()
+      .then((allowed) => {
+        if (active) setCanManageViewerAccounts(allowed);
+      })
+      .catch(() => {
+        if (active) setCanManageViewerAccounts(false);
+      });
+    return () => { active = false; };
+  }, [isAuthenticated]);
 
   // Native Viewer shell owns installed-app updates so WebView CORS cannot block them.
   useEffect(() => {
@@ -925,6 +946,10 @@ function ViewerApp() {
             <SlidersHorizontal size={16} />
             <span>단계 배포</span>
           </button>}
+          {canManageViewerAccounts && <button className="account-manager-button" type="button" onClick={() => setIsAccountManagerOpen(true)}>
+            <Users size={16} />
+            <span>계정 관리</span>
+          </button>}
           </div>
         </header>
 
@@ -1001,6 +1026,7 @@ function ViewerApp() {
           onSave={handleSaveRollout}
         />
       )}
+      {isAccountManagerOpen && <ViewerAccountManager onClose={() => setIsAccountManagerOpen(false)} />}
     </div>
   );
 }

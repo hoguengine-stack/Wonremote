@@ -1,10 +1,12 @@
 import {
   browserLocalPersistence,
   createUserWithEmailAndPassword,
+  getIdTokenResult,
   onAuthStateChanged,
   setPersistence,
   signInWithEmailAndPassword,
   signOut,
+  type User,
 } from "firebase/auth";
 import {
   collection,
@@ -130,6 +132,16 @@ const AGENT_VIEWER_LOGIN_ERROR = "사업자번호 Agent 계정은 Viewer로 로�
 const CENTRAL_VIEWER_LOGIN_ERROR = "등록된 중앙 Viewer 관리자 계정이 아닙니다.";
 const CENTRAL_VIEWER_UIDS = new Set(["Xjjdvk0Nx1eqCvND4yIOHbM53tl1"]);
 
+export interface ViewerAccount {
+  uid: string;
+  email: string;
+  displayName: string;
+  disabled: boolean;
+  isAdmin: boolean;
+  createdAt: string;
+  lastSignInAt: string | null;
+}
+
 export interface ViewerWebRtcTransport {
   close: () => void;
   sendControl: (action: string) => boolean;
@@ -165,7 +177,7 @@ export async function loginViewerWithFirebase(
   } catch (error) {
     throwExplainedFirebaseAuthError(error);
   }
-  if (!credential || !isCentralViewerUid(credential.user.uid)) {
+  if (!credential || !(await isAuthorizedViewerUser(credential.user))) {
     await signOut(services.auth);
     throw new Error(CENTRAL_VIEWER_LOGIN_ERROR);
   }
@@ -180,15 +192,26 @@ export function subscribeViewerAuthState(
   return onAuthStateChanged(
     services.auth,
     (user) => {
-      if (user && !isCentralViewerUid(user.uid)) {
-        void signOut(services.auth);
+      if (!user) {
         onAuthenticated(false);
-        onError(new Error(isAgentViewerIdentity(user.email ?? "")
-          ? AGENT_VIEWER_LOGIN_ERROR
-          : CENTRAL_VIEWER_LOGIN_ERROR));
         return;
       }
-      onAuthenticated(Boolean(user));
+      void isAuthorizedViewerUser(user)
+        .then(async (authorized) => {
+          if (authorized) {
+            onAuthenticated(true);
+            return;
+          }
+          await signOut(services.auth);
+          onAuthenticated(false);
+          onError(new Error(isAgentViewerIdentity(user.email ?? "")
+            ? AGENT_VIEWER_LOGIN_ERROR
+            : CENTRAL_VIEWER_LOGIN_ERROR));
+        })
+        .catch((error) => {
+          onAuthenticated(false);
+          onError(error instanceof Error ? error : new Error(CENTRAL_VIEWER_LOGIN_ERROR));
+        });
     },
     (error) => onError(error),
   );
@@ -202,6 +225,51 @@ function isAgentViewerIdentity(value: string): boolean {
 
 function isCentralViewerUid(uid: string): boolean {
   return CENTRAL_VIEWER_UIDS.has(uid);
+}
+
+async function isAuthorizedViewerUser(user: User): Promise<boolean> {
+  if (isCentralViewerUid(user.uid)) {
+    return true;
+  }
+  const token = await getIdTokenResult(user, true);
+  return token.claims.wonremoteViewer === true;
+}
+
+export async function isCurrentViewerAccountManager(
+  env: ViewerFirebaseEnv = import.meta.env,
+): Promise<boolean> {
+  const user = getViewerFirebaseServices(env).auth.currentUser;
+  if (!user) return false;
+  if (isCentralViewerUid(user.uid)) return true;
+  const token = await getIdTokenResult(user, true);
+  return token.claims.wonremoteAdmin === true;
+}
+
+export async function listViewerAccounts(
+  env: ViewerFirebaseEnv = import.meta.env,
+): Promise<ViewerAccount[]> {
+  return callViewerFunction<Record<string, never>, ViewerAccount[]>("listViewerAccounts", {}, env);
+}
+
+export async function createViewerAccount(
+  input: { email: string; password: string; displayName?: string },
+  env: ViewerFirebaseEnv = import.meta.env,
+): Promise<ViewerAccount> {
+  return callViewerFunction<typeof input, ViewerAccount>("createViewerAccount", input, env);
+}
+
+export async function updateViewerAccount(
+  input: { uid: string; displayName?: string; password?: string; disabled?: boolean },
+  env: ViewerFirebaseEnv = import.meta.env,
+): Promise<ViewerAccount> {
+  return callViewerFunction<typeof input, ViewerAccount>("updateViewerAccount", input, env);
+}
+
+export async function deleteViewerAccount(
+  uid: string,
+  env: ViewerFirebaseEnv = import.meta.env,
+): Promise<void> {
+  await callViewerFunction<{ uid: string }, { deleted: boolean }>("deleteViewerAccount", { uid }, env);
 }
 
 export async function logoutViewerWithFirebase(env: ViewerFirebaseEnv = import.meta.env): Promise<void> {
@@ -305,8 +373,8 @@ export async function deleteFirebaseDevice(
   env: ViewerFirebaseEnv = import.meta.env,
 ): Promise<void> {
   const services = getViewerFirebaseServices(env);
-  const userId = requireCurrentUserId(services.auth.currentUser?.uid);
-  if (!CENTRAL_VIEWER_UIDS.has(userId)) {
+  const user = services.auth.currentUser;
+  if (!user || !(await isAuthorizedViewerUser(user))) {
     throw new Error("Only the central Viewer can delete devices.");
   }
 

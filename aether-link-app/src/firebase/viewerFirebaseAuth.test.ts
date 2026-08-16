@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
+import { getIdTokenResult, onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { loginViewerWithFirebase, subscribeViewerAuthState } from "./viewerFirebase";
 
 const CENTRAL_VIEWER_UID = "Xjjdvk0Nx1eqCvND4yIOHbM53tl1";
 
 const mockState = vi.hoisted(() => ({
   services: {
-    auth: { app: "auth" },
+    auth: { app: "auth", currentUser: null },
     db: {},
     functions: {},
   },
@@ -28,6 +28,7 @@ vi.mock("./firebaseServices", () => ({
 vi.mock("firebase/auth", () => ({
   browserLocalPersistence: "local",
   createUserWithEmailAndPassword: vi.fn(),
+  getIdTokenResult: vi.fn(async () => ({ claims: {} })),
   onAuthStateChanged: vi.fn(),
   setPersistence: vi.fn(async () => undefined),
   signInWithEmailAndPassword: vi.fn(async () => ({ user: { uid: CENTRAL_VIEWER_UID } })),
@@ -67,7 +68,7 @@ describe("Viewer Firebase authentication", () => {
     expect(signOut).toHaveBeenCalledWith(mockState.services.auth);
   });
 
-  it("rejects a persisted Agent account instead of opening the central Viewer", () => {
+  it("rejects a persisted Agent account instead of opening the central Viewer", async () => {
     vi.mocked(onAuthStateChanged).mockImplementationOnce(((_auth: unknown, onNext: (user: unknown) => void) => {
       onNext({ uid: "agent-uid", email: "1234567890@agents.wonremote.app" });
       return vi.fn();
@@ -77,14 +78,14 @@ describe("Viewer Firebase authentication", () => {
 
     subscribeViewerAuthState(onAuthenticated, onError);
 
-    expect(onAuthenticated).toHaveBeenCalledWith(false);
+    await vi.waitFor(() => expect(onAuthenticated).toHaveBeenCalledWith(false));
     expect(onError).toHaveBeenCalledWith(expect.objectContaining({
       message: expect.stringContaining("Viewer 이메일 계정"),
     }));
     expect(signOut).toHaveBeenCalledWith(mockState.services.auth);
   });
 
-  it("accepts a persisted central Viewer account", () => {
+  it("accepts a persisted central Viewer account", async () => {
     vi.mocked(onAuthStateChanged).mockImplementationOnce(((_auth: unknown, onNext: (user: unknown) => void) => {
       onNext({ uid: CENTRAL_VIEWER_UID, email: "owner@example.com" });
       return vi.fn();
@@ -94,7 +95,18 @@ describe("Viewer Firebase authentication", () => {
 
     subscribeViewerAuthState(onAuthenticated, onError);
 
-    expect(onAuthenticated).toHaveBeenCalledWith(true);
+    await vi.waitFor(() => expect(onAuthenticated).toHaveBeenCalledWith(true));
     expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("accepts a Viewer account carrying the wonremoteViewer claim", async () => {
+    vi.mocked(signInWithEmailAndPassword).mockResolvedValueOnce({
+      user: { uid: "viewer-user", email: "staff@example.com" },
+    } as any);
+    vi.mocked(getIdTokenResult).mockResolvedValueOnce({ claims: { wonremoteViewer: true } } as any);
+
+    await loginViewerWithFirebase("staff@example.com", "secret123");
+
+    expect(signOut).not.toHaveBeenCalled();
   });
 });
