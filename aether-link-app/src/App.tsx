@@ -1429,6 +1429,7 @@ function ConnectionHistorySection() {
 
 function AgentFirstRunApp() {
   const firebaseMode = isViewerFirebaseEnabled();
+  const agentVersion = getViewerVersion(import.meta.env);
   const [businessNumber, setBusinessNumber] = useState("");
   const [password, setPassword] = useState("");
   const [apiUrl, setApiUrl] = useState("http://127.0.0.1:8787");
@@ -1489,7 +1490,7 @@ function AgentFirstRunApp() {
         businessNumber,
         password,
         installId,
-        version: getViewerVersion(import.meta.env),
+        version: agentVersion,
         apiUrl: firebaseMode ? undefined : apiUrl,
       });
       setRegisteredDevice(result.device);
@@ -1499,7 +1500,7 @@ function AgentFirstRunApp() {
         businessNumber: result.device.businessNumber,
         installId,
         registeredDeviceId: result.device.id,
-        version: getViewerVersion(import.meta.env),
+        version: agentVersion,
         apiUrl: firebaseMode ? "" : apiUrl,
       };
 
@@ -1532,7 +1533,7 @@ function AgentFirstRunApp() {
         <div className="login-panel agent-panel active-agent-panel">
           <div className="login-badge active-agent-badge">
             <Monitor size={20} />
-            <span>Active Agent</span>
+            <span>Active Agent · v{agentVersion}</span>
           </div>
           <h1>Agent 가동 중</h1>
           {error && <p className="error-text">{error}</p>}
@@ -1581,7 +1582,7 @@ function AgentFirstRunApp() {
       <form className={`login-panel agent-panel ${firebaseMode ? "firebase-agent-panel" : ""}`} onSubmit={handleFirstRun}>
         <div className="login-badge">
           <Monitor size={20} />
-          <span>Agent</span>
+          <span>Agent · v{agentVersion}</span>
         </div>
         <h1>Agent 최초 실행</h1>
         {!firebaseMode && (

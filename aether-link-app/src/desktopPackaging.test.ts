@@ -77,6 +77,14 @@ describe("desktop packaging scaffold", () => {
     expect(tauriSource).toContain("failed to assign Agent child to cleanup job");
   });
 
+  it("shows the running Agent version before and after registration", () => {
+    const appSource = readFileSync(path.join(projectRoot, "src", "App.tsx"), "utf8");
+
+    expect(appSource).toContain("const agentVersion = getViewerVersion(import.meta.env)");
+    expect(appSource).toContain("Active Agent · v{agentVersion}");
+    expect(appSource).toContain("Agent · v{agentVersion}");
+  });
+
   it("resets the NSIS output path after overriding split install folders", () => {
     const viewerHook = readFileSync(path.join(projectRoot, "src-tauri", "windows", "viewer-install-hooks.nsh"), "utf8");
     const agentHook = readFileSync(path.join(projectRoot, "src-tauri", "windows", "agent-install-hooks.nsh"), "utf8");
