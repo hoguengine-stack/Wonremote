@@ -100,14 +100,19 @@ $ReleaseApi = "https://api.github.com/repos/$Repository/releases"
 $Release = $null
 try {
   $Release = Invoke-GitHubJson "Get" "$ReleaseApi/tags/$Tag"
-  Write-Host "Found existing GitHub Release $Tag."
-  if (-not $Release.draft) {
-    throw "Refusing to replace published release $Tag. Bump the version before publishing so installed clients can detect the update."
-  }
 } catch {
   if ((Get-StatusCode $_) -ne 404) {
     throw
   }
+  $ReleaseList = Invoke-GitHubJson "Get" "$ReleaseApi?per_page=100"
+  $Release = $ReleaseList | Where-Object { $_.tag_name -eq $Tag } | Select-Object -First 1
+}
+if ($Release) {
+  Write-Host "Found existing GitHub Release $Tag."
+  if (-not $Release.draft) {
+    throw "Refusing to replace published release $Tag. Bump the version before publishing so installed clients can detect the update."
+  }
+} else {
   Write-Host "Creating GitHub Release $Tag."
   $Release = Invoke-GitHubJson "Post" $ReleaseApi @{
     tag_name = $Tag
@@ -129,26 +134,16 @@ function Publish-Asset($FilePath, $AssetName, $ContentType) {
   $EscapedName = [uri]::EscapeDataString($AssetName)
   $UploadUrl = "https://uploads.github.com/repos/$Repository/releases/$($Release.id)/assets?name=$EscapedName"
   Write-Host "Uploading $AssetName."
-  Invoke-RestMethod -Method Post -Uri $UploadUrl -Headers $Headers -InFile $FilePath -ContentType $ContentType | Out-Null
+  return Invoke-RestMethod -Method Post -Uri $UploadUrl -Headers $Headers -InFile $FilePath -ContentType $ContentType
 }
 
-Publish-Asset $StableInstallerPath $StableInstallerAssetName "application/octet-stream"
-Publish-Asset $StableAgentInstallerPath $StableAgentInstallerAssetName "application/octet-stream"
-Publish-Asset $ManifestPath $ManifestName "application/json"
+$PublishedAssets = @(
+  Publish-Asset $StableInstallerPath $StableInstallerAssetName "application/octet-stream"
+  Publish-Asset $StableAgentInstallerPath $StableAgentInstallerAssetName "application/octet-stream"
+  Publish-Asset $ManifestPath $ManifestName "application/json"
+)
 
-# Keep a partial or wrong upload private. Installed clients only see the tag after this exact set matches.
-$PublishedAssets = @()
-$AssetListAttempts = 8
-for ($Attempt = 1; $Attempt -le $AssetListAttempts; $Attempt++) {
-  $PublishedAssets = @(Invoke-GitHubJson "Get" $AssetsApi)
-  if ($PublishedAssets.Count -eq $ExpectedAssets.Count) {
-    break
-  }
-  if ($Attempt -lt $AssetListAttempts) {
-    Write-Host "GitHub asset list is not consistent yet ($($PublishedAssets.Count)/$($ExpectedAssets.Count)); retrying."
-    Start-Sleep -Seconds 5
-  }
-}
+# Keep a partial or wrong upload private. Each successful upload returns its stored asset metadata.
 if ($PublishedAssets.Count -ne $ExpectedAssets.Count) {
   throw "Release upload verification failed: expected $($ExpectedAssets.Count) assets, found $($PublishedAssets.Count)."
 }

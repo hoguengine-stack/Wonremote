@@ -669,12 +669,13 @@ describe("desktop packaging scaffold", () => {
     expect(packageReleaseScript).toContain("expectedOutputs");
     expect(packageReleaseScript).toContain("Two x86 WonRemote product installers created");
     expect(publishScript).toContain("Publish-Asset $ManifestPath $ManifestName");
-    expect(publishScript.match(/^Publish-Asset /gm)?.length).toBe(3);
+    expect(publishScript.match(/^\s{2}Publish-Asset /gm)?.length).toBe(3);
     expect(publishScript).toContain("Refusing to replace published release");
     expect(publishScript).toContain("Bump the version before publishing");
     expect(publishScript).toContain("Release upload verification failed");
-    expect(publishScript).toContain("$AssetListAttempts = 8");
-    expect(publishScript).toContain("GitHub asset list is not consistent yet");
+    expect(publishScript).toContain('$ReleaseList = Invoke-GitHubJson "Get" "$ReleaseApi?per_page=100"');
+    expect(publishScript).toContain("$PublishedAssets = @(");
+    expect(publishScript).toContain("return Invoke-RestMethod -Method Post");
     expect(publishScript).toContain("size differs from the local signed asset");
     expect(publishScript).toContain("Release download verification failed");
     expect(publishScript).toContain("verify-release-manifest.js");
