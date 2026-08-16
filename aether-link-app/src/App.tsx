@@ -1297,7 +1297,7 @@ function RolloutDialog({
         </div>
         <label>
           대상 버전
-          <input autoFocus value={draft.targetVersion} onChange={(event) => setDraft({ ...draft, targetVersion: event.target.value })} placeholder="예: 0.1.62" />
+          <input autoFocus value={draft.targetVersion} onChange={(event) => setDraft({ ...draft, targetVersion: event.target.value })} placeholder="예: 0.1.63" />
         </label>
         <div className="rollout-stage" role="group" aria-label="배포 단계">
           {(["canary", "pilot", "general"] as const).map((stage) => (
