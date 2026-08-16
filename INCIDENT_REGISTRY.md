@@ -34,3 +34,18 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - Regression proof: `npm test -- src/desktopPackaging.test.ts src/agent/productionUpdateCheck.test.ts` and `cargo test --manifest-path src-tauri/Cargo.toml test_node_resource_paths`.
 - Release proof: `v0.1.60` GitHub Actions release workflow started; final published-asset verification remains required.
 - Remaining blocker: Same-tag published assets and installed-runtime update verification are not yet confirmed.
+
+## INC-20260816-001: Single-architecture release could regress x64 runtime and block cross-architecture reinstall
+
+- Detected: 2026-08-16T08:05:42Z.
+- Severity: P1.
+- Affected: Viewer and Agent `0.1.60` release lane; Windows x64 and x86 installation/update paths.
+- Status: fixed-not-released.
+- User-visible symptom: A consolidated x86-only release would move x64 clients from native WebRTC to the x86 fallback, while a manual x64/x86 replacement could leave the previous process holding installer files.
+- Minimal trigger: Publish one x86 payload for both architectures or install a different architecture over a running WonRemote product.
+- Root cause and contributors: Public asset count was reduced by deleting the native x64 payload instead of wrapping both architectures; installer process cleanup also filtered targets by PE architecture.
+- Fix commit(s): `5ab222d`.
+- Permanent guard: Viewer and Agent each use a product-isolated universal NSIS wrapper with native x64/x86 payload selection; x86 packaging executes the bundled ia32 Node and `werift` smoke; installer cleanup stops every process under the exact product root regardless of architecture.
+- Regression proof: `npm test -- src/desktopPackaging.test.ts src/domain/updateManifest.test.ts src/domain/updateManifestScript.test.ts src/domain/installerHookIsolation.test.ts src/agent/agentWebRtcRuntimeSmoke.test.ts src/agent/productionUpdateMetadata.test.ts src/agent/agentUpdateOnce.test.ts src/agent/productionInstallerUpdate.test.ts src/api/viewerUpdate.test.ts src/domain/versioning.test.ts scripts/build-backend.test.js scripts/package-release-exes.test.js` -> 12 files and 101 tests passed; four release scripts passed `node --check`; `git diff --check` passed.
+- Release proof: not released.
+- Remaining blocker: Build the two universal installers and physically verify install/update on x64 and x86 Windows before publishing.
