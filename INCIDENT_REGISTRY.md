@@ -49,3 +49,18 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - Regression proof: `npm test -- src/desktopPackaging.test.ts src/domain/updateManifest.test.ts src/domain/updateManifestScript.test.ts src/domain/installerHookIsolation.test.ts src/agent/agentWebRtcRuntimeSmoke.test.ts src/agent/productionUpdateMetadata.test.ts src/agent/agentUpdateOnce.test.ts src/agent/productionInstallerUpdate.test.ts src/api/viewerUpdate.test.ts src/domain/versioning.test.ts scripts/build-backend.test.js scripts/package-release-exes.test.js` -> 12 files and 101 tests passed; four release scripts passed `node --check`; `git diff --check` passed.
 - Release proof: not released.
 - Remaining blocker: Build the two universal installers and physically verify install/update on x64 and x86 Windows before publishing.
+
+## INC-20260816-002: x86 release build crashed before runtime smoke execution
+
+- Detected: 2026-08-16T08:33:37Z.
+- Severity: P1.
+- Affected: `0.1.61` x86 release build; `scripts/build-backend.js` runtime smoke stage.
+- Status: fixed-not-released.
+- User-visible symptom: `npm run release:exes` stopped at the x86 Viewer build with `ReferenceError: ensureExists is not defined` after completing both x64 installers.
+- Minimal trigger: Run an ia32 backend build without injecting a test-only `ensureFile` function.
+- Root cause and contributors: The production default parameter referenced a nonexistent helper, while the original tests always injected a mock and never exercised the default path.
+- Fix commit(s): `07a51e6`.
+- Permanent guard: The smoke check now defaults to the real `ensureBuildArtifact` helper, and a temporary-files regression test invokes the production default without dependency injection.
+- Regression proof: `npm test -- scripts/build-backend.test.js src/agent/agentWebRtcRuntimeSmoke.test.ts` -> 2 files and 5 tests passed; `node --check scripts/build-backend.js` and `git diff --check` passed.
+- Release proof: not released.
+- Remaining blocker: Complete the x64/x86 universal installer build and local manifest verification.
