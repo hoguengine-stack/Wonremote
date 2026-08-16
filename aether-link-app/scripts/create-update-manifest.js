@@ -104,29 +104,9 @@ function buildSignaturePayloadV2(input) {
   ].join("\n");
 }
 
-function buildArchitectureMigrationSignaturePayload(input) {
-  return [
-    "signatureVersion=3",
-    `version=${input.latestVersion}`,
-    `forceUpdate=${input.forceUpdate ? "true" : "false"}`,
-    "from=x64",
-    "to=x86",
-    `viewer.url=${input.viewer.url}`,
-    `viewer.sha256=${input.viewer.sha256.toLowerCase()}`,
-    `viewer.assetName=${input.viewer.name}`,
-    `agent.url=${input.agent.url}`,
-    `agent.sha256=${input.agent.sha256.toLowerCase()}`,
-    `agent.assetName=${input.agent.name}`,
-  ].join("\n");
-}
-
 const args = readArgs(process.argv.slice(2));
 const version = args.get("--version") || packageJson.version;
 const forceUpdate = args.get("--force-update") === "true";
-const architectureMigration = args.get("--architecture-migration") || "";
-if (architectureMigration && architectureMigration !== "x64-to-x86") {
-  throw new Error("Only --architecture-migration=x64-to-x86 is supported.");
-}
 const viewerPath = path.resolve(args.get("--viewer-x64") || args.get("--installer") || defaultInstallerPath(version));
 const viewerPathX86 = path.resolve(args.get("--viewer-x86") || args.get("--installer-x86") || viewerPath);
 const agentPath = path.resolve(args.get("--agent-x64") || defaultReleaseAssetPath(stableAgentAssetName));
@@ -222,23 +202,6 @@ const manifest = {
     x86: agentX86,
   },
 };
-
-if (architectureMigration === "x64-to-x86") {
-  if (viewerX64.name !== viewerX86.name || viewerX64.url !== viewerX86.url || viewerX64.sha256 !== viewerX86.sha256 ||
-      agentX64.name !== agentX86.name || agentX64.url !== agentX86.url || agentX64.sha256 !== agentX86.sha256) {
-    throw new Error("x64-to-x86 migration requires x64 metadata to alias the exact x86 Viewer and Agent installers.");
-  }
-  manifest.architectureMigration = {
-    from: "x64",
-    to: "x86",
-    signature: sign(null, Buffer.from(buildArchitectureMigrationSignaturePayload({
-      agent: agentX86,
-      forceUpdate,
-      latestVersion: version,
-      viewer: viewerX86,
-    }), "utf8"), privateKeyPem).toString("base64"),
-  };
-}
 
 fs.mkdirSync(path.dirname(outPath), { recursive: true });
 fs.writeFileSync(outPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");

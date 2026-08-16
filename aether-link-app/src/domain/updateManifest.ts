@@ -42,10 +42,9 @@ export function parseProductionUpdateManifest(
   const assetKind = options.assetKind ?? "installer";
   const product = options.product ?? "agent";
   const manifestSection = manifestSectionForKind(assetKind, product);
-  const selectedArch = resolveSelectedAssetArch(input, arch, assetKind, options.publicKeyPem);
-  const asset = selectReleaseAsset(input, selectedArch, assetKind, product);
-  const downloadUrl = readRequiredString(asset.url, `${manifestSection}.${selectedArch}.url`);
-  const checksum = readRequiredString(asset.sha256, `${manifestSection}.${selectedArch}.sha256`).toLowerCase();
+  const asset = selectReleaseAsset(input, arch, assetKind, product);
+  const downloadUrl = readRequiredString(asset.url, `${manifestSection}.${arch}.url`);
+  const checksum = readRequiredString(asset.sha256, `${manifestSection}.${arch}.sha256`).toLowerCase();
 
   if (!isHttpsUrl(downloadUrl)) {
     throw new Error(`Production update manifest must include a valid HTTPS ${assetKind} URL.`);
@@ -77,31 +76,10 @@ export function parseProductionUpdateManifest(
   };
 
   if (options.publicKeyPem) {
-    verifyProductionUpdateSignature(metadata, options.publicKeyPem, selectedArch);
+    verifyProductionUpdateSignature(metadata, options.publicKeyPem, arch);
   }
 
   return metadata;
-}
-
-export function buildArchitectureMigrationSignaturePayload(input: {
-  agent: Required<Pick<ProductionUpdateMetadata, "assetName" | "checksum" | "downloadUrl">>;
-  forceUpdate: boolean;
-  latestVersion: string;
-  viewer: Required<Pick<ProductionUpdateMetadata, "assetName" | "checksum" | "downloadUrl">>;
-}): string {
-  return [
-    "signatureVersion=3",
-    `version=${input.latestVersion}`,
-    `forceUpdate=${input.forceUpdate ? "true" : "false"}`,
-    "from=x64",
-    "to=x86",
-    `viewer.url=${input.viewer.downloadUrl}`,
-    `viewer.sha256=${input.viewer.checksum.toLowerCase()}`,
-    `viewer.assetName=${input.viewer.assetName}`,
-    `agent.url=${input.agent.downloadUrl}`,
-    `agent.sha256=${input.agent.checksum.toLowerCase()}`,
-    `agent.assetName=${input.agent.assetName}`,
-  ].join("\n");
 }
 
 export function buildProductionUpdateSignaturePayload(input: {
@@ -180,53 +158,6 @@ function selectReleaseAsset(
     return input.installer as ManifestAsset;
   }
   throw new Error(`Production update manifest must include ${sectionName}.${arch} ${assetKind} metadata.`);
-}
-
-function resolveSelectedAssetArch(
-  input: Record<string, unknown>,
-  arch: "x64" | "x86",
-  assetKind: ProductionUpdateKind,
-  publicKeyPem?: string,
-): "x64" | "x86" {
-  if (arch !== "x64" || assetKind !== "installer" || !publicKeyPem) {
-    return arch;
-  }
-  if (input.architectureMigration === undefined) {
-    throw new Error("x64 installer updates require a signed x64 to x86 architecture migration.");
-  }
-  verifyArchitectureMigration(input, input.architectureMigration, publicKeyPem);
-  return "x86";
-}
-
-function verifyArchitectureMigration(input: Record<string, unknown>, value: unknown, publicKeyPem: string): void {
-  if (!isRecord(value) || value.from !== "x64" || value.to !== "x86" || typeof value.signature !== "string") {
-    throw new Error("Architecture migration must explicitly permit x64 to x86.");
-  }
-  const signature = value.signature;
-  const payload = buildArchitectureMigrationSignaturePayload({
-    agent: migrationAsset(input, "agentWindows"),
-    forceUpdate: Boolean(input.forceUpdate),
-    latestVersion: readRequiredString(input.version, "version"),
-    viewer: migrationAsset(input, "viewerWindows"),
-  });
-  if (!verify(null, Buffer.from(payload, "utf8"), publicKeyPem, Buffer.from(signature, "base64"))) {
-    throw new Error("Architecture migration signature verification failed.");
-  }
-}
-
-function migrationAsset(input: Record<string, unknown>, sectionName: "viewerWindows" | "agentWindows"):
-  Required<Pick<ProductionUpdateMetadata, "assetName" | "checksum" | "downloadUrl">> {
-  const section = input[sectionName];
-  if (!isRecord(section) || !isRecord(section.x86)) {
-    throw new Error(`Architecture migration requires ${sectionName}.x86 metadata.`);
-  }
-  const asset = section.x86 as ManifestAsset;
-  const downloadUrl = readRequiredString(asset.url, `${sectionName}.x86.url`);
-  return {
-    assetName: typeof asset.name === "string" && asset.name.trim() ? asset.name.trim() : deriveAssetName(downloadUrl),
-    checksum: readRequiredString(asset.sha256, `${sectionName}.x86.sha256`).toLowerCase(),
-    downloadUrl,
-  };
 }
 
 function manifestSectionForKind(

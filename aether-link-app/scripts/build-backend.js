@@ -388,8 +388,36 @@ async function build() {
     },
   });
   assertAgentWebRtcBundle(agentBuild.metafile);
+  if (buildArch === "ia32") {
+    runBundledX86AgentWebRtcSmoke();
+  }
 
   console.log("Backend bundling completed successfully!");
+}
+
+export function runBundledX86AgentWebRtcSmoke({
+  execFile = execFileSync,
+  ensureFile = ensureExists,
+  rootDir = appRoot,
+} = {}) {
+  const nodePath = path.join(rootDir, "dist-runtime", "node.exe");
+  const agentPath = path.join(rootDir, "dist-agent", "index.mjs");
+  const expectedOutput = "Agent runtime smoke passed: arch=ia32, webrtc=werift";
+
+  ensureFile(nodePath, "bundled x86 Node runtime for WebRTC smoke");
+  ensureFile(agentPath, "bundled x86 Agent runtime for WebRTC smoke");
+  console.log("Running bundled x86 Agent WebRTC runtime smoke...");
+  const output = execFile(nodePath, [agentPath, "--runtime-smoke"], {
+    cwd: path.dirname(agentPath),
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  if (!String(output).includes(expectedOutput)) {
+    throw new Error(
+      `Bundled x86 Agent WebRTC smoke did not confirm werift runtime. Expected output: ${expectedOutput}`,
+    );
+  }
 }
 
 function assertAgentWebRtcBundle(metafile) {
@@ -408,7 +436,9 @@ function assertAgentWebRtcBundle(metafile) {
   );
 }
 
-build().catch((err) => {
-  console.error("Backend build failed:", err);
-  process.exit(1);
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  build().catch((err) => {
+    console.error("Backend build failed:", err);
+    process.exit(1);
+  });
+}

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { generateKeyPairSync, sign } from "node:crypto";
 import {
-  buildArchitectureMigrationSignaturePayload,
   buildProductionUpdateSignaturePayload,
   buildProductionUpdateSignaturePayloadV2,
   parseProductionUpdateManifest,
@@ -63,14 +62,13 @@ describe("production update manifest", () => {
     });
   });
 
-  it("requires a signed migration before an x64 client selects x86 installer metadata", () => {
+  it("verifies the same universal installer independently for x64 and x86 clients", () => {
     const { privateKey, publicKey } = generateKeyPairSync("ed25519");
     const viewer = {
       name: "WonRemote-Viewer-Setup.exe",
       url: "https://github.com/hoguengine-stack/Wonremote/releases/download/v9.9.9/WonRemote-Viewer-Setup.exe",
       sha256: "f".repeat(64),
     };
-    const agent = { ...viewer, name: "WonRemote-Agent-Setup.exe", sha256: "e".repeat(64), url: viewer.url.replace("Viewer", "Agent") };
     const signedAsset = (asset: typeof viewer, arch: "x64" | "x86") => ({
       ...asset,
       signature: sign(null, Buffer.from(buildProductionUpdateSignaturePayload({ assetName: asset.name, checksum: asset.sha256, downloadUrl: asset.url, latestVersion: "9.9.9" }), "utf8"), privateKey).toString("base64"),
@@ -79,19 +77,15 @@ describe("production update manifest", () => {
     const manifest = {
       version: "9.9.9",
       viewerWindows: { x64: signedAsset(viewer, "x64"), x86: signedAsset(viewer, "x86") },
-      agentWindows: { x64: signedAsset(agent, "x64"), x86: signedAsset(agent, "x86") },
     };
     const publicKeyPem = publicKey.export({ format: "pem", type: "spki" }).toString();
-    const signature = sign(null, Buffer.from(buildArchitectureMigrationSignaturePayload({
-      agent: { assetName: agent.name, checksum: agent.sha256, downloadUrl: agent.url },
-      forceUpdate: false,
-      latestVersion: "9.9.9",
-      viewer: { assetName: viewer.name, checksum: viewer.sha256, downloadUrl: viewer.url },
-    }), "utf8"), privateKey).toString("base64");
 
-    expect(() => parseProductionUpdateManifest(manifest, { arch: "x64", product: "viewer", publicKeyPem })).toThrow("require a signed x64 to x86 architecture migration");
-    expect(() => parseProductionUpdateManifest({ ...manifest, architectureMigration: { from: "x64", to: "x86", signature: "invalid" } }, { arch: "x64", product: "viewer", publicKeyPem })).toThrow("migration signature verification failed");
-    expect(parseProductionUpdateManifest({ ...manifest, architectureMigration: { from: "x64", to: "x86", signature } }, { arch: "x64", product: "viewer", publicKeyPem })).toMatchObject({ assetName: viewer.name, latestVersion: "9.9.9" });
+    expect(parseProductionUpdateManifest(manifest, { arch: "x64", product: "viewer", publicKeyPem })).toMatchObject({ assetName: viewer.name, latestVersion: "9.9.9" });
+    expect(parseProductionUpdateManifest(manifest, { arch: "x86", product: "viewer", publicKeyPem })).toMatchObject({ assetName: viewer.name, latestVersion: "9.9.9" });
+    expect(() => parseProductionUpdateManifest({
+      ...manifest,
+      viewerWindows: { ...manifest.viewerWindows, x64: manifest.viewerWindows.x86 },
+    }, { arch: "x64", product: "viewer", publicKeyPem })).toThrow("v2 signature verification failed");
   });
 
   it.each([

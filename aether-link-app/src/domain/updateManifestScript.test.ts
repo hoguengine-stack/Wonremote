@@ -19,7 +19,7 @@ function fixtureFiles(root: string) {
 }
 
 describe("production update manifest scripts", () => {
-  it("creates x64-compatible and x86 update metadata from two x86 installers", () => {
+  it("creates independently signed x64 and x86 metadata for two universal installers", () => {
     const root = mkdtempSync(path.join(tmpdir(), "wonremote-manifest-contract-"));
     try {
       const files = fixtureFiles(root);
@@ -31,7 +31,6 @@ describe("production update manifest scripts", () => {
         manifestScript,
         `--viewer-x64=${files.viewer}`,
         `--agent-x64=${files.agent}`,
-        "--architecture-migration=x64-to-x86",
         "--version=9.9.9",
         `--private-key=${key}`,
         `--out=${out}`,
@@ -41,7 +40,7 @@ describe("production update manifest scripts", () => {
       expect(manifest.viewerWindows.x86.name).toBe("WonRemote-Viewer-Setup.exe");
       expect(manifest.agentWindows.x64.name).toBe("WonRemote-Agent-Setup.exe");
       expect(manifest.agentWindows.x86.name).toBe("WonRemote-Agent-Setup.exe");
-      expect(manifest.architectureMigration).toMatchObject({ from: "x64", to: "x86" });
+      expect(manifest.architectureMigration).toBeUndefined();
       expect(manifest.windows).toEqual(manifest.viewerWindows);
       expect(manifest.viewerWindows.x64.url).toContain("/download/v9.9.9/");
       expect(manifest.viewerWindows.x64.url).not.toContain("latest/download");
@@ -63,7 +62,7 @@ describe("production update manifest scripts", () => {
     }
   });
 
-  it("fails when either required x86 installer input is missing", () => {
+  it("fails when either required universal installer input is missing", () => {
     const root = mkdtempSync(path.join(tmpdir(), "wonremote-manifest-missing-"));
     try {
       const files = fixtureFiles(root);
@@ -74,7 +73,7 @@ describe("production update manifest scripts", () => {
     }
   });
 
-  it("publishes exactly two x86 installers and one manifest after the draft gate", () => {
+  it("publishes exactly two universal installers and one manifest after the draft gate", () => {
     const script = readFileSync(path.join(projectRoot, "scripts", "publish-github-release.ps1"), "utf8");
     expect(script.match(/^Publish-Asset /gm)?.length).toBe(3);
     expect(script).toContain("draft = $true");

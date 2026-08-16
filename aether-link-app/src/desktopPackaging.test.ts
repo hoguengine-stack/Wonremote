@@ -107,7 +107,8 @@ describe("desktop packaging scaffold", () => {
     for (const [hook, product] of [[viewerHook, "Viewer"], [agentHook, "Agent"]]) {
       expect(hook).toContain("WONREMOTE_STOP_RUNNING_PROCESSES");
       expect(hook).toContain("stop-wonremote-processes.ps1");
-      expect(hook).toContain(`-Product ${product} -Architecture x64`);
+      expect(hook).toContain(`-Product ${product}`);
+      expect(hook).not.toContain("-Architecture");
       expect(hook).toContain("SetErrorLevel $1");
       expect(hook).not.toContain("Get-Process");
       expect(hook).not.toContain("taskkill");
@@ -116,13 +117,14 @@ describe("desktop packaging scaffold", () => {
     expect(processStopper).toContain('Join-Path $env:LOCALAPPDATA "WonRemote\\$Product"');
     expect(processStopper).toContain("Get-CimInstance Win32_Process");
     expect(processStopper).toContain("Stop-Process -Id");
-    expect(processStopper).toContain("Test-TargetArchitecture");
+    expect(processStopper).not.toContain("Test-TargetArchitecture");
+    expect(processStopper).not.toContain("$Architecture");
     expect(processStopper).toContain("$remainingIds.Count -gt 0");
     expect(processStopper).not.toContain("Get-Process");
     expect(processStopper).not.toContain("taskkill");
   });
 
-  it("keeps legacy x64 installers guarded while the consolidated wrapper stays x86-compatible", () => {
+  it("keeps legacy x64 installers guarded while the universal wrapper selects the host architecture", () => {
     const viewerHook = readFileSync(path.join(projectRoot, "src-tauri", "windows", "viewer-install-hooks.nsh"), "utf8");
     const agentHook = readFileSync(path.join(projectRoot, "src-tauri", "windows", "agent-install-hooks.nsh"), "utf8");
     const packageReleaseScript = readFileSync(path.join(projectRoot, "scripts", "package-release-exes.js"), "utf8");
@@ -139,11 +141,15 @@ describe("desktop packaging scaffold", () => {
     }
 
     const createProductInstaller = packageReleaseScript.slice(
-      packageReleaseScript.indexOf("function createProductInstaller"),
+      packageReleaseScript.indexOf("function createUniversalProductInstaller"),
       packageReleaseScript.indexOf("function verifyTargetAgentRuntime"),
     );
-    expect(createProductInstaller).not.toContain("!include x64.nsh");
-    expect(createProductInstaller).not.toContain("requires 64-bit Windows");
+    expect(createProductInstaller).toContain("!include x64.nsh");
+    expect(createProductInstaller).toContain("\\${RunningX64}");
+    expect(createProductInstaller).toContain("installerPathKey");
+    expect(createProductInstaller).toContain("productFilename}-x64.exe");
+    expect(createProductInstaller).toContain("productFilename}-x86.exe");
+    expect(createProductInstaller).toContain("IfSilent");
   });
 
   it("allows installer update handoff to break away from the tray process job object", () => {
@@ -250,24 +256,26 @@ describe("desktop packaging scaffold", () => {
       "firebase:deploy:spark:no-storage": "powershell -ExecutionPolicy Bypass -File scripts/deploy-firebase.ps1 -SparkOnly -SkipStorage",
       "firebase:verify": "node scripts/verify-firebase-deploy-readiness.js",
       "release:exes": "node scripts/package-release-exes.js",
-      "release:manifest": "node scripts/create-update-manifest.js --architecture-migration=x64-to-x86",
+      "release:manifest": "node scripts/create-update-manifest.js",
       "release:keypair": "node scripts/generate-update-keypair.js",
       "release:publish": "powershell -ExecutionPolicy Bypass -File scripts/publish-github-release.ps1",
     });
     expect(packageJson.devDependencies["@tauri-apps/cli"]).toBeDefined();
   });
 
-  it("stages distinct Viewer and Agent executables after their respective icon builds", () => {
+  it("builds both product payloads before creating the universal wrappers", () => {
     const packageReleaseScript = readFileSync(path.join(projectRoot, "scripts", "package-release-exes.js"), "utf8");
     const viewerStage = packageReleaseScript.indexOf("buildViewerInstaller(target)");
     const agentBuild = packageReleaseScript.indexOf("buildAgentDefaultInstaller(target)", viewerStage);
-    const agentStage = packageReleaseScript.indexOf("createProductInstaller(expectedInstallerPath", agentBuild);
+    const packageReturn = packageReleaseScript.indexOf("agentInstallerPath: expectedAgentInstallerPath", agentBuild);
+    const wrapperStage = packageReleaseScript.indexOf('createUniversalProductInstaller(packages, "viewer")', packageReturn);
 
     expect(viewerStage).toBeGreaterThan(-1);
     expect(agentBuild).toBeGreaterThan(viewerStage);
-    expect(agentStage).toBeGreaterThan(agentBuild);
-    expect(packageReleaseScript).toContain("createProductInstaller(expectedInstallerPath, expectedAgentInstallerPath, target, \"viewer\")");
-    expect(packageReleaseScript).toContain("createProductInstaller(expectedInstallerPath, expectedAgentInstallerPath, target, \"agent\")");
+    expect(packageReturn).toBeGreaterThan(agentBuild);
+    expect(wrapperStage).toBeGreaterThan(packageReturn);
+    expect(packageReleaseScript).toContain('createUniversalProductInstaller(packages, "viewer")');
+    expect(packageReleaseScript).toContain('createUniversalProductInstaller(packages, "agent")');
   });
 
   it("deploys Firebase functions, rules, and hosting only behind an explicit gate", () => {
@@ -516,13 +524,14 @@ describe("desktop packaging scaffold", () => {
     expect(styles).not.toContain(".firebase-agent-panel label:has");
   });
 
-  it("packages only the two x86 Viewer and Agent installers", () => {
+  it("packages only two universal Viewer and Agent installers", () => {
     const packageReleaseScript = readFileSync(path.join(projectRoot, "scripts", "package-release-exes.js"), "utf8");
 
     expect(packageReleaseScript).toContain("WonRemote-Agent-Setup.exe");
-    expect(packageReleaseScript).toContain("Two x86 WonRemote product installers created");
+    expect(packageReleaseScript).toContain("Two universal WonRemote product installers created");
+    expect(packageReleaseScript).toContain('key: "x64"');
     expect(packageReleaseScript).toContain('key: "x86"');
-    expect(packageReleaseScript).toContain("createProductInstaller");
+    expect(packageReleaseScript).toContain("createUniversalProductInstaller");
     expect(packageReleaseScript).toContain("makensis.exe");
     expect(packageReleaseScript).not.toContain("copyInstaller(viewerInstallerPath, stableFullInstallerName)");
     expect(packageReleaseScript).not.toContain("Portable.zip");
@@ -533,7 +542,7 @@ describe("desktop packaging scaffold", () => {
     expect(packageReleaseScript).toContain("runtime");
   });
 
-  it("uses one x86 release lane while preserving x64 client update aliases", () => {
+  it("builds native x64 and x86 payloads behind two stable universal downloads", () => {
     const packageReleaseScript = readFileSync(path.join(projectRoot, "scripts", "package-release-exes.js"), "utf8");
     const publishScript = readFileSync(path.join(projectRoot, "scripts", "publish-github-release.ps1"), "utf8");
     const firebaseConfig = JSON.parse(readFileSync(path.join(projectRoot, "..", "firebase.json"), "utf8"));
@@ -547,7 +556,8 @@ describe("desktop packaging scaffold", () => {
     expect(packageReleaseScript).toContain("TARGET_ARCHITECTURES");
     expect(packageReleaseScript).toContain("i686-pc-windows-msvc");
     expect(packageReleaseScript).toContain("WONREMOTE_BUILD_ARCH");
-    expect(packageReleaseScript).toContain("Two x86 WonRemote product installers created");
+    expect(packageReleaseScript).toContain('key: "x64"');
+    expect(packageReleaseScript).toContain("Two universal WonRemote product installers created");
     expect(publishScript).not.toContain("$StableInstallerPathX86");
     expect(publishScript).not.toContain("$StableAgentInstallerPathX86");
 
@@ -652,7 +662,7 @@ describe("desktop packaging scaffold", () => {
     expect(registryStatusScript).toContain("supports 32-bit and 64-bit Windows");
   });
 
-  it("enforces the two-installer x86 release contract and restart-mode wrapper", () => {
+  it("enforces the two-installer product-isolated universal release contract", () => {
     const packageReleaseScript = readFileSync(path.join(projectRoot, "scripts", "package-release-exes.js"), "utf8");
     const publishScript = readFileSync(path.join(projectRoot, "scripts", "publish-github-release.ps1"), "utf8");
     const manifestScript = readFileSync(path.join(projectRoot, "scripts", "create-update-manifest.js"), "utf8");
@@ -664,7 +674,7 @@ describe("desktop packaging scaffold", () => {
     }
     const packageMain = packageReleaseScript.slice(packageReleaseScript.indexOf("function main()"));
     expect(packageMain).toContain("expectedOutputs");
-    expect(packageMain).toContain("Two x86 WonRemote product installers created");
+    expect(packageMain).toContain("Two universal WonRemote product installers created");
     expect(publishScript).toContain("Publish-Asset $ManifestPath $ManifestName");
     expect(publishScript.match(/^Publish-Asset /gm)?.length).toBe(3);
     expect(publishScript).toContain("Refusing to replace published release");
@@ -677,7 +687,9 @@ describe("desktop packaging scaffold", () => {
     expect(manifestScript).toContain("agentWindows");
     expect(manifestScript).toContain("release-tag");
     expect(manifestScript).not.toContain("latest/download");
-    expect(packageReleaseScript).toContain("WONREMOTE_RESTART_MODE");
+    expect(packageReleaseScript).not.toContain("WONREMOTE_RESTART_MODE");
+    expect(packageReleaseScript).toContain("installerPathKey");
+    expect(packageReleaseScript).toContain("IfSilent");
   });
 
   it("binds tag publication and update regression tests to the release version", () => {

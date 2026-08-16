@@ -1,11 +1,7 @@
 param(
   [Parameter(Mandatory = $true)]
   [ValidateSet("Agent", "Viewer")]
-  [string] $Product,
-
-  [Parameter(Mandatory = $true)]
-  [ValidateSet("x64", "x86")]
-  [string] $Architecture
+  [string] $Product
 )
 
 $ErrorActionPreference = "Stop"
@@ -30,36 +26,8 @@ function Convert-ExtendedPath([string] $Value) {
   return $normalized
 }
 
-function Test-TargetArchitecture([string] $Path, [int] $ExpectedMachine) {
-  $stream = $null
-  $reader = $null
-  try {
-    $sharing = [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete
-    $stream = [System.IO.File]::Open(
-      $Path,
-      [System.IO.FileMode]::Open,
-      [System.IO.FileAccess]::Read,
-      $sharing
-    )
-    $reader = New-Object System.IO.BinaryReader($stream)
-    $stream.Position = 60
-    $peOffset = $reader.ReadInt32()
-    $stream.Position = $peOffset + 4
-    return $reader.ReadUInt16() -eq $ExpectedMachine
-  } catch {
-    return $false
-  } finally {
-    if ($null -ne $reader) {
-      $reader.Dispose()
-    } elseif ($null -ne $stream) {
-      $stream.Dispose()
-    }
-  }
-}
-
 $root = Convert-ExtendedPath (Join-Path $env:LOCALAPPDATA "WonRemote\$Product")
 $prefix = $root + [System.IO.Path]::DirectorySeparatorChar
-$expectedMachine = if ($Architecture -eq "x64") { 0x8664 } else { 0x014c }
 $self = Get-CimInstance Win32_Process -Filter ("ProcessId = " + $PID) -ErrorAction SilentlyContinue
 $installerPid = if ($null -ne $self) { [int] $self.ParentProcessId } else { -1 }
 $processes = @(Get-CimInstance Win32_Process)
@@ -80,10 +48,7 @@ foreach ($process in $processes) {
   } catch {
     continue
   }
-  if (
-    $candidate.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase) -and
-    (Test-TargetArchitecture $candidate $expectedMachine)
-  ) {
+  if ($candidate.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
     [void] $targetIds.Add($id)
   }
 }

@@ -32,8 +32,8 @@ For update/rollback E2E testing, use a local fixture/update server instead of pu
 
 - Any failed, timed-out, hung, or skipped build, test, signing, upload, or verification step blocks all later release steps.
 - Never retry a failed release step until its root cause and focused regression proof are recorded.
-- A release is incomplete until one tag contains exactly these three assets: x86 Viewer, x86 Agent, and `wonremote-update-manifest.json`. The signed manifest must retain x64 logical entries that point to the same x86 installers so deployed x64 clients can migrate automatically.
-- When a trusted update key is configured, an x64 installer client rejects a manifest unless its signed `x64-to-x86` migration directive is present and valid. Do not remove this directive while any x64 installation can still update.
+- A release is incomplete until one tag contains exactly these three assets: the universal Viewer installer, the universal Agent installer, and `wonremote-update-manifest.json`.
+- Each universal installer must contain native x64 and x86 payloads and select the matching payload at install time. The manifest signs the same stable installer asset independently for x64 and x86 clients; architecture migration directives are not used.
 - A published version is immutable. Never delete, replace, retag, or publish over exposed release assets. Every changed installer requires a strictly new version and tag so installed clients can detect it.
 - The publisher must keep the release private until the exact three uploaded asset names and byte sizes match the local signed assets.
 - Before publication, the publisher downloads every uploaded asset from GitHub's asset API and verifies the remote manifest, signatures, and installer checksums again. A failed remote check leaves the release private.
@@ -43,7 +43,7 @@ For update/rollback E2E testing, use a local fixture/update server instead of pu
 
 Before declaring a release usable, collect fresh evidence for the same commit and tag:
 
-1. The two installer filenames, sizes, SHA-256 values, architecture, and product role.
+1. The two universal installer filenames, sizes, SHA-256 values, embedded x64/x86 payloads, and product role.
 2. The manifest version, signed asset URLs, checksums, signatures, and tag match.
 3. The Viewer and Agent Firebase download redirects, including x86 compatibility aliases, resolve to the intended installers.
 4. A previous installed Viewer and Agent can discover the release, verify it, install it, restart, and report the target version.
@@ -85,10 +85,10 @@ Default manifest output:
 
 - `release-exe/wonremote-update-manifest.json`
 
-The default update download URL points to the stable latest installer asset:
+The default update download URL is bound to the immutable release tag for the current version:
 
 ```text
-https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Viewer-Setup.exe
+https://github.com/hoguengine-stack/Wonremote/releases/download/v0.1.61/WonRemote-Viewer-Setup.exe
 ```
 
 Upload these files to the same GitHub Release tag:
@@ -101,7 +101,7 @@ User-facing Firebase Hosting download links:
 
 - Viewer installer: `https://wonremote-a7fd3.web.app/download/viewer`
 - Agent installer: `https://wonremote-a7fd3.web.app/download/agent`
-- Legacy x86 download URLs remain compatibility aliases for the same two installers.
+- Legacy x86 download URLs remain compatibility aliases for the same two universal installers.
 
 ## Runtime Verification Key
 
