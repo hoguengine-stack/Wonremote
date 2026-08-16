@@ -673,7 +673,7 @@ describe("desktop packaging scaffold", () => {
     expect(publishScript).toContain("Refusing to replace published release");
     expect(publishScript).toContain("Bump the version before publishing");
     expect(publishScript).toContain("Release upload verification failed");
-    expect(publishScript).toContain('$ReleaseList = Invoke-GitHubJson "Get" "$ReleaseApi?per_page=100"');
+    expect(publishScript).toContain('$ReleaseList = Invoke-GitHubJson "Get" "${ReleaseApi}?per_page=100"');
     expect(publishScript).toContain("$PublishedAssets = @(");
     expect(publishScript).toContain("return Invoke-RestMethod -Method Post");
     expect(publishScript).toContain("size differs from the local signed asset");

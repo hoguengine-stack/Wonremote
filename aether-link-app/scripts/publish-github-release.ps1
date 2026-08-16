@@ -104,7 +104,7 @@ try {
   if ((Get-StatusCode $_) -ne 404) {
     throw
   }
-  $ReleaseList = Invoke-GitHubJson "Get" "$ReleaseApi?per_page=100"
+  $ReleaseList = Invoke-GitHubJson "Get" "${ReleaseApi}?per_page=100"
   $Release = $ReleaseList | Where-Object { $_.tag_name -eq $Tag } | Select-Object -First 1
 }
 if ($Release) {
