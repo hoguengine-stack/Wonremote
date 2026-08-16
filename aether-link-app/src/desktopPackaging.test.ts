@@ -673,6 +673,8 @@ describe("desktop packaging scaffold", () => {
     expect(publishScript).toContain("Refusing to replace published release");
     expect(publishScript).toContain("Bump the version before publishing");
     expect(publishScript).toContain("Release upload verification failed");
+    expect(publishScript).toContain("$AssetListAttempts = 8");
+    expect(publishScript).toContain("GitHub asset list is not consistent yet");
     expect(publishScript).toContain("size differs from the local signed asset");
     expect(publishScript).toContain("Release download verification failed");
     expect(publishScript).toContain("verify-release-manifest.js");

@@ -137,7 +137,18 @@ Publish-Asset $StableAgentInstallerPath $StableAgentInstallerAssetName "applicat
 Publish-Asset $ManifestPath $ManifestName "application/json"
 
 # Keep a partial or wrong upload private. Installed clients only see the tag after this exact set matches.
-$PublishedAssets = @(Invoke-GitHubJson "Get" $AssetsApi)
+$PublishedAssets = @()
+$AssetListAttempts = 8
+for ($Attempt = 1; $Attempt -le $AssetListAttempts; $Attempt++) {
+  $PublishedAssets = @(Invoke-GitHubJson "Get" $AssetsApi)
+  if ($PublishedAssets.Count -eq $ExpectedAssets.Count) {
+    break
+  }
+  if ($Attempt -lt $AssetListAttempts) {
+    Write-Host "GitHub asset list is not consistent yet ($($PublishedAssets.Count)/$($ExpectedAssets.Count)); retrying."
+    Start-Sleep -Seconds 5
+  }
+}
 if ($PublishedAssets.Count -ne $ExpectedAssets.Count) {
   throw "Release upload verification failed: expected $($ExpectedAssets.Count) assets, found $($PublishedAssets.Count)."
 }
