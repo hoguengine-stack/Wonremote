@@ -75,7 +75,7 @@ describe("production update manifest scripts", () => {
 
   it("publishes exactly two x86 installers and one manifest after the draft gate", () => {
     const script = readFileSync(path.join(projectRoot, "scripts", "publish-github-release.ps1"), "utf8");
-    expect(script.match(/^Publish-Asset /gm)?.length).toBe(3);
+    expect(script.match(/^\s{2}Publish-Asset /gm)?.length).toBe(3);
     expect(script).toContain("draft = $true");
     expect(script).toContain("draft = $false");
     expect(script).toContain("Publish-Asset $StableInstallerPath $StableInstallerAssetName");

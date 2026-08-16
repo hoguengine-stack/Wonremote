@@ -92,7 +92,7 @@ jobs:
         run: npm run release:publish
 
       - name: Save Rust and downloaded tool caches
-        if: always() && steps.release-cache.outputs.cache-hit != 'true'
+        if: always() && steps.release-cache.outputs.cache-hit != 'true' && hashFiles('aether-link-app/src-tauri/target/**', 'aether-link-poc/target/**') != ''
         uses: actions/cache/save@v4
         with:
           path: |
