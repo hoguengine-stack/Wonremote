@@ -1,3 +1,6 @@
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { runBundledX86AgentWebRtcSmoke } from "./build-backend.js";
 
@@ -29,5 +32,22 @@ describe("bundled x86 Agent WebRTC smoke", () => {
       execFile: () => "Agent runtime smoke passed: arch=x64, webrtc=node-datachannel\n",
       rootDir: "C:\\bundle",
     })).toThrow("Bundled x86 Agent WebRTC smoke did not confirm werift runtime");
+  });
+
+  it("uses the real artifact existence check when no test dependency is injected", () => {
+    const rootDir = mkdtempSync(path.join(tmpdir(), "wonremote-x86-smoke-"));
+    try {
+      mkdirSync(path.join(rootDir, "dist-runtime"), { recursive: true });
+      mkdirSync(path.join(rootDir, "dist-agent"), { recursive: true });
+      writeFileSync(path.join(rootDir, "dist-runtime", "node.exe"), "fixture");
+      writeFileSync(path.join(rootDir, "dist-agent", "index.mjs"), "fixture");
+
+      expect(() => runBundledX86AgentWebRtcSmoke({
+        execFile: () => "Agent runtime smoke passed: arch=ia32, webrtc=werift\n",
+        rootDir,
+      })).not.toThrow();
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
   });
 });

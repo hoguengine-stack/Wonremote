@@ -397,7 +397,7 @@ async function build() {
 
 export function runBundledX86AgentWebRtcSmoke({
   execFile = execFileSync,
-  ensureFile = ensureExists,
+  ensureFile = ensureBuildArtifact,
   rootDir = appRoot,
 } = {}) {
   const nodePath = path.join(rootDir, "dist-runtime", "node.exe");
@@ -417,6 +417,12 @@ export function runBundledX86AgentWebRtcSmoke({
     throw new Error(
       `Bundled x86 Agent WebRTC smoke did not confirm werift runtime. Expected output: ${expectedOutput}`,
     );
+  }
+}
+
+function ensureBuildArtifact(filePath, label) {
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`${label} is missing: ${filePath}`);
   }
 }
 
