@@ -14,6 +14,12 @@ Expected local assets:
 - `release-exe/WonRemote-Viewer-Setup.exe`
 - `release-exe/WonRemote-Agent-Setup.exe`
 
+Build efficiency and isolation rules:
+
+- For each architecture, the Viewer build produces the frontend and architecture-specific runtime resources; the following Agent build reuses those verified resources instead of rebuilding them.
+- Do not run x64 and x86 release workers concurrently in the same checkout. They write different binaries to the same `dist-*` paths and can silently create a mixed-architecture installer.
+- GitHub Actions caches Rust targets and downloaded build tools. True x64/x86 parallel packaging is allowed only after every `dist-*`, Cargo target, and temporary release path is isolated per architecture.
+
 ## Publish Release Gate
 
 `release:publish` is locked by default. Do not publish a stable GitHub Release just because build and E2E tests pass.

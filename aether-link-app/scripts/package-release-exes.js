@@ -99,13 +99,16 @@ function cleanTauriResourceOutput(target) {
 function buildViewerInstaller(target) {
   console.log(`Building ${target.key} Viewer NSIS installer...`);
   cleanTauriResourceOutput(target);
-  runShell(buildTauriCommand(target, target.viewerConfig), buildEnvFor(target));
+  runShell(buildTauriCommand(target, target.viewerConfig), buildEnvFor(target, {
+    WONREMOTE_BUILD_STAGE: "full",
+  }));
 }
 
 function buildAgentDefaultInstaller(target) {
   console.log(`Building ${target.key} Agent-default NSIS installer...`);
   cleanTauriResourceOutput(target);
   runShell(buildTauriCommand(target, target.agentConfig), buildEnvFor(target, {
+    WONREMOTE_BUILD_STAGE: "reuse",
     WONREMOTE_DEFAULT_APP_MODE: "agent",
   }));
 }

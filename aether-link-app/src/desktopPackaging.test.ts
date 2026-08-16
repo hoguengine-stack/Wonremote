@@ -276,6 +276,8 @@ describe("desktop packaging scaffold", () => {
     expect(wrapperStage).toBeGreaterThan(packageReturn);
     expect(packageReleaseScript).toContain('createUniversalProductInstaller(packages, "viewer")');
     expect(packageReleaseScript).toContain('createUniversalProductInstaller(packages, "agent")');
+    expect(packageReleaseScript).toContain('WONREMOTE_BUILD_STAGE: "full"');
+    expect(packageReleaseScript).toContain('WONREMOTE_BUILD_STAGE: "reuse"');
   });
 
   it("deploys Firebase functions, rules, and hosting only behind an explicit gate", () => {
@@ -701,6 +703,11 @@ describe("desktop packaging scaffold", () => {
     expect(releaseWorkflow).toContain("src/agent/productionUpdateMetadata.test.ts");
     expect(releaseWorkflow).toContain("src/domain/updateManifestScript.test.ts");
     expect(releaseWorkflow).toContain("test_update_handoff_acknowledgement_path_is_adjacent_to_the_owned_script");
+    expect(releaseWorkflow).toContain("actions/cache@v4");
+    expect(releaseWorkflow).toContain("aether-link-app/.local-run/node-runtimes");
+    expect(releaseWorkflow).toContain("aether-link-app/.local-run/cmake");
+    expect(releaseWorkflow).toContain("aether-link-app/.local-run/nasm");
+    expect(releaseWorkflow).not.toContain("aether-link-app/.cache");
   });
 
   it("does not require a system Node installation at runtime", () => {

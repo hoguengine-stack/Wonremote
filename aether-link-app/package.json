@@ -22,7 +22,7 @@
     "firebase:verify": "node scripts/verify-firebase-deploy-readiness.js",
     "firebase:rules:test": "npx firebase-tools emulators:exec --only firestore --project wonremote-a7fd3 \"node scripts/verify-firestore-rules.mjs\"",
     "release:exes": "node scripts/package-release-exes.js",
-    "build": "tsc && vite build && node scripts/build-backend.js && node scripts/package-agent.js",
+    "build": "node scripts/build-app.js",
     "test": "vitest run"
   },
   "dependencies": {
