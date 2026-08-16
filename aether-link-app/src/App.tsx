@@ -1919,6 +1919,9 @@ function RemoteSessionPanel({
   onCloseSession: () => void;
 }) {
   const panelRef = React.useRef<HTMLElement | null>(null);
+  const imeInputRef = React.useRef<HTMLTextAreaElement | null>(null);
+  const imeComposingRef = React.useRef(false);
+  const completedImeTextRef = React.useRef("");
   const remotePreviewRef = React.useRef<HTMLDivElement | null>(null);
   const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
   const pressedKeysRef = React.useRef<Set<string>>(new Set());
@@ -2059,7 +2062,7 @@ function RemoteSessionPanel({
 
   useEffect(() => {
     if (session?.state === "connected") {
-      panelRef.current?.focus();
+      imeInputRef.current?.focus({ preventScroll: true });
     }
   }, [session?.id, session?.state]);
 
@@ -2550,7 +2553,7 @@ function RemoteSessionPanel({
     const { dx, dy } = mapRemotePoint(e.clientX, e.clientY, rect);
     const button = mapMouseButton(e.button);
     pressedButtonsRef.current.add(button);
-    panelRef.current?.focus();
+    imeInputRef.current?.focus({ preventScroll: true });
     onInputEvent(buildMouseCommand("down", dx, dy, button));
   };
 
@@ -2607,8 +2610,26 @@ function RemoteSessionPanel({
     onInputEvent(buildMouseCommand("wheel", dx, dy, 0, e.deltaY > 0 ? -120 : 120));
   };
 
-  const handleKeyDown = async (event: React.KeyboardEvent<HTMLElement>) => {
-    if (isEditableTarget(event.target)) {
+  const handleKeyDown = async (event: React.KeyboardEvent<HTMLElement>, allowImeInput = false) => {
+    if (isEditableTarget(event.target) && !allowImeInput) {
+      return;
+    }
+    if (allowImeInput && isHangulToggleKey(event.key, event.code, event.keyCode)) {
+      suppressedKeyUpsRef.current.add(event.key);
+      return;
+    }
+    if (allowImeInput && (event.nativeEvent.isComposing || event.key === "Process" || event.keyCode === 229)) {
+      suppressedKeyUpsRef.current.add(event.key);
+      return;
+    }
+    if (
+      allowImeInput &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      !event.metaKey &&
+      Array.from(event.key).length === 1
+    ) {
+      suppressedKeyUpsRef.current.add(event.key);
       return;
     }
     if (event.repeat) {
@@ -2681,19 +2702,50 @@ function RemoteSessionPanel({
     onInputEvent(command);
   };
 
-  const handleKeyUp = (event: React.KeyboardEvent<HTMLElement>) => {
-    if (isEditableTarget(event.target)) {
+  const handleKeyUp = (event: React.KeyboardEvent<HTMLElement>, allowImeInput = false) => {
+    if (isEditableTarget(event.target) && !allowImeInput) {
+      return;
+    }
+    if (suppressedKeyUpsRef.current.delete(event.key)) {
       return;
     }
     if (!isHangulToggleKey(event.key, event.code, event.keyCode)) {
       event.preventDefault();
     }
-    if (suppressedKeyUpsRef.current.delete(event.key)) {
-      return;
-    }
     const command = buildKeyboardCommand("keyup", event.key, event.code, event.keyCode);
     pressedKeysRef.current.delete(command.slice("key-up ".length));
     onInputEvent(command);
+  };
+
+  const handleImeInput = (event: React.FormEvent<HTMLTextAreaElement>) => {
+    const nativeEvent = event.nativeEvent as InputEvent;
+    if (imeComposingRef.current || nativeEvent.isComposing) {
+      return;
+    }
+    const text = event.currentTarget.value;
+    event.currentTarget.value = "";
+    if (text && text === completedImeTextRef.current) {
+      completedImeTextRef.current = "";
+      return;
+    }
+    if (text) {
+      onInputEvent(buildUnicodeTextCommand(text));
+    }
+  };
+
+  const handleImeCompositionEnd = (event: React.CompositionEvent<HTMLTextAreaElement>) => {
+    imeComposingRef.current = false;
+    const text = event.data || event.currentTarget.value;
+    event.currentTarget.value = "";
+    if (text) {
+      completedImeTextRef.current = text;
+      onInputEvent(buildUnicodeTextCommand(text));
+      window.setTimeout(() => {
+        if (completedImeTextRef.current === text) {
+          completedImeTextRef.current = "";
+        }
+      }, 0);
+    }
   };
 
   useEffect(() => {
@@ -3072,6 +3124,26 @@ function RemoteSessionPanel({
       onKeyDown={handleKeyDown}
       onKeyUp={handleKeyUp}
     >
+      <textarea
+        ref={imeInputRef}
+        className="remote-ime-input"
+        aria-label="원격 키보드 입력"
+        autoCapitalize="off"
+        autoCorrect="off"
+        spellCheck={false}
+        tabIndex={-1}
+        onCompositionStart={() => { imeComposingRef.current = true; }}
+        onCompositionEnd={handleImeCompositionEnd}
+        onInput={handleImeInput}
+        onKeyDown={(event) => {
+          event.stopPropagation();
+          void handleKeyDown(event, true);
+        }}
+        onKeyUp={(event) => {
+          event.stopPropagation();
+          handleKeyUp(event, true);
+        }}
+      />
       <div className="remote-work-area" style={{ display: "flex", flex: 1, gap: "16px", minHeight: "450px" }}>
         {/* 원격 스크린 영역 */}
         <div className="remote-screen connected" style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>

@@ -29,7 +29,21 @@ describe("connected remote session layout", () => {
     expect(appSource).toContain("buildKeyboardCommand(\"keydown\", event.key, event.code, event.keyCode)");
     expect(appSource).toContain("buildKeyboardCommand(\"keyup\", event.key, event.code, event.keyCode)");
     expect(appSource).toContain("isHangulToggleKey(event.key, event.code, event.keyCode)");
-    expect(appSource.match(/isHangulToggleKey\(event\.key, event\.code, event\.keyCode\)/g)).toHaveLength(2);
+    expect(appSource.match(/isHangulToggleKey\(event\.key, event\.code, event\.keyCode\)/g)).toHaveLength(3);
+  });
+
+  it("keeps a focused IME input sink for Korean composition without duplicating key events", () => {
+    const block = connectedReturnBlock();
+    expect(block).toContain('className="remote-ime-input"');
+    expect(block).toContain("onCompositionStart");
+    expect(block).toContain("onCompositionEnd={handleImeCompositionEnd}");
+    expect(block).toContain("onInput={handleImeInput}");
+    expect(block).toContain("event.stopPropagation()");
+    expect(appSource).toContain("imeInputRef.current?.focus({ preventScroll: true })");
+    expect(appSource).toContain("buildUnicodeTextCommand(text)");
+    expect(appSource).toContain('event.key === "Process" || event.keyCode === 229');
+    expect(appSource).toContain("completedImeTextRef.current");
+    expect(stylesSource).toContain(".remote-ime-input");
   });
 
   it("places actions before the remote work area and exposes fullscreen control", () => {

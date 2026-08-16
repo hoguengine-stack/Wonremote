@@ -437,6 +437,22 @@ input:focus {
 .account-actions .danger { color: #b22d2d; }
 .account-list-empty { color: #687786; margin: 0; padding: 24px; text-align: center; }
 
+.remote-ime-input {
+  border: 0;
+  height: 1px;
+  left: 8px;
+  min-height: 1px;
+  opacity: 0.01;
+  overflow: hidden;
+  padding: 0;
+  pointer-events: none;
+  position: absolute;
+  resize: none;
+  top: 8px;
+  width: 1px;
+  z-index: -1;
+}
+
 @media (max-width: 760px) {
   .account-create-form { grid-template-columns: 1fr; }
   .account-row { align-items: flex-start; flex-wrap: wrap; }
