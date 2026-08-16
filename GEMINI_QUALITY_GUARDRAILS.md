@@ -440,6 +440,8 @@ These rules apply to every production defect, test failure, installer failure, u
 10. Before a release is declared usable, verify the published manifest and all four Firebase download redirects against the same tag. Viewer and Agent, x64 and x86, are independent installation/update contracts.
 11. Before declaring any production defect fixed, append an entry to `INCIDENT_REGISTRY.md` using its required format. The entry must name the original symptom, root cause, fix commit, focused regression proof, release evidence, and verification status. This is mandatory for new incidents and must not be replaced by a chat summary.
 12. Before Codex edits code, follow `CODEX_IMPLEMENTATION_PROTOCOL.md`. It is mandatory to distinguish source, build, release, and installed-runtime evidence and to complete the affected mode/architecture matrix.
+13. Register every newly observed failure in `INCIDENT_REGISTRY.md` as `open` before implementing its fix. The same change set must update that entry with root cause, permanent guard, and focused proof. Deferring registration until the user asks about recurrence prevention is prohibited.
+14. A defect at a process, Firebase signaling, installer, update, architecture, or UI-to-native boundary remains open until a test crosses that same boundary. Helper-only unit tests may supplement but never replace the boundary regression test.
 
 ## Mandatory Current Baseline Protocol
 

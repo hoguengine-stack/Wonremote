@@ -20,6 +20,36 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - Remaining blocker: explicit gap or `none`
 ```
 
+## INC-20260816-005: x86 Agent published an incomplete WebRTC Answer
+
+- Detected: 2026-08-16T22:49:00Z.
+- Severity: P1.
+- Affected: Viewer and x86 Agent `0.1.64`; Firebase WebRTC signaling.
+- Status: physical-verification-required.
+- User-visible symptom: Viewer opened a remote session but displayed no remote screen.
+- Minimal trigger: Connect a Viewer to an online x86 Agent and wait for the realtime tile channel.
+- Root cause and contributors: Agent persisted the pre-gather `createAnswer()` SDP instead of the final `localDescription` produced after `setLocalDescription()`. Candidate trickling made the defect intermittent, and the existing werift-to-werift smoke did not exercise the Firebase signaling write boundary.
+- Fix commit(s): `c0c4ace`.
+- Permanent guard: Viewer Offer and Agent Answer signaling persist final local descriptions; `agentWebRtcSignaling.test.ts` crosses the Agent-to-Firebase boundary and requires an ICE candidate in the stored Answer.
+- Regression proof: `npm test -- src/firebase/agentPeerConnection.test.ts src/firebase/agentPeerConnectionWeriftSmoke.test.ts src/firebase/viewerWebRtcTransport.test.ts src/firebase/agentWebRtcSignaling.test.ts`.
+- Release proof: `v0.1.65` published with Viewer and Agent installers plus signed manifest.
+- Remaining blocker: Confirm a remote Viewer receives and renders the x86 Agent screen on physical devices.
+
+## INC-20260816-006: Release packaging remained above twenty minutes
+
+- Detected: 2026-08-16T23:15:35Z.
+- Severity: P2.
+- Affected: GitHub Actions `v0.1.65` x86 Viewer and Agent release workflow.
+- Status: open.
+- User-visible symptom: Building two installers took about 22 minutes despite the first optimization attempt.
+- Minimal trigger: Push release tag `v0.1.65` and run `Publish WonRemote release`.
+- Root cause and contributors: Removing the Agent compile-mode environment change did not eliminate the second Tauri package build; product-specific Tauri configuration still causes another packaging/link path. The first stable cache key also required a new cache save.
+- Fix commit(s): `d7c9ba2` was an incomplete mitigation; no complete fix yet.
+- Permanent guard: Pending replacement of two Tauri build invocations with one compiled x86 application payload and two installer-only packaging passes.
+- Regression proof: GitHub Actions run `31977574777` completed successfully but measured approximately 22 minutes, proving the performance requirement is not yet met.
+- Release proof: `v0.1.65` published; performance defect remains open.
+- Remaining blocker: Implement installer-only second-product packaging and compare two consecutive cached CI runs.
+
 ## INC-20260812-001: Viewer update check failed in installed Viewer
 
 - Detected: 2026-08-12.
