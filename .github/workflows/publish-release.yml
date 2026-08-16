@@ -43,9 +43,8 @@ jobs:
             aether-link-app/.local-run/cmake
             aether-link-app/.local-run/nasm
             aether-link-app/.local-run/7zip-verifier
-          key: wonremote-windows-${{ runner.os }}-${{ hashFiles('aether-link-app/src-tauri/Cargo.lock', 'aether-link-poc/Cargo.lock', 'aether-link-app/package-lock.json') }}-${{ github.sha }}
+          key: wonremote-windows-${{ runner.os }}-${{ hashFiles('aether-link-app/src-tauri/Cargo.lock', 'aether-link-poc/Cargo.lock', 'aether-link-app/package-lock.json') }}
           restore-keys: |
-            wonremote-windows-${{ runner.os }}-${{ hashFiles('aether-link-app/src-tauri/Cargo.lock', 'aether-link-poc/Cargo.lock', 'aether-link-app/package-lock.json') }}
             wonremote-windows-${{ runner.os }}-
 
       - name: Install dependencies
@@ -101,7 +100,7 @@ jobs:
             aether-link-app/.local-run/cmake
             aether-link-app/.local-run/nasm
             aether-link-app/.local-run/7zip-verifier
-          key: wonremote-windows-${{ runner.os }}-${{ hashFiles('aether-link-app/src-tauri/Cargo.lock', 'aether-link-poc/Cargo.lock', 'aether-link-app/package-lock.json') }}-${{ github.sha }}
+          key: wonremote-windows-${{ runner.os }}-${{ hashFiles('aether-link-app/src-tauri/Cargo.lock', 'aether-link-poc/Cargo.lock', 'aether-link-app/package-lock.json') }}
 
       - name: Upload verified release files
         uses: actions/upload-artifact@v4
@@ -125,17 +124,13 @@ jobs:
       WONREMOTE_RELEASE_GATE_APPROVED: "YES"
       WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY: ${{ secrets.WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY }}
       WONREMOTE_SKIP_BUILD_PAYLOAD_PREFLIGHT: "YES"
+      WONREMOTE_SKIP_UPDATE_E2E_PREFLIGHT: "YES"
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: aether-link-app/package-lock.json
-
-      - name: Install publish dependencies
-        run: npm ci
 
       - name: Download verified release files
         uses: actions/download-artifact@v4

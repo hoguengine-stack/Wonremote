@@ -531,9 +531,22 @@ describe("desktop packaging scaffold", () => {
     expect(packageReleaseScript).not.toContain("Portable.zip");
     expect(packageReleaseScript).not.toContain("Compress-Archive");
     expect(packageReleaseScript).toContain("expectedOutputs");
-    expect(packageReleaseScript).toContain("WONREMOTE_DEFAULT_APP_MODE");
+    expect(packageReleaseScript).not.toContain("WONREMOTE_DEFAULT_APP_MODE");
     expect(packageReleaseScript).toContain("server");
     expect(packageReleaseScript).toContain("runtime");
+  });
+
+  it("reuses one x86 Rust binary for Viewer and Agent packaging", () => {
+    const packageReleaseScript = readFileSync(path.join(projectRoot, "scripts", "package-release-exes.js"), "utf8");
+    const rustBuildScript = readFileSync(path.join(projectRoot, "src-tauri", "build.rs"), "utf8");
+    const rustApp = readFileSync(path.join(projectRoot, "src-tauri", "src", "lib.rs"), "utf8");
+    const workflow = readFileSync(path.join(projectRoot, "..", ".github", "workflows", "publish-release.yml"), "utf8");
+
+    expect(packageReleaseScript).toContain('WONREMOTE_BUILD_STAGE: "reuse"');
+    expect(packageReleaseScript).not.toContain("WONREMOTE_DEFAULT_APP_MODE");
+    expect(rustBuildScript).not.toContain("cargo:rerun-if-env-changed=WONREMOTE_DEFAULT_APP_MODE");
+    expect(rustApp).toContain('directory.eq_ignore_ascii_case("agent")');
+    expect(workflow).not.toMatch(/key: wonremote-windows-.*github\.sha/);
   });
 
   it("builds only native x86 payloads behind two stable downloads", () => {
@@ -604,6 +617,7 @@ describe("desktop packaging scaffold", () => {
     const publishScript = readFileSync(publishScriptPath, "utf8");
     expect(publishScript).toContain("GITHUB_TOKEN");
     expect(publishScript).toContain("WONREMOTE_RELEASE_GATE_APPROVED");
+    expect(publishScript).toContain("WONREMOTE_SKIP_UPDATE_E2E_PREFLIGHT");
     expect(publishScript).toContain('if ($ReleaseGateApproved -ne "YES")');
     expect(publishScript).toContain("WonRemote release gate is locked.");
     expect(publishScript).toContain("[string]$Repository = \"hoguengine-stack/Wonremote\"");
@@ -614,6 +628,15 @@ describe("desktop packaging scaffold", () => {
     expect(publishScript).toContain("$StableAgentInstallerPath");
     expect(publishScript).toContain("Publish-Asset $StableAgentInstallerPath $StableAgentInstallerAssetName");
     expect(publishScript).toContain("wonremote-update-manifest.json");
+  });
+
+  it("does not repeat build-job preflights while publishing the same verified artifact", () => {
+    const workflow = readFileSync(path.join(projectRoot, "..", ".github", "workflows", "publish-release.yml"), "utf8");
+    const publishJob = workflow.split("  publish-release:")[1];
+
+    expect(publishJob).toContain('WONREMOTE_SKIP_BUILD_PAYLOAD_PREFLIGHT: "YES"');
+    expect(publishJob).toContain('WONREMOTE_SKIP_UPDATE_E2E_PREFLIGHT: "YES"');
+    expect(publishJob).not.toContain("Install publish dependencies");
   });
 
   it("keeps x86 download routes as compatibility aliases to the two installers", () => {

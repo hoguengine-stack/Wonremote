@@ -54,9 +54,11 @@ foreach ($ExpectedAsset in $ExpectedAssets) {
   }
 }
 
-& npm run test:update-e2e
-if ($LASTEXITCODE -ne 0) {
-  throw "Installer update E2E preflight failed with exit code $LASTEXITCODE."
+if ($env:WONREMOTE_SKIP_UPDATE_E2E_PREFLIGHT -ne "YES") {
+  & npm run test:update-e2e
+  if ($LASTEXITCODE -ne 0) {
+    throw "Installer update E2E preflight failed with exit code $LASTEXITCODE."
+  }
 }
 
 if ($env:WONREMOTE_SKIP_BUILD_PAYLOAD_PREFLIGHT -ne "YES") {

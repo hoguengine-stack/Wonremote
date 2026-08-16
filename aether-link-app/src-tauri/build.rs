@@ -14,12 +14,6 @@ const FIREBASE_VITE_KEYS: [&str; 6] = [
 ];
 
 fn main() {
-    println!("cargo:rerun-if-env-changed=WONREMOTE_DEFAULT_APP_MODE");
-    if let Ok(default_mode) = std::env::var("WONREMOTE_DEFAULT_APP_MODE") {
-        if !default_mode.trim().is_empty() {
-            println!("cargo:rustc-env=WONREMOTE_DEFAULT_APP_MODE={}", default_mode.trim());
-        }
-    }
     ensure_dist_poc_resource_exists_for_cargo_metadata();
     ensure_dist_poc_vc_runtime_exists_for_cargo_metadata();
     ensure_dist_native_node_datachannel_exists_for_cargo_metadata();

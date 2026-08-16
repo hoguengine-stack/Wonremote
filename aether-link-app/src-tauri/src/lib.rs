@@ -59,7 +59,6 @@ const FIREBASE_APP_ID: Option<&str> = option_env!("VITE_WONREMOTE_FIREBASE_APP_I
 const FIREBASE_STORAGE_BUCKET: Option<&str> = option_env!("VITE_WONREMOTE_FIREBASE_STORAGE_BUCKET");
 const FIREBASE_MESSAGING_SENDER_ID: Option<&str> =
     option_env!("VITE_WONREMOTE_FIREBASE_MESSAGING_SENDER_ID");
-const DEFAULT_APP_MODE: Option<&str> = option_env!("WONREMOTE_DEFAULT_APP_MODE");
 const PUBLIC_FIREBASE_API_KEY: &str = "AIzaSyDb1Ihymmrt1SSYvbOAB2NjRV9PiWMY2y8";
 const PUBLIC_FIREBASE_AUTH_DOMAIN: &str = "wonremote-a7fd3.firebaseapp.com";
 const PUBLIC_FIREBASE_PROJECT_ID: &str = "wonremote-a7fd3";
@@ -1282,15 +1281,20 @@ fn default_agent_config_path() -> Option<PathBuf> {
 fn executable_name_requests_agent() -> bool {
     env::current_exe()
         .ok()
-        .and_then(|path| {
-            path.file_stem()
-                .map(|stem| stem.to_string_lossy().to_string())
-        })
-        .is_some_and(|stem| executable_stem_requests_agent(&stem))
+        .is_some_and(|path| executable_path_requests_agent(&path))
 }
 
 fn executable_stem_requests_agent(stem: &str) -> bool {
     stem.to_ascii_lowercase().contains("agent")
+}
+
+fn executable_path_requests_agent(path: &Path) -> bool {
+    path.file_stem()
+        .is_some_and(|stem| executable_stem_requests_agent(&stem.to_string_lossy()))
+        || path
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|directory| directory.eq_ignore_ascii_case("agent"))
 }
 
 fn launched_as_agent() -> bool {
@@ -1324,10 +1328,9 @@ fn args_request_show_window(args: &[String]) -> bool {
 }
 
 fn default_mode_requests_agent() -> bool {
-    mode_value_requests_agent(DEFAULT_APP_MODE)
-        || env::var("WONREMOTE_DEFAULT_APP_MODE")
-            .ok()
-            .is_some_and(|mode| mode_value_requests_agent(Some(&mode)))
+    env::var("WONREMOTE_DEFAULT_APP_MODE")
+        .ok()
+        .is_some_and(|mode| mode_value_requests_agent(Some(&mode)))
 }
 
 fn mode_value_requests_agent(mode: Option<&str>) -> bool {
@@ -2355,10 +2358,16 @@ mod registry_tests {
         assert!(executable_stem_requests_agent("WonRemote Agent"));
         assert!(executable_stem_requests_agent("wonremote-agent"));
         assert!(!executable_stem_requests_agent("WonRemote Viewer"));
+        assert!(executable_path_requests_agent(Path::new(
+            r"C:\Users\test\AppData\Local\WonRemote\Agent\wonremote-viewer.exe",
+        )));
+        assert!(!executable_path_requests_agent(Path::new(
+            r"C:\Users\test\AppData\Local\WonRemote\Viewer\wonremote-viewer.exe",
+        )));
     }
 
     #[test]
-    fn test_agent_default_compile_mode_enters_agent_mode() {
+    fn test_agent_default_runtime_mode_enters_agent_mode() {
         assert!(mode_value_requests_agent(Some("agent")));
         assert!(mode_value_requests_agent(Some("AGENT")));
         assert!(!mode_value_requests_agent(Some("viewer")));

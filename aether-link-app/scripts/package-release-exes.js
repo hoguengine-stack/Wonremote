@@ -99,7 +99,6 @@ function buildAgentDefaultInstaller(target) {
   cleanTauriResourceOutput(target);
   runShell(buildTauriCommand(target, target.agentConfig), buildEnvFor(target, {
     WONREMOTE_BUILD_STAGE: "reuse",
-    WONREMOTE_DEFAULT_APP_MODE: "agent",
   }));
 }
 
