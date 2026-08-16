@@ -69,12 +69,17 @@ jobs:
             throw "Release tag must match package.json: expected v$packageVersion, got $env:GITHUB_REF_NAME."
           }
 
-      - name: Verify update regression guards
-        run: |
-          npm test -- src/desktopPackaging.test.ts src/agent/productionUpdateCheck.test.ts src/agent/productionInstallerUpdate.test.ts src/agent/agentUpdateOnce.test.ts src/agent/productionUpdateMetadata.test.ts src/domain/updateManifest.test.ts src/domain/updateManifestScript.test.ts
-          npm run test:update-e2e
-          cargo test --manifest-path src-tauri/Cargo.toml test_node_resource_paths
-          cargo test --manifest-path src-tauri/Cargo.toml test_update_handoff_acknowledgement_path_is_adjacent_to_the_owned_script
+      - name: Verify release contract tests
+        run: npm test -- src/desktopPackaging.test.ts src/agent/productionUpdateCheck.test.ts src/agent/productionInstallerUpdate.test.ts src/agent/agentUpdateOnce.test.ts src/agent/productionUpdateMetadata.test.ts src/domain/updateManifest.test.ts src/domain/updateManifestScript.test.ts
+
+      - name: Verify installer update E2E
+        run: npm run test:update-e2e
+
+      - name: Verify Tauri resource paths
+        run: cargo test --manifest-path src-tauri/Cargo.toml test_node_resource_paths
+
+      - name: Verify updater acknowledgement ownership
+        run: cargo test --manifest-path src-tauri/Cargo.toml test_update_handoff_acknowledgement_path_is_adjacent_to_the_owned_script
 
       - name: Build two x86 installers and signed compatibility manifest
         run: |
