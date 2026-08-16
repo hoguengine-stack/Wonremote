@@ -79,3 +79,18 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - Regression proof: `npm test -- scripts/package-release-exes.test.js src/desktopPackaging.test.ts` -> 2 files and 56 tests passed. On Windows x64, silent Viewer replacement changed the running Agent PID from `3056` to `19296`, then kept exactly one Agent process running; Viewer and Agent both reported `0.1.61`, and device identity remained `123-45-67890:AGENT-82220F6D`.
 - Release proof: not released.
 - Remaining blocker: Windows x86 physical installation remains required before release publication.
+
+## INC-20260816-004: Installer update could leave a partially replaced product without file rollback
+
+- Detected: 2026-08-16T09:15:46Z.
+- Severity: P1.
+- Affected: installed Viewer and Agent updater handoff on Windows x64 and x86.
+- Status: fixed-not-released.
+- User-visible symptom: An installer failure or post-install runtime health failure could restart a partially replaced product instead of restoring the previous installation files.
+- Minimal trigger: Start a verified installer update that either exits nonzero after changing files or exits zero while the replacement runtime cannot remain healthy.
+- Root cause and contributors: The handoff treated process restart as rollback, had no pre-install product-root backup, and had no end-to-end fixture covering real file replacement and recovery.
+- Fix commit(s): `3c055a2`.
+- Permanent guard: The handoff completes a transactional product-root backup before stopping the old runtime, restores files on installer or health failure, retains backup files if restoration itself fails, and refuses to start installation without a complete backup. Local and CI publication also require the installer-update E2E and direct extraction of all four x64/x86 inner payload hosts.
+- Regression proof: `npm test -- scripts/verify-universal-installer-payloads.test.js scripts/package-release-exes.test.js src/agent/productionInstallerUpdate.test.ts` -> 3 files and 14 tests passed. `npm run test:update-e2e` proved successful old-to-new replacement, nonzero installer rollback, post-install health rollback, and backup-unavailable refusal. `npm run release:verify-payloads` reproduced both universal wrappers and directly extracted all four inner installers to verify x64/x86 host PE machines.
+- Release proof: not released; source build and version were intentionally unchanged.
+- Remaining blocker: Build a new version and complete Windows x86 physical installation before publication.
