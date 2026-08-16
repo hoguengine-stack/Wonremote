@@ -64,3 +64,18 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - Regression proof: `npm test -- scripts/build-backend.test.js src/agent/agentWebRtcRuntimeSmoke.test.ts` -> 2 files and 5 tests passed; `node --check scripts/build-backend.js` and `git diff --check` passed.
 - Release proof: not released.
 - Remaining blocker: Complete the x64/x86 universal installer build and local manifest verification.
+
+## INC-20260816-003: Viewer replacement stopped the background Agent
+
+- Detected: 2026-08-16T08:48:49Z.
+- Severity: P1.
+- Affected: `0.1.61` Viewer upgrade from an older installed Viewer while the Windows Agent is running.
+- Status: fixed-not-released.
+- User-visible symptom: A silent Viewer reinstall completed successfully but the Agent process disappeared and did not return.
+- Minimal trigger: Start the installed Agent, then run the universal Viewer installer with `/S` over the existing Viewer.
+- Root cause and contributors: The previously installed Viewer uninstaller still contained legacy cross-product process cleanup and could terminate the Agent during replacement. Product isolation in the new inner installer cannot change that already-installed uninstaller.
+- Fix commit(s): `bce5194`.
+- Permanent guard: The universal Viewer wrapper restarts an installed Agent after successful Viewer replacement without embedding or reinstalling the Agent payload; focused wrapper tests enforce both restart and product isolation. Wrapper-only assembly reuses already-built inner installers for fast validation.
+- Regression proof: `npm test -- scripts/package-release-exes.test.js src/desktopPackaging.test.ts` -> 2 files and 56 tests passed; physical reinstall proof remains required.
+- Release proof: not released.
+- Remaining blocker: Reassemble the universal wrappers and prove the Agent is running after a physical silent Viewer reinstall.
