@@ -103,7 +103,12 @@ describe("production installer update", () => {
       expect(script).toContain("Start-Process -FilePath");
       expect(script).toContain("WaitForExit()");
       expect(script).toContain("Installer exit code");
-      expect(script).toContain("Installer failed; restarting the previous $RestartMode process.");
+      expect(script).toContain("function Backup-WonRemoteInstall");
+      expect(script).toContain("function Restore-WonRemoteInstall");
+      expect(script).toContain("Backed up WonRemote install root");
+      expect(script).toContain("Restored WonRemote install root");
+      expect(script).toContain("WonRemote installer rollback completed and previous runtime recovered.");
+      expect(script).toContain("Installer rollback failed");
       expect(script).toContain("WonRemote-Viewer-Agent-Setup.exe");
       expect(script).toContain("/D=C:\\Users\\Tester\\WonRemote Agent");
       expect(script).toContain("$explicitInstallRoots = @('C:\\Users\\Tester\\WonRemote Agent')");
@@ -119,6 +124,10 @@ describe("production installer update", () => {
       expect(script).not.toContain("taskkill");
       expect(script).toContain("Another WonRemote update is already in progress");
       expect(script).toContain("[System.IO.FileShare]::None");
+      expect(script).toContain("Backup-WonRemoteInstall\n  Stop-WonRemoteProcesses\n  Write-HandoffLog");
+      expect(script).toContain("throw 'No previous WonRemote installation was available to back up.'");
+      expect(script).toContain("Rollback backup retained for manual recovery");
+      expect(script).toContain("Remove-WonRemoteRollback\n  Close-UpdateLock");
       expect(script).not.toContain("WONREMOTE_RESTART_MODE");
       expect(script).toContain("Start-WonRemoteAgent");
       expect(script).toContain("Join-Path $root \"wonremote-viewer.exe\"");
@@ -129,7 +138,10 @@ describe("production installer update", () => {
       expect(script).toContain("(?i)[\\\\/]agent[\\\\/]index\\.mjs");
       expect(script).toContain("(?i)(^|\\s)--watch(\\s|$)");
       expect(script).toContain("Start-Process -FilePath $candidate -ArgumentList @('--agent') -WindowStyle Hidden");
-      expect(script).toContain("if ($process.ExitCode -eq 0) {\n    Start-WonRemoteAgent\n    if ($RestartMode -eq 'agent') {\n      Wait-WonRemoteAgentRuntime");
+      expect(script).toContain("if ($process.ExitCode -ne 0) {");
+      expect(script).toContain("Start-WonRemoteAgent\n  if ($RestartMode -eq 'agent') {\n    Wait-WonRemoteAgentRuntime");
+      expect(script).toContain("catch {\n  Write-HandoffLog \"Installer handoff failed");
+      expect(script).toContain("Restore-WonRemoteInstall");
       const second = await prepareInstallerHandoff(
         { installerArgs: ["/S"], installerPath },
         { baseDir },
@@ -156,8 +168,8 @@ describe("production installer update", () => {
 
       expect(script).toContain("function Start-WonRemoteViewer");
       expect(script).toContain('Start-Process -FilePath $candidate\n');
-      expect(script).toContain("if ($process.ExitCode -eq 0) {\n    Start-WonRemoteViewer\n    if ($RestartMode -eq 'agent') {");
-      expect(script).toContain("} else {\n      Wait-WonRemoteViewer\n    }");
+      expect(script).toContain("Start-WonRemoteViewer\n  if ($RestartMode -eq 'agent') {");
+      expect(script).toContain("} else {\n    Wait-WonRemoteViewer\n  }");
     } finally {
       await rm(baseDir, { recursive: true, force: true });
     }

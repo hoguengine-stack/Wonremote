@@ -158,6 +158,9 @@ $LockPath = '${escapePowerShellSingleQuoted(input.lockPath)}'
 $RestartMode = '${escapePowerShellSingleQuoted(input.restartMode)}'
 $RestartExecutablePath = '${escapePowerShellSingleQuoted(input.restartExecutablePath ?? "")}'
 $explicitInstallRoots = @(${quotedExplicitInstallRoots})
+$RollbackRoot = Join-Path (Split-Path -Parent $InstallerPath) ('rollback-' + [guid]::NewGuid().ToString())
+$script:RollbackEntries = @()
+$FailureExitCode = 1
 function Write-HandoffLog([string]$Message) {
   $stamp = Get-Date -Format o
   Add-Content -LiteralPath $LogPath -Encoding UTF8 -Value "[$stamp] $Message"
@@ -227,15 +230,7 @@ function Test-UnderPath([string]$Candidate, [string[]]$Roots) {
 }
 
 function Stop-WonRemoteProcesses {
-  $roots = if ($RestartMode -eq 'agent') {
-    @("$env:LOCALAPPDATA\\WonRemote\\Agent", "$env:LOCALAPPDATA\\WonRemote Agent")
-  } else {
-    @("$env:LOCALAPPDATA\\WonRemote\\Viewer", "$env:LOCALAPPDATA\\WonRemote Viewer")
-  }
-  if (-not [string]::IsNullOrWhiteSpace($RestartExecutablePath)) {
-    $roots += Split-Path -Parent $RestartExecutablePath
-  }
-  $roots = @($roots + $explicitInstallRoots) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+  $roots = @(Get-WonRemoteInstallRoots)
   $targets = Get-CimInstance Win32_Process | Where-Object {
     Test-UnderPath $_.ExecutablePath $roots
   }
@@ -246,6 +241,73 @@ function Stop-WonRemoteProcesses {
     }
   }
   Start-Sleep -Milliseconds 1500
+}
+
+function Get-WonRemoteInstallRoots {
+  $roots = if ($RestartMode -eq 'agent') {
+    @("$env:LOCALAPPDATA\\WonRemote\\Agent", "$env:LOCALAPPDATA\\WonRemote Agent")
+  } else {
+    @("$env:LOCALAPPDATA\\WonRemote\\Viewer", "$env:LOCALAPPDATA\\WonRemote Viewer")
+  }
+  if (-not [string]::IsNullOrWhiteSpace($RestartExecutablePath)) {
+    $roots += Split-Path -Parent $RestartExecutablePath
+  }
+  return @($roots + $explicitInstallRoots) |
+    Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+    ForEach-Object { Normalize-PathForCompare $_ } |
+    Select-Object -Unique
+}
+
+function Backup-WonRemoteInstall {
+  New-Item -ItemType Directory -Path $RollbackRoot -Force | Out-Null
+  $pendingEntries = @()
+  $index = 0
+  try {
+    foreach ($root in @(Get-WonRemoteInstallRoots)) {
+      if (-not (Test-Path -LiteralPath $root -PathType Container)) { continue }
+      $backupPath = Join-Path $RollbackRoot ([string]$index)
+      New-Item -ItemType Directory -Path $backupPath -Force | Out-Null
+      Get-ChildItem -LiteralPath $root -Force | Copy-Item -Destination $backupPath -Recurse -Force
+      $pendingEntries += [pscustomobject]@{ Root = $root; Backup = $backupPath }
+      Write-HandoffLog "Backed up WonRemote install root: $root"
+      $index++
+    }
+    if ($pendingEntries.Count -eq 0) {
+      throw 'No previous WonRemote installation was available to back up.'
+    }
+    $script:RollbackEntries = $pendingEntries
+  } catch {
+    Remove-WonRemoteRollback
+    throw
+  }
+}
+
+function Remove-WonRemoteRollback {
+  if (Test-Path -LiteralPath $RollbackRoot) {
+    Remove-Item -LiteralPath $RollbackRoot -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Restore-WonRemoteInstall {
+  if ($script:RollbackEntries.Count -eq 0) {
+    throw 'No previous WonRemote installation was available to restore.'
+  }
+  Stop-WonRemoteProcesses
+  foreach ($entry in $script:RollbackEntries) {
+    if (Test-Path -LiteralPath $entry.Root) {
+      Remove-Item -LiteralPath $entry.Root -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $entry.Root -Force | Out-Null
+    Get-ChildItem -LiteralPath $entry.Backup -Force | Copy-Item -Destination $entry.Root -Recurse -Force
+    Write-HandoffLog "Restored WonRemote install root: $($entry.Root)"
+  }
+  ${restartCommand}
+  if ($RestartMode -eq 'agent') {
+    Wait-WonRemoteAgentRuntime
+  } else {
+    Wait-WonRemoteViewer
+  }
+  Write-HandoffLog 'WonRemote installer rollback completed and previous runtime recovered.'
 }
 
 function Test-WonRemoteAgentRunning([string[]]$Roots) {
@@ -366,29 +428,45 @@ function Wait-WonRemoteViewer {
 }
 
 try {
+  Backup-WonRemoteInstall
   Stop-WonRemoteProcesses
   Write-HandoffLog "Starting installer update: $InstallerPath $($InstallerArgs -join ' ')"
   $process = Start-Process -FilePath $InstallerPath -ArgumentList $InstallerArgs -WindowStyle Hidden -PassThru
   Write-HandoffLog "Installer PID: $($process.Id)"
   $process.WaitForExit()
   Write-HandoffLog "Installer exit code: $($process.ExitCode)"
-  if ($process.ExitCode -eq 0) {
-    ${restartCommand}
-    if ($RestartMode -eq 'agent') {
-      Wait-WonRemoteAgentRuntime
-    } else {
-      Wait-WonRemoteViewer
-    }
-  } else {
-    Write-HandoffLog "Installer failed; restarting the previous $RestartMode process."
-    ${restartCommand}
+  if ($process.ExitCode -ne 0) {
+    $FailureExitCode = $process.ExitCode
+    throw "Installer exited with code $($process.ExitCode)."
   }
+  ${restartCommand}
+  if ($RestartMode -eq 'agent') {
+    Wait-WonRemoteAgentRuntime
+  } else {
+    Wait-WonRemoteViewer
+  }
+  Remove-WonRemoteRollback
   Close-UpdateLock
-  exit $process.ExitCode
+  exit 0
 } catch {
   Write-HandoffLog "Installer handoff failed: $($_.Exception.Message)"
+  $rollbackCompleted = $false
+  if ($script:RollbackEntries.Count -gt 0) {
+    try {
+      Restore-WonRemoteInstall
+      $rollbackCompleted = $true
+    } catch {
+      Write-HandoffLog "Installer rollback failed: $($_.Exception.Message)"
+      Write-HandoffLog "Rollback backup retained for manual recovery: $RollbackRoot"
+    }
+  } else {
+    Write-HandoffLog 'Installer was not started because no complete rollback backup was available.'
+  }
+  if ($rollbackCompleted) {
+    Remove-WonRemoteRollback
+  }
   Close-UpdateLock
-  exit 1
+  exit $FailureExitCode
 }
 `;
 }

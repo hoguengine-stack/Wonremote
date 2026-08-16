@@ -39,6 +39,7 @@ jobs:
             aether-link-app/.local-run/node-runtimes
             aether-link-app/.local-run/cmake
             aether-link-app/.local-run/nasm
+            aether-link-app/.local-run/7zip-verifier
           key: wonremote-windows-${{ runner.os }}-${{ hashFiles('aether-link-app/src-tauri/Cargo.lock', 'aether-link-poc/Cargo.lock', 'aether-link-app/package-lock.json') }}
           restore-keys: |
             wonremote-windows-${{ runner.os }}-
@@ -71,6 +72,7 @@ jobs:
       - name: Verify update regression guards
         run: |
           npm test -- src/desktopPackaging.test.ts src/agent/productionUpdateCheck.test.ts src/agent/productionInstallerUpdate.test.ts src/agent/agentUpdateOnce.test.ts src/agent/productionUpdateMetadata.test.ts src/domain/updateManifest.test.ts src/domain/updateManifestScript.test.ts
+          npm run test:update-e2e
           cargo test --manifest-path src-tauri/Cargo.toml test_node_resource_paths
           cargo test --manifest-path src-tauri/Cargo.toml test_update_handoff_acknowledgement_path_is_adjacent_to_the_owned_script
 
