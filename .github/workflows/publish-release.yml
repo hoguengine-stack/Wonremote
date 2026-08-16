@@ -9,8 +9,10 @@ permissions:
   contents: write
 
 jobs:
-  publish:
+  build-release:
     runs-on: windows-2022
+    permissions:
+      contents: read
     defaults:
       run:
         shell: pwsh
@@ -88,9 +90,6 @@ jobs:
       - name: Verify updater acknowledgement ownership
         run: cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc --release --lib test_update_handoff_acknowledgement_path_is_adjacent_to_the_owned_script
 
-      - name: Publish GitHub release
-        run: npm run release:publish
-
       - name: Save Rust and downloaded tool caches
         if: always() && steps.release-cache.outputs.cache-hit != 'true' && hashFiles('aether-link-app/src-tauri/target/**', 'aether-link-poc/target/**') != ''
         uses: actions/cache/save@v4
@@ -103,3 +102,46 @@ jobs:
             aether-link-app/.local-run/nasm
             aether-link-app/.local-run/7zip-verifier
           key: wonremote-windows-${{ runner.os }}-${{ hashFiles('aether-link-app/src-tauri/Cargo.lock', 'aether-link-poc/Cargo.lock', 'aether-link-app/package-lock.json') }}-${{ github.sha }}
+
+      - name: Upload verified release files
+        uses: actions/upload-artifact@v4
+        with:
+          name: wonremote-release-${{ github.sha }}
+          path: aether-link-app/release-exe
+          if-no-files-found: error
+          retention-days: 3
+
+  publish-release:
+    needs: build-release
+    runs-on: windows-2022
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: aether-link-app
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      WONREMOTE_RELEASE_GATE_APPROVED: "YES"
+      WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY: ${{ secrets.WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY }}
+      WONREMOTE_SKIP_BUILD_PAYLOAD_PREFLIGHT: "YES"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: aether-link-app/package-lock.json
+
+      - name: Install publish dependencies
+        run: npm ci
+
+      - name: Download verified release files
+        uses: actions/download-artifact@v4
+        with:
+          name: wonremote-release-${{ github.sha }}
+          path: aether-link-app/release-exe
+
+      - name: Publish GitHub release
+        run: npm run release:publish

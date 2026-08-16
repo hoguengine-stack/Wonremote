@@ -59,9 +59,11 @@ if ($LASTEXITCODE -ne 0) {
   throw "Installer update E2E preflight failed with exit code $LASTEXITCODE."
 }
 
-& node (Join-Path $ScriptDir "verify-x86-installer-payloads.js")
-if ($LASTEXITCODE -ne 0) {
-  throw "x86 installer payload preflight failed with exit code $LASTEXITCODE."
+if ($env:WONREMOTE_SKIP_BUILD_PAYLOAD_PREFLIGHT -ne "YES") {
+  & node (Join-Path $ScriptDir "verify-x86-installer-payloads.js")
+  if ($LASTEXITCODE -ne 0) {
+    throw "x86 installer payload preflight failed with exit code $LASTEXITCODE."
+  }
 }
 
 & node (Join-Path $ScriptDir "verify-release-manifest.js") `

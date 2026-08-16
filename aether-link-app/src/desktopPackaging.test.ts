@@ -698,6 +698,13 @@ describe("desktop packaging scaffold", () => {
     expect(releaseWorkflow).toContain("test_update_handoff_acknowledgement_path_is_adjacent_to_the_owned_script");
     expect(releaseWorkflow).toContain("actions/cache/restore@v4");
     expect(releaseWorkflow).toContain("actions/cache/save@v4");
+    expect(releaseWorkflow).toContain("build-release:");
+    expect(releaseWorkflow).toContain("publish-release:");
+    expect(releaseWorkflow).toContain("needs: build-release");
+    expect(releaseWorkflow).toContain("actions/upload-artifact@v4");
+    expect(releaseWorkflow).toContain("actions/download-artifact@v4");
+    expect(releaseWorkflow).toContain('WONREMOTE_SKIP_BUILD_PAYLOAD_PREFLIGHT: "YES"');
+    expect(releaseWorkflow).toContain("name: wonremote-release-${{ github.sha }}");
     expect(releaseWorkflow).toContain("aether-link-app/.local-run/node-runtimes");
     expect(releaseWorkflow).toContain("aether-link-app/.local-run/cmake");
     expect(releaseWorkflow).toContain("aether-link-app/.local-run/nasm");
