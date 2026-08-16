@@ -75,16 +75,16 @@ jobs:
       - name: Verify installer update E2E
         run: npm run test:update-e2e
 
+      - name: Build two x86 installers and signed compatibility manifest
+        run: |
+          npm run release:exes
+          npm run release:manifest
+
       - name: Verify Tauri resource paths
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib test_node_resource_paths
 
       - name: Verify updater acknowledgement ownership
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib test_update_handoff_acknowledgement_path_is_adjacent_to_the_owned_script
-
-      - name: Build two x86 installers and signed compatibility manifest
-        run: |
-          npm run release:exes
-          npm run release:manifest
 
       - name: Publish GitHub release
         run: npm run release:publish
