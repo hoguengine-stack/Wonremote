@@ -11,8 +11,8 @@ describe("installer update result", () => {
     try {
       await mkdir(root, { recursive: true });
       await writeFile(resultPath, JSON.stringify({ state: "rollback", error: "new runtime failed", targetVersion: "0.1.62", updatedAt: "2026-08-16T00:00:00.000Z" }));
-      await expect(loadInstallerUpdateResult(resultPath, "0.1.63")).resolves.toEqual({
-        currentVersion: "0.1.63",
+      await expect(loadInstallerUpdateResult(resultPath, "0.1.64")).resolves.toEqual({
+        currentVersion: "0.1.64",
         error: "new runtime failed",
         progress: 0,
         state: "rollback",

@@ -5,12 +5,12 @@ describe("production update check", () => {
   it("reports an available signed update without downloading it", async () => {
     const loadMetadata = vi.fn(async () => ({
       forceUpdate: false,
-      latestVersion: "0.1.63",
+      latestVersion: "0.1.64",
     }));
 
     await expect(checkProductionUpdate("0.1.60", loadMetadata as any)).resolves.toEqual({
       available: true,
-      latestVersion: "0.1.63",
+      latestVersion: "0.1.64",
     });
   });
 

@@ -94,7 +94,7 @@ Default manifest output:
 The default update download URL is bound to the immutable release tag for the current version:
 
 ```text
-https://github.com/hoguengine-stack/Wonremote/releases/download/v0.1.63/WonRemote-Viewer-Setup.exe
+https://github.com/hoguengine-stack/Wonremote/releases/download/v0.1.64/WonRemote-Viewer-Setup.exe
 ```
 
 Upload these files to the same GitHub Release tag:
