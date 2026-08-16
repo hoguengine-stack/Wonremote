@@ -24,7 +24,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          # The recurrence gate compares every commit after the previous release tag.
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -71,6 +72,9 @@ jobs:
           if ($env:GITHUB_REF_TYPE -eq "tag" -and $env:GITHUB_REF_NAME -ne "v$packageVersion") {
             throw "Release tag must match package.json: expected v$packageVersion, got $env:GITHUB_REF_NAME."
           }
+
+      - name: Verify incident recurrence coverage
+        run: npm run recurrence:verify
 
       - name: Verify release contract tests
         run: npm test -- src/desktopPackaging.test.ts src/agent/productionUpdateCheck.test.ts src/agent/productionInstallerUpdate.test.ts src/agent/agentUpdateOnce.test.ts src/agent/productionUpdateMetadata.test.ts src/domain/updateManifest.test.ts src/domain/updateManifestScript.test.ts

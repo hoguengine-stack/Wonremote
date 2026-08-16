@@ -20,6 +20,12 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - Remaining blocker: explicit gap or `none`
 ```
 
+## Current Release Contract
+
+- Effective from commit `6f82268`, the user-approved public contract is two x86 installers (Viewer and Agent) plus one signed manifest. The same x86 payloads support both 32-bit and 64-bit Windows.
+- The four Firebase routes are aliases (`viewer`, `agent`, `viewer-x86`, `agent-x86`) for those two installers. Separate x64 and portable artifacts are not current release requirements.
+- Earlier entries describing four native x64/x86 payloads remain as historical evidence, but their architecture-count guards are superseded by this section.
+
 ## INC-20260816-005: x86 Agent published an incomplete WebRTC Answer
 
 - Detected: 2026-08-16T22:49:00Z.
@@ -44,7 +50,7 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - User-visible symptom: Building two installers took about 22 minutes despite the first optimization attempt.
 - Minimal trigger: Push release tag `v0.1.65` and run `Publish WonRemote release`.
 - Root cause and contributors: Removing the Agent compile-mode environment change did not eliminate the second Tauri package build; product-specific Tauri configuration still causes another packaging/link path. The first stable cache key also required a new cache save.
-- Fix commit(s): `d7c9ba2` was an incomplete mitigation; no complete fix yet.
+- Fix commit(s): `0b83867` and `d7c9ba2` were incomplete mitigations; no complete fix yet.
 - Permanent guard: Pending replacement of two Tauri build invocations with one compiled x86 application payload and two installer-only packaging passes.
 - Regression proof: GitHub Actions run `31977574777` completed successfully but measured approximately 22 minutes, proving the performance requirement is not yet met.
 - Release proof: `v0.1.65` published; performance defect remains open.
@@ -124,3 +130,93 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - Regression proof: `npm test -- scripts/verify-universal-installer-payloads.test.js scripts/package-release-exes.test.js src/agent/productionInstallerUpdate.test.ts` -> 3 files and 14 tests passed. `npm run test:update-e2e` proved successful old-to-new replacement, nonzero installer rollback, post-install health rollback, and backup-unavailable refusal. `npm run release:verify-payloads` reproduced both universal wrappers and directly extracted all four inner installers to verify x64/x86 host PE machines.
 - Release proof: not released; source build and version were intentionally unchanged.
 - Remaining blocker: Build a new version and complete Windows x86 physical installation before publication.
+
+## INC-20260816-007: Korean IME input did not reach the remote session
+
+- Detected: 2026-08-16.
+- Severity: P1.
+- Affected: Viewer remote-session keyboard path before `0.1.64`.
+- Status: physical-verification-required.
+- User-visible symptom: The Korean/English toggle and composed Korean text worked locally or not at all instead of reaching the remote PC.
+- Minimal trigger: Focus an active remote canvas, toggle Korean input, and compose Korean text.
+- Root cause and contributors: The canvas-only key path could not receive browser IME composition reliably, and `Process`/key code `229` could be duplicated as ordinary key events.
+- Fix commit(s): `49e513e`.
+- Permanent guard: A focused invisible IME sink handles composition, sends completed text through the Unicode text command, and suppresses duplicate `Process` events while retaining the explicit Hangul toggle route.
+- Regression proof: `npm test -- src/remoteSessionLayout.test.ts` covers the IME sink, composition handlers, Unicode command, duplicate suppression, and three Hangul-toggle entry points.
+- Release proof: `v0.1.64` and later include the source fix.
+- Remaining blocker: Confirm Korean composition and Hangul toggle on a physical Viewer-to-Agent session.
+
+## INC-20260816-008: Release CI ran Rust resource tests before generated resources existed
+
+- Detected: 2026-08-16.
+- Severity: P2.
+- Affected: GitHub Actions release runs `31959115773`, `31959487166`, and `31959834682`.
+- Status: released-verified.
+- User-visible symptom: Release jobs failed before publication; splitting the combined test step exposed repeated failure at `Verify Tauri resource paths`.
+- Minimal trigger: Run Tauri library tests in a clean runner before release resource generation.
+- Root cause and contributors: The Rust test target still compiled code requiring generated release resources. Adding `--lib` reduced unrelated targets but did not create those resources; the original combined step also obscured which boundary failed.
+- Fix commit(s): `97248cf`, `5b6ef5d`, `9997ff1`.
+- Permanent guard: Release diagnostics use separate named steps, and x86 release resources are generated before architecture-specific Tauri resource tests.
+- Regression proof: The next workflow advanced beyond both Tauri resource steps to `Publish GitHub release`; current workflow preserves build-before-Rust-gates ordering.
+- Release proof: `v0.1.63`, `v0.1.64`, and `v0.1.65` completed the ordered workflow.
+- Remaining blocker: none.
+
+## INC-20260816-009: GitHub release publication misclassified uploaded assets
+
+- Detected: 2026-08-16.
+- Severity: P1.
+- Affected: GitHub Actions release runs `31960134684` and `31961341996` at `Publish GitHub release`.
+- Status: released-verified.
+- User-visible symptom: Valid installer uploads remained in a draft/failed release because immediate asset-list reads did not prove the exact uploaded set.
+- Minimal trigger: Upload the three release assets and immediately validate them through a separate GitHub asset-list request.
+- Root cause and contributors: GitHub list visibility can lag upload completion. A timed retry still depended on eventual list consistency instead of the metadata returned by each successful upload.
+- Fix commit(s): `3bfd159`, `acd9580`.
+- Permanent guard: Publication collects each upload response directly and verifies the returned name and size before making the release public; partial or mismatched uploads remain draft.
+- Regression proof: `npm test -- src/desktopPackaging.test.ts` asserts the three returned upload records and exact asset validation contract; GitHub Actions run `31977574777` crossed the real upload/list/publish boundary successfully.
+- Release proof: Later `v0.1.63`, `v0.1.64`, and `v0.1.65` publication runs succeeded.
+- Remaining blocker: none.
+
+## INC-20260816-010: Release hardening changed code without updating its contract test
+
+- Detected: 2026-08-16.
+- Severity: P2.
+- Affected: GitHub Actions run `31962506495`, step `Verify release contract tests`.
+- Status: released-verified.
+- User-visible symptom: Release CI stopped before packaging because static contract expectations still described the previous cache and publication implementation.
+- Minimal trigger: Run focused release-contract tests after changing cache restore/save and direct upload-response verification.
+- Root cause and contributors: Implementation and its source-contract assertions were committed separately, so the first CI run necessarily failed.
+- Fix commit(s): `b83d48e` aligns the tests with `acd9580`.
+- Permanent guard: Changes to release workflow or publication script must update and run `desktopPackaging.test.ts` in the same commit before a tag is pushed.
+- Regression proof: `npm test -- src/desktopPackaging.test.ts` passed in subsequent release workflows.
+- Release proof: Subsequent releases completed the contract-test gate.
+- Remaining blocker: none.
+
+## INC-20260816-011: PowerShell variable interpolation corrupted the draft release URI
+
+- Detected: 2026-08-16.
+- Severity: P1.
+- Affected: GitHub Actions run `31963315096`, step `Publish GitHub release`.
+- Status: released-verified.
+- User-visible symptom: Publication could not locate or create the expected release after the tag endpoint fallback.
+- Minimal trigger: Evaluate `"$ReleaseApi?per_page=100"` in PowerShell when querying draft releases.
+- Root cause and contributors: PowerShell parsed the question mark as part of the variable token instead of appending it to the URI.
+- Fix commit(s): `33358a4`.
+- Permanent guard: Braced interpolation (`${ReleaseApi}`) is mandatory when punctuation immediately follows a PowerShell variable; the exact URI source is asserted by the release contract test.
+- Regression proof: `npm test -- src/desktopPackaging.test.ts` checks `${ReleaseApi}?per_page=100`; GitHub Actions run `31977574777` crossed the PowerShell/GitHub release lookup and publication boundary successfully.
+- Release proof: `v0.1.63` and later were published successfully.
+- Remaining blocker: none.
+
+## INC-20260816-012: Publication failure forced expensive release builds to repeat
+
+- Detected: 2026-08-16.
+- Severity: P2.
+- Affected: GitHub Actions release workflow before commit `1d2dcaf`.
+- Status: released-verified.
+- User-visible symptom: A publication-only failure required rerunning the long x86 packaging job, wasting user time and CI resources.
+- Minimal trigger: Let the publish step fail after verified installers have already been built.
+- Root cause and contributors: Build, verification, and GitHub publication were one job with no durable handoff artifact.
+- Fix commit(s): `1d2dcaf`.
+- Permanent guard: `build-release` uploads a short-lived verified artifact and `publish-release` downloads it in a separate write-permission job; publication retries cannot rebuild installers.
+- Regression proof: `npm test -- src/desktopPackaging.test.ts` asserts the two-job dependency and upload/download artifact handoff.
+- Release proof: Current release workflow and `v0.1.65` use the split job contract.
+- Remaining blocker: Build duration itself remains open under `INC-20260816-006`.
