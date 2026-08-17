@@ -50,9 +50,9 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - User-visible symptom: Building two installers took about 22 minutes despite the first optimization attempt.
 - Minimal trigger: Push release tag `v0.1.65` and run `Publish WonRemote release`.
 - Root cause and contributors: GitHub Actions run `31981757862` proved that tag-scoped cache lookup returned `Cache not found`, forcing a cold x86 build. The package script then called `tauri build` again for Agent; `WONREMOTE_BUILD_STAGE=reuse` skipped frontend/backend generation but still repeated Cargo linking and Tauri packaging for 2 minutes 15 seconds.
-- Fix commit(s): `0b83867` and `d7c9ba2` were incomplete mitigations; current fix commit pending.
+- Fix commit(s): `0b83867` and `d7c9ba2` were incomplete mitigations; `676abda` implements the shared-binary and main-cache fix.
 - Permanent guard: Release builds run only from an explicit `Prepare WonRemote v...` commit on `main`, allowing later releases to restore the default-branch cache. Viewer performs the single `tauri build`; Agent uses `tauri bundle` against that already-built x86 binary. Manual pre-build release tags are prohibited.
-- Regression proof: `npm test -- src/desktopPackaging.test.ts` -> 56 tests passed. A local `npx tauri bundle --bundles nsis --target i686-pc-windows-msvc --config src-tauri/tauri.agent.x86.conf.json` generated the Agent installer in about 30 seconds without a Cargo compile step.
+- Regression proof: `npm test -- src/desktopPackaging.test.ts scripts/package-release-exes.test.js` -> 2 files and 58 tests passed. A local `npx tauri bundle --bundles nsis --target i686-pc-windows-msvc --config src-tauri/tauri.agent.x86.conf.json` generated the Agent installer in about 30 seconds without a Cargo compile step.
 - Release proof: `v0.1.67` measured the old path at 18 minutes 15 seconds for installer generation and showed a cache miss; the optimized path is not released yet.
 - Remaining blocker: Measure the next main-triggered release and one subsequent cached release; retain installed Viewer/Agent smoke verification for the shared binary.
 
