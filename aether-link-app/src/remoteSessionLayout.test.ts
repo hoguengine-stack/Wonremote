@@ -59,7 +59,7 @@ describe("connected remote session layout", () => {
 
   it("places actions before the remote work area and exposes fullscreen control", () => {
     const block = connectedReturnBlock();
-    expect(block).toContain('className="session-actions session-actions-top"');
+    expect(block).toContain('className="session-actions session-actions-top remote-command-bar"');
     expect(stylesSource).toContain(".session-actions-top");
     expect(stylesSource).toContain("order: -1");
     expect(block).toContain("toggleSessionFullscreen");

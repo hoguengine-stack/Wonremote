@@ -28,6 +28,8 @@ import {
   Pencil,
   SlidersHorizontal,
   Users,
+  ArrowLeft,
+  Send,
 } from "lucide-react";
 import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -860,7 +862,7 @@ function ViewerApp() {
         </div>
       )}
       <aside className="sidebar">
-        <div className="brand-row">
+        <div className="brand-row" data-testid="viewer-brand">
           <div className="brand-mark">W</div>
           <div>
             <strong>WonRemote</strong>
@@ -874,7 +876,10 @@ function ViewerApp() {
           onClick={() => setSelectedStore("전체")}
         >
           <LayoutDashboard size={17} />
-          <span>전체 장비</span>
+          <span className="group-label">
+            <strong>전체 장비</strong>
+            <small>온라인 {fleetSummary.online}대</small>
+          </span>
           <b>{devices.length}</b>
         </button>
 
@@ -915,11 +920,17 @@ function ViewerApp() {
       </aside>
 
       <main className="workspace">
-        <header className="topbar">
+        <header className="topbar viewer-command-header" data-testid="viewer-command-header">
           <div className="workspace-title">
-            <span className="eyebrow">운영 콘솔</span>
-            <h1>원격 장비 관리</h1>
-            <p>{devices.length}대 등록 · {session ? "세션 연결됨" : "대기"}</p>
+            <span className="eyebrow">DEVICE OPERATIONS</span>
+            <div className="workspace-heading-line">
+              <h1>{selectedStore === "전체" ? "전체 장비" : selectedStore}</h1>
+              <span className="workspace-live-status">
+                <i aria-hidden="true" />
+                {fleetSummary.online}대 온라인
+              </span>
+            </div>
+            <p>{devices.length}대 등록 · {groups.length}개 매장</p>
             {apiError && <p className="topbar-error">{apiError}</p>}
           </div>
           <div className="topbar-tools">
@@ -954,7 +965,7 @@ function ViewerApp() {
         </header>
 
         <section className={session && activeDevice ? "content-grid" : "content-grid content-grid-dashboard"}>
-          <section className="control-panel">
+          <section className="control-panel device-workspace" data-testid="device-workspace">
             <section className="fleet-summary" aria-label="장비 상태 요약">
               <div className="summary-item online">
                 <Wifi size={18} />
@@ -1665,7 +1676,7 @@ function LoginScreen({
         </div>
         <h1>Viewer 관리자 로그인</h1>
         <label>
-          아이디 <input autoComplete="username" name="username" type="email" value={username} onChange={(event) => setUsername(event.target.value)} />
+          아이디 <input autoComplete="username" name="username" type="text" value={username} onChange={(event) => setUsername(event.target.value)} />
         </label>
         <label>
           비밀번호
@@ -1870,11 +1881,12 @@ function DeviceTable({
 const DANGEROUS_SYSTEM_COMMANDS = new Set(["logoff", "restart", "shutdown"]);
 
 function isEditableTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) {
+  if (!(target instanceof Element)) {
     return false;
   }
-  const tagName = target.tagName.toLowerCase();
-  return tagName === "input" || tagName === "textarea" || target.isContentEditable;
+  return Boolean(target.closest(
+    "button, input, select, summary, textarea, a[href], [contenteditable='true'], [role='button']",
+  ));
 }
 
 function mapMouseButton(button: number): MouseButtonCode {
@@ -3081,22 +3093,27 @@ function RemoteSessionPanel({
 
   if (session.state === "pending") {
     return (
-      <section className="session-panel">
-        <div className="section-heading">
-          <h2>원격 세션 (실시간 스트림)</h2>
-          <span>{device.desktopName}</span>
-        </div>
-        <div className="remote-screen" style={{ display: "flex", flexDirection: "column", gap: "24px", alignItems: "center", justifyContent: "center", background: "#0f0f1a", minHeight: "400px" }}>
-          <div className="status-pill" style={{ background: "rgba(99, 102, 241, 0.2)", color: "#818cf8", padding: "12px 24px", fontSize: "16px", fontWeight: "bold" }}>
-            에이전트 연결 준비 중...
+      <section className="session-panel session-pending-panel" data-testid="remote-session-pending">
+        <div className="pending-session-header">
+          <button className="session-back-button" type="button" onClick={() => void leaveRemoteSession()}>
+            <ArrowLeft size={17} />
+            <span>장비 목록</span>
+          </button>
+          <div className="session-device-context">
+            <span className="session-live-dot is-connecting" aria-hidden="true" />
+            <div>
+              <strong>{device.desktopName}</strong>
+              <small>{device.deviceName}</small>
+            </div>
           </div>
-          <p style={{ color: "#94a3b8", fontSize: "14px", textAlign: "center", maxWidth: "300px" }}>
+        </div>
+        <div className="pending-session-content">
+          <span className="pending-session-indicator" aria-hidden="true" />
+          <strong>에이전트 연결 준비 중</strong>
+          <p>
             Agent 상태를 확인하는 중입니다. 정상 등록된 온라인 장비는 별도 승인 없이 자동으로 연결됩니다.
           </p>
-          <button
-            onClick={() => void leaveRemoteSession()}
-            style={{ background: "#ef4444", border: "none", color: "#fff", padding: "10px 20px", borderRadius: "6px", fontWeight: "bold", cursor: "pointer" }}
-          >
+          <button className="session-cancel-button" type="button" onClick={() => void leaveRemoteSession()}>
             접속 시도 취소
           </button>
         </div>
@@ -3108,21 +3125,19 @@ function RemoteSessionPanel({
     <section
       ref={panelRef}
       className={`session-panel${isSessionFullscreen ? " session-fullscreen-active" : ""}${isSessionFullscreen && isFullscreenToolbarOpen ? " session-fullscreen-tools-open" : ""}`}
-      style={{ display: "flex", flexDirection: "column", position: "relative", outline: "none" }}
+      data-testid="remote-session-workspace"
       tabIndex={0}
       onBlur={handlePanelBlur}
       onKeyDown={handleKeyDown}
       onKeyUp={handleKeyUp}
     >
-      <div className="remote-work-area" style={{ display: "flex", flex: 1, gap: "16px", minHeight: "450px" }}>
-        {/* 원격 스크린 영역 */}
-        <div className="remote-screen connected" style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
+      <div className="remote-work-area remote-canvas-viewport" data-testid="remote-canvas-viewport">
+        <div className="remote-screen connected">
           <div
             ref={remotePreviewRef}
             className="remote-preview"
             onDragOver={(event) => event.preventDefault()}
             onDrop={handleFileDrop}
-            style={{ padding: 0, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", flex: 1 }}
           >
             <canvas
               ref={canvasRef}
@@ -3144,42 +3159,37 @@ function RemoteSessionPanel({
           </div>
         </div>
 
-        {/* 접이식 채팅 패널 */}
         {isChatOpen && (
-          <div className="remote-chat-panel" style={{ width: "260px", background: "#151522", border: "1px solid #2d2d3f", borderRadius: "8px", display: "flex", flexDirection: "column", padding: "12px" }}>
-            <div style={{ borderBottom: "1px solid #2d2d3f", paddingBottom: "8px", marginBottom: "8px", fontWeight: "bold", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <aside className="remote-chat-panel" aria-label="실시간 채팅">
+            <div className="remote-chat-header">
               <span>실시간 채팅</span>
-              <button
-                onClick={() => setIsChatOpen(false)}
-                style={{ background: "none", border: "none", color: "#94a3b8", cursor: "pointer", fontWeight: "bold" }}
-              >
-                닫기
+              <button type="button" onClick={() => setIsChatOpen(false)} aria-label="채팅 닫기" title="채팅 닫기">
+                <ChevronDown size={17} />
               </button>
             </div>
-            <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: "8px", marginBottom: "8px", maxHeight: "300px" }}>
+            <div className="remote-chat-messages">
               {chatMessages.map((msg) => {
                 if (msg.message === "__AUDIO_BEEP_SIGNAL__") return null;
                 const isViewer = msg.sender === "viewer";
                 return (
-                  <div key={msg.id} style={{ alignSelf: isViewer ? "flex-end" : "flex-start", background: isViewer ? "#4f46e5" : "#2d2d3f", color: "#fff", padding: "6px 12px", borderRadius: "8px", maxWidth: "80%", fontSize: "12px" }}>
+                  <div className={`remote-chat-message ${isViewer ? "viewer" : "agent"}`} key={msg.id}>
                     <strong>{isViewer ? "나: " : "에이전트: "}</strong>
                     {msg.message}
                   </div>
                 );
               })}
             </div>
-            <form onSubmit={handleSendChat} style={{ display: "flex", gap: "6px", background: "none", padding: 0, border: "none" }}>
+            <form className="remote-chat-compose" onSubmit={handleSendChat}>
               <input
                 value={chatInput}
                 onChange={(e) => setChatInput(e.target.value)}
                 placeholder="메시지 입력..."
-                style={{ flex: 1, padding: "6px", background: "#0f0f1a", border: "1px solid #2d2d3f", borderRadius: "4px", color: "#fff", fontSize: "12px" }}
               />
-              <button type="submit" style={{ background: "#4f46e5", border: "none", color: "#fff", padding: "6px 12px", borderRadius: "4px", cursor: "pointer", fontSize: "12px" }}>
-                전송
+              <button type="submit" aria-label="채팅 전송" title="채팅 전송">
+                <Send size={16} />
               </button>
             </form>
-          </div>
+          </aside>
         )}
       </div>
 
@@ -3187,6 +3197,7 @@ function RemoteSessionPanel({
         <>
           <button
             className="session-fullscreen-toolbar-toggle"
+            data-testid="fullscreen-toolbar-toggle"
             type="button"
             aria-expanded={isFullscreenToolbarOpen}
             aria-label={isFullscreenToolbarOpen ? "작업 도구 닫기" : "작업 도구 열기"}
@@ -3208,184 +3219,185 @@ function RemoteSessionPanel({
         </>
       )}
 
-      {/* 액션 컨트롤러 영역 */}
-      <div className="session-actions session-actions-top">
-        <div className="stream-mode-control" role="group" aria-label="화면 반응 속도">
+      <div className="session-actions session-actions-top remote-command-bar" data-testid="remote-command-bar">
+        <div className="session-command-identity">
+          <div className="session-device-context" data-testid="remote-connection-status" role="status" aria-live="polite">
+            <span className="session-live-dot" aria-hidden="true" />
+            <div>
+              <strong>{device.desktopName}</strong>
+              <small>{device.storeName} · 연결됨</small>
+            </div>
+          </div>
+        </div>
+
+        <div className="session-display-controls" data-testid="display-mode-controls" role="group" aria-label="원격 화면 표시 설정">
+          <div className="stream-mode-control" role="group" aria-label="화면 반응 속도">
+            <button
+              type="button"
+              className={streamPerformanceMode === "fast" ? "active" : ""}
+              aria-pressed={streamPerformanceMode === "fast"}
+              onClick={() => selectStreamPerformanceMode("fast")}
+              title="스크롤과 새 창 표시를 우선합니다"
+            >
+              빠름
+            </button>
+            <button
+              type="button"
+              className={streamPerformanceMode === "normal" ? "active" : ""}
+              aria-pressed={streamPerformanceMode === "normal"}
+              onClick={() => selectStreamPerformanceMode("normal")}
+              title="화질과 네트워크 안정성을 우선합니다"
+            >
+              보통
+            </button>
+          </div>
+          <div className="display-scale-control" role="group" aria-label="화면 배율">
+            <button type="button" onClick={setFitZoom} title="화면에 맞춤">Fit</button>
+            <button type="button" onClick={setActualSizeZoom} title="실제 크기">100%</button>
+          </div>
+          <div className="zoom-control" role="group" aria-label="확대 축소">
+            <button type="button" onClick={() => setZoom((value) => Math.max(0.25, Number((value - 0.25).toFixed(2))))} title="축소" aria-label="화면 축소">
+              <ZoomOut size={16} />
+            </button>
+            <span>{Math.round(zoom * 100)}%</span>
+            <button type="button" onClick={() => setZoom((value) => Math.min(8, Number((value + 0.25).toFixed(2))))} title="확대" aria-label="화면 확대">
+              <ZoomIn size={16} />
+            </button>
+          </div>
+          {device.displays && device.displays.length > 0 && (
+            <select
+              className="session-monitor-select"
+              value={selectedDisplayIndex}
+              onChange={(event) => handleSwitchDisplay(Number(event.target.value))}
+              title="모니터 선택"
+              aria-label="모니터 선택"
+            >
+              {device.displays.map((display) => (
+                <option key={display.index} value={display.index}>
+                  {display.primary ? "Primary " : ""}#{display.index + 1} {display.width}x{display.height} {display.name}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+
+        <div className="session-command-actions">
+          {transferProgress && (
+            <span className="session-transfer-status">
+              {transferProgress.fileName} {transferProgress.progress}% · {transferProgress.speed} · {transferProgress.timeLeft}
+            </span>
+          )}
+          <details className="session-tool-menu" data-testid="secondary-tools">
+            <summary>
+              <SlidersHorizontal size={17} />
+              <span>도구</span>
+              <ChevronDown size={15} />
+            </summary>
+            <div className="session-tool-menu-content">
+              <section className="session-tool-group" aria-label="시스템 도구">
+                <span className="session-tool-heading">시스템</span>
+                <div className="session-tool-grid">
+                  {[
+                    ["services.msc", "서비스"],
+                    ["taskmgr", "작업 관리자"],
+                    ["cmd", "CMD"],
+                    ["explorer", "탐색기"],
+                    ["devmgmt.msc", "장치관리자"],
+                    ["lock", "화면 잠금"],
+                    ["logoff", "로그오프"],
+                    ["restart", "재시작"],
+                    ["shutdown", "전원 끄기"],
+                  ].map(([command, label]) => (
+                    <button
+                      key={command}
+                      className={`secondary-button${DANGEROUS_SYSTEM_COMMANDS.has(command) ? " dangerous-tool" : ""}`}
+                      type="button"
+                      onClick={() => handleSystemCommand(command)}
+                      title={DANGEROUS_SYSTEM_COMMANDS.has(command) ? "두 번 눌러 실행" : label}
+                    >
+                      {DANGEROUS_SYSTEM_COMMANDS.has(command) ? <Power size={17} /> : <RotateCcw size={17} />}
+                      <span>{label}</span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+
+              <section className="session-tool-group" aria-label="협업 및 전송 도구">
+                <span className="session-tool-heading">협업 및 전송</span>
+                <div className="session-tool-grid">
+                  <button className="secondary-button" type="button" onClick={() => setIsChatOpen(!isChatOpen)}>
+                    <MessageSquare size={17} />
+                    <span>채팅 {chatMessages.length > 0 && `(${chatMessages.length})`}</span>
+                  </button>
+                  <button className="secondary-button" type="button" onClick={triggerBeepSound} title="오디오 비프음 송출">
+                    <Volume2 size={17} />
+                    <span>사운드 테스트</span>
+                  </button>
+                  <button className={`secondary-button${isRecording ? " recording" : ""}`} type="button" onClick={isRecording ? stopRecording : startRecording}>
+                    <Video size={17} />
+                    <span>{isRecording ? "녹화 중지" : "세션 녹화"}</span>
+                  </button>
+                  <button className="secondary-button" type="button" onClick={handleSendClipboard} title="뷰어 복사 텍스트 에이전트로 전달">
+                    <Clipboard size={17} />
+                    <span>클립보드 보내기</span>
+                  </button>
+                  <button className="secondary-button" type="button" onClick={handleFetchClipboard} title="에이전트 복사 텍스트 가져오기">
+                    <Clipboard size={17} />
+                    <span>클립보드 가져오기</span>
+                  </button>
+                  <label className="session-clipboard-sync">
+                    <input type="checkbox" checked={isClipboardSyncOn} onChange={(e) => setIsClipboardSyncOn(e.target.checked)} />
+                    자동 동기화
+                  </label>
+                  <button className="secondary-button" type="button" onClick={() => fileInputRef.current?.click()}>
+                    <FileUp size={17} />
+                    <span>{`파일 전송 (${remoteFileLimitLabel()})`}</span>
+                  </button>
+                  <input multiple type="file" ref={fileInputRef} onChange={handleFileUpload} style={{ display: "none" }} />
+                  <button className="secondary-button" type="button" onClick={() => folderInputRef.current?.click()}>
+                    <FileUp size={17} />
+                    <span>폴더 전송</span>
+                  </button>
+                  <input
+                    multiple
+                    type="file"
+                    ref={(node) => {
+                      folderInputRef.current = node;
+                      node?.setAttribute("webkitdirectory", "");
+                    }}
+                    onChange={handleFileUpload}
+                    style={{ display: "none" }}
+                  />
+                  <button className="secondary-button" type="button" onClick={startVisualPing}>
+                    <MousePointerClick size={17} />
+                    <span>{latencyReport || "Visual Ping"}</span>
+                  </button>
+                </div>
+              </section>
+            </div>
+          </details>
           <button
+            className="session-fullscreen-button"
             type="button"
-            className={streamPerformanceMode === "fast" ? "active" : ""}
-            aria-pressed={streamPerformanceMode === "fast"}
-            onClick={() => selectStreamPerformanceMode("fast")}
-            title="스크롤과 새 창 표시를 우선합니다"
+            aria-pressed={isSessionFullscreen}
+            onClick={toggleSessionFullscreen}
+            title="전체화면 전환"
           >
-            반응속도 빠름
+            {isSessionFullscreen ? <Minimize2 size={17} /> : <Maximize2 size={17} />}
+            <span>{isSessionFullscreen ? "창모드" : "전체화면"}</span>
           </button>
           <button
+            className="session-end-button destructive"
+            data-testid="end-session"
+            data-action="back-to-devices"
             type="button"
-            className={streamPerformanceMode === "normal" ? "active" : ""}
-            aria-pressed={streamPerformanceMode === "normal"}
-            onClick={() => selectStreamPerformanceMode("normal")}
-            title="화질과 네트워크 안정성을 우선합니다"
+            onClick={() => void leaveRemoteSession()}
+            title="세션을 종료하고 장비 목록으로 돌아가기"
           >
-            보통
+            <LogOut size={17} />
+            <span>세션 종료</span>
           </button>
         </div>
-        <button
-          className="secondary-button"
-          type="button"
-          aria-pressed={isSessionFullscreen}
-          onClick={toggleSessionFullscreen}
-          title="전체화면 전환"
-        >
-          {isSessionFullscreen ? <Minimize2 size={17} /> : <Maximize2 size={17} />}
-          <span>{isSessionFullscreen ? "창모드" : "전체화면"}</span>
-        </button>
-        <button className="secondary-button" type="button" onClick={setFitZoom} title="Fit">
-          <Maximize2 size={17} />
-          <span>Fit</span>
-        </button>
-        <button className="secondary-button" type="button" onClick={setActualSizeZoom} title="100%">
-          <Monitor size={17} />
-          <span>100%</span>
-        </button>
-        <button className="secondary-button" type="button" onClick={() => setZoom((value) => Math.max(0.25, Number((value - 0.25).toFixed(2))))} title="Zoom out">
-          <ZoomOut size={17} />
-          <span>{Math.round(zoom * 100)}%</span>
-        </button>
-        <button className="secondary-button" type="button" onClick={() => setZoom((value) => Math.min(8, Number((value + 0.25).toFixed(2))))} title="Zoom in">
-          <ZoomIn size={17} />
-          <span>+</span>
-        </button>
-        {device.displays && device.displays.length > 0 && (
-          <select
-            value={selectedDisplayIndex}
-            onChange={(event) => handleSwitchDisplay(Number(event.target.value))}
-            style={{ background: "#151522", border: "1px solid #2d2d3f", color: "#e5e7eb", borderRadius: "6px", padding: "8px 10px" }}
-            title="Monitor"
-          >
-            {device.displays.map((display) => (
-              <option key={display.index} value={display.index}>
-                {display.primary ? "Primary " : ""}#{display.index + 1} {display.width}x{display.height} {display.name}
-              </option>
-            ))}
-          </select>
-        )}
-        <button className="secondary-button" type="button" onClick={startVisualPing}>
-          <MousePointerClick size={17} />
-          <span>{latencyReport || "Visual Ping 측정"}</span>
-        </button>
-        <details className="session-tool-menu">
-          <summary>
-            <SlidersHorizontal size={17} />
-            <span>작업 도구</span>
-          </summary>
-          <div className="session-tool-menu-content">
-        {/* 3단계 기능들 */}
-        {[
-          ["services.msc", "서비스"],
-          ["taskmgr", "작업 관리자"],
-          ["cmd", "CMD"],
-          ["explorer", "탐색기"],
-          ["devmgmt.msc", "장치관리자"],
-          ["lock", "화면 잠금"],
-          ["logoff", "로그오프"],
-          ["restart", "재시작"],
-          ["shutdown", "전원 끄기"],
-        ].map(([command, label]) => (
-          <button
-            key={command}
-            className="secondary-button"
-            type="button"
-            onClick={() => handleSystemCommand(command)}
-            title={DANGEROUS_SYSTEM_COMMANDS.has(command) ? "Double click required" : label}
-            style={DANGEROUS_SYSTEM_COMMANDS.has(command) ? { borderColor: "rgba(239, 68, 68, 0.45)", color: "#fca5a5" } : undefined}
-          >
-            {DANGEROUS_SYSTEM_COMMANDS.has(command) ? <Power size={17} /> : <RotateCcw size={17} />}
-            <span>{label}</span>
-          </button>
-        ))}
-
-        <button className="secondary-button" type="button" onClick={() => setIsChatOpen(!isChatOpen)}>
-          <MessageSquare size={17} />
-          <span>채팅 {chatMessages.length > 0 && `(${chatMessages.length})`}</span>
-        </button>
-
-        <button className="secondary-button" type="button" onClick={triggerBeepSound} title="오디오 비프음 송출">
-          <Volume2 size={17} />
-          <span>사운드 테스트</span>
-        </button>
-
-        <button
-          className="secondary-button"
-          type="button"
-          onClick={isRecording ? stopRecording : startRecording}
-          style={{ background: isRecording ? "rgba(239, 68, 68, 0.15)" : "", color: isRecording ? "#ef4444" : "" }}
-        >
-          <Video size={17} />
-          <span>{isRecording ? "녹화 중지" : "세션 녹화"}</span>
-        </button>
-
-        <button className="secondary-button" type="button" onClick={handleSendClipboard} title="뷰어 복사 텍스트 에이전트로 전달">
-          <Clipboard size={17} />
-          <span>클립보드 보내기</span>
-        </button>
-
-        <button className="secondary-button" type="button" onClick={handleFetchClipboard} title="에이전트 복사 텍스트 가져오기">
-          <Clipboard size={17} />
-          <span>클립보드 가져오기</span>
-        </button>
-
-        <label style={{ display: "flex", alignItems: "center", gap: "6px", color: "#94a3b8", fontSize: "12px", cursor: "pointer" }}>
-          <input
-            type="checkbox"
-            checked={isClipboardSyncOn}
-            onChange={(e) => setIsClipboardSyncOn(e.target.checked)}
-          />
-          자동 동기화
-        </label>
-
-        <button className="secondary-button" type="button" onClick={() => fileInputRef.current?.click()}>
-          <FileUp size={17} />
-          <span>{`파일 전송 (${remoteFileLimitLabel()})`}</span>
-        </button>
-        <input
-          multiple
-          type="file"
-          ref={fileInputRef}
-          onChange={handleFileUpload}
-          style={{ display: "none" }}
-        />
-        <button className="secondary-button" type="button" onClick={() => folderInputRef.current?.click()}>
-          <FileUp size={17} />
-          <span>폴더 전송</span>
-        </button>
-        <input
-          multiple
-          type="file"
-          ref={(node) => {
-            folderInputRef.current = node;
-            node?.setAttribute("webkitdirectory", "");
-          }}
-          onChange={handleFileUpload}
-          style={{ display: "none" }}
-        />
-          </div>
-        </details>
-        {transferProgress && (
-          <span className="status-pill" style={{ background: "rgba(16, 185, 129, 0.15)", color: "#34d399" }}>
-            {transferProgress.fileName} {transferProgress.progress}% {transferProgress.speed} ETA {transferProgress.timeLeft}
-          </span>
-        )}
-
-        <button
-          className="secondary-button"
-          type="button"
-          onClick={() => void leaveRemoteSession()}
-          style={{ marginLeft: "auto", background: "rgba(239, 68, 68, 0.2)", color: "#ef4444" }}
-        >
-          <LogOut size={17} />
-          <span>세션 종료</span>
-        </button>
       </div>
     </section>
   );
