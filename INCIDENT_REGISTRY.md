@@ -230,7 +230,7 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - User-visible symptom: Pressing the Korean/English key and typing caused abnormal repeated input and lag; a single mouse click could appear held.
 - Minimal trigger: Enter a remote session, press the Korean/English key, type immediately, then click and leave or blur the remote canvas.
 - Root cause and contributors: The hidden IME sink swallowed the Hangul key without preventing local composition, while printable keys could travel through composition/input and key handlers. Pointer down had no duplicate guard, and delayed movement was not cancelled on every input-release boundary.
-- Fix commit(s): pending current change with required `Incident: INC-20260817-001` trailer.
+- Fix commit(s): `51be375` with `Incident: INC-20260817-001` trailer.
 - Permanent guard: Use one physical-key route on the focused session panel, send Hangul as one complete keypress, suppress browser composition sentinel events, deduplicate key and pointer transitions in both Viewer and Agent, capture/cancel pointers, cancel pending movement on release, and release tracked input before session close.
 - Regression proof: `npm test -- src/remoteSessionLayout.test.ts src/domain/remoteControlCommands.test.ts src/agent/agentCommandActions.test.ts src/agent/agentCommandExecution.test.ts src/agent/persistentInputShutdown.test.ts src/agent/agentPointerState.test.ts` -> 6 files and 82 tests passed; `npx tsc --noEmit` passed.
 - Release proof: not released.
