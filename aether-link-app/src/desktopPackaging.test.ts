@@ -728,6 +728,7 @@ describe("desktop packaging scaffold", () => {
     expect(releaseWorkflow).toContain('branches: ["main"]');
     expect(releaseWorkflow).not.toContain('tags: ["v*"]');
     expect(releaseWorkflow).toContain("startsWith(github.event.head_commit.message, 'Prepare WonRemote v')");
+    expect(releaseWorkflow).toContain('$env:GITHUB_REF_TYPE -ne "branch" -or $env:GITHUB_REF_NAME -ne "main"');
     expect(releaseWorkflow).toContain("src/agent/productionInstallerUpdate.test.ts");
     expect(releaseWorkflow).toContain("src/agent/agentUpdateOnce.test.ts");
     expect(releaseWorkflow).toContain("src/agent/productionUpdateMetadata.test.ts");

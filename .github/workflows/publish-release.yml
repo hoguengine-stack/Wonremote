@@ -70,8 +70,8 @@ jobs:
           if (@($appVersion, $cargoVersion, $tauriVersion) | Where-Object { $_ -ne $packageVersion }) {
             throw "Release version metadata must match package.json ($packageVersion)."
           }
-          if ($env:GITHUB_REF_TYPE -eq "tag" -and $env:GITHUB_REF_NAME -ne "v$packageVersion") {
-            throw "Release tag must match package.json: expected v$packageVersion, got $env:GITHUB_REF_NAME."
+          if ($env:GITHUB_REF_TYPE -ne "branch" -or $env:GITHUB_REF_NAME -ne "main") {
+            throw "Release builds must run from main, got $env:GITHUB_REF_TYPE/$env:GITHUB_REF_NAME."
           }
 
       - name: Verify incident recurrence coverage
