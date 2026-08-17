@@ -265,7 +265,7 @@ describe("desktop packaging scaffold", () => {
     expect(packageJson.devDependencies["@tauri-apps/cli"]).toBeDefined();
   });
 
-  it("builds both x86 product installers before copying stable release files", () => {
+  it("compiles one x86 app and bundles both product installers before copying stable release files", () => {
     const packageReleaseScript = readFileSync(path.join(projectRoot, "scripts", "package-release-exes.js"), "utf8");
     const viewerStage = packageReleaseScript.indexOf("buildViewerInstaller(target)");
     const agentBuild = packageReleaseScript.indexOf("buildAgentDefaultInstaller(target)", viewerStage);
@@ -277,7 +277,9 @@ describe("desktop packaging scaffold", () => {
     expect(packageReturn).toBeGreaterThan(agentBuild);
     expect(copyStage).toBeGreaterThan(packageReturn);
     expect(packageReleaseScript).toContain('WONREMOTE_BUILD_STAGE: "full"');
-    expect(packageReleaseScript).toContain('WONREMOTE_BUILD_STAGE: "reuse"');
+    expect(packageReleaseScript.match(/"npx tauri build"/g)).toHaveLength(1);
+    expect(packageReleaseScript.match(/"npx tauri bundle"/g)).toHaveLength(1);
+    expect(packageReleaseScript).not.toContain('WONREMOTE_BUILD_STAGE: "reuse"');
     expect(packageReleaseScript).toContain('--assemble-only');
   });
 
@@ -551,7 +553,8 @@ describe("desktop packaging scaffold", () => {
     const rustApp = readFileSync(path.join(projectRoot, "src-tauri", "src", "lib.rs"), "utf8");
     const workflow = readFileSync(path.join(projectRoot, "..", ".github", "workflows", "publish-release.yml"), "utf8");
 
-    expect(packageReleaseScript).toContain('WONREMOTE_BUILD_STAGE: "reuse"');
+    expect(packageReleaseScript).toContain("buildTauriBundleCommand(target, target.agentConfig)");
+    expect(packageReleaseScript).not.toContain("cleanTauriResourceOutput(target);\n  runShell(buildTauriBundleCommand");
     expect(packageReleaseScript).not.toContain("WONREMOTE_DEFAULT_APP_MODE");
     expect(rustBuildScript).not.toContain("cargo:rerun-if-env-changed=WONREMOTE_DEFAULT_APP_MODE");
     expect(rustApp).toContain('directory.eq_ignore_ascii_case("agent")');
@@ -719,10 +722,12 @@ describe("desktop packaging scaffold", () => {
     expect(packageReleaseScript).toContain("copyStableX86Installers");
   });
 
-  it("binds tag publication and update regression tests to the release version", () => {
+  it("builds releases from gated main commits so release caches remain reusable", () => {
     const releaseWorkflow = readFileSync(path.join(projectRoot, "..", ".github", "workflows", "publish-release.yml"), "utf8");
 
-    expect(releaseWorkflow).toContain('$env:GITHUB_REF_NAME -ne "v$packageVersion"');
+    expect(releaseWorkflow).toContain('branches: ["main"]');
+    expect(releaseWorkflow).not.toContain('tags: ["v*"]');
+    expect(releaseWorkflow).toContain("startsWith(github.event.head_commit.message, 'Prepare WonRemote v')");
     expect(releaseWorkflow).toContain("src/agent/productionInstallerUpdate.test.ts");
     expect(releaseWorkflow).toContain("src/agent/agentUpdateOnce.test.ts");
     expect(releaseWorkflow).toContain("src/agent/productionUpdateMetadata.test.ts");

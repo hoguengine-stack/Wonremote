@@ -2,7 +2,7 @@ name: Publish WonRemote release
 
 on:
   push:
-    tags: ["v*"]
+    branches: ["main"]
   workflow_dispatch:
 
 permissions:
@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   build-release:
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'Prepare WonRemote v')
     runs-on: windows-2022
     permissions:
       contents: read
@@ -24,7 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # The recurrence gate compares every commit after the previous release tag.
+          # The recurrence gate compares every commit after the previous published release tag.
           fetch-depth: 0
 
       - uses: actions/setup-node@v4

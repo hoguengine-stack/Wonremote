@@ -79,6 +79,15 @@ function buildTauriCommand(target, configPath) {
   ].filter(Boolean).join(" ");
 }
 
+export function buildTauriBundleCommand(target, configPath) {
+  return [
+    "npx tauri bundle",
+    "--bundles nsis",
+    target.rustTarget ? `--target ${target.rustTarget}` : "",
+    configPath ? `--config ${configPath}` : "",
+  ].filter(Boolean).join(" ");
+}
+
 function cleanTauriResourceOutput(target) {
   const targetRelease = releaseTargetFor(target);
   for (const directory of requiredResourceDirs) {
@@ -96,10 +105,7 @@ function buildViewerInstaller(target) {
 
 function buildAgentDefaultInstaller(target) {
   console.log(`Building ${target.key} Agent-default NSIS installer...`);
-  cleanTauriResourceOutput(target);
-  runShell(buildTauriCommand(target, target.agentConfig), buildEnvFor(target, {
-    WONREMOTE_BUILD_STAGE: "reuse",
-  }));
+  runShell(buildTauriBundleCommand(target, target.agentConfig), buildEnvFor(target));
 }
 
 function verifyTargetAgentRuntime(target, sourceRoot) {

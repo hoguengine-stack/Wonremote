@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { copyStableX86Installers } from "./package-release-exes.js";
+import { buildTauriBundleCommand, copyStableX86Installers } from "./package-release-exes.js";
 
 const temporaryDirectories = [];
 
@@ -13,6 +13,18 @@ afterEach(() => {
 });
 
 describe("x86 release installers", () => {
+  it("packages the Agent from the existing x86 binary without invoking tauri build", () => {
+    const command = buildTauriBundleCommand(
+      { rustTarget: "i686-pc-windows-msvc" },
+      "src-tauri/tauri.agent.x86.conf.json",
+    );
+
+    expect(command).toBe(
+      "npx tauri bundle --bundles nsis --target i686-pc-windows-msvc --config src-tauri/tauri.agent.x86.conf.json",
+    );
+    expect(command).not.toContain("tauri build");
+  });
+
   it("copies only the x86 Viewer and Agent installers to stable release names", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "wonremote-x86-release-"));
     temporaryDirectories.push(root);
