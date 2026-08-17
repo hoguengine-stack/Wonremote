@@ -40,3 +40,12 @@ export function pointerReleaseActions(state: AgentPointerState): string[] {
     .reverse()
     .map((button) => `mouse-up ${state.lastDx} ${state.lastDy} ${button}`);
 }
+
+export function shouldInjectPointerAction(action: string, state: AgentPointerState): boolean {
+  const match = /^mouse-(down|up)\s+-?\d+\s+-?\d+\s+(left|middle|right)$/.exec(action.trim());
+  if (!match) return true;
+  const button = match[2] as AgentMouseButton;
+  return match[1] === "down"
+    ? !state.pressedButtons.has(button)
+    : state.pressedButtons.has(button);
+}

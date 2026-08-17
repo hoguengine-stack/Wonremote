@@ -60,6 +60,7 @@ describe("Agent command execution", () => {
       "key-up Ctrl",
       "keypress Win",
       "keypress A",
+      "keypress Hangul",
       "paste",
       "ping-color-change",
       "clipboard-request",
@@ -136,6 +137,14 @@ describe("Agent command execution", () => {
     expect(runtime.injectAction).toHaveBeenNthCalledWith(1, "key-down A");
     expect(runtime.injectAction).toHaveBeenNthCalledWith(2, "key-up A");
     expect(runtime.startStream).toHaveBeenCalledWith("session-poll");
+  });
+
+  it("passes the single Hangul keypress through the WebRTC input boundary", async () => {
+    const runtime = createRuntime();
+
+    await expect(executeAgentCommand("keypress Hangul", "webrtc", runtime)).resolves.toBe("executed");
+    expect(runtime.injectAction).toHaveBeenCalledOnce();
+    expect(runtime.injectAction).toHaveBeenCalledWith("keypress Hangul");
   });
 
   it("keeps pressed-key state when key-up injection fails so shutdown can retry it", async () => {

@@ -3,6 +3,7 @@ import {
   createAgentPointerState,
   pointerReleaseActions,
   recordSuccessfulPointerAction,
+  shouldInjectPointerAction,
 } from "./agentPointerState";
 
 describe("Agent pointer state", () => {
@@ -21,5 +22,14 @@ describe("Agent pointer state", () => {
     recordSuccessfulPointerAction("mouse-up 100 200 right", state);
 
     expect(pointerReleaseActions(state)).toEqual([]);
+  });
+
+  it("rejects duplicate down and unmatched up transitions", () => {
+    const state = createAgentPointerState();
+    expect(shouldInjectPointerAction("mouse-down 100 200 left", state)).toBe(true);
+    recordSuccessfulPointerAction("mouse-down 100 200 left", state);
+    expect(shouldInjectPointerAction("mouse-down 100 200 left", state)).toBe(false);
+    expect(shouldInjectPointerAction("mouse-up 100 200 right", state)).toBe(false);
+    expect(shouldInjectPointerAction("mouse-up 100 200 left", state)).toBe(true);
   });
 });

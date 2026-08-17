@@ -2,6 +2,13 @@ import { describe, expect, it } from "vitest";
 import { recordSuccessfulInjectAction, resolveInjectActions } from "./agentCommandActions";
 
 describe("agent command actions", () => {
+  it("drops duplicate key-down and unmatched key-up transitions", () => {
+    const pressed = new Set(["Ctrl"]);
+    expect(resolveInjectActions("key-down Ctrl", pressed)).toEqual({ type: "inject", actions: [] });
+    expect(resolveInjectActions("key-up Shift", pressed)).toEqual({ type: "inject", actions: [] });
+    expect(resolveInjectActions("key-up Ctrl", pressed)).toEqual({ type: "inject", actions: ["key-up Ctrl"] });
+  });
+
   it("updates key state only after injection succeeds", () => {
     const pressed = new Set<string>();
 

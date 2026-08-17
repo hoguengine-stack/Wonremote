@@ -5,10 +5,18 @@ export type ResolvedAgentAction =
 export function resolveInjectActions(action: string, pressedKeys: Set<string>): ResolvedAgentAction {
   const trimmed = action.trim();
   if (trimmed.startsWith("key-down ")) {
+    const key = trimmed.slice("key-down ".length).trim();
+    if (key && pressedKeys.has(key)) {
+      return { type: "inject", actions: [] };
+    }
     return { type: "inject", actions: [trimmed] };
   }
 
   if (trimmed.startsWith("key-up ")) {
+    const key = trimmed.slice("key-up ".length).trim();
+    if (key && !pressedKeys.has(key)) {
+      return { type: "inject", actions: [] };
+    }
     return { type: "inject", actions: [trimmed] };
   }
 

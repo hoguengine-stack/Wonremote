@@ -29,21 +29,32 @@ describe("connected remote session layout", () => {
     expect(appSource).toContain("buildKeyboardCommand(\"keydown\", event.key, event.code, event.keyCode)");
     expect(appSource).toContain("buildKeyboardCommand(\"keyup\", event.key, event.code, event.keyCode)");
     expect(appSource).toContain("isHangulToggleKey(event.key, event.code, event.keyCode)");
-    expect(appSource.match(/isHangulToggleKey\(event\.key, event\.code, event\.keyCode\)/g)).toHaveLength(3);
+    expect(appSource.match(/isHangulToggleKey\(event\.key, event\.code, event\.keyCode\)/g)).toHaveLength(1);
   });
 
-  it("keeps a focused IME input sink for Korean composition without duplicating key events", () => {
+  it("routes Hangul and printable keys through one physical keyboard path", () => {
     const block = connectedReturnBlock();
-    expect(block).toContain('className="remote-ime-input"');
-    expect(block).toContain("onCompositionStart");
-    expect(block).toContain("onCompositionEnd={handleImeCompositionEnd}");
-    expect(block).toContain("onInput={handleImeInput}");
-    expect(block).toContain("event.stopPropagation()");
-    expect(appSource).toContain("imeInputRef.current?.focus({ preventScroll: true })");
-    expect(appSource).toContain("buildUnicodeTextCommand(text)");
+    expect(block).not.toContain('className="remote-ime-input"');
+    expect(block).not.toContain("onCompositionStart");
+    expect(appSource).toContain("panelRef.current?.focus({ preventScroll: true })");
+    expect(appSource).not.toContain("buildUnicodeTextCommand");
     expect(appSource).toContain('event.key === "Process" || event.keyCode === 229');
-    expect(appSource).toContain("completedImeTextRef.current");
-    expect(stylesSource).toContain(".remote-ime-input");
+    expect(appSource).toContain("const hangulToggle = isHangulToggleKey");
+    expect(appSource).toContain('onInputEvent("keypress Hangul")');
+    expect(stylesSource).not.toContain(".remote-ime-input");
+  });
+
+  it("deduplicates pointer transitions and cancels delayed movement on release", () => {
+    expect(appSource).toContain("pressedButtonsRef.current.has(button)");
+    expect(appSource).toContain("if (!pressedButtonsRef.current.has(button))");
+    expect(appSource).toContain("setPointerCapture(e.pointerId)");
+    expect(appSource).toContain("releasePointerCapture(e.pointerId)");
+    expect(appSource).toContain("onPointerCancel={handleCanvasPointerCancel}");
+    expect(appSource).toContain("onLostPointerCapture={handleCanvasPointerCancel}");
+    expect(appSource).toContain("const cancelPendingPointerMove");
+    expect(appSource).toContain("pendingMoveRef.current = null");
+    expect(appSource).toContain("cancelPendingPointerMove();");
+    expect(appSource).toContain("releaseAllInputs();");
   });
 
   it("places actions before the remote work area and exposes fullscreen control", () => {
@@ -55,6 +66,9 @@ describe("connected remote session layout", () => {
     expect(block).toContain("isSessionFullscreen");
     expect(block).toContain("session-fullscreen-active");
     expect(block).toContain('className="session-fullscreen-exit"');
+    expect(block).toContain("창모드");
+    expect(appSource).toContain("useState(true)");
+    expect(appSource).toContain("setIsSessionFullscreen(true)");
     expect(block).toContain("isFullscreenToolbarOpen");
     expect(block).toContain("session-fullscreen-tools-open");
     expect(block).toContain('className="session-fullscreen-toolbar-toggle"');
@@ -87,7 +101,7 @@ describe("connected remote session layout", () => {
   });
 
   it("keeps hover movement for remote menus while rate limiting it", () => {
-    const start = appSource.indexOf("const handleCanvasMouseMove");
+    const start = appSource.indexOf("const handleCanvasPointerMove");
     const end = appSource.indexOf("const handleCanvasWheel", start);
     const moveBlock = appSource.slice(start, end);
 
@@ -97,6 +111,16 @@ describe("connected remote session layout", () => {
     expect(moveBlock).toContain("moveDelayTimerRef.current");
     expect(moveBlock).toContain("33 - (performance.now() - lastMoveSentAtRef.current)");
     expect(moveBlock).toContain("requestAnimationFrame");
+  });
+
+  it("keeps secondary tools in one overlay menu and removes duplicate monitor buttons", () => {
+    const block = connectedReturnBlock();
+    expect(block).toContain('className="session-tool-menu"');
+    expect(block).toContain('className="session-tool-menu-content"');
+    expect(block).not.toContain("display-button-");
+    expect(block).not.toContain('name: "Fallback"');
+    expect(stylesSource).toContain(".session-tool-menu-content");
+    expect(stylesSource).toContain("position: absolute;");
   });
 
   it("defines flexible focus-mode layout hooks without legacy log panels", () => {
@@ -119,6 +143,9 @@ describe("connected remote session layout", () => {
     expect(stylesSource).toContain("width: 100vw;");
     expect(stylesSource).toContain("max-height");
     expect(stylesSource).toContain("overflow-y");
+    expect(stylesSource).toContain(".remote-canvas");
+    expect(stylesSource).toContain("height: 100% !important;");
+    expect(stylesSource).toContain("max-width: none;");
     expect(capabilitySource).toContain("core:window:allow-is-fullscreen");
     expect(capabilitySource).toContain("core:window:allow-set-fullscreen");
     expect(stylesSource).not.toMatch(/^\.input-log\s*\{/m);

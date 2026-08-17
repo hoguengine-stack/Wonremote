@@ -107,7 +107,6 @@ import {
   buildPasteTextCommand,
   buildSwitchMonitorCommand,
   buildSystemCommand,
-  buildUnicodeTextCommand,
   formatTransferStats,
   isHangulToggleKey,
   mapCanvasPointToVirtualDesktopAbsolute,
@@ -1917,12 +1916,9 @@ function RemoteSessionPanel({
   sessionId: string;
   session: RemoteSession | null;
   onInputEvent: (action: string, options?: { localOnly?: boolean }) => void | Promise<void>;
-  onCloseSession: () => void;
+  onCloseSession: () => void | Promise<void>;
 }) {
   const panelRef = React.useRef<HTMLElement | null>(null);
-  const imeInputRef = React.useRef<HTMLTextAreaElement | null>(null);
-  const imeComposingRef = React.useRef(false);
-  const completedImeTextRef = React.useRef("");
   const remotePreviewRef = React.useRef<HTMLDivElement | null>(null);
   const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
   const pressedKeysRef = React.useRef<Set<string>>(new Set());
@@ -1954,7 +1950,7 @@ function RemoteSessionPanel({
   const [latencyReport, setLatencyReport] = useState<string>("");
   const [pingState, setPingState] = useState<{ start: number } | null>(null);
   const [zoom, setZoom] = useState(1);
-  const [isSessionFullscreen, setIsSessionFullscreen] = useState(false);
+  const [isSessionFullscreen, setIsSessionFullscreen] = useState(true);
   const [isFullscreenToolbarOpen, setIsFullscreenToolbarOpen] = useState(false);
   const [streamPerformanceMode, setStreamPerformanceMode] = useState<StreamPerformanceMode>(() =>
     normalizeStreamPerformanceMode(window.localStorage.getItem("wonremote-stream-performance-mode")),
@@ -1977,7 +1973,7 @@ function RemoteSessionPanel({
   const [isChatOpen, setIsChatOpen] = useState(false);
 
   useEffect(() => {
-    setIsSessionFullscreen(false);
+    setIsSessionFullscreen(true);
     setIsFullscreenToolbarOpen(false);
   }, [sessionId]);
 
@@ -2010,6 +2006,18 @@ function RemoteSessionPanel({
     } catch {
       // The fixed immersive layout remains usable when native fullscreen is unavailable.
     }
+  }
+
+  async function leaveRemoteSession() {
+    releaseAllInputs();
+    setIsSessionFullscreen(false);
+    setIsFullscreenToolbarOpen(false);
+    if ((window as any).__TAURI_INTERNALS__) {
+      await getCurrentWindow().setFullscreen(false).catch(() => {});
+    } else if (document.fullscreenElement) {
+      await document.exitFullscreen().catch(() => {});
+    }
+    await onCloseSession();
   }
 
   const sendClipboardImage = React.useCallback(async (image: Blob, knownSha256?: string) => {
@@ -2063,7 +2071,7 @@ function RemoteSessionPanel({
 
   useEffect(() => {
     if (session?.state === "connected") {
-      imeInputRef.current?.focus({ preventScroll: true });
+      panelRef.current?.focus({ preventScroll: true });
     }
   }, [session?.id, session?.state]);
 
@@ -2518,12 +2526,25 @@ function RemoteSessionPanel({
     };
   }, [device?.id, sessionId, session?.id, session?.state]);
 
+  const cancelPendingPointerMove = () => {
+    pendingMoveRef.current = null;
+    if (moveFrameRef.current !== null) {
+      window.cancelAnimationFrame(moveFrameRef.current);
+      moveFrameRef.current = null;
+    }
+    if (moveDelayTimerRef.current !== null) {
+      window.clearTimeout(moveDelayTimerRef.current);
+      moveDelayTimerRef.current = null;
+    }
+  };
+
   const releaseAllInputs = () => {
-    suppressedKeyUpsRef.current.clear();
-    if (pressedKeysRef.current.size > 0) {
+    cancelPendingPointerMove();
+    if (pressedKeysRef.current.size > 0 || suppressedKeyUpsRef.current.size > 0) {
       pressedKeysRef.current.clear();
       onInputEvent("key-release-all");
     }
+    suppressedKeyUpsRef.current.clear();
     if (pressedButtonsRef.current.size > 0) {
       const canvas = canvasRef.current;
       const rect = canvas?.getBoundingClientRect();
@@ -2545,7 +2566,7 @@ function RemoteSessionPanel({
     releaseAllInputs();
   };
 
-  const handleCanvasMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const handleCanvasPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     e.preventDefault();
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -2553,12 +2574,16 @@ function RemoteSessionPanel({
     const rect = canvas.getBoundingClientRect();
     const { dx, dy } = mapRemotePoint(e.clientX, e.clientY, rect);
     const button = mapMouseButton(e.button);
+    if (pressedButtonsRef.current.has(button)) {
+      return;
+    }
     pressedButtonsRef.current.add(button);
-    imeInputRef.current?.focus({ preventScroll: true });
+    e.currentTarget.setPointerCapture(e.pointerId);
+    panelRef.current?.focus({ preventScroll: true });
     onInputEvent(buildMouseCommand("down", dx, dy, button));
   };
 
-  const handleCanvasMouseUp = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const handleCanvasPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
     e.preventDefault();
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -2566,11 +2591,17 @@ function RemoteSessionPanel({
     const rect = canvas.getBoundingClientRect();
     const { dx, dy } = mapRemotePoint(e.clientX, e.clientY, rect);
     const button = mapMouseButton(e.button);
+    if (!pressedButtonsRef.current.has(button)) {
+      return;
+    }
     pressedButtonsRef.current.delete(button);
     onInputEvent(buildMouseCommand("up", dx, dy, button));
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
   };
 
-  const handleCanvasMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const handleCanvasPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -2601,6 +2632,19 @@ function RemoteSessionPanel({
     }, waitMs);
   };
 
+  const handleCanvasPointerCancel = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    const rect = canvas?.getBoundingClientRect();
+    const point = rect
+      ? mapRemotePoint(e.clientX, e.clientY, rect)
+      : { dx: 32768, dy: 32768 };
+    for (const button of pressedButtonsRef.current) {
+      onInputEvent(buildMouseCommand("up", point.dx, point.dy, button));
+    }
+    pressedButtonsRef.current.clear();
+    cancelPendingPointerMove();
+  };
+
   const handleCanvasWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
     e.preventDefault();
     const canvas = canvasRef.current;
@@ -2611,25 +2655,21 @@ function RemoteSessionPanel({
     onInputEvent(buildMouseCommand("wheel", dx, dy, 0, e.deltaY > 0 ? -120 : 120));
   };
 
-  const handleKeyDown = async (event: React.KeyboardEvent<HTMLElement>, allowImeInput = false) => {
-    if (isEditableTarget(event.target) && !allowImeInput) {
+  const handleKeyDown = async (event: React.KeyboardEvent<HTMLElement>) => {
+    if (isEditableTarget(event.target)) {
       return;
     }
-    if (allowImeInput && isHangulToggleKey(event.key, event.code, event.keyCode)) {
-      suppressedKeyUpsRef.current.add(event.key);
+    const hangulToggle = isHangulToggleKey(event.key, event.code, event.keyCode);
+    if (hangulToggle) {
+      event.preventDefault();
+      if (!event.repeat) {
+        suppressedKeyUpsRef.current.add(event.key);
+        onInputEvent("keypress Hangul");
+      }
       return;
     }
-    if (allowImeInput && (event.nativeEvent.isComposing || event.key === "Process" || event.keyCode === 229)) {
-      suppressedKeyUpsRef.current.add(event.key);
-      return;
-    }
-    if (
-      allowImeInput &&
-      !event.ctrlKey &&
-      !event.altKey &&
-      !event.metaKey &&
-      Array.from(event.key).length === 1
-    ) {
+    if (!hangulToggle && (event.nativeEvent.isComposing || event.key === "Process" || event.keyCode === 229)) {
+      event.preventDefault();
       suppressedKeyUpsRef.current.add(event.key);
       return;
     }
@@ -2687,77 +2727,34 @@ function RemoteSessionPanel({
       return;
     }
 
-    if (!event.ctrlKey && !event.altKey && !event.metaKey && Array.from(event.key).length === 1) {
-      event.preventDefault();
-      suppressedKeyUpsRef.current.add(event.key);
-      onInputEvent(buildUnicodeTextCommand(event.key));
-      return;
-    }
-
-    const hangulToggle = isHangulToggleKey(event.key, event.code, event.keyCode);
-    if (!hangulToggle) {
-      event.preventDefault();
-    }
+    event.preventDefault();
     const command = buildKeyboardCommand("keydown", event.key, event.code, event.keyCode);
     pressedKeysRef.current.add(command.slice("key-down ".length));
     onInputEvent(command);
   };
 
-  const handleKeyUp = (event: React.KeyboardEvent<HTMLElement>, allowImeInput = false) => {
-    if (isEditableTarget(event.target) && !allowImeInput) {
+  const handleKeyUp = (event: React.KeyboardEvent<HTMLElement>) => {
+    if (isEditableTarget(event.target)) {
       return;
     }
+    event.preventDefault();
     if (suppressedKeyUpsRef.current.delete(event.key)) {
       return;
-    }
-    if (!isHangulToggleKey(event.key, event.code, event.keyCode)) {
-      event.preventDefault();
     }
     const command = buildKeyboardCommand("keyup", event.key, event.code, event.keyCode);
     pressedKeysRef.current.delete(command.slice("key-up ".length));
     onInputEvent(command);
   };
 
-  const handleImeInput = (event: React.FormEvent<HTMLTextAreaElement>) => {
-    const nativeEvent = event.nativeEvent as InputEvent;
-    if (imeComposingRef.current || nativeEvent.isComposing) {
-      return;
-    }
-    const text = event.currentTarget.value;
-    event.currentTarget.value = "";
-    if (text && text === completedImeTextRef.current) {
-      completedImeTextRef.current = "";
-      return;
-    }
-    if (text) {
-      onInputEvent(buildUnicodeTextCommand(text));
-    }
-  };
-
-  const handleImeCompositionEnd = (event: React.CompositionEvent<HTMLTextAreaElement>) => {
-    imeComposingRef.current = false;
-    const text = event.data || event.currentTarget.value;
-    event.currentTarget.value = "";
-    if (text) {
-      completedImeTextRef.current = text;
-      onInputEvent(buildUnicodeTextCommand(text));
-      window.setTimeout(() => {
-        if (completedImeTextRef.current === text) {
-          completedImeTextRef.current = "";
-        }
-      }, 0);
-    }
-  };
-
   useEffect(() => {
-    const handleWindowMouseUp = () => {
+    const handleWindowMouseUp = (event: MouseEvent) => {
       if (pressedButtonsRef.current.size === 0) {
         return;
       }
       const canvas = canvasRef.current;
       const rect = canvas?.getBoundingClientRect();
       const point = rect
-        ? mapRemotePoint(rect.left + rect.width / 2, rect.top + rect.height / 2, rect)
+        ? mapRemotePoint(event.clientX, event.clientY, rect)
         : { dx: 32768, dy: 32768 };
       for (const button of pressedButtonsRef.current) {
         onInputEvent(buildMouseCommand("up", point.dx, point.dy, button));
@@ -2778,14 +2775,6 @@ function RemoteSessionPanel({
       window.removeEventListener("mouseup", handleWindowMouseUp);
       window.removeEventListener("blur", handleWindowBlur);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
-      if (moveFrameRef.current !== null) {
-        window.cancelAnimationFrame(moveFrameRef.current);
-        moveFrameRef.current = null;
-      }
-      if (moveDelayTimerRef.current !== null) {
-        window.clearTimeout(moveDelayTimerRef.current);
-        moveDelayTimerRef.current = null;
-      }
       releaseAllInputs();
     };
   }, [sessionId]);
@@ -3105,7 +3094,7 @@ function RemoteSessionPanel({
             Agent 상태를 확인하는 중입니다. 정상 등록된 온라인 장비는 별도 승인 없이 자동으로 연결됩니다.
           </p>
           <button
-            onClick={onCloseSession}
+            onClick={() => void leaveRemoteSession()}
             style={{ background: "#ef4444", border: "none", color: "#fff", padding: "10px 20px", borderRadius: "6px", fontWeight: "bold", cursor: "pointer" }}
           >
             접속 시도 취소
@@ -3125,26 +3114,6 @@ function RemoteSessionPanel({
       onKeyDown={handleKeyDown}
       onKeyUp={handleKeyUp}
     >
-      <textarea
-        ref={imeInputRef}
-        className="remote-ime-input"
-        aria-label="원격 키보드 입력"
-        autoCapitalize="off"
-        autoCorrect="off"
-        spellCheck={false}
-        tabIndex={-1}
-        onCompositionStart={() => { imeComposingRef.current = true; }}
-        onCompositionEnd={handleImeCompositionEnd}
-        onInput={handleImeInput}
-        onKeyDown={(event) => {
-          event.stopPropagation();
-          void handleKeyDown(event, true);
-        }}
-        onKeyUp={(event) => {
-          event.stopPropagation();
-          handleKeyUp(event, true);
-        }}
-      />
       <div className="remote-work-area" style={{ display: "flex", flex: 1, gap: "16px", minHeight: "450px" }}>
         {/* 원격 스크린 영역 */}
         <div className="remote-screen connected" style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
@@ -3157,14 +3126,15 @@ function RemoteSessionPanel({
           >
             <canvas
               ref={canvasRef}
+              className="remote-canvas"
               onContextMenu={(event) => event.preventDefault()}
-              onMouseDown={handleCanvasMouseDown}
-              onMouseMove={handleCanvasMouseMove}
-              onMouseUp={handleCanvasMouseUp}
+              onPointerDown={handleCanvasPointerDown}
+              onPointerMove={handleCanvasPointerMove}
+              onPointerUp={handleCanvasPointerUp}
+              onPointerCancel={handleCanvasPointerCancel}
+              onLostPointerCapture={handleCanvasPointerCancel}
               onWheel={handleCanvasWheel}
               style={{
-                width: "100%",
-                height: "auto",
                 display: "block",
                 cursor: "crosshair",
                 transform: `scale(${zoom})`,
@@ -3229,10 +3199,11 @@ function RemoteSessionPanel({
             className="session-fullscreen-exit"
             type="button"
             aria-label="전체화면 종료"
-            title="전체화면 종료"
+            title="창모드로 전환"
             onClick={toggleSessionFullscreen}
           >
             <Minimize2 size={20} />
+            <span>창모드</span>
           </button>
         </>
       )}
@@ -3267,7 +3238,7 @@ function RemoteSessionPanel({
           title="전체화면 전환"
         >
           {isSessionFullscreen ? <Minimize2 size={17} /> : <Maximize2 size={17} />}
-          <span>{isSessionFullscreen ? "전체화면 종료" : "전체화면"}</span>
+          <span>{isSessionFullscreen ? "창모드" : "전체화면"}</span>
         </button>
         <button className="secondary-button" type="button" onClick={setFitZoom} title="Fit">
           <Maximize2 size={17} />
@@ -3303,22 +3274,12 @@ function RemoteSessionPanel({
           <MousePointerClick size={17} />
           <span>{latencyReport || "Visual Ping 측정"}</span>
         </button>
-        {(device.displays?.length ? device.displays : [
-          { index: 0, name: "Fallback", width: 0, height: 0, primary: true },
-          { index: 1, name: "Fallback", width: 0, height: 0, primary: false },
-        ]).map((display) => (
-          <button
-            className={selectedDisplayIndex === display.index ? "secondary-button active" : "secondary-button"}
-            key={`display-button-${display.index}`}
-            type="button"
-            onClick={() => handleSwitchDisplay(display.index)}
-            title={display.width > 0 ? `${display.width}x${display.height} ${display.name}` : `Monitor ${display.index + 1}`}
-          >
-            <Monitor size={17} />
-            <span>{display.primary ? "Primary" : `Monitor ${display.index + 1}`}</span>
-          </button>
-        ))}
-
+        <details className="session-tool-menu">
+          <summary>
+            <SlidersHorizontal size={17} />
+            <span>작업 도구</span>
+          </summary>
+          <div className="session-tool-menu-content">
         {/* 3단계 기능들 */}
         {[
           ["services.msc", "서비스"],
@@ -3408,6 +3369,8 @@ function RemoteSessionPanel({
           onChange={handleFileUpload}
           style={{ display: "none" }}
         />
+          </div>
+        </details>
         {transferProgress && (
           <span className="status-pill" style={{ background: "rgba(16, 185, 129, 0.15)", color: "#34d399" }}>
             {transferProgress.fileName} {transferProgress.progress}% {transferProgress.speed} ETA {transferProgress.timeLeft}
@@ -3417,7 +3380,7 @@ function RemoteSessionPanel({
         <button
           className="secondary-button"
           type="button"
-          onClick={onCloseSession}
+          onClick={() => void leaveRemoteSession()}
           style={{ marginLeft: "auto", background: "rgba(239, 68, 68, 0.2)", color: "#ef4444" }}
         >
           <LogOut size={17} />

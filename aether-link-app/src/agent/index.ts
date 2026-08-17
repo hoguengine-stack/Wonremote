@@ -74,7 +74,11 @@ import {
   releasePressedInput,
   releasePressedInputAndClose,
 } from "./persistentInputShutdown";
-import { createAgentPointerState, recordSuccessfulPointerAction } from "./agentPointerState";
+import {
+  createAgentPointerState,
+  recordSuccessfulPointerAction,
+  shouldInjectPointerAction,
+} from "./agentPointerState";
 import { processWebRtcFileChunk } from "./webrtcFileReceiver";
 import { copyPngFileToWindowsClipboardAndRemove } from "./clipboardImage";
 import { runAgentWebRtcRuntimeSmoke } from "./agentWebRtcRuntimeSmoke";
@@ -1756,6 +1760,10 @@ function createAgentCommandRuntime(deviceId: string): AgentCommandRuntime {
     pressedKeys,
     getActiveSessionId: () => activeSessionId,
     injectAction: async (action) => {
+      if (!shouldInjectPointerAction(action, pointerState)) {
+        console.warn(`[Input guard] Ignoring duplicate pointer transition: ${action}`);
+        return;
+      }
       await persistentInputInjector.inject(action);
       recordSuccessfulPointerAction(action, pointerState);
       console.log(`[Inject Success] ${action}`);
