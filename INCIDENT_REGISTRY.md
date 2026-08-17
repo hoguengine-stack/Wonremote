@@ -226,27 +226,27 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - Detected: 2026-08-17.
 - Severity: P1.
 - Affected: Viewer remote-session keyboard and pointer lifecycle after `0.1.65`.
-- Status: open.
+- Status: physical-verification-required.
 - User-visible symptom: Pressing the Korean/English key and typing caused abnormal repeated input and lag; a single mouse click could appear held.
 - Minimal trigger: Enter a remote session, press the Korean/English key, type immediately, then click and leave or blur the remote canvas.
 - Root cause and contributors: The hidden IME sink swallowed the Hangul key without preventing local composition, while printable keys could travel through composition/input and key handlers. Pointer down had no duplicate guard, and delayed movement was not cancelled on every input-release boundary.
 - Fix commit(s): `51be375` with `Incident: INC-20260817-001` trailer.
 - Permanent guard: Use one physical-key route on the focused session panel, send Hangul as one complete keypress, suppress browser composition sentinel events, deduplicate key and pointer transitions in both Viewer and Agent, capture/cancel pointers, cancel pending movement on release, and release tracked input before session close.
 - Regression proof: `npm test -- src/remoteSessionLayout.test.ts src/domain/remoteControlCommands.test.ts src/agent/agentCommandActions.test.ts src/agent/agentCommandExecution.test.ts src/agent/persistentInputShutdown.test.ts src/agent/agentPointerState.test.ts` -> 6 files and 82 tests passed; `npx tsc --noEmit` passed.
-- Release proof: not released.
-- Remaining blocker: Build a later version and confirm Hangul typing, pointer release, Fit height, and fullscreen/window transitions on physical Viewer and Agent devices.
+- Release proof: `v0.1.67` published the x86 Viewer and Agent installers through successful GitHub Actions run `31981757862`.
+- Remaining blocker: Confirm Hangul typing, pointer release, Fit height, and fullscreen/window transitions on physical Viewer and Agent devices.
 
 ## INC-20260817-002: Release contract test retained the previous Fit width rule
 
 - Detected: 2026-08-17.
 - Severity: P2.
 - Affected: GitHub Actions release run `31981596648`, step `Verify release contract tests`.
-- Status: fixed-not-released.
+- Status: released-verified.
 - User-visible symptom: `v0.1.66` stopped before installer packaging even though the Fit implementation intentionally removed the canvas width cap.
 - Minimal trigger: Run `desktopPackaging.test.ts` after changing focused-session Fit from `max-width: 100%` to height-filling `max-width: none`.
 - Root cause and contributors: The implementation and focused layout tests changed together, but the release contract test still asserted the previous CSS token and was not included in pre-tag validation.
 - Fix commit(s): `1986838`.
 - Permanent guard: Every remote-session CSS contract change must update and run both `remoteSessionLayout.test.ts` and `desktopPackaging.test.ts` before a release tag is created.
 - Regression proof: `npm test -- src/desktopPackaging.test.ts src/remoteSessionLayout.test.ts src/domain/versioning.test.ts` -> 3 files and 72 tests passed; the release contract now asserts height-filling Fit with `max-width: none`.
-- Release proof: not released.
-- Remaining blocker: Pass the focused contract tests and publish the next version.
+- Release proof: GitHub Actions run `31981757862` passed the corrected release-contract gate and published `v0.1.67` with exactly the Viewer installer, Agent installer, and signed update manifest.
+- Remaining blocker: none.
