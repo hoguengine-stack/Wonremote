@@ -235,3 +235,18 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - Regression proof: `npm test -- src/remoteSessionLayout.test.ts src/domain/remoteControlCommands.test.ts src/agent/agentCommandActions.test.ts src/agent/agentCommandExecution.test.ts src/agent/persistentInputShutdown.test.ts src/agent/agentPointerState.test.ts` -> 6 files and 82 tests passed; `npx tsc --noEmit` passed.
 - Release proof: not released.
 - Remaining blocker: Build a later version and confirm Hangul typing, pointer release, Fit height, and fullscreen/window transitions on physical Viewer and Agent devices.
+
+## INC-20260817-002: Release contract test retained the previous Fit width rule
+
+- Detected: 2026-08-17.
+- Severity: P2.
+- Affected: GitHub Actions release run `31981596648`, step `Verify release contract tests`.
+- Status: fixed-not-released.
+- User-visible symptom: `v0.1.66` stopped before installer packaging even though the Fit implementation intentionally removed the canvas width cap.
+- Minimal trigger: Run `desktopPackaging.test.ts` after changing focused-session Fit from `max-width: 100%` to height-filling `max-width: none`.
+- Root cause and contributors: The implementation and focused layout tests changed together, but the release contract test still asserted the previous CSS token and was not included in pre-tag validation.
+- Fix commit(s): pending.
+- Permanent guard: Every remote-session CSS contract change must update and run both `remoteSessionLayout.test.ts` and `desktopPackaging.test.ts` before a release tag is created.
+- Regression proof: pending.
+- Release proof: not released.
+- Remaining blocker: Pass the focused contract tests and publish the next version.

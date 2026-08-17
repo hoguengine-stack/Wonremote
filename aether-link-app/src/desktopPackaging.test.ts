@@ -321,7 +321,8 @@ describe("desktop packaging scaffold", () => {
     expect(stylesSource).toContain("max-height: none;");
     expect(stylesSource).toContain("order: -1;");
     expect(stylesSource).toContain("overflow: visible;");
-    expect(stylesSource).toContain("max-width: 100%;");
+    expect(stylesSource).toContain("height: 100% !important;");
+    expect(stylesSource).toContain("max-width: none;");
     expect(stylesSource).toContain("width: auto !important;");
   });
 
