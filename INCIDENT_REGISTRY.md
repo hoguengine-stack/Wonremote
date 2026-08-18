@@ -141,7 +141,7 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - Minimal trigger: Focus an active remote canvas, toggle Korean input, and compose Korean text.
 - Root cause and contributors: The canvas-only key path could not receive browser IME composition reliably, and `Process`/key code `229` could be duplicated as ordinary key events.
 - Fix commit(s): `49e513e`.
-- Permanent guard: A focused invisible IME sink handles composition, sends completed text through the Unicode text command, and suppresses duplicate `Process` events while retaining the explicit Hangul toggle route.
+- Permanent guard: A focused invisible IME sink owns the Viewer-local Hangul state, sends completed text through the Unicode text command, and never forwards the Hangul toggle to the remote PC.
 - Regression proof: `npm test -- src/remoteSessionLayout.test.ts` covers the IME sink, composition handlers, Unicode command, duplicate suppression, and three Hangul-toggle entry points.
 - Release proof: `v0.1.64` and later include the source fix.
 - Remaining blocker: Confirm Korean composition and Hangul toggle on a physical Viewer-to-Agent session.
@@ -231,7 +231,7 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - Minimal trigger: Enter a remote session, press the Korean/English key, type immediately, then click and leave or blur the remote canvas.
 - Root cause and contributors: The hidden IME sink swallowed the Hangul key without preventing local composition, while printable keys could travel through composition/input and key handlers. Pointer down had no duplicate guard, and delayed movement was not cancelled on every input-release boundary.
 - Fix commit(s): `51be375` with `Incident: INC-20260817-001` trailer.
-- Permanent guard: Use one physical-key route on the focused session panel, send Hangul as one complete keypress, suppress browser composition sentinel events, deduplicate key and pointer transitions in both Viewer and Agent, capture/cancel pointers, cancel pending movement on release, and release tracked input before session close.
+- Permanent guard: Superseded by `INC-20260818-002` for Hangul and Agent down-event handling. Viewer owns local IME composition and deduplicates physical transitions; Agent state is retained only for recovery and must not discard explicit down/up commands.
 - Regression proof: `npm test -- src/remoteSessionLayout.test.ts src/domain/remoteControlCommands.test.ts src/agent/agentCommandActions.test.ts src/agent/agentCommandExecution.test.ts src/agent/persistentInputShutdown.test.ts src/agent/agentPointerState.test.ts` -> 6 files and 82 tests passed; `npx tsc --noEmit` passed.
 - Release proof: `v0.1.67` published the x86 Viewer and Agent installers through successful GitHub Actions run `31981757862`.
 - Remaining blocker: Confirm Hangul typing, pointer release, Fit height, and fullscreen/window transitions on physical Viewer and Agent devices.
@@ -265,3 +265,18 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - Regression proof: `npm test -- src/api/viewerApi.test.ts src/domain/viewerInputState.test.ts src/remoteSessionLayout.test.ts src/domain/agentCommandOrdering.test.ts src/agent/agentCommandActions.test.ts src/agent/agentPointerState.test.ts src/agent/agentCommandExecution.test.ts src/agent/persistentInputShutdown.test.ts src/agent/persistentInputInjector.test.ts` -> 9 files and 105 tests passed.
 - Release proof: none; no version bump, installer build, or publication was requested for this source-only fix.
 - Remaining blocker: Verify left/right/middle click hold and release, modifier chords, focus loss, and session close on two physical PCs after the next requested build.
+
+## INC-20260818-002: Local IME, modifier shortcuts, and first click were filtered incorrectly
+
+- Detected: 2026-08-18.
+- Severity: P1.
+- Affected: Viewer Korean text composition, Ctrl shortcuts, Agent keyboard/button recovery state, and remote taskbar clicks.
+- Status: source-fixed-physical-verification-required.
+- User-visible symptom: The Viewer Hangul key did not switch the local IME, Ctrl+C/Ctrl+V failed, and a remote taskbar click could be ignored.
+- Minimal trigger: Toggle Hangul while the remote canvas owns focus, or send a new key/button down after the persistent input pipe accepted the previous down but its acknowledgement was lost.
+- Root cause and contributors: Viewer toggled the remote IME instead of composing in a local hidden input; Agent treated recovery state as an input deduplication filter, so stale pressed state discarded the next explicit key/button down.
+- Fix commit(s): pending.
+- Permanent guard: Compose text only through the focused local IME sink, keep modifier shortcuts on raw down/up events, compare the actual event target before suppressing text input, and use Agent pressed state only for shutdown recovery while forwarding every explicit down/up transition.
+- Regression proof: `npm test -- src/domain/viewerInputState.test.ts src/domain/remoteControlCommands.test.ts src/remoteSessionLayout.test.ts src/agent/agentCommandActions.test.ts src/agent/agentPointerState.test.ts src/agent/agentCommandExecution.test.ts` -> 6 files and 95 tests passed.
+- Release proof: none; no build, version bump, or publication was requested.
+- Remaining blocker: Verify Korean composition, Ctrl+C/Ctrl+V, and remote taskbar click on two physical PCs after the next requested build.

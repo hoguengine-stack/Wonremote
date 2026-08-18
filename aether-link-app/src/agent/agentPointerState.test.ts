@@ -25,11 +25,11 @@ describe("Agent pointer state", () => {
     expect(pointerReleaseActions(state)).toEqual([]);
   });
 
-  it("rejects duplicate down but always forwards up as an idempotent release", () => {
+  it("always forwards explicit button transitions even when tracked state may be stale", () => {
     const state = createAgentPointerState();
     expect(shouldInjectPointerAction("mouse-down 100 200 left", state)).toBe(true);
     recordSuccessfulPointerAction("mouse-down 100 200 left", state);
-    expect(shouldInjectPointerAction("mouse-down 100 200 left", state)).toBe(false);
+    expect(shouldInjectPointerAction("mouse-down 100 200 left", state)).toBe(true);
     expect(shouldInjectPointerAction("mouse-up 100 200 right", state)).toBe(true);
     expect(shouldInjectPointerAction("mouse-up 100 200 left", state)).toBe(true);
   });

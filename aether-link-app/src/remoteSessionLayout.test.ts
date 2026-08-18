@@ -32,16 +32,33 @@ describe("connected remote session layout", () => {
     expect(appSource.match(/isHangulToggleKey\(event\.key, event\.code, event\.keyCode\)/g)).toHaveLength(1);
   });
 
-  it("routes Hangul and printable keys through one physical keyboard path", () => {
+  it("routes Hangul and printable text through a local IME sink without remote Hangul toggles", () => {
     const block = connectedReturnBlock();
-    expect(block).not.toContain('className="remote-ime-input"');
-    expect(block).not.toContain("onCompositionStart");
-    expect(appSource).toContain("panelRef.current?.focus({ preventScroll: true })");
-    expect(appSource).not.toContain("buildUnicodeTextCommand");
-    expect(appSource).toContain('event.key === "Process" || event.keyCode === 229');
+    expect(block).toContain('className="remote-ime-input"');
+    expect(block).toContain("onCompositionStart");
+    expect(appSource).toContain("imeInputRef.current?.focus({ preventScroll: true })");
+    expect(appSource).toContain("buildUnicodeTextCommand");
     expect(appSource).toContain("const hangulToggle = isHangulToggleKey");
-    expect(appSource).toContain('onInputEvent("keypress Hangul")');
-    expect(stylesSource).not.toContain(".remote-ime-input");
+    expect(appSource).not.toContain('onInputEvent("keypress Hangul")');
+    expect(appSource).toContain("event.target !== imeInputRef.current");
+    expect(appSource).not.toContain("event.currentTarget !== imeInputRef.current");
+    expect(stylesSource).toContain(".remote-ime-input");
+  });
+
+  it("keeps Ctrl shortcuts on the raw key down and key up path", () => {
+    const start = appSource.indexOf("const handleKeyDown");
+    const end = appSource.indexOf("const handleKeyUp", start);
+    const keyDownBlock = appSource.slice(start, end);
+    const pasteStart = keyDownBlock.indexOf('event.ctrlKey && event.key.toLowerCase() === "v"');
+    const pasteEnd = keyDownBlock.indexOf("const isLocalText", pasteStart);
+    const pasteBlock = keyDownBlock.slice(pasteStart, pasteEnd);
+
+    expect(pasteStart).toBeGreaterThanOrEqual(0);
+    expect(pasteEnd).toBeGreaterThan(pasteStart);
+    expect(pasteBlock).toContain("buildPasteTextCommand(text)");
+    expect(pasteBlock).not.toContain('onInputEvent("key-up Ctrl")');
+    expect(keyDownBlock).toContain('buildKeyboardCommand("keydown"');
+    expect(appSource).toContain('buildKeyboardCommand("keyup"');
   });
 
   it("deduplicates pointer transitions and cancels delayed movement on release", () => {

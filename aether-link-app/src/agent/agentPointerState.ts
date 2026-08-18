@@ -51,9 +51,8 @@ export function pointerReleaseActions(state: AgentPointerState): string[] {
     .map((button) => `mouse-up ${state.lastDx} ${state.lastDy} ${button}`);
 }
 
-export function shouldInjectPointerAction(action: string, state: AgentPointerState): boolean {
-  const match = /^mouse-(down|up)\s+-?\d+\s+-?\d+\s+(left|middle|right)$/.exec(action.trim());
-  if (!match) return true;
-  const button = match[2] as AgentMouseButton;
-  return match[1] !== "down" || !state.pressedButtons.has(button);
+export function shouldInjectPointerAction(_action: string, _state: AgentPointerState): boolean {
+  // Viewer already deduplicates physical transitions. Agent state is recovery state only:
+  // suppressing an explicit down here loses the next real input after an ambiguous pipe ack.
+  return true;
 }

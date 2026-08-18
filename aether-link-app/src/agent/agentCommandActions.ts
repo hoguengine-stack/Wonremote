@@ -5,10 +5,6 @@ export type ResolvedAgentAction =
 export function resolveInjectActions(action: string, pressedKeys: Set<string>): ResolvedAgentAction {
   const trimmed = action.trim();
   if (trimmed.startsWith("key-down ")) {
-    const key = trimmed.slice("key-down ".length).trim();
-    if (key && pressedKeys.has(key)) {
-      return { type: "inject", actions: [] };
-    }
     return { type: "inject", actions: [trimmed] };
   }
 
@@ -21,6 +17,10 @@ export function resolveInjectActions(action: string, pressedKeys: Set<string>): 
     return { type: "inject", actions };
   }
 
+  if (trimmed === "paste") {
+    return { type: "inject", actions: [pressedKeys.has("Ctrl") ? "keypress V" : "paste"] };
+  }
+
   const pastePayloadPrefix = ["paste-text-base64 ", "paste_text ", "paste-text "].find((prefix) =>
     trimmed.startsWith(prefix),
   );
@@ -29,7 +29,7 @@ export function resolveInjectActions(action: string, pressedKeys: Set<string>): 
     return {
       type: "pasteText",
       text: decodeUtf8Base64(payload),
-      actions: ["paste"],
+      actions: [pressedKeys.has("Ctrl") ? "keypress V" : "paste"],
     };
   }
 

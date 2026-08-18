@@ -168,6 +168,19 @@ describe("Agent command execution", () => {
     expect([...runtime.pressedKeys]).toEqual(["Ctrl"]);
   });
 
+  it("retries an explicit key-down when recovery state survived a lost acknowledgement", async () => {
+    const runtime = createRuntime();
+    runtime.injectAction = vi.fn()
+      .mockRejectedValueOnce(new Error("ack lost"))
+      .mockResolvedValueOnce(undefined);
+
+    await expect(executeAgentCommand("key-down Ctrl", "poll", runtime)).rejects.toThrow("ack lost");
+    await expect(executeAgentCommand("key-down Ctrl", "webrtc", runtime)).resolves.toBe("executed");
+
+    expect(runtime.injectAction).toHaveBeenCalledTimes(2);
+    expect(runtime.injectAction).toHaveBeenNthCalledWith(2, "key-down Ctrl");
+  });
+
   it("serializes asynchronous key actions in enqueue order", async () => {
     const queue = createSerializedAgentCommandQueue();
     const order: string[] = [];

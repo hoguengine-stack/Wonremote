@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  consumeRemoteTextInput,
+  finishRemoteComposition,
+  isRemoteTextInputKeystroke,
   pressTrackedKey,
   pressTrackedMouseButton,
   releaseTrackedKeyByRemoteKey,
@@ -10,6 +13,28 @@ import {
 } from "./viewerInputState";
 
 describe("Viewer input state", () => {
+  it("captures ordinary printable keys through the local IME but preserves Ctrl shortcuts", () => {
+    expect(isRemoteTextInputKeystroke({ key: "a" })).toBe(true);
+    expect(isRemoteTextInputKeystroke({ key: "Process", isComposing: true })).toBe(true);
+    expect(isRemoteTextInputKeystroke({ key: "v", ctrlKey: true })).toBe(false);
+    expect(isRemoteTextInputKeystroke({ key: "F5" })).toBe(false);
+  });
+
+  it("emits completed Korean composition once even when a trailing input event repeats it", () => {
+    const completed = finishRemoteComposition("한");
+    expect(completed).toEqual({ text: "한", suppressNextValue: "한" });
+    expect(consumeRemoteTextInput("한", false, completed.suppressNextValue)).toEqual({
+      text: "",
+      suppressNextValue: "",
+    });
+    expect(finishRemoteComposition("", "한")).toEqual({ text: "한", suppressNextValue: "한" });
+  });
+
+  it("emits plain local text once and ignores intermediate composition input", () => {
+    expect(consumeRemoteTextInput("ㅎ", true, "")).toEqual({ text: "", suppressNextValue: "" });
+    expect(consumeRemoteTextInput("abc", false, "")).toEqual({ text: "abc", suppressNextValue: "" });
+  });
+
   it("ignores unsupported and duplicate mouse-button down transitions", () => {
     const pressed = new Set<0 | 1 | 2>();
 

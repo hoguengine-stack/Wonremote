@@ -1,5 +1,42 @@
 import type { MouseButtonCode } from "./remoteControlCommands";
 
+type RemoteTextKeystroke = {
+  key: string;
+  ctrlKey?: boolean;
+  altKey?: boolean;
+  metaKey?: boolean;
+  isComposing?: boolean;
+};
+
+export function isRemoteTextInputKeystroke(event: RemoteTextKeystroke): boolean {
+  if (event.ctrlKey || event.altKey || event.metaKey) {
+    return false;
+  }
+  return event.isComposing || event.key === "Process" || event.key.length === 1;
+}
+
+export function finishRemoteComposition(text: string, inputValue = ""): {
+  text: string;
+  suppressNextValue: string;
+} {
+  const completedText = text || inputValue;
+  return { text: completedText, suppressNextValue: completedText };
+}
+
+export function consumeRemoteTextInput(
+  value: string,
+  isComposing: boolean,
+  suppressNextValue: string,
+): { text: string; suppressNextValue: string } {
+  if (isComposing) {
+    return { text: "", suppressNextValue };
+  }
+  if (suppressNextValue && value === suppressNextValue) {
+    return { text: "", suppressNextValue: "" };
+  }
+  return { text: value, suppressNextValue: "" };
+}
+
 export function pressTrackedMouseButton(
   pressed: Set<MouseButtonCode>,
   browserButton: number,

@@ -2041,6 +2041,16 @@ input:focus {
   flex: 0 0 auto;
 }
 
+.remote-ime-input {
+  height: 1px;
+  left: -10000px;
+  opacity: 0;
+  pointer-events: none;
+  position: fixed;
+  top: 0;
+  width: 1px;
+}
+
 .session-actions-top {
   align-items: center;
   background: #111a23;

@@ -6,9 +6,12 @@ import {
 } from "./agentCommandActions";
 
 describe("agent command actions", () => {
-  it("drops duplicate key-down but always forwards key-up as an idempotent release", () => {
+  it("always forwards explicit key transitions even when tracked state may be stale", () => {
     const pressed = new Set(["Ctrl"]);
-    expect(resolveInjectActions("key-down Ctrl", pressed)).toEqual({ type: "inject", actions: [] });
+    expect(resolveInjectActions("key-down Ctrl", pressed)).toEqual({
+      type: "inject",
+      actions: ["key-down Ctrl"],
+    });
     expect(resolveInjectActions("key-up Shift", pressed)).toEqual({ type: "inject", actions: ["key-up Shift"] });
     expect(resolveInjectActions("key-up Ctrl", pressed)).toEqual({ type: "inject", actions: ["key-up Ctrl"] });
   });
@@ -71,6 +74,22 @@ describe("agent command actions", () => {
     expect(resolveInjectActions(`paste_text ${payload}`, new Set())).toEqual({
       type: "pasteText",
       text,
+      actions: ["paste"],
+    });
+    expect(resolveInjectActions(`paste-text-base64 ${payload}`, new Set(["Ctrl"]))).toEqual({
+      type: "pasteText",
+      text,
+      actions: ["keypress V"],
+    });
+  });
+
+  it("does not release a held Ctrl while completing a local clipboard paste", () => {
+    expect(resolveInjectActions("paste", new Set(["Ctrl"]))).toEqual({
+      type: "inject",
+      actions: ["keypress V"],
+    });
+    expect(resolveInjectActions("paste", new Set())).toEqual({
+      type: "inject",
       actions: ["paste"],
     });
   });

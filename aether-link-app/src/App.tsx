@@ -107,6 +107,7 @@ import {
   buildKeyboardCommand,
   buildMouseCommand,
   buildPasteTextCommand,
+  buildUnicodeTextCommand,
   buildSwitchMonitorCommand,
   buildSystemCommand,
   formatTransferStats,
@@ -115,6 +116,9 @@ import {
   type MouseButtonCode,
 } from "./domain/remoteControlCommands";
 import {
+  consumeRemoteTextInput,
+  finishRemoteComposition,
+  isRemoteTextInputKeystroke,
   normalizeWheelDelta,
   pressTrackedKey,
   pressTrackedMouseButton,
@@ -1893,6 +1897,9 @@ function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) {
     return false;
   }
+  if (target.closest("[data-remote-ime-input='true']")) {
+    return false;
+  }
   return Boolean(target.closest(
     "button, input, select, summary, textarea, a[href], [contenteditable='true'], [role='button']",
   ));
@@ -1930,6 +1937,9 @@ function RemoteSessionPanel({
   onCloseSession: () => void | Promise<void>;
 }) {
   const panelRef = React.useRef<HTMLElement | null>(null);
+  const imeInputRef = React.useRef<HTMLTextAreaElement | null>(null);
+  const imeComposingRef = React.useRef(false);
+  const suppressNextImeValueRef = React.useRef("");
   const remotePreviewRef = React.useRef<HTMLDivElement | null>(null);
   const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
   const pressedKeysRef = React.useRef<Map<string, string>>(new Map());
@@ -2590,7 +2600,7 @@ function RemoteSessionPanel({
       return;
     }
     e.currentTarget.setPointerCapture(e.pointerId);
-    panelRef.current?.focus({ preventScroll: true });
+    imeInputRef.current?.focus({ preventScroll: true });
     onInputEvent(buildMouseCommand("down", dx, dy, button));
   };
 
@@ -2677,16 +2687,12 @@ function RemoteSessionPanel({
     }
     const hangulToggle = isHangulToggleKey(event.key, event.code, event.keyCode);
     if (hangulToggle) {
-      event.preventDefault();
-      if (!event.repeat) {
-        suppressedKeyUpsRef.current.add(event.code || "Hangul");
-        onInputEvent("keypress Hangul");
+      if (event.repeat) {
+        event.preventDefault();
+        return;
       }
-      return;
-    }
-    if (!hangulToggle && (event.nativeEvent.isComposing || event.key === "Process" || event.keyCode === 229)) {
-      event.preventDefault();
-      suppressedKeyUpsRef.current.add(event.code || event.key);
+      suppressedKeyUpsRef.current.add(event.code || "Hangul");
+      imeInputRef.current?.focus({ preventScroll: true });
       return;
     }
     if (event.repeat) {
@@ -2711,9 +2717,6 @@ function RemoteSessionPanel({
       if (image) {
         const targetSessionId = sessionId;
         const targetTransport = webRtcTransportRef.current;
-        if (releaseTrackedKeyByRemoteKey(pressedKeysRef.current, "Ctrl")) {
-          onInputEvent("key-up Ctrl");
-        }
         if (!targetSessionId || !targetTransport || activeSessionIdRef.current !== targetSessionId) {
           return;
         }
@@ -2732,13 +2735,25 @@ function RemoteSessionPanel({
       }
       try {
         const text = await navigator.clipboard.readText();
-        if (text) {
-          onInputEvent(buildPasteTextCommand(text));
-        } else {
-          onInputEvent("paste");
-        }
+        onInputEvent(text ? buildPasteTextCommand(text) : "paste");
       } catch {
         onInputEvent("paste");
+      }
+      return;
+    }
+
+    const isLocalText = isRemoteTextInputKeystroke({
+      key: event.key,
+      ctrlKey: event.ctrlKey,
+      altKey: event.altKey,
+      metaKey: event.metaKey,
+      isComposing: event.nativeEvent.isComposing || event.keyCode === 229,
+    });
+    if (isLocalText) {
+      suppressedKeyUpsRef.current.add(event.code || event.key);
+      if (event.target !== imeInputRef.current && event.key.length === 1) {
+        event.preventDefault();
+        onInputEvent(buildUnicodeTextCommand(event.key));
       }
       return;
     }
@@ -2767,6 +2782,42 @@ function RemoteSessionPanel({
     event.preventDefault();
     onInputEvent(`key-up ${remoteKey}`);
   };
+
+  const handleImeCompositionStart = () => {
+    imeComposingRef.current = true;
+    suppressNextImeValueRef.current = "";
+  };
+
+  const handleImeCompositionEnd = (event: React.CompositionEvent<HTMLTextAreaElement>) => {
+    imeComposingRef.current = false;
+    const result = finishRemoteComposition(event.data, event.currentTarget.value);
+    suppressNextImeValueRef.current = result.suppressNextValue;
+    event.currentTarget.value = "";
+    if (result.text) {
+      onInputEvent(buildUnicodeTextCommand(result.text));
+    }
+  };
+
+  const handleImeInput = (event: React.FormEvent<HTMLTextAreaElement>) => {
+    const input = event.currentTarget;
+    const nativeEvent = event.nativeEvent as InputEvent;
+    const result = consumeRemoteTextInput(
+      input.value,
+      imeComposingRef.current || nativeEvent.isComposing,
+      suppressNextImeValueRef.current,
+    );
+    suppressNextImeValueRef.current = result.suppressNextValue;
+    if (!imeComposingRef.current && !nativeEvent.isComposing) {
+      input.value = "";
+    }
+    if (result.text) {
+      onInputEvent(buildUnicodeTextCommand(result.text));
+    }
+  };
+
+  useEffect(() => {
+    imeInputRef.current?.focus({ preventScroll: true });
+  }, [sessionId]);
 
   useEffect(() => {
     const handleWindowMouseUp = (event: MouseEvent) => {
@@ -3140,6 +3191,18 @@ function RemoteSessionPanel({
       onKeyDown={handleKeyDown}
       onKeyUp={handleKeyUp}
     >
+      <textarea
+        ref={imeInputRef}
+        className="remote-ime-input"
+        data-remote-ime-input="true"
+        aria-label="원격 키보드 입력"
+        autoCapitalize="off"
+        autoCorrect="off"
+        spellCheck={false}
+        onCompositionStart={handleImeCompositionStart}
+        onCompositionEnd={handleImeCompositionEnd}
+        onInput={handleImeInput}
+      />
       <div className="remote-work-area remote-canvas-viewport" data-testid="remote-canvas-viewport">
         <div className="remote-screen connected">
           <div
