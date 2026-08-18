@@ -1,12 +1,28 @@
 import { describe, expect, it } from "vitest";
-import { recordSuccessfulInjectAction, resolveInjectActions } from "./agentCommandActions";
+import {
+  recordPendingInjectAction,
+  recordSuccessfulInjectAction,
+  resolveInjectActions,
+} from "./agentCommandActions";
 
 describe("agent command actions", () => {
-  it("drops duplicate key-down and unmatched key-up transitions", () => {
+  it("drops duplicate key-down but always forwards key-up as an idempotent release", () => {
     const pressed = new Set(["Ctrl"]);
     expect(resolveInjectActions("key-down Ctrl", pressed)).toEqual({ type: "inject", actions: [] });
-    expect(resolveInjectActions("key-up Shift", pressed)).toEqual({ type: "inject", actions: [] });
+    expect(resolveInjectActions("key-up Shift", pressed)).toEqual({ type: "inject", actions: ["key-up Shift"] });
     expect(resolveInjectActions("key-up Ctrl", pressed)).toEqual({ type: "inject", actions: ["key-up Ctrl"] });
+  });
+
+  it("tracks a key-down before acknowledgement so an ambiguous failure can be released", () => {
+    const pressed = new Set<string>();
+
+    recordPendingInjectAction("key-down Ctrl", pressed);
+
+    expect([...pressed]).toEqual(["Ctrl"]);
+    expect(resolveInjectActions("key-up Ctrl", pressed)).toEqual({
+      type: "inject",
+      actions: ["key-up Ctrl"],
+    });
   });
 
   it("updates key state only after injection succeeds", () => {

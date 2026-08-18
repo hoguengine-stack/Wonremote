@@ -1,6 +1,7 @@
 import { SUPPORTED_SYSTEM_COMMANDS } from "../domain/remoteControlCommands";
 import {
   parseSecurityCodeCommand,
+  recordPendingInjectAction,
   recordSuccessfulInjectAction,
   resolveInjectActions,
 } from "./agentCommandActions";
@@ -181,6 +182,7 @@ export async function executeAgentCommand(
     await runtime.setClipboardText(resolved.text);
   }
   for (const resolvedAction of resolved.actions) {
+    recordPendingInjectAction(resolvedAction, runtime.pressedKeys);
     await runtime.injectAction(resolvedAction);
     recordSuccessfulInjectAction(resolvedAction, runtime.pressedKeys);
   }

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createAgentPointerState,
   pointerReleaseActions,
+  recordPendingPointerAction,
   recordSuccessfulPointerAction,
   shouldInjectPointerAction,
 } from "./agentPointerState";
@@ -24,12 +25,20 @@ describe("Agent pointer state", () => {
     expect(pointerReleaseActions(state)).toEqual([]);
   });
 
-  it("rejects duplicate down and unmatched up transitions", () => {
+  it("rejects duplicate down but always forwards up as an idempotent release", () => {
     const state = createAgentPointerState();
     expect(shouldInjectPointerAction("mouse-down 100 200 left", state)).toBe(true);
     recordSuccessfulPointerAction("mouse-down 100 200 left", state);
     expect(shouldInjectPointerAction("mouse-down 100 200 left", state)).toBe(false);
-    expect(shouldInjectPointerAction("mouse-up 100 200 right", state)).toBe(false);
+    expect(shouldInjectPointerAction("mouse-up 100 200 right", state)).toBe(true);
     expect(shouldInjectPointerAction("mouse-up 100 200 left", state)).toBe(true);
+  });
+
+  it("tracks mouse-down intent before acknowledgement so shutdown can release it", () => {
+    const state = createAgentPointerState();
+
+    recordPendingPointerAction("mouse-down 123 456 left", state);
+
+    expect(pointerReleaseActions(state)).toEqual(["mouse-up 123 456 left"]);
   });
 });

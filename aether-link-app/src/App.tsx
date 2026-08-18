@@ -115,6 +115,15 @@ import {
   type MouseButtonCode,
 } from "./domain/remoteControlCommands";
 import {
+  normalizeWheelDelta,
+  pressTrackedKey,
+  pressTrackedMouseButton,
+  releaseTrackedKey,
+  releaseTrackedKeyByRemoteKey,
+  releaseTrackedMouseButton,
+  shouldUseReliableInputFallback,
+} from "./domain/viewerInputState";
+import {
   REMOTE_FILE_CHUNK_BYTES,
   canUseFirestoreDirectFileTransfer,
   canTransferRemoteFile,
@@ -1889,16 +1898,6 @@ function isEditableTarget(target: EventTarget | null): boolean {
   ));
 }
 
-function mapMouseButton(button: number): MouseButtonCode {
-  if (button === 1) {
-    return 1;
-  }
-  if (button === 2) {
-    return 2;
-  }
-  return 0;
-}
-
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
   let binary = "";
@@ -1933,13 +1932,14 @@ function RemoteSessionPanel({
   const panelRef = React.useRef<HTMLElement | null>(null);
   const remotePreviewRef = React.useRef<HTMLDivElement | null>(null);
   const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
-  const pressedKeysRef = React.useRef<Set<string>>(new Set());
+  const pressedKeysRef = React.useRef<Map<string, string>>(new Map());
   const suppressedKeyUpsRef = React.useRef<Set<string>>(new Set());
   const pressedButtonsRef = React.useRef<Set<MouseButtonCode>>(new Set());
   const moveFrameRef = React.useRef<number | null>(null);
   const moveDelayTimerRef = React.useRef<number | null>(null);
   const lastMoveSentAtRef = React.useRef(0);
   const pendingMoveRef = React.useRef<{ dx: number; dy: number } | null>(null);
+  const lastPointerPointRef = React.useRef({ dx: 32768, dy: 32768 });
   const lastClipboardTextRef = React.useRef<string>("");
   const lastClipboardImageHashRef = React.useRef<string>("");
   const pingStateRef = React.useRef<{ start: number } | null>(null);
@@ -1956,7 +1956,9 @@ function RemoteSessionPanel({
   }, [sessionId]);
   const onInputEvent = React.useCallback((action: string) => {
     const sentOverWebRtc = webRtcTransportRef.current?.sendControl(action) ?? false;
-    return sendInputEvent(action, { localOnly: sentOverWebRtc });
+    return sendInputEvent(action, {
+      localOnly: sentOverWebRtc || !shouldUseReliableInputFallback(action),
+    });
   }, [sendInputEvent]);
   const dangerConfirmUntilRef = React.useRef<Record<string, number>>({});
   const [latencyReport, setLatencyReport] = useState<string>("");
@@ -2558,11 +2560,7 @@ function RemoteSessionPanel({
     }
     suppressedKeyUpsRef.current.clear();
     if (pressedButtonsRef.current.size > 0) {
-      const canvas = canvasRef.current;
-      const rect = canvas?.getBoundingClientRect();
-      const point = rect
-        ? mapRemotePoint(rect.left + rect.width / 2, rect.top + rect.height / 2, rect)
-        : { dx: 32768, dy: 32768 };
+      const point = lastPointerPointRef.current;
       for (const button of pressedButtonsRef.current) {
         onInputEvent(buildMouseCommand("up", point.dx, point.dy, button));
       }
@@ -2584,12 +2582,13 @@ function RemoteSessionPanel({
     if (!canvas) return;
 
     const rect = canvas.getBoundingClientRect();
-    const { dx, dy } = mapRemotePoint(e.clientX, e.clientY, rect);
-    const button = mapMouseButton(e.button);
-    if (pressedButtonsRef.current.has(button)) {
+    const point = mapRemotePoint(e.clientX, e.clientY, rect);
+    lastPointerPointRef.current = point;
+    const { dx, dy } = point;
+    const button = pressTrackedMouseButton(pressedButtonsRef.current, e.button);
+    if (button === null) {
       return;
     }
-    pressedButtonsRef.current.add(button);
     e.currentTarget.setPointerCapture(e.pointerId);
     panelRef.current?.focus({ preventScroll: true });
     onInputEvent(buildMouseCommand("down", dx, dy, button));
@@ -2601,12 +2600,13 @@ function RemoteSessionPanel({
     if (!canvas) return;
 
     const rect = canvas.getBoundingClientRect();
-    const { dx, dy } = mapRemotePoint(e.clientX, e.clientY, rect);
-    const button = mapMouseButton(e.button);
-    if (!pressedButtonsRef.current.has(button)) {
+    const point = mapRemotePoint(e.clientX, e.clientY, rect);
+    lastPointerPointRef.current = point;
+    const { dx, dy } = point;
+    const button = releaseTrackedMouseButton(pressedButtonsRef.current, e.button);
+    if (button === null) {
       return;
     }
-    pressedButtonsRef.current.delete(button);
     onInputEvent(buildMouseCommand("up", dx, dy, button));
     if (e.currentTarget.hasPointerCapture(e.pointerId)) {
       e.currentTarget.releasePointerCapture(e.pointerId);
@@ -2618,7 +2618,9 @@ function RemoteSessionPanel({
     if (!canvas) return;
 
     const rect = canvas.getBoundingClientRect();
-    pendingMoveRef.current = mapRemotePoint(e.clientX, e.clientY, rect);
+    const point = mapRemotePoint(e.clientX, e.clientY, rect);
+    pendingMoveRef.current = point;
+    lastPointerPointRef.current = point;
     if (moveFrameRef.current !== null || moveDelayTimerRef.current !== null) {
       return;
     }
@@ -2645,11 +2647,8 @@ function RemoteSessionPanel({
   };
 
   const handleCanvasPointerCancel = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current;
-    const rect = canvas?.getBoundingClientRect();
-    const point = rect
-      ? mapRemotePoint(e.clientX, e.clientY, rect)
-      : { dx: 32768, dy: 32768 };
+    e.preventDefault();
+    const point = lastPointerPointRef.current;
     for (const button of pressedButtonsRef.current) {
       onInputEvent(buildMouseCommand("up", point.dx, point.dy, button));
     }
@@ -2663,8 +2662,13 @@ function RemoteSessionPanel({
     if (!canvas) return;
 
     const rect = canvas.getBoundingClientRect();
-    const { dx, dy } = mapRemotePoint(e.clientX, e.clientY, rect);
-    onInputEvent(buildMouseCommand("wheel", dx, dy, 0, e.deltaY > 0 ? -120 : 120));
+    const point = mapRemotePoint(e.clientX, e.clientY, rect);
+    lastPointerPointRef.current = point;
+    const { dx, dy } = point;
+    const delta = normalizeWheelDelta(e.deltaY);
+    if (delta !== 0) {
+      onInputEvent(buildMouseCommand("wheel", dx, dy, 0, delta));
+    }
   };
 
   const handleKeyDown = async (event: React.KeyboardEvent<HTMLElement>) => {
@@ -2675,14 +2679,14 @@ function RemoteSessionPanel({
     if (hangulToggle) {
       event.preventDefault();
       if (!event.repeat) {
-        suppressedKeyUpsRef.current.add(event.key);
+        suppressedKeyUpsRef.current.add(event.code || "Hangul");
         onInputEvent("keypress Hangul");
       }
       return;
     }
     if (!hangulToggle && (event.nativeEvent.isComposing || event.key === "Process" || event.keyCode === 229)) {
       event.preventDefault();
-      suppressedKeyUpsRef.current.add(event.key);
+      suppressedKeyUpsRef.current.add(event.code || event.key);
       return;
     }
     if (event.repeat) {
@@ -2692,22 +2696,22 @@ function RemoteSessionPanel({
 
     if (event.ctrlKey && event.key === "Escape") {
       event.preventDefault();
-      if (pressedKeysRef.current.delete("Ctrl")) {
+      if (releaseTrackedKeyByRemoteKey(pressedKeysRef.current, "Ctrl")) {
         onInputEvent("key-up Ctrl");
       }
-      suppressedKeyUpsRef.current.add(event.key);
+      suppressedKeyUpsRef.current.add(event.code || "Esc");
       onInputEvent("keypress Win");
       return;
     }
 
     if (event.ctrlKey && event.key.toLowerCase() === "v") {
       event.preventDefault();
-      suppressedKeyUpsRef.current.add(event.key);
+      suppressedKeyUpsRef.current.add(event.code || event.key);
       const image = await readClipboardPngBlob();
       if (image) {
         const targetSessionId = sessionId;
         const targetTransport = webRtcTransportRef.current;
-        if (pressedKeysRef.current.delete("Ctrl")) {
+        if (releaseTrackedKeyByRemoteKey(pressedKeysRef.current, "Ctrl")) {
           onInputEvent("key-up Ctrl");
         }
         if (!targetSessionId || !targetTransport || activeSessionIdRef.current !== targetSessionId) {
@@ -2741,37 +2745,42 @@ function RemoteSessionPanel({
 
     event.preventDefault();
     const command = buildKeyboardCommand("keydown", event.key, event.code, event.keyCode);
-    pressedKeysRef.current.add(command.slice("key-down ".length));
+    const remoteKey = command.slice("key-down ".length);
+    if (!pressTrackedKey(pressedKeysRef.current, event.code || remoteKey, remoteKey)) {
+      return;
+    }
     onInputEvent(command);
   };
 
   const handleKeyUp = (event: React.KeyboardEvent<HTMLElement>) => {
-    if (isEditableTarget(event.target)) {
+    const command = buildKeyboardCommand("keyup", event.key, event.code, event.keyCode);
+    const fallbackRemoteKey = command.slice("key-up ".length);
+    const physicalKey = event.code || fallbackRemoteKey;
+    if (suppressedKeyUpsRef.current.delete(physicalKey)) {
+      event.preventDefault();
+      return;
+    }
+    const remoteKey = releaseTrackedKey(pressedKeysRef.current, physicalKey);
+    if (remoteKey === null) {
       return;
     }
     event.preventDefault();
-    if (suppressedKeyUpsRef.current.delete(event.key)) {
-      return;
-    }
-    const command = buildKeyboardCommand("keyup", event.key, event.code, event.keyCode);
-    pressedKeysRef.current.delete(command.slice("key-up ".length));
-    onInputEvent(command);
+    onInputEvent(`key-up ${remoteKey}`);
   };
 
   useEffect(() => {
     const handleWindowMouseUp = (event: MouseEvent) => {
-      if (pressedButtonsRef.current.size === 0) {
+      const button = releaseTrackedMouseButton(pressedButtonsRef.current, event.button);
+      if (button === null) {
         return;
       }
       const canvas = canvasRef.current;
       const rect = canvas?.getBoundingClientRect();
       const point = rect
         ? mapRemotePoint(event.clientX, event.clientY, rect)
-        : { dx: 32768, dy: 32768 };
-      for (const button of pressedButtonsRef.current) {
-        onInputEvent(buildMouseCommand("up", point.dx, point.dy, button));
-      }
-      pressedButtonsRef.current.clear();
+        : lastPointerPointRef.current;
+      lastPointerPointRef.current = point;
+      onInputEvent(buildMouseCommand("up", point.dx, point.dy, button));
     };
     const handleWindowBlur = () => releaseAllInputs();
     const handleVisibilityChange = () => {

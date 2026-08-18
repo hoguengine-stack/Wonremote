@@ -76,6 +76,7 @@ import {
 } from "./persistentInputShutdown";
 import {
   createAgentPointerState,
+  recordPendingPointerAction,
   recordSuccessfulPointerAction,
   shouldInjectPointerAction,
 } from "./agentPointerState";
@@ -1764,6 +1765,7 @@ function createAgentCommandRuntime(deviceId: string): AgentCommandRuntime {
         console.warn(`[Input guard] Ignoring duplicate pointer transition: ${action}`);
         return;
       }
+      recordPendingPointerAction(action, pointerState);
       await persistentInputInjector.inject(action);
       recordSuccessfulPointerAction(action, pointerState);
       console.log(`[Inject Success] ${action}`);

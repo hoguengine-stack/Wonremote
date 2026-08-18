@@ -48,6 +48,20 @@ import {
 const API_BASE_URL = import.meta.env.VITE_WONREMOTE_API_URL ?? "http://127.0.0.1:8787";
 const LOCAL_API_CONNECTION_ERROR =
   "WonRemote 연결에 실패했습니다. Firebase 설정 또는 내장 API 실행 상태를 확인해 주세요.";
+const sessionOperationTails = new Map<string, Promise<void>>();
+
+function runSessionOperation<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
+  const previous = sessionOperationTails.get(sessionId) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(operation);
+  const settled = current.then(() => undefined, () => undefined);
+  sessionOperationTails.set(sessionId, settled);
+  void settled.then(() => {
+    if (sessionOperationTails.get(sessionId) === settled) {
+      sessionOperationTails.delete(sessionId);
+    }
+  });
+  return current;
+}
 
 export async function loginAdmin(username: string, password: string): Promise<void> {
   if (isViewerFirebaseEnabled()) {
@@ -214,28 +228,32 @@ export async function connectByCode(connectionCode: string): Promise<{
 }
 
 export async function recordInput(sessionId: string, action: string): Promise<string[]> {
-  if (isViewerFirebaseEnabled()) {
-    return recordFirebaseInput(sessionId, action);
-  }
+  return runSessionOperation(sessionId, async () => {
+    if (isViewerFirebaseEnabled()) {
+      return recordFirebaseInput(sessionId, action);
+    }
 
-  const body = await request<{ inputLog: string[] }>(
-    `/api/sessions/${encodeURIComponent(sessionId)}/input`,
-    {
-      method: "POST",
-      body: { action },
-    },
-  );
-  return body.inputLog;
+    const body = await request<{ inputLog: string[] }>(
+      `/api/sessions/${encodeURIComponent(sessionId)}/input`,
+      {
+        method: "POST",
+        body: { action },
+      },
+    );
+    return body.inputLog;
+  });
 }
 
 export async function closeSession(sessionId: string): Promise<void> {
-  if (isViewerFirebaseEnabled()) {
-    await closeFirebaseSession(sessionId);
-    return;
-  }
+  await runSessionOperation(sessionId, async () => {
+    if (isViewerFirebaseEnabled()) {
+      await closeFirebaseSession(sessionId);
+      return;
+    }
 
-  await request(`/api/sessions/${encodeURIComponent(sessionId)}/close`, {
-    method: "POST",
+    await request(`/api/sessions/${encodeURIComponent(sessionId)}/close`, {
+      method: "POST",
+    });
   });
 }
 

@@ -13,10 +13,6 @@ export function resolveInjectActions(action: string, pressedKeys: Set<string>): 
   }
 
   if (trimmed.startsWith("key-up ")) {
-    const key = trimmed.slice("key-up ".length).trim();
-    if (key && !pressedKeys.has(key)) {
-      return { type: "inject", actions: [] };
-    }
     return { type: "inject", actions: [trimmed] };
   }
 
@@ -38,6 +34,17 @@ export function resolveInjectActions(action: string, pressedKeys: Set<string>): 
   }
 
   return { type: "inject", actions: [trimmed] };
+}
+
+export function recordPendingInjectAction(action: string, pressedKeys: Set<string>): void {
+  const trimmed = action.trim();
+  if (!trimmed.startsWith("key-down ")) {
+    return;
+  }
+  const key = trimmed.slice("key-down ".length).trim();
+  if (key) {
+    pressedKeys.add(key);
+  }
 }
 
 export function recordSuccessfulInjectAction(action: string, pressedKeys: Set<string>): void {

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ManagedDevice } from "../domain/types";
 import {
+  closeFirebaseSession,
   deleteFirebaseDevice,
   fetchFirebaseDevices,
   fetchFirebaseConnectionHistory,
@@ -8,16 +9,19 @@ import {
   fetchFirebaseTiles,
   isViewerFirebaseEnabled,
   logoutViewerWithFirebase,
+  recordFirebaseInput,
   uploadFirebaseFileToStorage,
   uploadFirebaseFileChunk,
 } from "../firebase/viewerFirebase";
 import {
+  closeSession,
   deleteRemoteDevice,
   fetchConnectionHistory,
   fetchDevices,
   fetchFileTransferReceipts,
   fetchTiles,
   logoutAdmin,
+  recordInput,
   uploadFileChunk,
   uploadFileToStorage,
 } from "./viewerApi";
@@ -279,5 +283,51 @@ describe("viewer API routing", () => {
 
     expect(isViewerFirebaseEnabled).toHaveBeenCalled();
     expect(logoutViewerWithFirebase).not.toHaveBeenCalled();
+  });
+
+  it("serializes Firebase fallback input so down and up cannot overtake each other", async () => {
+    let releaseFirst!: (value: string[]) => void;
+    const firstResult = new Promise<string[]>((resolve) => {
+      releaseFirst = resolve;
+    });
+    vi.mocked(recordFirebaseInput)
+      .mockImplementationOnce(() => firstResult)
+      .mockResolvedValueOnce([]);
+
+    const down = recordInput("session-input-order", "mouse-down 10 20 left");
+    const up = recordInput("session-input-order", "mouse-up 10 20 left");
+
+    await vi.waitFor(() => expect(recordFirebaseInput).toHaveBeenCalledTimes(1));
+    releaseFirst([]);
+    await down;
+    await up;
+
+    expect(recordFirebaseInput).toHaveBeenNthCalledWith(
+      1,
+      "session-input-order",
+      "mouse-down 10 20 left",
+    );
+    expect(recordFirebaseInput).toHaveBeenNthCalledWith(
+      2,
+      "session-input-order",
+      "mouse-up 10 20 left",
+    );
+  });
+
+  it("waits for queued fallback input before closing the same session", async () => {
+    let releaseInput!: (value: string[]) => void;
+    vi.mocked(recordFirebaseInput).mockImplementationOnce(() => new Promise((resolve) => {
+      releaseInput = resolve;
+    }));
+
+    const input = recordInput("session-close-order", "key-up Ctrl");
+    const close = closeSession("session-close-order");
+
+    await vi.waitFor(() => expect(releaseInput).toBeTypeOf("function"));
+    expect(closeFirebaseSession).not.toHaveBeenCalled();
+    releaseInput([]);
+    await input;
+    await close;
+    expect(closeFirebaseSession).toHaveBeenCalledWith("session-close-order");
   });
 });

@@ -35,6 +35,16 @@ export function recordSuccessfulPointerAction(action: string, state: AgentPointe
   }
 }
 
+export function recordPendingPointerAction(action: string, state: AgentPointerState): void {
+  const match = /^mouse-down\s+(-?\d+)\s+(-?\d+)\s+(left|middle|right)$/.exec(action.trim());
+  if (!match) {
+    return;
+  }
+  state.lastDx = Number(match[1]);
+  state.lastDy = Number(match[2]);
+  state.pressedButtons.add(match[3] as AgentMouseButton);
+}
+
 export function pointerReleaseActions(state: AgentPointerState): string[] {
   return [...state.pressedButtons]
     .reverse()
@@ -45,7 +55,5 @@ export function shouldInjectPointerAction(action: string, state: AgentPointerSta
   const match = /^mouse-(down|up)\s+-?\d+\s+-?\d+\s+(left|middle|right)$/.exec(action.trim());
   if (!match) return true;
   const button = match[2] as AgentMouseButton;
-  return match[1] === "down"
-    ? !state.pressedButtons.has(button)
-    : state.pressedButtons.has(button);
+  return match[1] !== "down" || !state.pressedButtons.has(button);
 }

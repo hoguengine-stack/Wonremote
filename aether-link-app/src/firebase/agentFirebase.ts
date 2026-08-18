@@ -15,6 +15,7 @@ import {
   type Unsubscribe,
 } from "firebase/firestore";
 import { getDownloadURL, ref } from "firebase/storage";
+import { orderAgentCommands } from "../domain/agentCommandOrdering";
 import type {
   AgentCommand,
   AgentCommandPollResult,
@@ -382,7 +383,7 @@ export async function pollAgentCommandsWithFirebase(
     await batch.commit();
   }
 
-  return { commands };
+  return { commands: orderAgentCommands(commands) };
 }
 
 export async function subscribeAgentCommandsWithFirebase(
@@ -448,7 +449,7 @@ export async function subscribeAgentCommandsWithFirebase(
         });
         await batch.commit();
         if (active && commands.length > 0) {
-          await onCommands(commands);
+          await onCommands(orderAgentCommands(commands));
         }
       }).catch((error) => {
         onError(error instanceof Error ? error : new Error(String(error)));

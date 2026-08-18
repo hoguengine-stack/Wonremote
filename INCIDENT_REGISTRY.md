@@ -250,3 +250,18 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - Regression proof: `npm test -- src/desktopPackaging.test.ts src/remoteSessionLayout.test.ts src/domain/versioning.test.ts` -> 3 files and 72 tests passed; the release contract now asserts height-filling Fit with `max-width: none`.
 - Release proof: GitHub Actions run `31981757862` passed the corrected release-contract gate and published `v0.1.67` with exactly the Viewer installer, Agent installer, and signed update manifest.
 - Remaining blocker: none.
+
+## INC-20260818-001: Remote input release could be discarded or reordered
+
+- Detected: 2026-08-18.
+- Severity: P1.
+- Affected: Viewer pointer/keyboard generation, Firebase input fallback, Agent input acknowledgement tracking, and session shutdown.
+- Status: source-fixed-physical-verification-required.
+- User-visible symptom: A single click or held key could remain active, mouse down/up could arrive out of order, and keyboard release could disappear after focus moved inside the Viewer.
+- Minimal trigger: Press or click in a remote session while the WebRTC control channel falls back to Firebase, move focus to a Viewer control, or lose the input-pipe acknowledgement after Win32 accepted the down event.
+- Root cause and contributors: Viewer tracked keys by the mutable logical key instead of physical code, unsupported mouse buttons fell through as left click, fallback requests ran concurrently, session close could overtake release commands, and Agent state was updated only after acknowledgement so a lost acknowledgement caused the later release to be suppressed.
+- Fix commit(s): pending current working-tree change; do not release until committed with this incident trailer.
+- Permanent guard: Track physical keys and exact mouse buttons, release at the last pointer coordinate, serialize reliable fallback transitions per session, drop lossy move fallback, order Firestore commands by creation time, enqueue releases before session close, record down intent before acknowledgement, and never suppress an explicit up transition.
+- Regression proof: `npm test -- src/api/viewerApi.test.ts src/domain/viewerInputState.test.ts src/remoteSessionLayout.test.ts src/domain/agentCommandOrdering.test.ts src/agent/agentCommandActions.test.ts src/agent/agentPointerState.test.ts src/agent/agentCommandExecution.test.ts src/agent/persistentInputShutdown.test.ts src/agent/persistentInputInjector.test.ts` -> 9 files and 105 tests passed.
+- Release proof: none; no version bump, installer build, or publication was requested for this source-only fix.
+- Remaining blocker: Verify left/right/middle click hold and release, modifier chords, focus loss, and session close on two physical PCs after the next requested build.

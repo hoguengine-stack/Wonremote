@@ -45,8 +45,9 @@ describe("connected remote session layout", () => {
   });
 
   it("deduplicates pointer transitions and cancels delayed movement on release", () => {
-    expect(appSource).toContain("pressedButtonsRef.current.has(button)");
-    expect(appSource).toContain("if (!pressedButtonsRef.current.has(button))");
+    expect(appSource).toContain("pressTrackedMouseButton(pressedButtonsRef.current, e.button)");
+    expect(appSource).toContain("releaseTrackedMouseButton(pressedButtonsRef.current, e.button)");
+    expect(appSource).toContain("releaseTrackedMouseButton(pressedButtonsRef.current, event.button)");
     expect(appSource).toContain("setPointerCapture(e.pointerId)");
     expect(appSource).toContain("releasePointerCapture(e.pointerId)");
     expect(appSource).toContain("onPointerCancel={handleCanvasPointerCancel}");
@@ -55,6 +56,26 @@ describe("connected remote session layout", () => {
     expect(appSource).toContain("pendingMoveRef.current = null");
     expect(appSource).toContain("cancelPendingPointerMove();");
     expect(appSource).toContain("releaseAllInputs();");
+  });
+
+  it("releases tracked keys after focus moves to an internal control", () => {
+    const start = appSource.indexOf("const handleKeyUp");
+    const end = appSource.indexOf("useEffect(() =>", start);
+    const keyUpBlock = appSource.slice(start, end);
+
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    expect(keyUpBlock).toContain("releaseTrackedKey(pressedKeysRef.current");
+    expect(keyUpBlock).not.toContain("isEditableTarget(event.target)");
+  });
+
+  it("releases held mouse buttons at the last remote pointer position", () => {
+    const start = appSource.indexOf("const releaseAllInputs");
+    const end = appSource.indexOf("const handlePanelBlur", start);
+    const releaseBlock = appSource.slice(start, end);
+
+    expect(releaseBlock).toContain("lastPointerPointRef.current");
+    expect(releaseBlock).not.toContain("rect.left + rect.width / 2");
   });
 
   it("places actions before the remote work area and exposes fullscreen control", () => {

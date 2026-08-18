@@ -158,14 +158,14 @@ describe("Agent command execution", () => {
     expect([...runtime.pressedKeys]).toEqual(["Ctrl"]);
   });
 
-  it("does not track a key-down command that failed before acknowledgement", async () => {
+  it("retains an attempted key-down after an ambiguous acknowledgement failure", async () => {
     const runtime = createRuntime();
     runtime.injectAction = vi.fn(async () => {
       throw new Error("input rejected");
     });
 
     await expect(executeAgentCommand("key-down Ctrl", "poll", runtime)).rejects.toThrow("input rejected");
-    expect([...runtime.pressedKeys]).toEqual([]);
+    expect([...runtime.pressedKeys]).toEqual(["Ctrl"]);
   });
 
   it("serializes asynchronous key actions in enqueue order", async () => {
