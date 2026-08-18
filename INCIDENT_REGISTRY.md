@@ -275,7 +275,7 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - User-visible symptom: The Viewer Hangul key did not switch the local IME, Ctrl+C/Ctrl+V failed, and a remote taskbar click could be ignored.
 - Minimal trigger: Toggle Hangul while the remote canvas owns focus, or send a new key/button down after the persistent input pipe accepted the previous down but its acknowledgement was lost.
 - Root cause and contributors: Viewer toggled the remote IME instead of composing in a local hidden input; Agent treated recovery state as an input deduplication filter, so stale pressed state discarded the next explicit key/button down.
-- Fix commit(s): pending.
+- Fix commit(s): `5357953`.
 - Permanent guard: Compose text only through the focused local IME sink, keep modifier shortcuts on raw down/up events, compare the actual event target before suppressing text input, and use Agent pressed state only for shutdown recovery while forwarding every explicit down/up transition.
 - Regression proof: `npm test -- src/domain/viewerInputState.test.ts src/domain/remoteControlCommands.test.ts src/remoteSessionLayout.test.ts src/agent/agentCommandActions.test.ts src/agent/agentPointerState.test.ts src/agent/agentCommandExecution.test.ts` -> 6 files and 95 tests passed.
 - Release proof: none; no build, version bump, or publication was requested.
