@@ -286,14 +286,14 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - Detected: 2026-08-19T05:15:30Z.
 - Severity: P1.
 - Affected: Viewer focused-session and fullscreen canvas sizing.
-- Status: fixed-not-released.
+- Status: physical-verification-required.
 - User-visible symptom: The remote desktop filled the available height but its left and right edges were outside the visible fullscreen viewport.
 - Minimal trigger: Open a remote session whose aspect ratio differs from the Viewer viewport and enter fullscreen Fit mode.
 - Root cause and contributors: The canvas was forced to `height: 100%` with no width limit while its parent hid overflow, so height-based scaling expanded the canvas beyond the viewport width.
 - Fix commit(s): `9b9409b`.
 - Permanent guard: Fit sizes the canvas element itself with automatic width and height plus 100% maximum bounds. `object-fit` is prohibited on the remote canvas because internal letterboxing would make pointer coordinates disagree with the visible image.
 - Regression proof: `npm test -- src/remoteSessionLayout.test.ts src/desktopPackaging.test.ts` passed 69 tests; the final combined focused gate passed 92 tests across five files.
-- Release proof: Pending the requested `v0.1.71` installer build.
+- Release proof: `v0.1.71` published Viewer and Agent x86 installers plus the signed update manifest through successful GitHub Actions run `32218801753`.
 - Remaining blocker: Confirm no horizontal crop and correct edge clicks on a physical Viewer at mismatched aspect ratios.
 
 ## INC-20260819-002: A completed click could remain as a remote drag
@@ -301,12 +301,12 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - Detected: 2026-08-19T05:15:30Z.
 - Severity: P1.
 - Affected: Viewer pointer capture, movement batching, and global pointer-release recovery.
-- Status: fixed-not-released.
+- Status: physical-verification-required.
 - User-visible symptom: Moving the mouse after one left click could be interpreted as dragging on the remote PC.
 - Minimal trigger: Complete a click while the canvas loses or misses its pointer-up event, then move the pointer over the remote canvas.
 - Root cause and contributors: Release recovery listened for legacy `mouseup` only, did not reconcile the browser `buttons` mask during movement, and could leave a scheduled move alive across the release boundary.
 - Fix commit(s): `b56423b`.
 - Permanent guard: Global `pointerup` and `pointercancel` release tracked buttons, every release cancels pending movement, and a move whose physical `buttons` mask no longer contains a tracked button emits the missing `mouse-up` before that move. Only the pointer ID that owns the active press may reconcile or release it; session, visibility, blur, and lost-capture release paths remain mandatory.
 - Regression proof: Focused RED runs failed before the missing-release and pointer-ownership guards; `npm test -- src/domain/viewerInputState.test.ts src/viewerPointerLifecycle.test.ts` passed 17 tests, and the final combined focused gate passed 92 tests across five files.
-- Release proof: Pending the requested `v0.1.71` installer build.
+- Release proof: `v0.1.71` published Viewer and Agent x86 installers plus the signed update manifest through successful GitHub Actions run `32218801753`.
 - Remaining blocker: Confirm click, intentional drag, capture loss, and session-close release on two physical PCs.
