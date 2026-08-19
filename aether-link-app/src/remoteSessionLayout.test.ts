@@ -182,8 +182,15 @@ describe("connected remote session layout", () => {
     expect(stylesSource).toContain("max-height");
     expect(stylesSource).toContain("overflow-y");
     expect(stylesSource).toContain(".remote-canvas");
-    expect(stylesSource).toContain("height: 100% !important;");
-    expect(stylesSource).toContain("max-width: none;");
+    expect(stylesSource).toMatch(
+      /\.session-fullscreen-active \.remote-preview canvas\s*\{[^}]*height: auto !important;[^}]*max-height: 100%;[^}]*max-width: 100%;[^}]*width: auto !important;/s,
+    );
+    expect(stylesSource).toMatch(
+      /\.remote-focus-mode \.remote-preview canvas\s*\{[^}]*height: auto !important;[^}]*max-height: 100%;[^}]*max-width: 100%;[^}]*width: auto !important;/s,
+    );
+    expect(stylesSource).not.toMatch(
+      /(?:\.session-fullscreen-active \.remote-preview canvas|\.remote-focus-mode \.remote-preview canvas|\.remote-canvas)\s*\{[^}]*object-fit:/s,
+    );
     expect(capabilitySource).toContain("core:window:allow-is-fullscreen");
     expect(capabilitySource).toContain("core:window:allow-set-fullscreen");
     expect(stylesSource).not.toMatch(/^\.input-log\s*\{/m);

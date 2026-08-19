@@ -323,9 +323,12 @@ describe("desktop packaging scaffold", () => {
     expect(stylesSource).toContain("max-height: none;");
     expect(stylesSource).toContain("order: -1;");
     expect(stylesSource).toContain("overflow: visible;");
-    expect(stylesSource).toContain("height: 100% !important;");
-    expect(stylesSource).toContain("max-width: none;");
-    expect(stylesSource).toContain("width: auto !important;");
+    expect(stylesSource).toMatch(
+      /\.session-fullscreen-active \.remote-preview canvas\s*\{[^}]*height: auto !important;[^}]*max-height: 100%;[^}]*max-width: 100%;[^}]*width: auto !important;/s,
+    );
+    expect(stylesSource).not.toMatch(
+      /(?:\.session-fullscreen-active \.remote-preview canvas|\.remote-canvas)\s*\{[^}]*object-fit:/s,
+    );
   });
 
   it("routes Firebase file uploads through Storage before chunking starts", () => {

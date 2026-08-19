@@ -1047,9 +1047,9 @@ input:focus {
 }
 
 .remote-focus-mode .remote-preview canvas {
-  height: 100% !important;
-  max-height: none;
-  max-width: none;
+  height: auto !important;
+  max-height: 100%;
+  max-width: 100%;
   width: auto !important;
 }
 
@@ -1120,9 +1120,9 @@ input:focus {
 }
 
 .session-fullscreen-active .remote-preview canvas {
-  height: 100% !important;
-  max-height: none;
-  max-width: none;
+  height: auto !important;
+  max-height: 100%;
+  max-width: 100%;
   width: auto !important;
 }
 
@@ -1199,9 +1199,9 @@ input:focus {
 }
 
 .remote-canvas {
-  height: 100%;
-  max-height: none;
-  max-width: none;
+  height: auto;
+  max-height: 100%;
+  max-width: 100%;
   touch-action: none;
   width: auto;
 }
