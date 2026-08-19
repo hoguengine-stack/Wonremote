@@ -125,6 +125,7 @@ import {
   releaseTrackedKey,
   releaseTrackedKeyByRemoteKey,
   releaseTrackedMouseButton,
+  releaseTrackedMouseButtonsMissingFromMask,
   shouldUseReliableInputFallback,
 } from "./domain/viewerInputState";
 import {
@@ -1945,6 +1946,7 @@ function RemoteSessionPanel({
   const pressedKeysRef = React.useRef<Map<string, string>>(new Map());
   const suppressedKeyUpsRef = React.useRef<Set<string>>(new Set());
   const pressedButtonsRef = React.useRef<Set<MouseButtonCode>>(new Set());
+  const activePointerIdRef = React.useRef<number | null>(null);
   const moveFrameRef = React.useRef<number | null>(null);
   const moveDelayTimerRef = React.useRef<number | null>(null);
   const lastMoveSentAtRef = React.useRef(0);
@@ -2576,6 +2578,7 @@ function RemoteSessionPanel({
       }
       pressedButtonsRef.current.clear();
     }
+    activePointerIdRef.current = null;
   };
 
   const handlePanelBlur = (event: React.FocusEvent<HTMLElement>) => {
@@ -2588,6 +2591,9 @@ function RemoteSessionPanel({
 
   const handleCanvasPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     e.preventDefault();
+    if (activePointerIdRef.current !== null && activePointerIdRef.current !== e.pointerId) {
+      return;
+    }
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -2599,6 +2605,7 @@ function RemoteSessionPanel({
     if (button === null) {
       return;
     }
+    activePointerIdRef.current = e.pointerId;
     e.currentTarget.setPointerCapture(e.pointerId);
     imeInputRef.current?.focus({ preventScroll: true });
     onInputEvent(buildMouseCommand("down", dx, dy, button));
@@ -2606,6 +2613,9 @@ function RemoteSessionPanel({
 
   const handleCanvasPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
     e.preventDefault();
+    if (activePointerIdRef.current !== null && activePointerIdRef.current !== e.pointerId) {
+      return;
+    }
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -2613,24 +2623,43 @@ function RemoteSessionPanel({
     const point = mapRemotePoint(e.clientX, e.clientY, rect);
     lastPointerPointRef.current = point;
     const { dx, dy } = point;
+    cancelPendingPointerMove();
     const button = releaseTrackedMouseButton(pressedButtonsRef.current, e.button);
-    if (button === null) {
-      return;
+    if (button !== null) {
+      onInputEvent(buildMouseCommand("up", dx, dy, button));
     }
-    onInputEvent(buildMouseCommand("up", dx, dy, button));
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-      e.currentTarget.releasePointerCapture(e.pointerId);
+    if (pressedButtonsRef.current.size === 0) {
+      activePointerIdRef.current = null;
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
     }
   };
 
   const handleCanvasPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (activePointerIdRef.current !== null && activePointerIdRef.current !== e.pointerId) {
+      return;
+    }
     const canvas = canvasRef.current;
     if (!canvas) return;
 
     const rect = canvas.getBoundingClientRect();
     const point = mapRemotePoint(e.clientX, e.clientY, rect);
-    pendingMoveRef.current = point;
     lastPointerPointRef.current = point;
+    const releasedButtons = releaseTrackedMouseButtonsMissingFromMask(
+      pressedButtonsRef.current,
+      e.buttons,
+    );
+    if (releasedButtons.length > 0) {
+      cancelPendingPointerMove();
+      for (const button of releasedButtons) {
+        onInputEvent(buildMouseCommand("up", point.dx, point.dy, button));
+      }
+      if (pressedButtonsRef.current.size === 0) {
+        activePointerIdRef.current = null;
+      }
+    }
+    pendingMoveRef.current = point;
     if (moveFrameRef.current !== null || moveDelayTimerRef.current !== null) {
       return;
     }
@@ -2658,12 +2687,16 @@ function RemoteSessionPanel({
 
   const handleCanvasPointerCancel = (e: React.PointerEvent<HTMLCanvasElement>) => {
     e.preventDefault();
+    if (activePointerIdRef.current !== null && activePointerIdRef.current !== e.pointerId) {
+      return;
+    }
+    cancelPendingPointerMove();
     const point = lastPointerPointRef.current;
     for (const button of pressedButtonsRef.current) {
       onInputEvent(buildMouseCommand("up", point.dx, point.dy, button));
     }
     pressedButtonsRef.current.clear();
-    cancelPendingPointerMove();
+    activePointerIdRef.current = null;
   };
 
   const handleCanvasWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
@@ -2820,7 +2853,11 @@ function RemoteSessionPanel({
   }, [sessionId]);
 
   useEffect(() => {
-    const handleWindowMouseUp = (event: MouseEvent) => {
+    const handleWindowPointerUp = (event: PointerEvent) => {
+      if (activePointerIdRef.current !== null && activePointerIdRef.current !== event.pointerId) {
+        return;
+      }
+      cancelPendingPointerMove();
       const button = releaseTrackedMouseButton(pressedButtonsRef.current, event.button);
       if (button === null) {
         return;
@@ -2832,6 +2869,15 @@ function RemoteSessionPanel({
         : lastPointerPointRef.current;
       lastPointerPointRef.current = point;
       onInputEvent(buildMouseCommand("up", point.dx, point.dy, button));
+      if (pressedButtonsRef.current.size === 0) {
+        activePointerIdRef.current = null;
+      }
+    };
+    const handleWindowPointerCancel = (event: PointerEvent) => {
+      if (activePointerIdRef.current !== null && activePointerIdRef.current !== event.pointerId) {
+        return;
+      }
+      releaseAllInputs();
     };
     const handleWindowBlur = () => releaseAllInputs();
     const handleVisibilityChange = () => {
@@ -2840,11 +2886,13 @@ function RemoteSessionPanel({
       }
     };
 
-    window.addEventListener("mouseup", handleWindowMouseUp);
+    window.addEventListener("pointerup", handleWindowPointerUp, true);
+    window.addEventListener("pointercancel", handleWindowPointerCancel, true);
     window.addEventListener("blur", handleWindowBlur);
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
-      window.removeEventListener("mouseup", handleWindowMouseUp);
+      window.removeEventListener("pointerup", handleWindowPointerUp, true);
+      window.removeEventListener("pointercancel", handleWindowPointerCancel, true);
       window.removeEventListener("blur", handleWindowBlur);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       releaseAllInputs();

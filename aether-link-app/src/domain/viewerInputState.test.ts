@@ -8,6 +8,7 @@ import {
   releaseTrackedKeyByRemoteKey,
   releaseTrackedKey,
   releaseTrackedMouseButton,
+  releaseTrackedMouseButtonsMissingFromMask,
   normalizeWheelDelta,
   shouldUseReliableInputFallback,
 } from "./viewerInputState";
@@ -50,6 +51,27 @@ describe("Viewer input state", () => {
     expect(releaseTrackedMouseButton(pressed, 2)).toBe(2);
     expect([...pressed]).toEqual([0]);
     expect(releaseTrackedMouseButton(pressed, 2)).toBeNull();
+  });
+
+  it("keeps a real drag pressed while the browser still reports the button", () => {
+    const pressed = new Set<0 | 1 | 2>([0]);
+
+    expect(releaseTrackedMouseButtonsMissingFromMask(pressed, 1)).toEqual([]);
+    expect([...pressed]).toEqual([0]);
+  });
+
+  it("repairs a missed pointer-up before the next buttonless move", () => {
+    const pressed = new Set<0 | 1 | 2>([0, 2]);
+
+    expect(releaseTrackedMouseButtonsMissingFromMask(pressed, 0)).toEqual([0, 2]);
+    expect(pressed.size).toBe(0);
+  });
+
+  it("maps the browser buttons bitmask to left, middle, and right buttons", () => {
+    const pressed = new Set<0 | 1 | 2>([0, 1, 2]);
+
+    expect(releaseTrackedMouseButtonsMissingFromMask(pressed, 5)).toEqual([2]);
+    expect([...pressed]).toEqual([0, 1]);
   });
 
   it("deduplicates keydown and releases the original token by physical key identity", () => {

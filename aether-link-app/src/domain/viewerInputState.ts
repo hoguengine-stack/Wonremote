@@ -60,6 +60,20 @@ export function releaseTrackedMouseButton(
   return button;
 }
 
+export function releaseTrackedMouseButtonsMissingFromMask(
+  pressed: Set<MouseButtonCode>,
+  browserButtons: number,
+): MouseButtonCode[] {
+  const released: MouseButtonCode[] = [];
+  for (const button of pressed) {
+    if ((browserButtons & browserButtonsMask(button)) === 0) {
+      pressed.delete(button);
+      released.push(button);
+    }
+  }
+  return released;
+}
+
 export function pressTrackedKey(
   pressed: Map<string, string>,
   physicalKey: string,
@@ -110,4 +124,10 @@ export function shouldUseReliableInputFallback(action: string): boolean {
 
 function normalizeMouseButton(button: number): MouseButtonCode | null {
   return button === 0 || button === 1 || button === 2 ? button : null;
+}
+
+function browserButtonsMask(button: MouseButtonCode): number {
+  if (button === 0) return 1;
+  if (button === 1) return 4;
+  return 2;
 }

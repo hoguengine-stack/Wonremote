@@ -145,7 +145,9 @@ describe("connected remote session layout", () => {
 
     expect(start).toBeGreaterThanOrEqual(0);
     expect(end).toBeGreaterThan(start);
-    expect(moveBlock).not.toContain("pressedButtonsRef.current.size === 0");
+    expect(moveBlock).not.toMatch(
+      /if \(pressedButtonsRef\.current\.size === 0\)\s*\{\s*return;/,
+    );
     expect(moveBlock).toContain("moveDelayTimerRef.current");
     expect(moveBlock).toContain("33 - (performance.now() - lastMoveSentAtRef.current)");
     expect(moveBlock).toContain("requestAnimationFrame");
