@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { addDoc, setDoc, updateDoc } from "firebase/firestore";
-import { safeAddDoc, safeBatchUpdate, safeSetDoc, safeUpdateDoc } from "./firestoreWrite";
+import { safeAddDoc, safeBatchSet, safeBatchUpdate, safeSetDoc, safeUpdateDoc } from "./firestoreWrite";
 
 vi.mock("firebase/firestore", () => ({
   addDoc: vi.fn(async () => ({ id: "doc-1" })),
@@ -59,6 +59,20 @@ describe("safe Firestore writes", () => {
     expect(batch.update).toHaveBeenCalledWith(
       { path: "commands/command-1" },
       { deliveredAt: "server-time", state: "delivered" },
+    );
+  });
+
+  it("strips undefined values before batch.set", () => {
+    const batch = { set: vi.fn() };
+
+    safeBatchSet(batch as any, { path: "sessions/session-1" } as any, {
+      state: "connected",
+      optional: undefined,
+    });
+
+    expect(batch.set).toHaveBeenCalledWith(
+      { path: "sessions/session-1" },
+      { state: "connected" },
     );
   });
 });

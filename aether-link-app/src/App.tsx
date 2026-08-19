@@ -83,7 +83,6 @@ import { getViewerVersion } from "./domain/versioning";
 import {
   resolveViewerUpdateIntervalMs,
   shouldNotifyUpdate,
-  shouldReloadViewerForUpdate,
 } from "./domain/updatePolicy";
 import { shouldPollViewerTileFallback } from "./domain/realtimeTransportPolicy";
 import {
@@ -126,6 +125,7 @@ import {
   releaseTrackedKeyByRemoteKey,
   releaseTrackedMouseButton,
   releaseTrackedMouseButtonsMissingFromMask,
+  shouldForwardTrackedKeyRepeat,
   shouldUseReliableInputFallback,
 } from "./domain/viewerInputState";
 import {
@@ -285,7 +285,6 @@ function ViewerApp() {
   const [apiError, setApiError] = useState("");
   const [query, setQuery] = useState("");
   const [selectedStore, setSelectedStore] = useState("전체");
-  const [updateAlert, setUpdateAlert] = useState<string | null>(null);
   const [isManualUpdateChecking, setIsManualUpdateChecking] = useState(false);
   const [viewerUpdateDialog, setViewerUpdateDialog] = useState<ViewerUpdateDialogState | null>(null);
   const [isRefreshingDevices, setIsRefreshingDevices] = useState(false);
@@ -348,7 +347,7 @@ function ViewerApp() {
     return () => { active = false; };
   }, [isAuthenticated]);
 
-  // Native Viewer shell owns installed-app updates so WebView CORS cannot block them.
+  // Native commands perform signed checks and installation; the WebView owns user consent.
   useEffect(() => {
     if ((window as any).__TAURI_INTERNALS__) {
       return;
@@ -356,8 +355,6 @@ function ViewerApp() {
 
     const currentViewerVersion = getViewerVersion(import.meta.env);
     let active = true;
-    let reloadTimer: ReturnType<typeof setTimeout> | undefined;
-
     const checkViewerUpdate = async () => {
       try {
         const data = await fetchViewerUpdateMetadata(import.meta.env);
@@ -365,12 +362,7 @@ function ViewerApp() {
 
         const latestVersion = data.latestVersion;
         if (active && typeof latestVersion === "string" && shouldNotifyUpdate(data, currentViewerVersion)) {
-          setUpdateAlert(latestVersion);
-          if (shouldReloadViewerForUpdate(data, currentViewerVersion) && !reloadTimer) {
-            reloadTimer = setTimeout(() => {
-              window.location.reload();
-            }, 1500);
-          }
+          setViewerUpdateDialog((current) => current ?? { kind: "available", version: latestVersion });
         }
       } catch (e) {
         // ignore
@@ -385,9 +377,38 @@ function ViewerApp() {
     return () => {
       active = false;
       clearInterval(interval);
-      if (reloadTimer) {
-        clearTimeout(reloadTimer);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!(window as any).__TAURI_INTERNALS__) {
+      return;
+    }
+
+    let active = true;
+    const checkNativeViewerUpdate = async () => {
+      try {
+        const update = await invoke<{ available: boolean; latestVersion: string }>("check_installer_update");
+        if (active && update.available) {
+          setViewerUpdateDialog((current) => current ?? {
+            kind: "available",
+            version: update.latestVersion,
+          });
+        }
+      } catch {
+        // Automatic checks retry later. Manual checks surface the error to the user.
       }
+    };
+
+    const initialTimer = window.setTimeout(() => void checkNativeViewerUpdate(), 3_000);
+    const interval = window.setInterval(
+      () => void checkNativeViewerUpdate(),
+      resolveViewerUpdateIntervalMs(import.meta.env),
+    );
+    return () => {
+      active = false;
+      window.clearTimeout(initialTimer);
+      window.clearInterval(interval);
     };
   }, []);
 
@@ -422,11 +443,18 @@ function ViewerApp() {
 
   const handleConfirmViewerUpdate = async () => {
     setViewerUpdateDialog(null);
-    if ((window as any).__TAURI_INTERNALS__) {
-      await invoke("start_installer_update", { restartMode: "viewer" });
-      return;
+    try {
+      if ((window as any).__TAURI_INTERNALS__) {
+        await invoke("start_installer_update", { restartMode: "viewer" });
+        return;
+      }
+      window.location.reload();
+    } catch (error) {
+      setViewerUpdateDialog({
+        kind: "error",
+        message: error instanceof Error ? error.message : "업데이트를 시작할 수 없습니다.",
+      });
     }
-    window.location.reload();
   };
 
   const handleRefreshDeviceList = async () => {
@@ -859,22 +887,24 @@ function ViewerApp() {
     }
   }
 
+  const updateDialogOverlay = viewerUpdateDialog ? (
+    <ViewerUpdateDialog
+      state={viewerUpdateDialog}
+      onClose={() => setViewerUpdateDialog(null)}
+      onConfirm={() => void handleConfirmViewerUpdate()}
+    />
+  ) : null;
+
   if (isCheckingAutoLogin) {
-    return <AutoLoginScreen />;
+    return <><AutoLoginScreen />{updateDialogOverlay}</>;
   }
 
   if (!isAuthenticated) {
-    return <LoginScreen error={loginError} onSubmit={handleLogin} />;
+    return <><LoginScreen error={loginError} onSubmit={handleLogin} />{updateDialogOverlay}</>;
   }
 
   return (
     <div className={`app-shell${isRemoteFocusMode ? " remote-focus-mode" : ""}`}>
-      {updateAlert && (
-        <div className="update-notice" role="status">
-          <TriangleAlert size={17} />
-          새 Viewer 업데이트가 있습니다. {updateAlert} 버전으로 갱신하는 중입니다.
-        </div>
-      )}
       <aside className="sidebar">
         <div className="brand-row" data-testid="viewer-brand">
           <div className="brand-mark">W</div>
@@ -1036,13 +1066,7 @@ function ViewerApp() {
           onSubmit={handleSecureConnectSubmit}
         />
       )}
-      {viewerUpdateDialog && (
-        <ViewerUpdateDialog
-          state={viewerUpdateDialog}
-          onClose={() => setViewerUpdateDialog(null)}
-          onConfirm={() => void handleConfirmViewerUpdate()}
-        />
-      )}
+      {updateDialogOverlay}
       {isRolloutOpen && rolloutDraft && (
         <RolloutDialog
           initial={rolloutDraft}
@@ -1357,29 +1381,30 @@ function ViewerUpdateDialog({
   onClose: () => void;
   onConfirm: () => void;
 }) {
-  useModalEscape(onClose);
   const isAvailable = state.kind === "available";
-  const title = isAvailable ? "업데이트 준비 완료" : state.kind === "current" ? "최신 버전입니다" : "업데이트 확인 실패";
+  useModalEscape(isAvailable ? () => undefined : onClose);
+  const title = isAvailable ? "최신 업데이트가 있습니다" : state.kind === "current" ? "최신 버전입니다" : "업데이트 확인 실패";
   const message = isAvailable
-    ? `${state.version} 버전을 설치할 수 있습니다. 지금 업데이트할까요?`
+    ? `${state.version} 버전 업데이트를 진행합니다.`
     : state.kind === "current"
       ? `현재 Viewer는 ${state.version} 버전입니다.`
       : state.message;
 
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+    <div className="modal-backdrop" role="presentation" onMouseDown={isAvailable ? undefined : onClose}>
       <section className="modal-panel compact-modal" role="dialog" aria-modal="true" aria-labelledby="viewer-update-title" onMouseDown={(event) => event.stopPropagation()}>
         <div className="section-heading">
           <h2 id="viewer-update-title">{title}</h2>
         </div>
         <p className="modal-help">{message}</p>
         <div className="modal-actions">
-          <button className="secondary-button" type="button" onClick={onClose}>
-            {isAvailable ? "취소" : "닫기"}
-          </button>
-          {isAvailable && (
+          {isAvailable ? (
             <button className="primary-button compact" type="button" onClick={onConfirm}>
-              지금 업데이트
+              확인
+            </button>
+          ) : (
+            <button className="secondary-button" type="button" onClick={onClose}>
+              닫기
             </button>
           )}
         </div>
@@ -1976,7 +2001,7 @@ function RemoteSessionPanel({
   const [latencyReport, setLatencyReport] = useState<string>("");
   const [pingState, setPingState] = useState<{ start: number } | null>(null);
   const [zoom, setZoom] = useState(1);
-  const [isSessionFullscreen, setIsSessionFullscreen] = useState(true);
+  const [isSessionFullscreen, setIsSessionFullscreen] = useState(false);
   const [isFullscreenToolbarOpen, setIsFullscreenToolbarOpen] = useState(false);
   const [streamPerformanceMode, setStreamPerformanceMode] = useState<StreamPerformanceMode>(() =>
     normalizeStreamPerformanceMode(window.localStorage.getItem("wonremote-stream-performance-mode")),
@@ -1999,7 +2024,7 @@ function RemoteSessionPanel({
   const [isChatOpen, setIsChatOpen] = useState(false);
 
   useEffect(() => {
-    setIsSessionFullscreen(true);
+    setIsSessionFullscreen(false);
     setIsFullscreenToolbarOpen(false);
   }, [sessionId]);
 
@@ -2728,13 +2753,11 @@ function RemoteSessionPanel({
       imeInputRef.current?.focus({ preventScroll: true });
       return;
     }
-    if (event.repeat) {
-      event.preventDefault();
-      return;
-    }
-
     if (event.ctrlKey && event.key === "Escape") {
       event.preventDefault();
+      if (event.repeat) {
+        return;
+      }
       if (releaseTrackedKeyByRemoteKey(pressedKeysRef.current, "Ctrl")) {
         onInputEvent("key-up Ctrl");
       }
@@ -2745,6 +2768,9 @@ function RemoteSessionPanel({
 
     if (event.ctrlKey && event.key.toLowerCase() === "v") {
       event.preventDefault();
+      if (event.repeat) {
+        return;
+      }
       suppressedKeyUpsRef.current.add(event.code || event.key);
       const image = await readClipboardPngBlob();
       if (image) {
@@ -2794,7 +2820,14 @@ function RemoteSessionPanel({
     event.preventDefault();
     const command = buildKeyboardCommand("keydown", event.key, event.code, event.keyCode);
     const remoteKey = command.slice("key-down ".length);
-    if (!pressTrackedKey(pressedKeysRef.current, event.code || remoteKey, remoteKey)) {
+    const physicalKey = event.code || remoteKey;
+    if (event.repeat) {
+      if (shouldForwardTrackedKeyRepeat(pressedKeysRef.current, physicalKey, remoteKey)) {
+        onInputEvent(command);
+      }
+      return;
+    }
+    if (!pressTrackedKey(pressedKeysRef.current, physicalKey, remoteKey)) {
       return;
     }
     onInputEvent(command);

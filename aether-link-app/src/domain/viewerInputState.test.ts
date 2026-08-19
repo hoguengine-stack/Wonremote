@@ -11,6 +11,7 @@ import {
   releaseTrackedMouseButtonsMissingFromMask,
   normalizeWheelDelta,
   shouldUseReliableInputFallback,
+  shouldForwardTrackedKeyRepeat,
 } from "./viewerInputState";
 
 describe("Viewer input state", () => {
@@ -81,6 +82,17 @@ describe("Viewer input state", () => {
     expect(pressTrackedKey(pressed, "KeyA", "a")).toBe(false);
     expect(releaseTrackedKey(pressed, "KeyA")).toBe("A");
     expect(releaseTrackedKey(pressed, "KeyA")).toBeNull();
+  });
+
+  it("forwards repeat keydown only while the same physical key remains pressed", () => {
+    const pressed = new Map<string, string>();
+
+    expect(shouldForwardTrackedKeyRepeat(pressed, "Backspace", "Backspace")).toBe(false);
+    expect(pressTrackedKey(pressed, "Backspace", "Backspace")).toBe(true);
+    expect(shouldForwardTrackedKeyRepeat(pressed, "Backspace", "Backspace")).toBe(true);
+    expect(shouldForwardTrackedKeyRepeat(pressed, "Backspace", "Delete")).toBe(false);
+    expect(releaseTrackedKey(pressed, "Backspace")).toBe("Backspace");
+    expect(shouldForwardTrackedKeyRepeat(pressed, "Backspace", "Backspace")).toBe(false);
   });
 
   it("can release a modifier by the remote token used for a synthesized shortcut", () => {

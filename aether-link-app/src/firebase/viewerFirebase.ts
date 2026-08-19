@@ -78,7 +78,7 @@ import { buildAgentAuthEmail, buildAgentAuthPassword, buildViewerAuthCredentials
 import { buildFirestoreDevice, mapFirestoreDevice, mergeFirstRunDeviceDocument } from "./firestoreDevice";
 import { getWonRemoteFirebaseServices } from "./firebaseServices";
 import { throwExplainedFirebaseAuthError } from "./firebaseError";
-import { safeAddDoc, safeBatchUpdate, safeSetDoc, safeUpdateDoc } from "./firestoreWrite";
+import { safeAddDoc, safeBatchSet, safeBatchUpdate, safeSetDoc, safeUpdateDoc } from "./firestoreWrite";
 import type { UpdateFleetRollout } from "../domain/updateFleetPolicy";
 
 type ViewerFirebaseEnv = ImportMetaEnv;
@@ -156,6 +156,10 @@ export interface ViewerWebRtcTransport {
     onProgress?: (receivedBytes: number, totalBytes: number) => void;
   }) => Promise<boolean>;
 }
+
+// Covers the full connection watchdog window even under key repeat and pointer movement.
+// Returning false here would mix the ordered WebRTC stream with Firestore fallback writes.
+const MAX_PENDING_WEBRTC_CONTROL_ACTIONS = 2_048;
 
 export function isViewerFirebaseEnabled(env: ViewerFirebaseEnv = import.meta.env): boolean {
   return resolveFirebaseConfig(env) !== null;
@@ -789,6 +793,7 @@ export async function startFirebaseViewerWebRtcTransport(
   let unsubscribeSignal: Unsubscribe | null = null;
   let unsubscribeAgentCandidates: Unsubscribe | null = null;
   let connectWatchdog: ReturnType<typeof setTimeout> | null = null;
+  let pendingControlActions: string[] = [];
   const frameAssembler = new WebRtcFrameAssembler();
   const fileAckStates = new Map<string, WebRtcFileAckMessage>();
   const fileAckWaiters = new Map<string, Set<{
@@ -839,6 +844,7 @@ export async function startFirebaseViewerWebRtcTransport(
       // best effort cleanup
     }
     rejectAllFileWaiters(new Error("WebRTC file channel closed."));
+    pendingControlActions = [];
     peer.close();
   };
 
@@ -855,19 +861,38 @@ export async function startFirebaseViewerWebRtcTransport(
   const channel = peer.createDataChannel(WEBRTC_TILE_CHANNEL_LABEL, viewerTileDataChannelOptions());
   const controlChannel = peer.createDataChannel(WEBRTC_CONTROL_CHANNEL_LABEL, { ordered: true });
   const fileChannel = peer.createDataChannel(WEBRTC_FILE_CHANNEL_LABEL, { ordered: true });
+  const markConnectionReady = () => {
+    if (!channelOpened || !controlChannelOpened) {
+      return;
+    }
+    clearConnectWatchdog();
+    handlers.onState?.("webrtc-open");
+  };
   controlChannel.onopen = () => {
     controlChannelOpened = true;
+    const queued = pendingControlActions;
+    pendingControlActions = [];
+    try {
+      for (const payload of queued) {
+        controlChannel.send(payload);
+      }
+    } catch (error) {
+      reportUnavailable("control-channel-send-failed", error instanceof Error ? error.message : String(error));
+      return;
+    }
     handlers.onState?.("webrtc-control-open");
+    markConnectionReady();
   };
   controlChannel.onclose = () => {
     controlChannelOpened = false;
     if (!closedByCaller && !resourcesClosed) {
       handlers.onState?.("webrtc-control-closed");
+      reportUnavailable("control-channel-closed");
     }
   };
   controlChannel.onerror = () => {
     controlChannelOpened = false;
-    handlers.onError?.(new Error("Viewer WebRTC control channel failed."));
+    reportUnavailable("control-channel-error", "Viewer WebRTC control channel failed.");
   };
   fileChannel.onopen = () => {
     fileChannelOpened = true;
@@ -913,8 +938,8 @@ export async function startFirebaseViewerWebRtcTransport(
   };
   channel.onopen = () => {
     channelOpened = true;
-    clearConnectWatchdog();
-    handlers.onState?.("webrtc-open");
+    handlers.onState?.("webrtc-tiles-open");
+    markConnectionReady();
   };
   channel.onclose = () => {
     if (closedByCaller || resourcesClosed) {
@@ -996,27 +1021,36 @@ export async function startFirebaseViewerWebRtcTransport(
     (error) => handlers.onError?.(error),
   );
 
-  const offer = await peer.createOffer();
-  await peer.setLocalDescription(offer);
-  const localOffer = peer.localDescription ?? offer;
-  await safeSetDoc(
-    signalRef,
-    {
-      offer: {
-        negotiationId,
-        type: localOffer.type,
-        sdp: localOffer.sdp,
-      },
-      negotiationId,
-      state: "viewer-offer",
-      updatedAt: serverTimestamp(),
-    },
-    { merge: true },
-  );
-  handlers.onState?.("webrtc-offer-sent");
+  const connectTimeoutMs = resolveWebRtcConnectTimeoutMs(env);
   connectWatchdog = setTimeout(() => {
-    reportUnavailable("timeout", `${resolveWebRtcConnectTimeoutMs(env)}ms without an open data channel`);
-  }, resolveWebRtcConnectTimeoutMs(env));
+    reportUnavailable("timeout", `${connectTimeoutMs}ms without open tile and control channels`);
+  }, connectTimeoutMs);
+
+  void (async () => {
+    const offer = await peer.createOffer();
+    await peer.setLocalDescription(offer);
+    const localOffer = peer.localDescription ?? offer;
+    await safeSetDoc(
+      signalRef,
+      {
+        offer: {
+          negotiationId,
+          type: localOffer.type,
+          sdp: localOffer.sdp,
+        },
+        negotiationId,
+        state: "viewer-offer",
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true },
+    );
+    if (resourcesClosed || closedByCaller) {
+      return;
+    }
+    handlers.onState?.("webrtc-offer-sent");
+  })().catch((error) => {
+    reportUnavailable("offer-failed", error instanceof Error ? error.message : String(error));
+  });
 
   const waitForFileAck = (transferId: string, minReceivedChunks: number): Promise<WebRtcFileAckMessage> => {
     const current = fileAckStates.get(transferId);
@@ -1103,11 +1137,23 @@ export async function startFirebaseViewerWebRtcTransport(
       closeResources();
     },
     sendControl: (action) => {
-      if (!controlChannelOpened || controlChannel.readyState !== "open") {
+      if (resourcesClosed || closedByCaller) {
         return false;
       }
+      const payload = serializeWebRtcControlAction(action);
+      if (!controlChannelOpened || controlChannel.readyState !== "open") {
+        if (pendingControlActions.length >= MAX_PENDING_WEBRTC_CONTROL_ACTIONS) {
+          reportUnavailable(
+            "control-queue-overflow",
+            `${MAX_PENDING_WEBRTC_CONTROL_ACTIONS} queued actions before the control channel opened`,
+          );
+          return false;
+        }
+        pendingControlActions.push(payload);
+        return true;
+      }
       try {
-        controlChannel.send(serializeWebRtcControlAction(action));
+        controlChannel.send(payload);
         return true;
       } catch (error) {
         handlers.onError?.(error instanceof Error ? error : new Error(String(error)));
@@ -1222,17 +1268,20 @@ async function openFirebaseSessionDirect(
   }
 
   const session = buildConnectedSession(deviceId);
-  await safeSetDoc(
-    doc(services.db, "sessions", session.id),
-    {
-      ...session,
-      ownerUid: userId,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    },
-    { merge: true },
-  );
-  await enqueueFirebaseDeviceCommandDirect(deviceId, `start-stream ${session.id}`, env, session.id);
+  const batch = writeBatch(services.db);
+  safeBatchSet(batch, doc(services.db, "sessions", session.id), {
+    ...session,
+    ownerUid: userId,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  }, { merge: true });
+  safeBatchSet(batch, doc(collection(services.db, "devices", deviceId, "commands")), {
+    action: `start-stream ${session.id}`,
+    createdAt: serverTimestamp(),
+    state: "pending",
+    sessionId: session.id,
+  });
+  await batch.commit();
   return {
     inputLog: [`${new Date().toLocaleTimeString()} start-stream queued via Firestore fallback`],
     session,

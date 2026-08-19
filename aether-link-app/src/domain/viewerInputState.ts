@@ -86,6 +86,14 @@ export function pressTrackedKey(
   return true;
 }
 
+export function shouldForwardTrackedKeyRepeat(
+  pressed: Map<string, string>,
+  physicalKey: string,
+  remoteKey: string,
+): boolean {
+  return Boolean(physicalKey && remoteKey && pressed.get(physicalKey) === remoteKey);
+}
+
 export function releaseTrackedKey(
   pressed: Map<string, string>,
   physicalKey: string,

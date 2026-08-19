@@ -771,7 +771,7 @@ describe("desktop packaging scaffold", () => {
     expect(viewerModeSetup).not.toContain('arg("--watch")');
   });
 
-  it("checks installed Viewer updates from the native shell instead of the WebView", () => {
+  it("checks installed Viewer updates natively but installs only after WebView confirmation", () => {
     const tauriLib = readFileSync(path.join(projectRoot, "src-tauri", "src", "lib.rs"), "utf8");
     const appTsx = readFileSync(path.join(projectRoot, "src", "App.tsx"), "utf8");
     const viewerModeSetup = tauriLib.slice(
@@ -783,9 +783,10 @@ describe("desktop packaging scaffold", () => {
       tauriLib.indexOf("// Viewer Mode Setup"),
     );
 
-    expect(tauriLib).toContain("fn start_viewer_update_watcher");
-    expect(viewerModeSetup).toContain("start_viewer_update_watcher(app.handle().clone())");
+    expect(tauriLib).not.toContain("fn start_viewer_update_watcher");
+    expect(viewerModeSetup).not.toContain("start_installer_update(");
     expect(agentModeSetup).not.toContain("start_viewer_update_watcher");
+    expect(tauriLib).toContain("restart_viewer_from_tray(app)");
     expect(tauriLib).toContain('.env("WONREMOTE_UPDATE_PRODUCT", restart_mode)');
     expect(tauriLib).toContain('.env("WONREMOTE_TAURI_UPDATE_BROKER", "1")');
     expect(tauriLib).toContain("launch_brokered_update_handoff");
@@ -802,8 +803,11 @@ describe("desktop packaging scaffold", () => {
     expect(nativeBranch).toContain('invoke<{ available: boolean; latestVersion: string }>("check_installer_update")');
     expect(nativeBranch).not.toContain("fetchViewerUpdateMetadata");
     expect(nativeBranch).not.toContain("github.com");
+    expect(appTsx).toContain("const checkNativeViewerUpdate");
     expect(appTsx).toContain('invoke("start_installer_update", { restartMode: "viewer" })');
-    expect(appTsx).toContain("Native Viewer shell owns installed-app updates");
+    expect(appTsx).toContain("the WebView owns user consent");
+    expect(appTsx).toContain('const title = isAvailable ? "최신 업데이트가 있습니다"');
+    expect(appTsx).toContain("`${state.version} 버전 업데이트를 진행합니다.`");
   });
 
   it("starts the bundled local API server before agent registration or heartbeat", () => {

@@ -105,8 +105,8 @@ describe("connected remote session layout", () => {
     expect(block).toContain("session-fullscreen-active");
     expect(block).toContain('className="session-fullscreen-exit"');
     expect(block).toContain("창모드");
-    expect(appSource).toContain("useState(true)");
-    expect(appSource).toContain("setIsSessionFullscreen(true)");
+    expect(appSource).toContain("const [isSessionFullscreen, setIsSessionFullscreen] = useState(false)");
+    expect(appSource).toContain("setIsSessionFullscreen(false)");
     expect(block).toContain("isFullscreenToolbarOpen");
     expect(block).toContain("session-fullscreen-tools-open");
     expect(block).toContain('className="session-fullscreen-toolbar-toggle"');
@@ -129,6 +129,9 @@ describe("connected remote session layout", () => {
     expect(appSource).toContain("isManualUpdateChecking");
     expect(appSource).toContain('setViewerUpdateDialog({ kind: "available"');
     expect(appSource).toContain("function ViewerUpdateDialog");
+    expect(appSource).toContain('const title = isAvailable ? "최신 업데이트가 있습니다"');
+    expect(appSource).toContain("`${state.version} 버전 업데이트를 진행합니다.`");
+    expect(appSource).toContain("확인");
     expect(stylesSource).toContain(".viewer-update-button");
   });
 

@@ -27,6 +27,7 @@ vi.mock("./firebaseServices", () => ({
 
 vi.mock("./firestoreWrite", () => ({
   safeAddDoc: firestoreMocks.safeAddDoc,
+  safeBatchSet: vi.fn(),
   safeBatchUpdate: vi.fn(),
   safeSetDoc: firestoreMocks.safeSetDoc,
   safeUpdateDoc: vi.fn(),
@@ -79,6 +80,7 @@ describe("Viewer WebRTC transport", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -97,12 +99,15 @@ describe("Viewer WebRTC transport", () => {
     expect(tileChannel?.options).toMatchObject({ ordered: false });
     expect(controlChannel?.options).toMatchObject({ ordered: true });
     expect(fileChannel?.options).toMatchObject({ ordered: true });
-    expect(transport.sendControl("key-down Ctrl")).toBe(false);
+    expect(transport.sendControl("key-down Ctrl")).toBe(true);
+    expect(controlChannel!.send).not.toHaveBeenCalled();
 
     controlChannel!.readyState = "open";
     controlChannel!.onopen?.();
-    expect(transport.sendControl("key-down Ctrl")).toBe(true);
+    expect(controlChannel!.send).toHaveBeenCalledOnce();
     expect(parseWebRtcControlAction(controlChannel!.send.mock.calls[0][0])).toBe("key-down Ctrl");
+    expect(transport.sendControl("key-up Ctrl")).toBe(true);
+    expect(parseWebRtcControlAction(controlChannel!.send.mock.calls[1][0])).toBe("key-up Ctrl");
 
     fileChannel!.readyState = "open";
     fileChannel!.onopen?.();
@@ -163,5 +168,79 @@ describe("Viewer WebRTC transport", () => {
 
     transport.close();
     expect(FakePeerConnection.latest.close).toHaveBeenCalledOnce();
+    expect(transport.sendControl("key-up Ctrl")).toBe(false);
+  });
+
+  it("exposes an ordered control queue before the Firestore offer write finishes", async () => {
+    let finishOfferWrite: (() => void) | undefined;
+    firestoreMocks.safeSetDoc.mockImplementationOnce(() => new Promise<undefined>((resolve) => {
+      finishOfferWrite = () => resolve(undefined);
+    }));
+    const { startFirebaseViewerWebRtcTransport } = await import("./viewerFirebase");
+    let resolvedTransport: Awaited<ReturnType<typeof startFirebaseViewerWebRtcTransport>> | undefined;
+
+    const transportPromise = startFirebaseViewerWebRtcTransport(
+      "session-fast-start",
+      { onFrame: vi.fn() },
+      {} as ImportMetaEnv,
+    );
+    void transportPromise.then((transport) => {
+      resolvedTransport = transport;
+    });
+
+    await vi.waitFor(() => expect(firestoreMocks.safeSetDoc).toHaveBeenCalledOnce());
+    await Promise.resolve();
+    expect(resolvedTransport).toBeDefined();
+    expect(resolvedTransport!.sendControl("key-down Backspace")).toBe(true);
+
+    const controlChannel = FakePeerConnection.latest.channels.get("wonremote-control")!;
+    expect(controlChannel.send).not.toHaveBeenCalled();
+    controlChannel.readyState = "open";
+    controlChannel.onopen?.();
+    expect(parseWebRtcControlAction(controlChannel.send.mock.calls[0][0])).toBe("key-down Backspace");
+
+    finishOfferWrite?.();
+    const transport = await transportPromise;
+    transport.close();
+  });
+
+  it("keeps the startup watchdog active until both tile and control channels open", async () => {
+    vi.useFakeTimers();
+    const { startFirebaseViewerWebRtcTransport } = await import("./viewerFirebase");
+    const onError = vi.fn();
+    const transport = await startFirebaseViewerWebRtcTransport(
+      "session-missing-control",
+      { onError, onFrame: vi.fn() },
+      { VITE_WONREMOTE_RTC_CONNECT_TIMEOUT_MS: "2000" } as unknown as ImportMetaEnv,
+    );
+
+    const tileChannel = FakePeerConnection.latest.channels.get("wonremote-tiles")!;
+    tileChannel.readyState = "open";
+    tileChannel.onopen?.();
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({
+      message: expect.stringContaining("without open tile and control channels"),
+    }));
+    expect(transport.sendControl("key-down A")).toBe(false);
+  });
+
+  it("closes a saturated pre-open queue before allowing Firestore fallback", async () => {
+    const { startFirebaseViewerWebRtcTransport } = await import("./viewerFirebase");
+    const onError = vi.fn();
+    const transport = await startFirebaseViewerWebRtcTransport(
+      "session-control-overflow",
+      { onError, onFrame: vi.fn() },
+      {} as ImportMetaEnv,
+    );
+
+    for (let index = 0; index < 2_048; index += 1) {
+      expect(transport.sendControl(`key-down Repeat${index}`)).toBe(true);
+    }
+    expect(transport.sendControl("key-up Repeat2047")).toBe(false);
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({
+      message: expect.stringContaining("control-queue-overflow"),
+    }));
+    expect(transport.sendControl("key-release-all")).toBe(false);
   });
 });

@@ -68,18 +68,53 @@ const PUBLIC_FIREBASE_MESSAGING_SENDER_ID: &str = "52940136204";
 const PORTABLE_MARKER_FILENAME: &str = "wonremote-portable.json";
 const UPDATE_HANDOFF_PREFIX: &str = "[WonRemoteUpdateHandoff]";
 const UPDATE_CHECK_PREFIX: &str = "[WonRemoteUpdateCheck]";
-const VIEWER_UPDATE_INITIAL_DELAY: Duration = Duration::from_secs(3);
-const VIEWER_UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(15 * 60);
-const VIEWER_UPDATE_FAILURE_RETRY_DELAY: Duration = Duration::from_secs(60);
-const VIEWER_UPDATE_WAIT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 #[cfg(target_arch = "x86")]
 const WIN32_AGENT_TRAY_ID: u32 = 37;
 #[cfg(target_arch = "x86")]
 const WM_WONREMOTE_AGENT_TRAY: u32 = WM_APP + 37;
 static PANIC_LOGGER: Once = Once::new();
 static VIEWER_UPDATE_CHECK_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
-static VIEWER_RESTART_AFTER_CHECK_REQUESTED: AtomicBool = AtomicBool::new(false);
-static VIEWER_UPDATE_RETRY_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ViewerUpdateEntryPoint {
+    Startup,
+    TrayRestart,
+    ConfirmedWebView,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ViewerUpdateAction {
+    None,
+    RestartOnly,
+    Install,
+}
+
+fn viewer_update_action(entry_point: ViewerUpdateEntryPoint) -> ViewerUpdateAction {
+    match entry_point {
+        ViewerUpdateEntryPoint::Startup => ViewerUpdateAction::None,
+        ViewerUpdateEntryPoint::TrayRestart => ViewerUpdateAction::RestartOnly,
+        ViewerUpdateEntryPoint::ConfirmedWebView => ViewerUpdateAction::Install,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct MainWindowPolicy {
+    width: f64,
+    height: f64,
+    min_width: f64,
+    min_height: f64,
+    resizable: bool,
+}
+
+fn main_window_policy(is_agent: bool) -> Option<MainWindowPolicy> {
+    is_agent.then_some(MainWindowPolicy {
+        width: 400.0,
+        height: 520.0,
+        min_width: 400.0,
+        min_height: 520.0,
+        resizable: false,
+    })
+}
 
 #[derive(serde::Deserialize, serde::Serialize)]
 struct ViewerUpdateCheck {
@@ -625,12 +660,37 @@ where
     }
 }
 
+fn apply_main_window_policy(
+    window: &tauri::WebviewWindow,
+    is_agent: bool,
+) -> tauri::Result<()> {
+    let Some(policy) = main_window_policy(is_agent) else {
+        return Ok(());
+    };
+
+    window.set_min_size(Some(tauri::LogicalSize::new(
+        policy.min_width,
+        policy.min_height,
+    )))?;
+    window.set_size(tauri::LogicalSize::new(policy.width, policy.height))?;
+    window.set_resizable(policy.resizable)?;
+    window.center()?;
+    Ok(())
+}
+
 fn show_main_window_with_log(app: &tauri::AppHandle, reason: &str) {
     append_runtime_log("window", &format!("{reason}: show requested"));
     let Some(window) = app.get_webview_window("main") else {
         append_runtime_log("window", &format!("{reason}: main window not found"));
         return;
     };
+
+    if let Err(error) = apply_main_window_policy(&window, launched_as_agent()) {
+        append_runtime_log(
+            "window",
+            &format!("{reason}: Agent window policy failed: {error}"),
+        );
+    }
 
     match window.show() {
         Ok(_) => append_runtime_log("window", &format!("{reason}: show ok")),
@@ -1429,6 +1489,27 @@ fn schedule_viewer_restart(executable: &Path) -> Result<(), String> {
         .map_err(|error| format!("failed to schedule Viewer restart: {error}"))
 }
 
+fn restart_viewer_from_tray(app: &tauri::AppHandle) {
+    if viewer_update_action(ViewerUpdateEntryPoint::TrayRestart)
+        != ViewerUpdateAction::RestartOnly
+    {
+        append_runtime_log("tray-menu", "viewer restart blocked by Native update policy");
+        return;
+    }
+
+    append_runtime_log("tray-menu", "viewer restart requested");
+    let restart = env::current_exe()
+        .map_err(|error| error.to_string())
+        .and_then(|executable| schedule_viewer_restart(&executable));
+    match restart {
+        Ok(()) => app.exit(0),
+        Err(error) => {
+            append_runtime_log("tray-menu", &error);
+            show_main_window_with_log(app, "viewer-restart-schedule-failed");
+        }
+    }
+}
+
 #[tauri::command]
 fn start_installer_update(
     app: tauri::AppHandle,
@@ -1449,8 +1530,18 @@ fn start_installer_update(
     let package_kind = packaged_update_kind(&resources.root);
     let restart_executable = node_compatible_path(&env::current_exe().map_err(|error| error.to_string())?);
     let is_viewer_update = restart_mode == "viewer";
-    if is_viewer_update && restart_after_check.unwrap_or(false) {
-        VIEWER_RESTART_AFTER_CHECK_REQUESTED.store(true, Ordering::Release);
+    if is_viewer_update {
+        if restart_after_check.unwrap_or(false) {
+            return Err(
+                "Viewer restartAfterCheck is disabled; restart and update installation are separate actions."
+                    .to_string(),
+            );
+        }
+        if viewer_update_action(ViewerUpdateEntryPoint::ConfirmedWebView)
+            != ViewerUpdateAction::Install
+        {
+            return Err("Viewer update installation requires user confirmation.".to_string());
+        }
     }
     if is_viewer_update && VIEWER_UPDATE_CHECK_IN_FLIGHT.swap(true, Ordering::AcqRel) {
         append_runtime_log("viewer-native-update", "signed update check already running");
@@ -1478,7 +1569,6 @@ fn start_installer_update(
         Err(error) => {
             if is_viewer_update {
                 VIEWER_UPDATE_CHECK_IN_FLIGHT.store(false, Ordering::Release);
-                VIEWER_UPDATE_RETRY_REQUESTED.store(true, Ordering::Release);
             }
             append_runtime_log("updater", &format!("spawn failed: {error}"));
             return Err(error.to_string());
@@ -1523,7 +1613,6 @@ fn start_installer_update(
             }
         });
     }
-    let restart_app = app.clone();
     thread::spawn(move || {
         match child.wait() {
             Ok(status) => {
@@ -1532,36 +1621,18 @@ fn start_installer_update(
                     && !status.success()
                     && !update_handoff_started.load(Ordering::Acquire)
                 {
-                    VIEWER_UPDATE_RETRY_REQUESTED.store(true, Ordering::Release);
                     append_runtime_log(
                         "viewer-native-update",
-                        "updater failed before a handoff; retry requested in 60 seconds",
+                        "updater failed before a handoff; waiting for another user-confirmed attempt",
                     );
                 }
             }
             Err(error) => {
                 append_runtime_log("updater", &format!("wait failed: {error}"));
-                if is_viewer_update && !update_handoff_started.load(Ordering::Acquire) {
-                    VIEWER_UPDATE_RETRY_REQUESTED.store(true, Ordering::Release);
-                }
             }
         }
         if is_viewer_update {
             VIEWER_UPDATE_CHECK_IN_FLIGHT.store(false, Ordering::Release);
-            if VIEWER_RESTART_AFTER_CHECK_REQUESTED.swap(false, Ordering::AcqRel)
-                && !update_handoff_started.load(Ordering::Acquire)
-            {
-                append_runtime_log("tray-menu", "viewer restart after update check completed");
-                match env::current_exe().map_err(|error| error.to_string()).and_then(|executable| {
-                    schedule_viewer_restart(&executable)
-                }) {
-                    Ok(()) => restart_app.exit(0),
-                    Err(error) => {
-                        append_runtime_log("tray-menu", &error);
-                        show_main_window_with_log(&restart_app, "viewer-restart-schedule-failed");
-                    }
-                }
-            }
         }
     });
     append_runtime_log(
@@ -1620,39 +1691,6 @@ fn check_installer_update(app: tauri::AppHandle) -> Result<ViewerUpdateCheck, St
         &format!("manual check completed: version={} available={}", result.latest_version, result.available),
     );
     Ok(result)
-}
-
-fn start_viewer_update_watcher(app: tauri::AppHandle) {
-    thread::spawn(move || {
-        thread::sleep(VIEWER_UPDATE_INITIAL_DELAY);
-        loop {
-            if let Err(error) = start_installer_update(app.clone(), "viewer".to_string(), None) {
-                append_runtime_log(
-                    "viewer-native-update",
-                    &format!("failed to start signed update check: {error}"),
-                );
-            }
-            wait_for_next_viewer_update_attempt();
-        }
-    });
-}
-
-fn wait_for_next_viewer_update_attempt() {
-    let started_at = Instant::now();
-    loop {
-        if VIEWER_UPDATE_RETRY_REQUESTED.swap(false, Ordering::AcqRel) {
-            append_runtime_log(
-                "viewer-native-update",
-                "transient update failure; retrying signed update check in 60 seconds",
-            );
-            thread::sleep(VIEWER_UPDATE_FAILURE_RETRY_DELAY);
-            return;
-        }
-        if started_at.elapsed() >= VIEWER_UPDATE_CHECK_INTERVAL {
-            return;
-        }
-        thread::sleep(VIEWER_UPDATE_WAIT_POLL_INTERVAL);
-    }
 }
 
 fn app_root_from_manifest() -> PathBuf {
@@ -2028,6 +2066,14 @@ pub fn run() {
             let agent_state = app.state::<AgentState>();
 
             if is_agent {
+                if let Some(window) = app.get_webview_window("main") {
+                    if let Err(error) = apply_main_window_policy(&window, true) {
+                        append_runtime_log(
+                            "window",
+                            &format!("agent-startup: window policy failed: {error}"),
+                        );
+                    }
+                }
                 let force_show_window = agent_launch_should_show_window(is_agent);
                 start_agent_show_window_request_watcher(app.handle().clone());
 
@@ -2189,13 +2235,20 @@ pub fn run() {
                 }
             } else {
                 // Viewer Mode Setup
+                if viewer_update_action(ViewerUpdateEntryPoint::Startup)
+                    != ViewerUpdateAction::None
+                {
+                    append_runtime_log(
+                        "viewer-native-update",
+                        "automatic startup installation blocked by Native update policy",
+                    );
+                }
                 let resource_dir = if cfg!(debug_assertions) {
                     app_root_from_manifest()
                 } else {
                     app.path().resource_dir()?
                 };
                 start_local_api_server_for_mode(&job, &resource_dir)?;
-                start_viewer_update_watcher(app.handle().clone());
 
                 // Show window for Viewer
                 show_main_window_with_log(app.handle(), "viewer-startup");
@@ -2231,17 +2284,7 @@ pub fn run() {
                                 });
                             }
                             "restart" => {
-                                append_runtime_log("tray-menu", "viewer restart with update check requested");
-                                if let Err(error) = start_installer_update(
-                                    app.clone(),
-                                    "viewer".to_string(),
-                                    Some(true),
-                                ) {
-                                    append_runtime_log(
-                                        "tray-menu",
-                                        &format!("viewer restart update check failed: {error}"),
-                                    );
-                                }
+                                restart_viewer_from_tray(app);
                             }
                             "toggle_startup" => {
                                 let is_checked = startup_i_clone.is_checked().unwrap_or(false);
@@ -2537,6 +2580,44 @@ mod registry_tests {
             true,
             &["WonRemote Agent.exe".to_string()],
         ));
+    }
+
+    #[test]
+    fn test_agent_window_policy_is_compact_and_viewer_is_unchanged() {
+        let agent = main_window_policy(true).expect("Agent mode must have a window policy");
+
+        assert_eq!(agent.width, 400.0);
+        assert_eq!(agent.height, 520.0);
+        assert_eq!(agent.min_width, 400.0);
+        assert_eq!(agent.min_height, 520.0);
+        assert!(!agent.resizable);
+        assert_eq!(main_window_policy(false), None);
+    }
+
+    #[test]
+    fn test_viewer_update_install_requires_explicit_webview_confirmation() {
+        assert_eq!(
+            viewer_update_action(ViewerUpdateEntryPoint::Startup),
+            ViewerUpdateAction::None,
+        );
+        assert_eq!(
+            viewer_update_action(ViewerUpdateEntryPoint::TrayRestart),
+            ViewerUpdateAction::RestartOnly,
+        );
+        assert_eq!(
+            viewer_update_action(ViewerUpdateEntryPoint::ConfirmedWebView),
+            ViewerUpdateAction::Install,
+        );
+    }
+
+    #[test]
+    fn test_native_viewer_paths_do_not_call_the_installer_command() {
+        let source = include_str!("lib.rs");
+        let installer_call = ["start_installer_", "update("].concat();
+        let legacy_watcher = ["start_viewer_", "update_watcher("].concat();
+
+        assert_eq!(source.matches(&installer_call).count(), 1);
+        assert!(!source.contains(&legacy_watcher));
     }
 
     #[test]

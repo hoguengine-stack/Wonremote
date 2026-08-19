@@ -310,3 +310,48 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - Regression proof: Focused RED runs failed before the missing-release and pointer-ownership guards; `npm test -- src/domain/viewerInputState.test.ts src/viewerPointerLifecycle.test.ts` passed 17 tests, and the final combined focused gate passed 92 tests across five files.
 - Release proof: `v0.1.71` published Viewer and Agent x86 installers plus the signed update manifest through successful GitHub Actions run `32218801753`.
 - Remaining blocker: Confirm click, intentional drag, capture loss, and session-close release on two physical PCs.
+
+## INC-20260819-003: Session startup serialized signaling and dropped early key repeats
+
+- Detected: 2026-08-19T11:31:14Z.
+- Severity: P1.
+- Affected: Firebase direct session creation, Viewer WebRTC control startup, and remote keyboard repeat handling.
+- Status: fixed-not-released.
+- User-visible symptom: Entering a remote session was slow, early keyboard input was delayed or missing, and holding Backspace deleted only one character.
+- Minimal trigger: Connect through Firebase, type before the WebRTC control channel opens, then hold Backspace.
+- Root cause and contributors: Session creation and `start-stream` used two sequential Firestore writes, the Viewer did not expose the transport until its offer write completed, the connection watchdog started after that write and treated the tile channel alone as ready, a saturated pre-open queue could mix WebRTC with Firestore fallback ordering, and every repeated browser keydown was discarded.
+- Fix commit(s): pending current source commit.
+- Permanent guard: Commit the connected session and `start-stream` command in one Firestore batch, return the Viewer transport while signaling continues, start the watchdog independently of Firestore, require both tile and control channels before readiness, close a saturated queue before allowing fallback, reconnect when the control channel fails, and forward repeat keydown only for an already tracked physical key.
+- Regression proof: Focused Viewer input, WebRTC transport, atomic session start, Firestore write, remote layout, and packaging tests passed 92 tests across six files; three focused Native policy tests and the frontend production build passed.
+- Release proof: none; release build pending.
+- Remaining blocker: Confirm first-frame time and held Backspace behavior on two physical PCs.
+
+## INC-20260819-004: Native Viewer updater installed without WebView confirmation
+
+- Detected: 2026-08-19T11:31:14Z.
+- Severity: P1.
+- Affected: Viewer startup update watcher, tray restart, and update dialog.
+- Status: fixed-not-released.
+- User-visible symptom: A detected Viewer update could start without the requested confirmation modal.
+- Minimal trigger: Launch an outdated installed Viewer and wait for the Native startup watcher.
+- Root cause and contributors: The Native shell called the installer updater automatically after startup, while the existing dialog guarded only the manual update button.
+- Fix commit(s): pending current source commit.
+- Permanent guard: Native startup performs no installation, automatic and manual checks only populate the WebView modal, an available update modal has one explicit confirmation button, and tray restart schedules a plain restart so the reopened Viewer performs the same consent flow.
+- Regression proof: Focused desktop packaging contract passed 56 tests; Native policy tests and frontend production build passed.
+- Release proof: none; release build pending.
+- Remaining blocker: Confirm startup detection, modal confirmation, installer handoff, and tray restart on an installed Viewer.
+
+## INC-20260819-005: Agent status window ignored its compact operating role
+
+- Detected: 2026-08-19T11:31:14Z.
+- Severity: P2.
+- Affected: Agent first-run, registered status, tray reopen, and self-healing window display.
+- Status: fixed-not-released.
+- User-visible symptom: Opening the Agent displayed an oversized Viewer-like window around a small status card.
+- Minimal trigger: Start or reopen the installed executable in `--agent` mode.
+- Root cause and contributors: Viewer and Agent shared one default Tauri window size and every show path reused it without an Agent-specific policy.
+- Fix commit(s): pending current source commit.
+- Permanent guard: Every Agent show path reapplies a non-resizable `400x520` logical window policy; Viewer mode has no compact policy and remains unchanged.
+- Regression proof: Focused Native Agent window policy test passed and `git diff --check` passed.
+- Release proof: none; release build pending.
+- Remaining blocker: Confirm no scrolling at 100%, 125%, and 150% Windows DPI on an installed Agent.

@@ -34,3 +34,19 @@ export function safeBatchUpdate(
   const writableBatch = batch as { update: (documentRef: never, data: never) => unknown };
   return writableBatch.update(documentRef as never, stripUndefinedFields(data) as never);
 }
+
+export function safeBatchSet(
+  batch: unknown,
+  documentRef: unknown,
+  data: unknown,
+  options?: unknown,
+): unknown {
+  const writableBatch = batch as {
+    set: (documentRef: never, data: never, options?: never) => unknown;
+  };
+  const payload = stripUndefinedFields(data);
+  if (options === undefined) {
+    return writableBatch.set(documentRef as never, payload as never);
+  }
+  return writableBatch.set(documentRef as never, payload as never, options as never);
+}
