@@ -107,6 +107,8 @@ describe("connected remote session layout", () => {
     expect(block).toContain("창모드");
     expect(appSource).toContain("const [isSessionFullscreen, setIsSessionFullscreen] = useState(false)");
     expect(appSource).toContain("setIsSessionFullscreen(false)");
+    expect(appSource).not.toContain("setFullscreen(isRemoteFocusMode)");
+    expect(appSource).toContain("setFullscreen(nextFullscreen)");
     expect(block).toContain("isFullscreenToolbarOpen");
     expect(block).toContain("session-fullscreen-tools-open");
     expect(block).toContain('className="session-fullscreen-toolbar-toggle"');
@@ -154,6 +156,52 @@ describe("connected remote session layout", () => {
     expect(moveBlock).toContain("moveDelayTimerRef.current");
     expect(moveBlock).toContain("33 - (performance.now() - lastMoveSentAtRef.current)");
     expect(moveBlock).toContain("requestAnimationFrame");
+  });
+
+  it("applies the selected stream mode only after Firebase WebRTC is ready", () => {
+    expect(appSource).toContain("const [isWebRtcConnectionReady, setIsWebRtcConnectionReady] = useState(false)");
+    expect(appSource).toContain("if (isViewerFirebaseEnabled() && !isWebRtcConnectionReady)");
+    expect(appSource).toContain('if (state === "webrtc-open")');
+    expect(appSource).toContain("setIsWebRtcConnectionReady(true)");
+  });
+
+  it("cancels a queued reconnect after WebRTC opens and ignores diagnostics", () => {
+    const openStart = appSource.indexOf('if (state === "webrtc-open")');
+    const diagnosticStart = appSource.indexOf("onDiagnostic:", openStart);
+    const openBlock = appSource.slice(openStart, diagnosticStart);
+    const reconnectStart = appSource.indexOf("const scheduleWebRtcReconnect = () =>");
+    const reconnectEnd = appSource.indexOf("const startWebRtc = async () =>", reconnectStart);
+    const reconnectBlock = appSource.slice(reconnectStart, reconnectEnd);
+
+    expect(openBlock).toContain("webRtcConnectionOpen = true");
+    expect(openBlock).toContain("window.clearTimeout(webRtcReconnectTimer)");
+    expect(openBlock).toContain("webRtcReconnectTimer = null");
+    expect(reconnectBlock).toContain("webRtcConnectionOpen");
+    expect(appSource.slice(diagnosticStart, appSource.indexOf("onError:", diagnosticStart)))
+      .not.toContain("scheduleWebRtcReconnect()");
+  });
+
+  it("prevents an older connection attempt from replacing a newer session", () => {
+    expect(appSource).toContain("const connectAttemptIdRef = useRef(0)");
+    expect(appSource).toContain("const sessionShutdownInProgressRef = useRef(false)");
+    expect(appSource).toContain("async function runTrackedSessionOpen(");
+    expect(appSource).toContain("const attemptId = ++connectAttemptIdRef.current");
+    expect(appSource).toContain("attemptId !== connectAttemptIdRef.current");
+    expect(appSource).not.toContain("await closeSession(result.session.id).catch(() => {})");
+    const closeStart = appSource.indexOf("async function handleCloseSession()");
+    const closeEnd = appSource.indexOf("async function handleConnectDevice", closeStart);
+    expect(closeStart).toBeGreaterThanOrEqual(0);
+    expect(appSource.slice(closeStart, closeEnd)).toContain("connectAttemptIdRef.current += 1");
+    expect(appSource.slice(closeStart, closeEnd)).toContain("Promise.all([...pendingConnectAttemptsRef.current])");
+
+    const logoutStart = appSource.indexOf("async function handleLogout()");
+    const logoutEnd = appSource.indexOf("async function markInput", logoutStart);
+    expect(logoutStart).toBeGreaterThanOrEqual(0);
+    expect(appSource.slice(logoutStart, logoutEnd)).toContain("Promise.all([...pendingConnectAttemptsRef.current])");
+    expect(appSource.slice(logoutStart, logoutEnd)).toContain("await closeSession(session.id)");
+    expect(appSource.slice(logoutStart, logoutEnd)).toContain("await logoutAdmin()");
+    expect(appSource).toContain('await runTrackedSessionOpen(() => openSession(device.id), "세션 연결 실패")');
+    expect(appSource).toContain("() => connectSecureSession({");
   });
 
   it("keeps secondary tools in one overlay menu and removes duplicate monitor buttons", () => {

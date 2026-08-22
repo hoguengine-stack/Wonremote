@@ -20,6 +20,7 @@ import {
   beginAgentCaptureGeneration,
   currentSessionId,
   endAgentSessionGeneration,
+  shouldStartStreamForCommand,
 } from "./agentSessionLifecycle";
 import {
   createAgentCommandPollGate,
@@ -83,6 +84,7 @@ import {
 import { processWebRtcFileChunk } from "./webrtcFileReceiver";
 import { copyPngFileToWindowsClipboardAndRemove } from "./clipboardImage";
 import { runAgentWebRtcRuntimeSmoke } from "./agentWebRtcRuntimeSmoke";
+import { prewarmAgentPeerConnectionRuntime } from "../firebase/agentPeerConnection";
 import { loadInstallerUpdateResult } from "./updateResult";
 import {
   getStreamPerformanceProfile,
@@ -220,6 +222,11 @@ let streamBackpressured = false;
 let streamBufferedAmount = 0;
 let streamFrameSequence = 0;
 let keyframeRetryTimer: ReturnType<typeof setTimeout> | null = null;
+type StreamFramePayload = Parameters<AgentWebRtcTransport["sendFrame"]>[0];
+let pendingInitialKeyframe: {
+  sessionGeneration: number;
+  frame: StreamFramePayload;
+} | null = null;
 let firestoreTileFallbackStartedAtMs = Date.now();
 let firestoreTileFallbackFrameCount = 0;
 let firestoreTileFallbackLimitLogged = false;
@@ -242,6 +249,43 @@ let lastSessionPollError = "";
 let activeSessionRecoveryPermissionBlocked = false;
 let lastActiveSessionRecoveryWarning = "";
 
+function flushPendingInitialKeyframe(expectedSessionGeneration: number): boolean {
+  if (!pendingInitialKeyframe) {
+    return false;
+  }
+  if (pendingInitialKeyframe.sessionGeneration !== expectedSessionGeneration) {
+    pendingInitialKeyframe = null;
+    return false;
+  }
+  const sendResult = webRtcTransport?.sendFrame(pendingInitialKeyframe.frame);
+  if (sendResult !== "sent") {
+    return false;
+  }
+  pendingInitialKeyframe = null;
+  streamTransport = "webrtc";
+  streamBackpressured = false;
+  streamBufferedAmount = webRtcTransport?.getBufferedAmount() ?? 0;
+  return true;
+}
+
+function applyStreamProfileToRunningCapture(): boolean {
+  if (!streamProcess || !streamDesired) {
+    return false;
+  }
+  const profile = getStreamPerformanceProfile(currentStreamMode);
+  try {
+    streamProcess.stdin.write(
+      `set-stream-profile ${currentLoopSleepMs} ${profile.jpegQuality} ${profile.maxMergeWidth}\n`,
+    );
+    return true;
+  } catch (error) {
+    console.warn(
+      `[Capture profile update failed] ${error instanceof Error ? error.message : error}`,
+    );
+    return false;
+  }
+}
+
 
 async function startStreaming(
   deviceId: string,
@@ -262,6 +306,7 @@ async function startStreaming(
   const captureRunGeneration = captureGeneration;
   const transportGeneration = sessionGeneration;
   const { sessionChanged } = generationTransition;
+  pendingInitialKeyframe = null;
   streamDesired = true;
   streamBackend = backend;
   currentOutputIndex = outputIndex;
@@ -348,15 +393,24 @@ async function startStreaming(
         streamFailureCount = 0;
         lastStreamFrameAt = new Date().toISOString();
         lastStreamError = undefined;
+        const framePayload: StreamFramePayload = {
+          tiles: data.tiles,
+          width: data.width,
+          height: data.height,
+          sequence: streamFrameSequence,
+          keyframe: data.keyframe === true,
+        };
         const sendResult = USE_FIREBASE
-          ? webRtcTransport?.sendFrame({
-              tiles: data.tiles,
-              width: data.width,
-              height: data.height,
-              sequence: streamFrameSequence,
-              keyframe: data.keyframe === true,
-            }, data.keyframe === true ? undefined : streamProfile.maxBufferedAmount)
+          ? webRtcTransport?.sendFrame(
+              framePayload,
+              framePayload.keyframe ? undefined : streamProfile.maxBufferedAmount,
+            )
           : undefined;
+        if (USE_FIREBASE && framePayload.keyframe) {
+          pendingInitialKeyframe = sendResult === "sent"
+            ? null
+            : { sessionGeneration: transportGeneration, frame: framePayload };
+        }
         if (sendResult === "sent") {
           streamTransport = "webrtc";
           streamBackpressured = false;
@@ -369,7 +423,11 @@ async function startStreaming(
           if (keyframeRetryTimer === null) {
             keyframeRetryTimer = setTimeout(() => {
               keyframeRetryTimer = null;
-              if (streamProcess === child && streamDesired) {
+              if (
+                !flushPendingInitialKeyframe(transportGeneration) &&
+                streamProcess === child &&
+                streamDesired
+              ) {
                 streamProcess.stdin.write("request-keyframe\n");
               }
             }, 250);
@@ -486,6 +544,25 @@ function ensureSessionWebRtcTransport(
   webRtcTransportStartGeneration = expectedSessionGeneration;
   rtcState = "starting";
   rtcError = undefined;
+  let initialFrameSynchronized = false;
+  const synchronizeInitialFrame = () => {
+    if (
+      initialFrameSynchronized ||
+      !webRtcTransport ||
+      !streamProcess ||
+      !streamDesired
+    ) {
+      return;
+    }
+    initialFrameSynchronized = true;
+    if (keyframeRetryTimer) {
+      clearTimeout(keyframeRetryTimer);
+      keyframeRetryTimer = null;
+    }
+    if (!flushPendingInitialKeyframe(expectedSessionGeneration)) {
+      streamProcess.stdin.write("request-keyframe\n");
+    }
+  };
   void startAgentWebRtcTransportWithFirebase(sessionId, {
     onControl: (action, isCurrentChannel) => {
       void agentCommandQueue.enqueue(async () => {
@@ -551,12 +628,15 @@ function ensureSessionWebRtcTransport(
       )) {
         return;
       }
+      if (state === "negotiating") {
+        initialFrameSynchronized = false;
+        rtcState = "starting";
+        return;
+      }
       if (state === "open") {
         rtcState = "ready";
         rtcError = undefined;
-        if (streamProcess && streamDesired) {
-          streamProcess.stdin.write("request-keyframe\n");
-        }
+        synchronizeInitialFrame();
         return;
       }
       if (state === "closed") {
@@ -581,7 +661,9 @@ function ensureSessionWebRtcTransport(
         return;
       }
       webRtcTransport = transport;
-      if (rtcState !== "ready") {
+      if (rtcState === "ready") {
+        synchronizeInitialFrame();
+      } else {
         rtcState = "starting";
       }
       console.log("[WebRTC] Agent tile, control, and file data channels are waiting to open.");
@@ -632,6 +714,7 @@ async function stopSessionPolling(): Promise<void> {
     clearTimeout(keyframeRetryTimer);
     keyframeRetryTimer = null;
   }
+  pendingInitialKeyframe = null;
   void webRtcTransport?.close();
   webRtcTransport = null;
   webRtcTransportStartGeneration = null;
@@ -905,6 +988,11 @@ async function main() {
     }
   } else {
     console.log("[Agent] Firebase mode enabled. Skipping local API health gate.");
+    void prewarmAgentPeerConnectionRuntime()
+      .then((runtime) => console.log(`[WebRTC] Agent runtime prewarmed: ${runtime}`))
+      .catch((error) => console.warn(
+        `[WebRTC] Agent runtime prewarm failed; connection will retry on demand: ${error instanceof Error ? error.message : error}`,
+      ));
   }
 
   const updateResultPath = path.join(process.env.APPDATA ?? process.cwd(), "WonRemote", "updates", "last-update-result.json");
@@ -1595,7 +1683,7 @@ async function ensureActiveFirebaseSessionRecovery(config: AgentLocalConfig): Pr
       deviceId: config.registeredDeviceId,
       installId: config.installId,
     });
-    if (sessions.length === 0) {
+    if (streamDesired || sessions.length === 0) {
       return;
     }
     console.log(`[Agent] Recovering active remote session after restart: ${sessions[0].id}`);
@@ -1801,7 +1889,7 @@ function createAgentCommandRuntime(deviceId: string): AgentCommandRuntime {
       }
       currentLoopSleepMs = milliseconds;
       console.log(`Adjusting stream loop sleep to: ${currentLoopSleepMs}ms`);
-      if (activeSessionId) {
+      if (activeSessionId && !applyStreamProfileToRunningCapture()) {
         await startStreaming(deviceId, activeSessionId, currentOutputIndex, currentLoopSleepMs);
       }
     },
@@ -1813,12 +1901,24 @@ function createAgentCommandRuntime(deviceId: string): AgentCommandRuntime {
       currentStreamMode = mode;
       currentLoopSleepMs = profile.loopSleepMs;
       console.log(`Switching stream performance mode to ${mode} (sleep: ${profile.loopSleepMs}ms, quality: ${profile.jpegQuality}, merge: ${profile.maxMergeWidth}px)`);
-      if (activeSessionId) {
+      if (activeSessionId && !applyStreamProfileToRunningCapture()) {
         await startStreaming(deviceId, activeSessionId, currentOutputIndex, currentLoopSleepMs);
       }
     },
     showSecurityCode,
     startStream: async (sessionId) => {
+      if (!shouldStartStreamForCommand({
+        activeSessionId,
+        requestedSessionId: sessionId,
+        streamDesired,
+        captureActive: streamProcess !== null,
+        restartPending: streamRestartTimer !== null,
+        rtcState,
+      })) {
+        console.log(`[Agent] Ignoring duplicate start-stream for active session ${sessionId}.`);
+        ensureSessionWebRtcTransport(deviceId, sessionId, sessionGeneration);
+        return;
+      }
       console.log(`Starting capture stream for session ${sessionId}`);
       await startStreaming(deviceId, sessionId, currentOutputIndex, currentLoopSleepMs);
     },

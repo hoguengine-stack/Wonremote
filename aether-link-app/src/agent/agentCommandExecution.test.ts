@@ -342,6 +342,55 @@ describe("Agent command execution", () => {
     expect(ensureBlock).toContain("webRtcTransportStartGeneration === expectedSessionGeneration");
     expect(ensureBlock).toContain('streamProcess.stdin.write("request-keyframe\\n")');
   });
+
+  it("deduplicates an active start-stream command and rechecks recovery after its query", () => {
+    const source = readFileSync(path.resolve(process.cwd(), "src", "agent", "index.ts"), "utf8");
+    const runtimeStart = source.indexOf("startStream: async (sessionId) =>");
+    const runtimeEnd = source.indexOf("stopStream: async () =>", runtimeStart);
+    const runtimeBlock = source.slice(runtimeStart, runtimeEnd);
+    const recoveryStart = source.indexOf("async function ensureActiveFirebaseSessionRecovery");
+    const recoveryEnd = source.indexOf("function warnActiveSessionRecoveryOnce", recoveryStart);
+    const recoveryBlock = source.slice(recoveryStart, recoveryEnd);
+
+    expect(runtimeBlock).toContain("shouldStartStreamForCommand({");
+    expect(runtimeBlock).toContain("ensureSessionWebRtcTransport(deviceId, sessionId, sessionGeneration)");
+    expect(recoveryBlock).toContain("if (streamDesired || sessions.length === 0)");
+  });
+
+  it("buffers the first keyframe until WebRTC opens instead of encoding it twice", () => {
+    const source = readFileSync(path.resolve(process.cwd(), "src", "agent", "index.ts"), "utf8");
+    const start = source.indexOf("async function startStreaming(");
+    const end = source.indexOf("function startSessionPolling", start);
+    const block = source.slice(start, end);
+
+    expect(block).toContain('pendingInitialKeyframe = sendResult === "sent"');
+    expect(block).toContain("flushPendingInitialKeyframe(transportGeneration)");
+    expect(block).toContain("const synchronizeInitialFrame = () =>");
+    expect(block).toContain("flushPendingInitialKeyframe(expectedSessionGeneration)");
+    expect(block).toContain("initialFrameSynchronized = true");
+    expect(block).toContain('if (state === "negotiating")');
+    expect(block).toContain("initialFrameSynchronized = false");
+    expect(block).toContain('streamProcess.stdin.write("request-keyframe\\n")');
+    expect(block).toContain("if (!flushPendingInitialKeyframe(expectedSessionGeneration))");
+    expect(block).not.toMatch(
+      /flushPendingInitialKeyframe\(expectedSessionGeneration\);\s*streamProcess\.stdin\.write\("request-keyframe\\n"\)/,
+    );
+  });
+
+  it("changes the active stream profile without restarting capture", () => {
+    const source = readFileSync(path.resolve(process.cwd(), "src", "agent", "index.ts"), "utf8");
+    const helperStart = source.indexOf("function applyStreamProfileToRunningCapture()");
+    const helperEnd = source.indexOf("async function startStreaming(", helperStart);
+    const helperBlock = source.slice(helperStart, helperEnd);
+    const modeStart = source.indexOf("setStreamMode: async (mode) =>");
+    const modeEnd = source.indexOf("showSecurityCode,", modeStart);
+    const modeBlock = source.slice(modeStart, modeEnd);
+
+    expect(helperBlock).toContain("set-stream-profile");
+    expect(modeBlock).toContain("applyStreamProfileToRunningCapture()");
+    expect(modeBlock).toContain("await startStreaming(");
+    expect(modeBlock).not.toMatch(/if \(activeSessionId\) \{\s*await startStreaming/);
+  });
 });
 
 function createRuntime(): AgentCommandRuntime {

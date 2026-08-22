@@ -22,6 +22,12 @@ jobs:
       GITHUB_TOKEN: ${{ github.token }}
       WONREMOTE_RELEASE_GATE_APPROVED: "YES"
       WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY: ${{ secrets.WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY }}
+      VITE_WONREMOTE_RTC_STUN_URLS: ${{ vars.WONREMOTE_RTC_STUN_URLS }}
+      VITE_WONREMOTE_RTC_TURN_URLS: ${{ secrets.WONREMOTE_RTC_TURN_URLS }}
+      VITE_WONREMOTE_RTC_TURN_USERNAME: ${{ secrets.WONREMOTE_RTC_TURN_USERNAME }}
+      VITE_WONREMOTE_RTC_TURN_CREDENTIAL: ${{ secrets.WONREMOTE_RTC_TURN_CREDENTIAL }}
+      VITE_WONREMOTE_RTC_RELAY_ONLY: ${{ vars.WONREMOTE_RTC_RELAY_ONLY }}
+      VITE_WONREMOTE_RTC_CONNECT_TIMEOUT_MS: ${{ vars.WONREMOTE_RTC_CONNECT_TIMEOUT_MS }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -59,6 +65,21 @@ jobs:
         run: |
           if ([string]::IsNullOrWhiteSpace($env:WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY)) {
             throw "WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY GitHub Actions secret is missing."
+          }
+
+      - name: Verify realtime ICE configuration
+        run: |
+          $turnValues = @(
+            $env:VITE_WONREMOTE_RTC_TURN_URLS,
+            $env:VITE_WONREMOTE_RTC_TURN_USERNAME,
+            $env:VITE_WONREMOTE_RTC_TURN_CREDENTIAL
+          )
+          $configuredTurnValues = @($turnValues | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+          if ($configuredTurnValues.Count -ne 0 -and $configuredTurnValues.Count -ne $turnValues.Count) {
+            throw "TURN URL, username, and credential must be configured together."
+          }
+          if ($env:VITE_WONREMOTE_RTC_RELAY_ONLY -match '^(1|true|yes|on)$' -and $configuredTurnValues.Count -ne $turnValues.Count) {
+            throw "Relay-only release requires a complete TURN configuration."
           }
 
       - name: Verify version metadata is aligned

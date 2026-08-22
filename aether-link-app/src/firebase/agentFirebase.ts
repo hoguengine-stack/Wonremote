@@ -34,6 +34,7 @@ import {
   formatWebRtcConnectionFailure,
   isTerminalWebRtcConnectionState,
   resolveWebRtcConnectTimeoutMs,
+  webRtcReconnectDelayMs,
 } from "../domain/webrtcStability";
 import { resolveFirebaseConfig } from "./firebaseConfig";
 import { buildAgentAuthEmail, buildAgentAuthPassword } from "./firebaseIdentity";
@@ -87,7 +88,7 @@ export interface AgentWebRtcTransportHandlers {
     chunk: WebRtcFileChunkMessage,
     isCurrentChannel: () => boolean,
   ) => Promise<WebRtcFileAckMessage | null> | WebRtcFileAckMessage | null;
-  onState?: (state: "open" | "closed" | "error", error?: string) => void;
+  onState?: (state: "negotiating" | "open" | "closed" | "error", error?: string) => void;
 }
 
 export interface ActiveFirebaseSession {
@@ -196,6 +197,7 @@ export async function registerAgentFirstRunWithFirebase(
         ...deviceDocument,
         deletedAt: null,
         installId: input.installId,
+        lastSeenAtServer: serverTimestamp(),
         ownerUid: credential.user.uid,
         updatedAt: serverTimestamp(),
       },
@@ -238,6 +240,7 @@ export async function sendAgentHeartbeatWithFirebase(
       displays: input.displays ?? [],
       installId: input.installId,
       lastSeenAt: nowIso,
+      lastSeenAtServer: serverTimestamp(),
       macAddresses: input.macAddresses ?? [],
       controlDiagnostics: input.controlDiagnostics ?? null,
       deletedAt: null,
@@ -546,6 +549,10 @@ export async function startAgentWebRtcTransportWithFirebase(
   let connectWatchdog: ReturnType<typeof setTimeout> | null = null;
   let unsubscribeSignal: Unsubscribe | null = null;
   let unsubscribeViewerCandidates: Unsubscribe | null = null;
+  let signalRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let viewerCandidateRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let signalRetryAttempt = 0;
+  let viewerCandidateRetryAttempt = 0;
   let negotiationQueue = Promise.resolve();
 
   const clearConnectWatchdog = () => {
@@ -634,6 +641,7 @@ export async function startAgentWebRtcTransportWithFirebase(
       return;
     }
 
+    handlers.onState?.("negotiating");
     await closeActivePeer();
     if (closedByCaller) {
       return;
@@ -662,9 +670,8 @@ export async function startAgentWebRtcTransportWithFirebase(
         createdAt: serverTimestamp(),
         negotiationId: offer.negotiationId,
       }).catch((error) => {
-        reportTransportError(
-          "agent-candidate-write-failed",
-          error instanceof Error ? error.message : String(error),
+        console.warn(
+          `[WebRTC] Agent ICE candidate write failed; remaining candidates will continue: ${error instanceof Error ? error.message : error}`,
         );
       });
     };
@@ -849,9 +856,8 @@ export async function startAgentWebRtcTransportWithFirebase(
     void getDocs(viewerCandidates)
       .then((snapshot) => applyViewerCandidateDocs(snapshot.docs))
       .catch((error) => {
-        reportTransportError(
-          "viewer-candidate-refresh-failed",
-          error instanceof Error ? error.message : String(error),
+        console.warn(
+          `[WebRTC] Viewer ICE candidate refresh failed; realtime listener will continue: ${error instanceof Error ? error.message : error}`,
         );
       });
     const answer = await peer.createAnswer();
@@ -897,6 +903,82 @@ export async function startAgentWebRtcTransportWithFirebase(
       });
   };
 
+  const scheduleSignalResubscribe = (error: unknown) => {
+    console.warn(
+      `[WebRTC] Signal listener failed after initial offer; resubscribing: ${error instanceof Error ? error.message : error}`,
+    );
+    if (closedByCaller || signalRetryTimer) {
+      return;
+    }
+    const delayMs = webRtcReconnectDelayMs(signalRetryAttempt);
+    signalRetryAttempt += 1;
+    signalRetryTimer = setTimeout(() => {
+      signalRetryTimer = null;
+      subscribeSignalUpdates();
+    }, delayMs);
+  };
+
+  const subscribeSignalUpdates = () => {
+    if (closedByCaller) {
+      return;
+    }
+    unsubscribeSignal?.();
+    unsubscribeSignal = null;
+    try {
+      unsubscribeSignal = onSnapshot(
+        signalRef,
+        (snapshot) => {
+          signalRetryAttempt = 0;
+          scheduleNegotiation(snapshot.data());
+        },
+        (error) => {
+          unsubscribeSignal = null;
+          scheduleSignalResubscribe(error);
+        },
+      );
+    } catch (error) {
+      scheduleSignalResubscribe(error);
+    }
+  };
+
+  const scheduleViewerCandidateResubscribe = (error: unknown) => {
+    console.warn(
+      `[WebRTC] Viewer ICE candidate listener failed; resubscribing: ${error instanceof Error ? error.message : error}`,
+    );
+    if (closedByCaller || viewerCandidateRetryTimer) {
+      return;
+    }
+    const delayMs = webRtcReconnectDelayMs(viewerCandidateRetryAttempt);
+    viewerCandidateRetryAttempt += 1;
+    viewerCandidateRetryTimer = setTimeout(() => {
+      viewerCandidateRetryTimer = null;
+      subscribeViewerCandidateUpdates();
+    }, delayMs);
+  };
+
+  const subscribeViewerCandidateUpdates = () => {
+    if (closedByCaller) {
+      return;
+    }
+    unsubscribeViewerCandidates?.();
+    unsubscribeViewerCandidates = null;
+    try {
+      unsubscribeViewerCandidates = onSnapshot(
+        viewerCandidates,
+        (snapshot) => {
+          viewerCandidateRetryAttempt = 0;
+          applyViewerCandidateDocs(snapshot.docs);
+        },
+        (error) => {
+          unsubscribeViewerCandidates = null;
+          scheduleViewerCandidateResubscribe(error);
+        },
+      );
+    } catch (error) {
+      scheduleViewerCandidateResubscribe(error);
+    }
+  };
+
   try {
     await activateNegotiation(signalSnapshot);
   } catch (error) {
@@ -906,21 +988,21 @@ export async function startAgentWebRtcTransportWithFirebase(
     }
   }
 
-  unsubscribeSignal = onSnapshot(
-    signalRef,
-    (snapshot) => scheduleNegotiation(snapshot.data()),
-    (error) => reportTransportError("signal-listener-failed", error.message),
-  );
-  unsubscribeViewerCandidates = onSnapshot(
-    viewerCandidates,
-    (snapshot) => applyViewerCandidateDocs(snapshot.docs),
-    (error) => reportTransportError("viewer-candidate-listener-failed", error.message),
-  );
+  subscribeSignalUpdates();
+  subscribeViewerCandidateUpdates();
 
   return {
     close: async () => {
       closedByCaller = true;
       clearConnectWatchdog();
+      if (signalRetryTimer) {
+        clearTimeout(signalRetryTimer);
+        signalRetryTimer = null;
+      }
+      if (viewerCandidateRetryTimer) {
+        clearTimeout(viewerCandidateRetryTimer);
+        viewerCandidateRetryTimer = null;
+      }
       unsubscribeSignal?.();
       unsubscribeViewerCandidates?.();
       await negotiationQueue.catch(() => undefined);
@@ -1060,16 +1142,50 @@ async function waitForWebRtcOffer(
   signalRef: ReturnType<typeof doc>,
   timeoutMs = 8_000,
 ): Promise<Record<string, any> | null> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() <= deadline) {
-    const snapshot = await getDoc(signalRef);
-    const data = snapshot.data() as Record<string, any> | undefined;
-    if (parseAgentWebRtcOffer(data)) {
-      return data ?? null;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let unsubscribe: Unsubscribe | null = null;
+    let unsubscribeWhenReady = false;
+
+    const finish = (value: Record<string, any> | null, error?: unknown) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      if (unsubscribe) {
+        unsubscribe();
+        unsubscribe = null;
+      } else {
+        unsubscribeWhenReady = true;
+      }
+      if (error) {
+        reject(error);
+      } else {
+        resolve(value);
+      }
+    };
+    const timeout = setTimeout(() => finish(null), timeoutMs);
+
+    try {
+      unsubscribe = onSnapshot(
+        signalRef,
+        (snapshot) => {
+          const data = snapshot.data() as Record<string, any> | undefined;
+          if (parseAgentWebRtcOffer(data)) {
+            finish(data ?? null);
+          }
+        },
+        (error) => finish(null, error),
+      );
+      if (unsubscribeWhenReady && unsubscribe) {
+        unsubscribe();
+        unsubscribe = null;
+      }
+    } catch (error) {
+      finish(null, error);
     }
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  return null;
+  });
 }
 
 function oppositeSessionSender(sender: "viewer" | "agent"): "viewer" | "agent" {

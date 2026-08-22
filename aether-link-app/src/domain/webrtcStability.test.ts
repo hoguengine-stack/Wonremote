@@ -22,9 +22,9 @@ describe("WebRTC stability policy", () => {
     expect(resolveWebRtcConnectTimeoutMs({ WONREMOTE_RTC_CONNECT_TIMEOUT_MS: "9000" })).toBe(9_000);
   });
 
-  it("treats failed, disconnected, and closed as terminal realtime states", () => {
+  it("keeps transient disconnects recoverable and terminates failed or closed peers", () => {
     expect(isTerminalWebRtcConnectionState("failed")).toBe(true);
-    expect(isTerminalWebRtcConnectionState("disconnected")).toBe(true);
+    expect(isTerminalWebRtcConnectionState("disconnected")).toBe(false);
     expect(isTerminalWebRtcConnectionState("closed")).toBe(true);
     expect(isTerminalWebRtcConnectionState("connecting")).toBe(false);
     expect(isTerminalWebRtcConnectionState("connected")).toBe(false);

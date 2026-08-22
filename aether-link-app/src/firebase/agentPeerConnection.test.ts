@@ -17,6 +17,7 @@ import {
   createAgentPeerConnection,
   isDataChannelBackpressured,
   normalizeWeriftConfig,
+  prewarmAgentPeerConnectionRuntime,
   resolveAgentLocalDescription,
   resolveWebRtcMaxBufferedAmount,
   routeAgentDataChannel,
@@ -96,6 +97,29 @@ describe("Agent PeerConnection architecture adapter", () => {
     expect(typeof peer.createAnswer).toBe("function");
     expect(typeof peer.addIceCandidate).toBe("function");
     await peer.close();
+  });
+
+  it("preloads only the runtime used by the current architecture", async () => {
+    const importNative = vi.fn(async () => ({ RTCPeerConnection: FakePeerConnection }));
+    const importWerift = vi.fn(async () => ({ RTCPeerConnection: FakePeerConnection }));
+
+    await expect(prewarmAgentPeerConnectionRuntime({
+      arch: "ia32",
+      importNative,
+      importWerift,
+    })).resolves.toBe("werift");
+    expect(importWerift).toHaveBeenCalledOnce();
+    expect(importNative).not.toHaveBeenCalled();
+
+    importNative.mockClear();
+    importWerift.mockClear();
+    await expect(prewarmAgentPeerConnectionRuntime({
+      arch: "x64",
+      importNative,
+      importWerift,
+    })).resolves.toBe("node-datachannel");
+    expect(importNative).toHaveBeenCalledOnce();
+    expect(importWerift).not.toHaveBeenCalled();
   });
 
   it("publishes the gathered local SDP instead of the pre-gather answer", () => {

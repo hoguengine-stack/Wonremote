@@ -115,6 +115,21 @@ export async function createAgentPeerConnection(
   }
 }
 
+export async function prewarmAgentPeerConnectionRuntime(
+  options: AgentPeerConnectionFactoryOptions = {},
+): Promise<"node-datachannel" | "werift"> {
+  const arch = options.arch ?? process.arch;
+  if (arch === "ia32" || arch === "x86") {
+    const rtcModule = await (options.importWerift ?? importWerift)();
+    requirePeerConnectionConstructor(rtcModule, "werift");
+    return "werift";
+  }
+
+  const rtcModule = await (options.importNative ?? importNative)();
+  requirePeerConnectionConstructor(rtcModule, "node-datachannel/polyfill");
+  return "node-datachannel";
+}
+
 export function resolveWebRtcMaxBufferedAmount(
   env: Partial<Record<"WONREMOTE_WEBRTC_MAX_BUFFERED_BYTES", string>> = process.env,
 ): number {

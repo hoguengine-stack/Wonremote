@@ -321,6 +321,21 @@ mod tests {
     }
 
     #[test]
+    fn runtime_stream_profile_updates_are_strict_and_atomic() {
+        assert_eq!(
+            parse_runtime_stream_profile("set-stream-profile 16 75 512"),
+            Some(RuntimeStreamProfile {
+                loop_sleep_ms: 16,
+                jpeg_quality: 75,
+                max_merge_width: 512,
+            }),
+        );
+        assert_eq!(parse_runtime_stream_profile("set-stream-profile 16 0 512"), None);
+        assert_eq!(parse_runtime_stream_profile("set-stream-profile 16 75 16"), None);
+        assert_eq!(parse_runtime_stream_profile("set-stream-profile 16 75 512 extra"), None);
+    }
+
+    #[test]
     fn parse_config_accepts_list_displays_mode() {
         let config =
             parse_benchmark_config(["aether-link-poc", "--mode", "list-displays"]).unwrap();
@@ -1971,6 +1986,34 @@ fn base64_encode(data: &[u8]) -> String {
     result
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RuntimeStreamProfile {
+    loop_sleep_ms: u64,
+    jpeg_quality: i32,
+    max_merge_width: usize,
+}
+
+fn parse_runtime_stream_profile(line: &str) -> Option<RuntimeStreamProfile> {
+    let mut parts = line.split_whitespace();
+    if parts.next()? != "set-stream-profile" {
+        return None;
+    }
+    let loop_sleep_ms = parts.next()?.parse::<u64>().ok()?;
+    let jpeg_quality = parts.next()?.parse::<i32>().ok()?;
+    let max_merge_width = parts.next()?.parse::<usize>().ok()?;
+    if parts.next().is_some()
+        || !(1..=100).contains(&jpeg_quality)
+        || !(32..=2048).contains(&max_merge_width)
+    {
+        return None;
+    }
+    Some(RuntimeStreamProfile {
+        loop_sleep_ms,
+        jpeg_quality,
+        max_merge_width,
+    })
+}
+
 async fn run_streaming_loop(config: BenchmarkConfig) {
     let mut capturer = match DesktopCapturer::new_stream(config.output_index) {
         Ok(c) => c,
@@ -1999,14 +2042,27 @@ async fn run_streaming_loop(config: BenchmarkConfig) {
     let mut compressor = Compressor::new().unwrap();
     let _ = compressor.set_quality(config.jpeg_quality);
     let _ = compressor.set_subsamp(Subsamp::Sub2x2);
+    let mut active_jpeg_quality = config.jpeg_quality;
 
     let mut tile_rgb24 = vec![0u8; (width * tile_size * 3) as usize];
 
     use tokio::io::{AsyncBufReadExt, BufReader};
     let inject_ping_marker = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let request_keyframe = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let runtime_loop_sleep_ms = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(
+        config.loop_sleep_ms,
+    ));
+    let runtime_jpeg_quality = std::sync::Arc::new(std::sync::atomic::AtomicI32::new(
+        config.jpeg_quality,
+    ));
+    let runtime_max_merge_width = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(
+        config.max_merge_width,
+    ));
     let inject_ping_marker_clone = inject_ping_marker.clone();
     let request_keyframe_clone = request_keyframe.clone();
+    let runtime_loop_sleep_ms_clone = runtime_loop_sleep_ms.clone();
+    let runtime_jpeg_quality_clone = runtime_jpeg_quality.clone();
+    let runtime_max_merge_width_clone = runtime_max_merge_width.clone();
 
     tokio::spawn(async move {
         let stdin = tokio::io::stdin();
@@ -2016,6 +2072,20 @@ async fn run_streaming_loop(config: BenchmarkConfig) {
                 inject_ping_marker_clone.store(true, std::sync::atomic::Ordering::SeqCst);
             } else if line.trim() == "request-keyframe" {
                 request_keyframe_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+            } else if let Some(profile) = parse_runtime_stream_profile(&line) {
+                runtime_loop_sleep_ms_clone.store(
+                    profile.loop_sleep_ms,
+                    std::sync::atomic::Ordering::SeqCst,
+                );
+                runtime_jpeg_quality_clone.store(
+                    profile.jpeg_quality,
+                    std::sync::atomic::Ordering::SeqCst,
+                );
+                runtime_max_merge_width_clone.store(
+                    profile.max_merge_width,
+                    std::sync::atomic::Ordering::SeqCst,
+                );
+                request_keyframe_clone.store(true, std::sync::atomic::Ordering::SeqCst);
             }
         }
     });
@@ -2024,6 +2094,12 @@ async fn run_streaming_loop(config: BenchmarkConfig) {
         let loop_start = Instant::now();
         match capturer.capture_frame(config.capture_timeout_ms) {
             Ok(CaptureFrameStatus::Frame { mut rgb565, .. }) => {
+                let jpeg_quality = runtime_jpeg_quality.load(std::sync::atomic::Ordering::SeqCst);
+                if jpeg_quality != active_jpeg_quality
+                    && compressor.set_quality(jpeg_quality).is_ok()
+                {
+                    active_jpeg_quality = jpeg_quality;
+                }
                 if inject_ping_marker.swap(false, std::sync::atomic::Ordering::SeqCst) {
                     let ts = tile_size as usize;
                     let w = width as usize;
@@ -2050,8 +2126,10 @@ async fn run_streaming_loop(config: BenchmarkConfig) {
                     let h = height as usize;
                     let ts = tile_size as usize;
 
+                    let max_merge_width = runtime_max_merge_width
+                        .load(std::sync::atomic::Ordering::SeqCst);
                     let merged_tiles =
-                        merge_dirty_tiles(&dirty_tiles, cols, w, h, ts, config.max_merge_width);
+                        merge_dirty_tiles(&dirty_tiles, cols, w, h, ts, max_merge_width);
 
                     for tile in &merged_tiles {
                         convert_tile_rgb565_to_rgb24(
@@ -2108,8 +2186,9 @@ async fn run_streaming_loop(config: BenchmarkConfig) {
         }
 
         let elapsed = loop_start.elapsed();
-        let configured_sleep_ms = if config.loop_sleep_ms > 0 {
-            config.loop_sleep_ms
+        let runtime_sleep_ms = runtime_loop_sleep_ms.load(std::sync::atomic::Ordering::SeqCst);
+        let configured_sleep_ms = if runtime_sleep_ms > 0 {
+            runtime_sleep_ms
         } else {
             16
         };

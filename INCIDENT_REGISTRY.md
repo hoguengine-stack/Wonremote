@@ -355,3 +355,33 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - Regression proof: Focused Native Agent window policy test passed and `git diff --check` passed.
 - Release proof: `v0.1.72` published the x86 Viewer and Agent installers plus the signed update manifest through successful GitHub Actions run `32249082554`.
 - Remaining blocker: Confirm no scrolling at 100%, 125%, and 150% Windows DPI on an installed Agent.
+
+## INC-20260820-001: Remote session still restarted capture and discarded the first keyframe
+
+- Detected: 2026-08-19T16:03:29Z.
+- Severity: P1.
+- Affected: Viewer Firebase direct session startup, Agent WebRTC offer handling, duplicate `start-stream` recovery, and initial capture delivery.
+- Status: fixed-not-released.
+- User-visible symptom: An online Agent still took too long to show its first usable remote frame after the Viewer pressed connect.
+- Minimal trigger: Open a Firebase remote session while the Agent recovery query, command listener, WebRTC negotiation, and capture startup overlap.
+- Root cause and contributors: The Viewer added a redundant device read before its atomic session commit; the Agent polled the offer at 250ms intervals, could restart an already active capture when recovery and command delivery overlapped, and discarded a keyframe produced before the data channel opened. The selected stream mode could also race startup, entering a session forced a fullscreen transition and canvas reflow, and an older in-flight connection could replace a newer or closed session.
+- Fix commit(s): pending local commit.
+- Permanent guard: Remove the duplicate device read but expose the Viewer session only after the atomic commit, reject devices without a server-generated heartbeat from the last 60 seconds in both direct-rule and callable paths, track normal and secure connection attempts through cleanup before logout or close, listen for the offer with a one-shot realtime subscription, ignore duplicate active `start-stream` commands, retain one session-scoped initial keyframe until WebRTC opens and request one fresh keyframe after every negotiation, defer the selected stream-mode command until the realtime control channel is ready, keep the established per-profile JPEG merge width so a tile does not exceed the WebRTC message limit, and enter sessions in windowed mode unless the user explicitly requests fullscreen.
+- Regression proof: Focused RED reproduced the realtime offer delay contract, duplicate start guard, missing initial-keyframe buffer, premature stream-mode dispatch, stale normal/secure connection-attempt guards, stale or future-dated online-device rules, renegotiation first-frame loss, and forced-fullscreen contract. Focused GREEN passes 104 Node tests across eight files; application and Cloud Functions `npx tsc --noEmit`, `npm run recurrence:verify`, and `git diff --check` pass. The Firestore emulator command is blocked because Java is not installed on this PC; the source-level Firebase security policy tests pass.
+- Release proof: Not released. A version bump and installer build remain forbidden until the user explicitly requests `빌드`.
+- Remaining blocker: Measure click-to-first-presented-frame on the Viewer and Agent physical PCs after the next explicitly requested release build.
+
+## INC-20260823-001: A healthy WebRTC session was closed by a stale reconnect timer
+
+- Detected: 2026-08-23.
+- Severity: P1.
+- Affected: Viewer WebRTC error classification/reconnect lifecycle, Agent ICE signaling, packaged RTC configuration, runtime loading, and first-keyframe synchronization.
+- Status: source-fixed-physical-verification-required.
+- User-visible symptom: The first WebRTC channels opened about one second after `start-stream`, closed again within roughly half a second, and repeated negotiation until the remote screen appeared about 30 seconds later.
+- Minimal trigger: Let a trickle-ICE candidate write/add/listener operation report an error while the tile and control channels are opening or already healthy.
+- Root cause and contributors: Candidate-level diagnostics were treated as fatal transport failures; Viewer reconnect timers scheduled before `webrtc-open` were not cancelled after the channels became healthy; Agent and Viewer repeated the same fatal candidate policy; the x86 Agent loaded its WebRTC runtime only on demand; channel-open synchronization could send both a buffered keyframe and an unnecessary fresh keyframe; and the first `set-stream-mode fast` command restarted the capture process during initial connection. Release builds also had no enforced path for passing the same optional TURN configuration to the packaged Agent.
+- Fix commit(s): pending local commit.
+- Permanent guard: Classify candidate-level failures as diagnostics while retaining timeout, SDP, and confirmed channel failures as fatal; do not tear down on the transient WebRTC `disconnected` state; resubscribe failed Agent signaling/candidate listeners without closing a healthy peer; cancel pending Viewer reconnect work immediately on `webrtc-open`; never schedule reconnect while the current channel is open; prewarm the architecture-specific Agent WebRTC runtime; send either the buffered initial keyframe or request one fresh keyframe, never both; update capture sleep/quality/merge settings through the running process instead of restarting capture; remove inherited runtime ICE variables before launching the packaged Agent; map one release ICE configuration into both Viewer and packaged Agent; and reject partial TURN or relay-only-without-TURN release configuration.
+- Regression proof: `npx vitest run src/domain/webrtcStability.test.ts src/firebase/agentWebRtcSignaling.test.ts src/firebase/agentPeerConnection.test.ts src/firebase/viewerWebRtcTransport.test.ts src/remoteSessionLayout.test.ts src/agent/agentCommandExecution.test.ts` passed 98 tests across six files; the release ICE packaging contract, packaged-Agent build-only RTC configuration test, and runtime stream-profile parser test passed; `npx tsc --noEmit`, `npm run recurrence:verify`, and `git diff --check` passed.
+- Release proof: none; no version bump, installer build, publication, or physical installation was requested.
+- Remaining blocker: Configure and physically verify an operating TURN service for symmetric-NAT/UDP-blocked sites, then measure click-to-first-presented-frame on LAN and relay paths after the next explicitly requested build.

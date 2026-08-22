@@ -16,10 +16,13 @@ initializeApp();
 
 const db = getFirestore();
 const SECURE_SESSION_TTL_MS = 120_000;
+const DEVICE_HEARTBEAT_MAX_AGE_MS = 60_000;
+const DEVICE_HEARTBEAT_FUTURE_TOLERANCE_MS = 5_000;
 
 type DeviceDocument = {
   businessNumber?: string;
   lastSeenAt?: unknown;
+  lastSeenAtServer?: unknown;
   macAddresses?: unknown;
   ownerUid?: string;
   status?: string;
@@ -297,10 +300,29 @@ function queueOpenSession(
 
 async function readOwnedOnlineDevice(deviceId: string, uid: string): Promise<DeviceDocument & { id: string }> {
   const device = await readOwnedDevice(deviceId, uid);
-  if (device.status !== "online") {
+  const heartbeatAtMs = firestoreTimestampMillis(device.lastSeenAtServer);
+  const heartbeatAgeMs = heartbeatAtMs === null ? null : Date.now() - heartbeatAtMs;
+  if (
+    device.status !== "online" ||
+    heartbeatAgeMs === null ||
+    heartbeatAgeMs < -DEVICE_HEARTBEAT_FUTURE_TOLERANCE_MS ||
+    heartbeatAgeMs > DEVICE_HEARTBEAT_MAX_AGE_MS
+  ) {
     throw new HttpsError("failed-precondition", "Only online agents can accept connections.");
   }
   return device;
+}
+
+function firestoreTimestampMillis(value: unknown): number | null {
+  if (!value || typeof value !== "object" || !("toMillis" in value)) {
+    return null;
+  }
+  const toMillis = (value as { toMillis?: unknown }).toMillis;
+  if (typeof toMillis !== "function") {
+    return null;
+  }
+  const result = toMillis.call(value);
+  return typeof result === "number" && Number.isFinite(result) ? result : null;
 }
 
 async function readOwnedDevice(deviceId: string, uid: string): Promise<DeviceDocument & { id: string }> {

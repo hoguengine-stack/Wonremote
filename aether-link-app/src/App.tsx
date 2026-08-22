@@ -289,6 +289,9 @@ function ViewerApp() {
   const [viewerUpdateDialog, setViewerUpdateDialog] = useState<ViewerUpdateDialogState | null>(null);
   const [isRefreshingDevices, setIsRefreshingDevices] = useState(false);
   const sessionRestoreAttemptedRef = useRef(false);
+  const connectAttemptIdRef = useRef(0);
+  const pendingConnectAttemptsRef = useRef<Set<Promise<{ cleanupSucceeded: boolean; connected: boolean }>>>(new Set());
+  const sessionShutdownInProgressRef = useRef(false);
   const [editTarget, setEditTarget] = useState<DeviceEditTarget | null>(null);
   const [secureConnect, setSecureConnect] = useState<SecureConnectState | null>(null);
   const [rolloutDraft, setRolloutDraft] = useState<UpdateFleetRollout | null>(null);
@@ -567,23 +570,6 @@ function ViewerApp() {
   }, [session]);
 
   useEffect(() => {
-    if (!(window as any).__TAURI_INTERNALS__) {
-      return;
-    }
-
-    const appWindow = getCurrentWindow();
-    void appWindow.setFullscreen(isRemoteFocusMode).catch(() => {
-      // Browser/dev mode and some restricted shells can reject fullscreen changes.
-    });
-
-    return () => {
-      if (isRemoteFocusMode) {
-        void appWindow.setFullscreen(false).catch(() => {});
-      }
-    };
-  }, [isRemoteFocusMode]);
-
-  useEffect(() => {
     if (!isAuthenticated) {
       return;
     }
@@ -678,6 +664,7 @@ function ViewerApp() {
       }
       setLoginError("");
       setApiError("");
+      sessionShutdownInProgressRef.current = false;
       setIsAuthenticated(true);
     } catch (error) {
       setLoginError(error instanceof Error ? error.message : "관리자 로그인을 완료할 수 없습니다.");
@@ -685,14 +672,27 @@ function ViewerApp() {
   }
 
   async function handleLogout() {
+    sessionShutdownInProgressRef.current = true;
+    connectAttemptIdRef.current += 1;
     try {
+      const pendingResults = await Promise.all([...pendingConnectAttemptsRef.current]);
+      if (pendingResults.some(({ cleanupSucceeded }) => !cleanupSucceeded)) {
+        setApiError("취소된 원격 세션을 정리하지 못해 로그아웃을 중단했습니다.");
+        sessionShutdownInProgressRef.current = false;
+        return;
+      }
+      if (session) {
+        await closeSession(session.id);
+      }
       await logoutAdmin();
-    } finally {
       setIsAuthenticated(false);
       setSession(null);
       window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
       setDevices([]);
       setApiError("");
+    } catch (error) {
+      sessionShutdownInProgressRef.current = false;
+      setApiError(error instanceof Error ? error.message : "로그아웃 전 세션 정리 실패");
     }
   }
 
@@ -713,40 +713,103 @@ function ViewerApp() {
   }
 
   async function handleCloseSession() {
-    if (!session) {
-      return;
-    }
+    sessionShutdownInProgressRef.current = true;
+    connectAttemptIdRef.current += 1;
     try {
+      const pendingResults = await Promise.all([...pendingConnectAttemptsRef.current]);
+      if (pendingResults.some(({ cleanupSucceeded }) => !cleanupSucceeded)) {
+        setApiError("취소된 원격 세션을 정리하지 못했습니다.");
+        return;
+      }
+      if (!session) {
+        return;
+      }
       await closeSession(session.id);
       setSession(null);
       window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
       setApiError("");
     } catch (error) {
       setApiError(error instanceof Error ? error.message : "세션 종료 실패");
+    } finally {
+      sessionShutdownInProgressRef.current = false;
+    }
+  }
+
+  async function runTrackedSessionOpen(
+    openRequest: () => Promise<{ session: RemoteSession }>,
+    failureMessage: string,
+  ): Promise<boolean> {
+    if (sessionShutdownInProgressRef.current) {
+      return false;
+    }
+    const attemptId = ++connectAttemptIdRef.current;
+    const connectionTask = (async (): Promise<{ cleanupSucceeded: boolean; connected: boolean }> => {
+      let createdSessionId: string | null = null;
+      try {
+        const result = await openRequest();
+        createdSessionId = result.session.id;
+        if (
+          sessionShutdownInProgressRef.current ||
+          attemptId !== connectAttemptIdRef.current
+        ) {
+          await closeSession(result.session.id);
+          return { cleanupSucceeded: true, connected: false };
+        }
+        setSession(result.session);
+        setApiError("");
+        return { cleanupSucceeded: true, connected: true };
+      } catch (error) {
+        if (
+          !sessionShutdownInProgressRef.current &&
+          attemptId === connectAttemptIdRef.current
+        ) {
+          setApiError(error instanceof Error ? error.message : failureMessage);
+          return { cleanupSucceeded: true, connected: false };
+        }
+        if (createdSessionId) {
+          setApiError(error instanceof Error ? error.message : "취소된 원격 세션 정리 실패");
+          return { cleanupSucceeded: false, connected: false };
+        }
+        return { cleanupSucceeded: true, connected: false };
+      }
+    })();
+    pendingConnectAttemptsRef.current.add(connectionTask);
+    try {
+      const result = await connectionTask;
+      return result.connected;
+    } finally {
+      pendingConnectAttemptsRef.current.delete(connectionTask);
     }
   }
 
   async function handleConnectDevice(device: ManagedDevice) {
+    if (sessionShutdownInProgressRef.current) {
+      return;
+    }
     if (device.status !== "online") {
       setApiError("온라인 상태의 Agent만 접속할 수 있습니다.");
       return;
     }
-    try {
-      const result = await openSession(device.id);
-      setSession(result.session);
-      setApiError("");
-    } catch (error) {
-      setApiError(error instanceof Error ? error.message : "세션 연결 실패");
-    }
+    await runTrackedSessionOpen(() => openSession(device.id), "세션 연결 실패");
   }
 
   async function handleSecureConnectRequest(device: ManagedDevice) {
+    if (sessionShutdownInProgressRef.current) {
+      return;
+    }
     if (device.status !== "online") {
       setApiError("온라인 상태의 Agent만 보안접속을 요청할 수 있습니다.");
       return;
     }
+    const requestAttemptId = connectAttemptIdRef.current;
     try {
       const challenge = await requestSecureSession(device.id);
+      if (
+        sessionShutdownInProgressRef.current ||
+        requestAttemptId !== connectAttemptIdRef.current
+      ) {
+        return;
+      }
       setSecureConnect({
         challengeId: challenge.challengeId,
         code: "",
@@ -756,7 +819,9 @@ function ViewerApp() {
       });
       setApiError("");
     } catch (error) {
-      setApiError(error instanceof Error ? error.message : "보안접속 코드 요청 실패");
+      if (!sessionShutdownInProgressRef.current) {
+        setApiError(error instanceof Error ? error.message : "보안접속 코드 요청 실패");
+      }
     }
   }
 
@@ -766,18 +831,18 @@ function ViewerApp() {
       return;
     }
     setSecureConnect({ ...secureConnect, isSubmitting: true });
-    try {
-      const result = await connectSecureSession({
+    const connected = await runTrackedSessionOpen(
+      () => connectSecureSession({
         challengeId: secureConnect.challengeId,
         code: secureConnect.code,
         deviceId: secureConnect.device.id,
-      });
-      setSession(result.session);
+      }),
+      "보안접속 실패",
+    );
+    if (connected) {
       setSecureConnect(null);
-      setApiError("");
-    } catch (error) {
+    } else if (!sessionShutdownInProgressRef.current) {
       setSecureConnect({ ...secureConnect, isSubmitting: false });
-      setApiError(error instanceof Error ? error.message : "보안접속 실패");
     }
   }
 
@@ -2003,6 +2068,7 @@ function RemoteSessionPanel({
   const [zoom, setZoom] = useState(1);
   const [isSessionFullscreen, setIsSessionFullscreen] = useState(false);
   const [isFullscreenToolbarOpen, setIsFullscreenToolbarOpen] = useState(false);
+  const [isWebRtcConnectionReady, setIsWebRtcConnectionReady] = useState(false);
   const [streamPerformanceMode, setStreamPerformanceMode] = useState<StreamPerformanceMode>(() =>
     normalizeStreamPerformanceMode(window.localStorage.getItem("wonremote-stream-performance-mode")),
   );
@@ -2026,6 +2092,7 @@ function RemoteSessionPanel({
   useEffect(() => {
     setIsSessionFullscreen(false);
     setIsFullscreenToolbarOpen(false);
+    setIsWebRtcConnectionReady(false);
   }, [sessionId]);
 
   useEffect(() => {
@@ -2130,8 +2197,11 @@ function RemoteSessionPanel({
     if (!sessionId || session?.state !== "connected") {
       return;
     }
+    if (isViewerFirebaseEnabled() && !isWebRtcConnectionReady) {
+      return;
+    }
     void onInputEvent(buildSetStreamModeCommand(streamPerformanceMode));
-  }, [sessionId, session?.state, streamPerformanceMode]);
+  }, [isWebRtcConnectionReady, sessionId, session?.state, streamPerformanceMode]);
 
   useEffect(() => {
     pingStateRef.current = pingState;
@@ -2299,6 +2369,7 @@ function RemoteSessionPanel({
     let webRtcReconnectTimer: number | null = null;
     let webRtcReconnectAttempt = 0;
     let webRtcStartInFlight = false;
+    let webRtcConnectionOpen = false;
     type TileFrame = { tiles?: any[]; width?: number; height?: number; sequence?: number; keyframe?: boolean };
     let keyframeRenderPending = false;
     const queuedDuringKeyframe: TileFrame[] = [];
@@ -2483,7 +2554,7 @@ function RemoteSessionPanel({
     const firebaseEnabled = isViewerFirebaseEnabled();
     if (firebaseEnabled) {
       const scheduleWebRtcReconnect = () => {
-        if (!active || webRtcReconnectTimer !== null) {
+        if (!active || webRtcConnectionOpen || webRtcReconnectTimer !== null) {
           return;
         }
         const delayMs = webRtcReconnectDelayMs(webRtcReconnectAttempt);
@@ -2499,6 +2570,8 @@ function RemoteSessionPanel({
           return;
         }
         webRtcStartInFlight = true;
+        webRtcConnectionOpen = false;
+        setIsWebRtcConnectionReady(false);
         webRtcTransport?.close();
         webRtcTransport = null;
         webRtcTransportRef.current = null;
@@ -2508,11 +2581,24 @@ function RemoteSessionPanel({
             onState: (state) => {
               if (!active) return;
               if (state === "webrtc-open") {
+                webRtcConnectionOpen = true;
                 webRtcReconnectAttempt = 0;
+                if (webRtcReconnectTimer !== null) {
+                  window.clearTimeout(webRtcReconnectTimer);
+                  webRtcReconnectTimer = null;
+                }
+                setIsWebRtcConnectionReady(true);
+              }
+            },
+            onDiagnostic: (message) => {
+              if (active) {
+                console.warn("[WebRTC Viewer diagnostic]", message);
               }
             },
             onError: (error) => {
               if (!active) return;
+              webRtcConnectionOpen = false;
+              setIsWebRtcConnectionReady(false);
               console.warn("[WebRTC Viewer]", error.message);
               scheduleWebRtcReconnect();
             },
@@ -2564,6 +2650,7 @@ function RemoteSessionPanel({
 
     return () => {
       active = false;
+      webRtcConnectionOpen = false;
       if (webRtcReconnectTimer !== null) {
         window.clearTimeout(webRtcReconnectTimer);
       }

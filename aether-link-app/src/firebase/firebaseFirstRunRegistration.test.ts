@@ -91,6 +91,7 @@ describe("Firebase first-run registration payloads", () => {
     expect(signInWithEmailAndPassword).toHaveBeenCalled();
     const payload = vi.mocked(mockState.transaction.set).mock.calls[0][1] as Record<string, unknown>;
     expect(payload).not.toHaveProperty("version");
+    expect(payload).toMatchObject({ lastSeenAtServer: "server-time" });
   });
 
   it("moves a user store name and retires only the previous Agent document during reconciliation", async () => {
@@ -140,5 +141,9 @@ describe("Firebase first-run registration payloads", () => {
 
     const payload = vi.mocked(setDoc).mock.calls[0][1] as Record<string, unknown>;
     expect(payload).not.toHaveProperty("version");
+    expect(payload).toMatchObject({
+      lastSeenAtServer: "server-time",
+      updatedAt: "server-time",
+    });
   });
 });

@@ -59,6 +59,12 @@ const FIREBASE_APP_ID: Option<&str> = option_env!("VITE_WONREMOTE_FIREBASE_APP_I
 const FIREBASE_STORAGE_BUCKET: Option<&str> = option_env!("VITE_WONREMOTE_FIREBASE_STORAGE_BUCKET");
 const FIREBASE_MESSAGING_SENDER_ID: Option<&str> =
     option_env!("VITE_WONREMOTE_FIREBASE_MESSAGING_SENDER_ID");
+const RTC_STUN_URLS: Option<&str> = option_env!("VITE_WONREMOTE_RTC_STUN_URLS");
+const RTC_TURN_URLS: Option<&str> = option_env!("VITE_WONREMOTE_RTC_TURN_URLS");
+const RTC_TURN_USERNAME: Option<&str> = option_env!("VITE_WONREMOTE_RTC_TURN_USERNAME");
+const RTC_TURN_CREDENTIAL: Option<&str> = option_env!("VITE_WONREMOTE_RTC_TURN_CREDENTIAL");
+const RTC_RELAY_ONLY: Option<&str> = option_env!("VITE_WONREMOTE_RTC_RELAY_ONLY");
+const RTC_CONNECT_TIMEOUT_MS: Option<&str> = option_env!("VITE_WONREMOTE_RTC_CONNECT_TIMEOUT_MS");
 const PUBLIC_FIREBASE_API_KEY: &str = "AIzaSyDb1Ihymmrt1SSYvbOAB2NjRV9PiWMY2y8";
 const PUBLIC_FIREBASE_AUTH_DOMAIN: &str = "wonremote-a7fd3.firebaseapp.com";
 const PUBLIC_FIREBASE_PROJECT_ID: &str = "wonremote-a7fd3";
@@ -779,6 +785,7 @@ fn spawn_agent_only_process(
         command.env("WONREMOTE_API_URL", "http://127.0.0.1:8787");
     }
     apply_firebase_env(&mut command);
+    apply_rtc_env(&mut command);
 
     add_no_window(&mut command);
 
@@ -1843,6 +1850,30 @@ fn apply_firebase_env(command: &mut Command) {
     }
 }
 
+fn packaged_rtc_config_value(build_value: Option<&str>) -> Option<String> {
+    build_value
+        .map(str::to_string)
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn apply_rtc_env(command: &mut Command) {
+    let values = [
+        ("WONREMOTE_RTC_STUN_URLS", RTC_STUN_URLS),
+        ("WONREMOTE_RTC_TURN_URLS", RTC_TURN_URLS),
+        ("WONREMOTE_RTC_TURN_USERNAME", RTC_TURN_USERNAME),
+        ("WONREMOTE_RTC_TURN_CREDENTIAL", RTC_TURN_CREDENTIAL),
+        ("WONREMOTE_RTC_RELAY_ONLY", RTC_RELAY_ONLY),
+        ("WONREMOTE_RTC_CONNECT_TIMEOUT_MS", RTC_CONNECT_TIMEOUT_MS),
+    ];
+
+    for (key, build_value) in values {
+        command.env_remove(key);
+        if let Some(value) = packaged_rtc_config_value(build_value) {
+            command.env(key, value);
+        }
+    }
+}
+
 fn local_api_addr() -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], LOCAL_API_PORT))
 }
@@ -2697,6 +2728,20 @@ mod registry_tests {
             Some("project-id".to_string()),
             None,
         ));
+    }
+
+    #[test]
+    fn test_packaged_rtc_config_uses_only_non_empty_build_values() {
+        assert_eq!(
+            packaged_rtc_config_value(Some("turn:build.example:3478")),
+            Some("turn:build.example:3478".to_string()),
+        );
+        assert_eq!(
+            packaged_rtc_config_value(Some("stun:build.example:3478")),
+            Some("stun:build.example:3478".to_string()),
+        );
+        assert_eq!(packaged_rtc_config_value(Some("  ")), None);
+        assert_eq!(packaged_rtc_config_value(None), None);
     }
 
     #[test]

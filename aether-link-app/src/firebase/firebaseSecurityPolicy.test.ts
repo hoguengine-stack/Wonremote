@@ -94,6 +94,20 @@ describe("Firebase security deployment policy", () => {
 
     expect(rules).toContain("function ownsSession(sessionId)");
     expect(rules).toContain("function isOwnSessionCreate(sessionId)");
+    expect(rules).toContain('deviceDoc(request.resource.data.deviceId).data.status == "online"');
+    expect(rules).toContain("function hasFreshDeviceHeartbeat(deviceId)");
+    expect(rules).toContain('device.get("lastSeenAtServer", null)');
+    expect(rules).toContain("heartbeatAt <= request.time");
+    expect(rules).toContain('request.time - duration.value(60, "s")');
+    expect(rules).toContain("hasFreshDeviceHeartbeat(request.resource.data.deviceId)");
+    expect(rules).toContain("request.resource.data.lastSeenAtServer == request.time");
+
+    const functionsSource = readFileSync(resolve(repoRoot, "functions/src/index.ts"), "utf8");
+    expect(functionsSource).toContain("const DEVICE_HEARTBEAT_MAX_AGE_MS = 60_000");
+    expect(functionsSource).toContain("const DEVICE_HEARTBEAT_FUTURE_TOLERANCE_MS = 5_000");
+    expect(functionsSource).toContain("firestoreTimestampMillis(device.lastSeenAtServer)");
+    expect(functionsSource).toContain("heartbeatAgeMs < -DEVICE_HEARTBEAT_FUTURE_TOLERANCE_MS");
+    expect(functionsSource).toContain("heartbeatAgeMs > DEVICE_HEARTBEAT_MAX_AGE_MS");
     expect(rules).toContain("function canAccessSession(sessionId)");
     expect(rules).toContain("function canReadSession()");
     expect(rules).toContain("function isOwnSessionClose(sessionId)");

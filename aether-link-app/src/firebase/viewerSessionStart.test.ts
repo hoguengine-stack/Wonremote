@@ -2,9 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => ({
   batch: {
-    commit: vi.fn(async () => undefined),
+    commit: vi.fn<() => Promise<void>>(async () => undefined),
     set: vi.fn(),
   },
+  getDoc: vi.fn(async () => ({ exists: () => true, data: () => ({ status: "online" }) })),
   safeBatchSet: vi.fn((batch: { set: (...args: unknown[]) => unknown }, ref: unknown, data: unknown, options?: unknown) =>
     options === undefined ? batch.set(ref, data) : batch.set(ref, data, options)),
 }));
@@ -14,7 +15,7 @@ vi.mock("firebase/firestore", () => ({
   doc: vi.fn((root: { path?: string }, ...segments: string[]) => segments.length > 0
     ? { path: segments.join("/") }
     : { path: `${root.path}/command-auto` }),
-  getDoc: vi.fn(async () => ({ exists: () => true, data: () => ({ status: "online" }) })),
+  getDoc: state.getDoc,
   getDocs: vi.fn(),
   limit: vi.fn(),
   onSnapshot: vi.fn(),
@@ -65,5 +66,6 @@ describe("Viewer direct session start", () => {
       state: "pending",
     });
     expect(state.batch.commit).toHaveBeenCalledOnce();
+    expect(state.getDoc).not.toHaveBeenCalled();
   });
 });

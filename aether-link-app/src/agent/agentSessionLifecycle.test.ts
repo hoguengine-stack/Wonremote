@@ -4,6 +4,7 @@ import {
   currentSessionId,
   endAgentSessionGeneration,
   sessionIdFromStartStreamCommand,
+  shouldStartStreamForCommand,
   shouldStopActiveSession,
   stopStreamTargetFromCommand,
 } from "./agentSessionLifecycle";
@@ -61,6 +62,35 @@ describe("Agent session lifecycle commands", () => {
       sessionGeneration: 7,
       sessionChanged: false,
     });
+  });
+
+  it("does not restart an already starting or ready capture for a duplicate start-stream command", () => {
+    const active = {
+      activeSessionId: "session-1",
+      requestedSessionId: "session-1",
+      streamDesired: true,
+      captureActive: true,
+      restartPending: false,
+    };
+
+    expect(shouldStartStreamForCommand({ ...active, rtcState: "starting" })).toBe(false);
+    expect(shouldStartStreamForCommand({ ...active, rtcState: "ready" })).toBe(false);
+    expect(shouldStartStreamForCommand({ ...active, captureActive: false, restartPending: true, rtcState: "ready" })).toBe(false);
+  });
+
+  it("still starts a new, stopped, or failed session", () => {
+    const active = {
+      activeSessionId: "session-1",
+      requestedSessionId: "session-1",
+      streamDesired: true,
+      captureActive: true,
+      restartPending: false,
+    };
+
+    expect(shouldStartStreamForCommand({ ...active, requestedSessionId: "session-2", rtcState: "ready" })).toBe(true);
+    expect(shouldStartStreamForCommand({ ...active, streamDesired: false, rtcState: "ready" })).toBe(true);
+    expect(shouldStartStreamForCommand({ ...active, captureActive: false, rtcState: "ready" })).toBe(true);
+    expect(shouldStartStreamForCommand({ ...active, rtcState: "unavailable" })).toBe(true);
   });
 
   it("invalidates session transport only on a session switch or stop", () => {

@@ -4,13 +4,19 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const FIREBASE_VITE_KEYS: [&str; 6] = [
+const PUBLIC_VITE_KEYS: [&str; 12] = [
     "VITE_WONREMOTE_FIREBASE_API_KEY",
     "VITE_WONREMOTE_FIREBASE_AUTH_DOMAIN",
     "VITE_WONREMOTE_FIREBASE_PROJECT_ID",
     "VITE_WONREMOTE_FIREBASE_APP_ID",
     "VITE_WONREMOTE_FIREBASE_STORAGE_BUCKET",
     "VITE_WONREMOTE_FIREBASE_MESSAGING_SENDER_ID",
+    "VITE_WONREMOTE_RTC_STUN_URLS",
+    "VITE_WONREMOTE_RTC_TURN_URLS",
+    "VITE_WONREMOTE_RTC_TURN_USERNAME",
+    "VITE_WONREMOTE_RTC_TURN_CREDENTIAL",
+    "VITE_WONREMOTE_RTC_RELAY_ONLY",
+    "VITE_WONREMOTE_RTC_CONNECT_TIMEOUT_MS",
 ];
 
 fn main() {
@@ -18,7 +24,7 @@ fn main() {
     ensure_dist_poc_vc_runtime_exists_for_cargo_metadata();
     ensure_dist_native_node_datachannel_exists_for_cargo_metadata();
     stage_installer_process_stop_script();
-    export_public_firebase_env_from_dotenv();
+    export_public_vite_env_from_dotenv();
     tauri_build::build()
 }
 
@@ -112,12 +118,12 @@ fn ensure_dist_native_node_datachannel_exists_for_cargo_metadata() {
     );
 }
 
-fn export_public_firebase_env_from_dotenv() {
+fn export_public_vite_env_from_dotenv() {
     let dotenv_path = Path::new("../.env");
     println!("cargo:rerun-if-changed={}", dotenv_path.display());
 
     let dotenv_values = read_dotenv(dotenv_path);
-    for key in FIREBASE_VITE_KEYS {
+    for key in PUBLIC_VITE_KEYS {
         if std::env::var_os(key).is_some() {
             continue;
         }

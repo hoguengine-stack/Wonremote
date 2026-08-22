@@ -51,6 +51,23 @@ export interface AgentStreamGenerationState {
   sessionGeneration: number;
 }
 
+export function shouldStartStreamForCommand(input: {
+  activeSessionId: string | null;
+  requestedSessionId: string;
+  streamDesired: boolean;
+  captureActive: boolean;
+  restartPending: boolean;
+  rtcState: "none" | "starting" | "ready" | "unavailable" | undefined;
+}): boolean {
+  if (!input.streamDesired || input.activeSessionId !== input.requestedSessionId) {
+    return true;
+  }
+  if (!input.captureActive && !input.restartPending) {
+    return true;
+  }
+  return input.rtcState !== "starting" && input.rtcState !== "ready";
+}
+
 export function beginAgentCaptureGeneration(
   state: AgentStreamGenerationState,
   sessionId: string,

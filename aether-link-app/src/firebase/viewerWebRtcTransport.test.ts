@@ -77,6 +77,8 @@ describe("Viewer WebRTC transport", () => {
   beforeEach(() => {
     vi.stubGlobal("RTCPeerConnection", FakePeerConnection);
     vi.clearAllMocks();
+    firestoreMocks.safeAddDoc.mockResolvedValue({ id: "candidate-1" });
+    firestoreMocks.safeSetDoc.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -223,6 +225,56 @@ describe("Viewer WebRTC transport", () => {
       message: expect.stringContaining("without open tile and control channels"),
     }));
     expect(transport.sendControl("key-down A")).toBe(false);
+  });
+
+  it("keeps a healthy connection alive when one trickle ICE candidate write fails", async () => {
+    const { startFirebaseViewerWebRtcTransport } = await import("./viewerFirebase");
+    const onDiagnostic = vi.fn();
+    const onError = vi.fn();
+    const transport = await startFirebaseViewerWebRtcTransport(
+      "session-candidate-warning",
+      { onDiagnostic, onError, onFrame: vi.fn() },
+      {} as ImportMetaEnv,
+    );
+
+    const peer = FakePeerConnection.latest;
+    const tileChannel = peer.channels.get("wonremote-tiles")!;
+    const controlChannel = peer.channels.get("wonremote-control")!;
+    tileChannel.readyState = "open";
+    controlChannel.readyState = "open";
+    tileChannel.onopen?.();
+    controlChannel.onopen?.();
+
+    firestoreMocks.safeAddDoc.mockRejectedValueOnce(new Error("candidate write denied"));
+    peer.onicecandidate?.({
+      candidate: { toJSON: () => ({ candidate: "candidate:1" }) } as RTCIceCandidate,
+    });
+    await vi.waitFor(() => expect(onDiagnostic).toHaveBeenCalledWith(
+      expect.stringContaining("viewer-candidate-write-failed"),
+    ));
+
+    expect(onError).not.toHaveBeenCalled();
+    expect(peer.close).not.toHaveBeenCalled();
+    expect(transport.sendControl("key-down A")).toBe(true);
+    transport.close();
+  });
+
+  it("does not tear down a peer for a transient disconnected state", async () => {
+    const { startFirebaseViewerWebRtcTransport } = await import("./viewerFirebase");
+    const onError = vi.fn();
+    const transport = await startFirebaseViewerWebRtcTransport(
+      "session-transient-disconnect",
+      { onError, onFrame: vi.fn() },
+      {} as ImportMetaEnv,
+    );
+
+    const peer = FakePeerConnection.latest;
+    peer.connectionState = "disconnected";
+    peer.onconnectionstatechange?.();
+
+    expect(onError).not.toHaveBeenCalled();
+    expect(peer.close).not.toHaveBeenCalled();
+    transport.close();
   });
 
   it("closes a saturated pre-open queue before allowing Firestore fallback", async () => {

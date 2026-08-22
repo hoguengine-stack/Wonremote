@@ -38,6 +38,10 @@ $env:WONREMOTE_RTC_TURN_CREDENTIAL="..."
 
 Set `VITE_WONREMOTE_RTC_RELAY_ONLY=true` and `WONREMOTE_RTC_RELAY_ONLY=true` only when the deployment must force TURN relay traffic for restrictive NAT/firewall tests.
 
+Release builds read the matching GitHub Actions variables/secrets (`WONREMOTE_RTC_STUN_URLS`, `WONREMOTE_RTC_TURN_URLS`, `WONREMOTE_RTC_TURN_USERNAME`, `WONREMOTE_RTC_TURN_CREDENTIAL`, `WONREMOTE_RTC_RELAY_ONLY`, and `WONREMOTE_RTC_CONNECT_TIMEOUT_MS`). The Tauri host maps the build-time `VITE_` values into the packaged Agent process so Viewer and Agent cannot silently ship with different ICE settings.
+
+TURN remains part of WebRTC. Configure an operating TURN service before claiming reliable first-connect behavior across symmetric NAT or UDP-blocked networks. Static TURN credentials embedded in an installer are extractable, so production should use short-lived credentials issued by a trusted backend.
+
 Firestore tile streaming fallback is disabled by default because screen frames can consume Firestore writes, reads, and egress quickly. Use it only for short diagnostics:
 
 ```powershell

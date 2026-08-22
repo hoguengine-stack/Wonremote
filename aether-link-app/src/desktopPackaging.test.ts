@@ -841,4 +841,42 @@ describe("desktop packaging scaffold", () => {
     expect(tauriLib).toContain('env!("CARGO_PKG_VERSION")');
     expect(tauriLib).not.toContain('unwrap_or("0.1.0")');
   });
+
+  it("passes one release ICE configuration to both Viewer and packaged Agent", () => {
+    const workflow = readFileSync(
+      path.join(projectRoot, "..", ".github", "workflows", "publish-release.yml"),
+      "utf8",
+    );
+    const buildScript = readFileSync(path.join(projectRoot, "src-tauri", "build.rs"), "utf8");
+    const tauriLib = readFileSync(path.join(projectRoot, "src-tauri", "src", "lib.rs"), "utf8");
+    const rtcKeys = [
+      "RTC_STUN_URLS",
+      "RTC_TURN_URLS",
+      "RTC_TURN_USERNAME",
+      "RTC_TURN_CREDENTIAL",
+      "RTC_RELAY_ONLY",
+      "RTC_CONNECT_TIMEOUT_MS",
+    ];
+
+    for (const suffix of rtcKeys) {
+      expect(workflow).toContain(`VITE_WONREMOTE_${suffix}:`);
+      expect(buildScript).toContain(`"VITE_WONREMOTE_${suffix}"`);
+      expect(tauriLib).toContain(`option_env!("VITE_WONREMOTE_${suffix}")`);
+      expect(tauriLib).toContain(`"WONREMOTE_${suffix}"`);
+    }
+    const agentSpawn = tauriLib.slice(
+      tauriLib.indexOf("fn spawn_agent_only_process"),
+      tauriLib.indexOf("fn start_agent_watchdog"),
+    );
+    const rtcEnv = tauriLib.slice(
+      tauriLib.indexOf("fn apply_rtc_env"),
+      tauriLib.indexOf("fn local_api_addr"),
+    );
+    expect(agentSpawn).toContain("apply_firebase_env(&mut command);");
+    expect(agentSpawn).toContain("apply_rtc_env(&mut command);");
+    expect(rtcEnv).toContain("command.env_remove(key);");
+    expect(rtcEnv).not.toContain("env::var(");
+    expect(workflow).toContain("TURN URL, username, and credential must be configured together.");
+    expect(workflow).toContain("Relay-only release requires a complete TURN configuration.");
+  });
 });

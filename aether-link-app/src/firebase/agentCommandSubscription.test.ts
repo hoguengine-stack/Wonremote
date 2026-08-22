@@ -111,6 +111,13 @@ describe("Agent Firebase command subscription", () => {
 
     expect(getDoc).not.toHaveBeenCalled();
     expect(state.update).toHaveBeenCalledOnce();
+    expect(state.update).toHaveBeenCalledWith(
+      expect.objectContaining({ path: "devices/device-1" }),
+      expect.objectContaining({
+        lastSeenAtServer: "server-time",
+        status: "online",
+      }),
+    );
     expect(result.device).toMatchObject({ id: "device-1", status: "online", version: "0.1.44", activeDisplayIndex: 1 });
   });
 

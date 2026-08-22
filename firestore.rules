@@ -18,6 +18,14 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/devices/$(deviceId));
     }
 
+    function hasFreshDeviceHeartbeat(deviceId) {
+      let device = deviceDoc(deviceId).data;
+      let heartbeatAt = device.get("lastSeenAtServer", null);
+      return heartbeatAt is timestamp
+        && heartbeatAt <= request.time
+        && heartbeatAt >= request.time - duration.value(60, "s");
+    }
+
     function ownsDevice(deviceId) {
       return signedIn() && deviceDoc(deviceId).data.ownerUid == request.auth.uid;
     }
@@ -59,6 +67,8 @@ service cloud.firestore {
         && request.resource.data.deviceId is string
         && request.resource.data.state == "connected"
         && isCentralViewer()
+        && deviceDoc(request.resource.data.deviceId).data.status == "online"
+        && hasFreshDeviceHeartbeat(request.resource.data.deviceId)
         && deviceDoc(request.resource.data.deviceId).data.ownerUid is string;
     }
 
@@ -76,6 +86,7 @@ service cloud.firestore {
         && request.resource.data.businessNumber is string
         && request.resource.data.deviceNumber is string
         && request.resource.data.installId is string
+        && request.resource.data.lastSeenAtServer == request.time
         && request.resource.data.status == "online";
     }
 
@@ -86,7 +97,11 @@ service cloud.firestore {
         && request.resource.data.deviceNumber == resource.data.deviceNumber
         && request.resource.data.installId == resource.data.installId
         && request.resource.data.get("updateRing", null) == resource.data.get("updateRing", null)
-        && request.resource.data.get("updatePaused", false) == resource.data.get("updatePaused", false);
+        && request.resource.data.get("updatePaused", false) == resource.data.get("updatePaused", false)
+        && (
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny(["lastSeenAtServer"])
+          || request.resource.data.lastSeenAtServer == request.time
+        );
     }
 
     function isCentralViewerDeviceUpdate() {

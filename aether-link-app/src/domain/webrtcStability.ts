@@ -20,7 +20,7 @@ export function resolveWebRtcConnectTimeoutMs(env: RtcEnv): number {
 }
 
 export function isTerminalWebRtcConnectionState(state: string | undefined): boolean {
-  return state === "failed" || state === "disconnected" || state === "closed";
+  return state === "failed" || state === "closed";
 }
 
 export function formatWebRtcConnectionFailure(reason: string, detail?: string): string {

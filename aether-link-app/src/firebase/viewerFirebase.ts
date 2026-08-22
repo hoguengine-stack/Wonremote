@@ -491,7 +491,9 @@ export async function registerFirstRunAgentWithFirebase(
       ...deviceDocument,
       deletedAt: null,
       installId: input.installId,
+      lastSeenAtServer: serverTimestamp(),
       ownerUid: credential.user.uid,
+      updatedAt: serverTimestamp(),
     },
     { merge: true },
   );
@@ -769,6 +771,7 @@ export async function startFirebaseViewerWebRtcTransport(
   handlers: {
     onFrame: (frame: RemoteTileFrame) => void;
     onState?: (state: string) => void;
+    onDiagnostic?: (message: string) => void;
     onError?: (error: Error) => void;
   },
   env: ViewerFirebaseEnv = import.meta.env,
@@ -858,6 +861,13 @@ export async function startFirebaseViewerWebRtcTransport(
     closeResources();
   };
 
+  const reportDiagnostic = (reason: string, detail?: string) => {
+    if (resourcesClosed || closedByCaller) {
+      return;
+    }
+    handlers.onDiagnostic?.(formatWebRtcConnectionFailure(reason, detail));
+  };
+
   const channel = peer.createDataChannel(WEBRTC_TILE_CHANNEL_LABEL, viewerTileDataChannelOptions());
   const controlChannel = peer.createDataChannel(WEBRTC_CONTROL_CHANNEL_LABEL, { ordered: true });
   const fileChannel = peer.createDataChannel(WEBRTC_FILE_CHANNEL_LABEL, { ordered: true });
@@ -909,7 +919,7 @@ export async function startFirebaseViewerWebRtcTransport(
     fileChannelOpened = false;
     const error = new Error("Viewer WebRTC file channel failed.");
     rejectAllFileWaiters(error);
-    handlers.onError?.(error);
+    reportDiagnostic("file-channel-error", error.message);
   };
   fileChannel.onmessage = (event) => {
     const ack = parseWebRtcFileAck(event.data);
@@ -973,7 +983,10 @@ export async function startFirebaseViewerWebRtcTransport(
       candidate: event.candidate.toJSON(),
       createdAt: serverTimestamp(),
       negotiationId,
-    }).catch((error) => handlers.onError?.(error instanceof Error ? error : new Error(String(error))));
+    }).catch((error) => reportDiagnostic(
+      "viewer-candidate-write-failed",
+      error instanceof Error ? error.message : String(error),
+    ));
   };
 
   unsubscribeSignal = onSnapshot(
@@ -993,9 +1006,18 @@ export async function startFirebaseViewerWebRtcTransport(
       answerApplied = true;
       void peer
         .setRemoteDescription({ type: "answer", sdp: answer.sdp })
-        .catch((error) => handlers.onError?.(error instanceof Error ? error : new Error(String(error))));
+        .catch((error) => reportUnavailable(
+          "answer-apply-failed",
+          error instanceof Error ? error.message : String(error),
+        ));
     },
-    (error) => handlers.onError?.(error),
+    (error) => {
+      if (answerApplied) {
+        reportDiagnostic("signal-listener-failed-after-answer", error.message);
+      } else {
+        reportUnavailable("signal-listener-failed", error.message);
+      }
+    },
   );
 
   unsubscribeAgentCandidates = onSnapshot(
@@ -1014,11 +1036,14 @@ export async function startFirebaseViewerWebRtcTransport(
         if (candidate) {
           void peer
             .addIceCandidate(candidate as RTCIceCandidateInit)
-            .catch((error) => handlers.onError?.(error instanceof Error ? error : new Error(String(error))));
+            .catch((error) => reportDiagnostic(
+              "agent-candidate-rejected",
+              error instanceof Error ? error.message : String(error),
+            ));
         }
       });
     },
-    (error) => handlers.onError?.(error),
+    (error) => reportDiagnostic("agent-candidate-listener-failed", error.message),
   );
 
   const connectTimeoutMs = resolveWebRtcConnectTimeoutMs(env);
@@ -1258,15 +1283,6 @@ async function openFirebaseSessionDirect(
 ): Promise<{ session: RemoteSession; inputLog: string[] }> {
   const services = getViewerFirebaseServices(env);
   const userId = requireCurrentUserId(services.auth.currentUser?.uid);
-  const deviceSnapshot = await getDoc(doc(services.db, "devices", deviceId));
-  if (!deviceSnapshot.exists()) {
-    throw new Error("Firebase device not found.");
-  }
-  const device = deviceSnapshot.data() as { status?: unknown };
-  if (device.status !== "online") {
-    throw new Error("Only online agents can accept connections.");
-  }
-
   const session = buildConnectedSession(deviceId);
   const batch = writeBatch(services.db);
   safeBatchSet(batch, doc(services.db, "sessions", session.id), {
