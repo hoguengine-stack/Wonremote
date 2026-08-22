@@ -166,3 +166,24 @@ jobs:
 
       - name: Publish GitHub release
         run: npm run release:publish
+
+      - name: Verify live Firebase download aliases
+        run: |
+          $expectedAliases = @{
+            "viewer" = "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Viewer-Setup.exe"
+            "agent" = "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Agent-Setup.exe"
+            "viewer-x86" = "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Viewer-Setup.exe"
+            "agent-x86" = "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Agent-Setup.exe"
+          }
+          foreach ($alias in $expectedAliases.Keys) {
+            $headers = & curl.exe --silent --show-error --head --max-redirs 0 "https://wonremote-a7fd3.web.app/download/$alias"
+            if ($LASTEXITCODE -ne 0) {
+              throw "Firebase alias request failed for $alias with exit code $LASTEXITCODE."
+            }
+            $statusLine = @($headers | Where-Object { $_ -match '^HTTP/' })[-1]
+            $locationLine = $headers | Where-Object { $_ -match '^location:' } | Select-Object -First 1
+            $location = ($locationLine -replace '^location:\s*', '').Trim()
+            if ($statusLine -notmatch '\s302\s' -or $location -ne $expectedAliases[$alias]) {
+              throw "Firebase alias mismatch for $alias. status=$statusLine location=$location"
+            }
+          }

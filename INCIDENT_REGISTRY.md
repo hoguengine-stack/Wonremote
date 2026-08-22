@@ -385,3 +385,18 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - Regression proof: `npx vitest run src/domain/webrtcStability.test.ts src/firebase/agentWebRtcSignaling.test.ts src/firebase/agentPeerConnection.test.ts src/firebase/viewerWebRtcTransport.test.ts src/remoteSessionLayout.test.ts src/agent/agentCommandExecution.test.ts` passed 98 tests across six files; the release ICE packaging contract, packaged-Agent build-only RTC configuration test, and runtime stream-profile parser test passed; `npx tsc --noEmit`, `npm run recurrence:verify`, and `git diff --check` passed.
 - Release proof: none; no version bump, installer build, publication, or physical installation was requested.
 - Remaining blocker: Configure and physically verify an operating TURN service for symmetric-NAT/UDP-blocked sites, then measure click-to-first-presented-frame on LAN and relay paths after the next explicitly requested build.
+
+## INC-20260823-002: Live Firebase x86 download aliases targeted removed release assets
+
+- Detected: 2026-08-23.
+- Severity: P1.
+- Affected: Firebase Hosting download aliases and the post-release delivery gate.
+- Status: open.
+- User-visible symptom: `/download/viewer-x86` and `/download/agent-x86` redirected to removed `*-Setup-x86.exe` asset names even though the release contained only the approved stable Viewer and Agent installers.
+- Minimal trigger: Publish the two-installer x86 release contract while Firebase Hosting still serves an older redirect configuration.
+- Root cause and contributors: Source configuration and tests were correct, but Hosting had not been redeployed and the release workflow validated repository configuration rather than the four live download aliases.
+- Fix commit(s): pending local commit.
+- Permanent guard: After every GitHub release publish, issue a live no-follow HEAD request for `viewer`, `agent`, `viewer-x86`, and `agent-x86`; require HTTP 302 and exact stable Viewer or Agent asset destinations before declaring delivery successful.
+- Regression proof: pending.
+- Release proof: GitHub release `v0.1.73` and Actions run `32604699424` exposed the stale live-alias drift; Hosting redeploy and post-deploy verification are pending.
+- Remaining blocker: Deploy the current Hosting configuration and verify all four live aliases.

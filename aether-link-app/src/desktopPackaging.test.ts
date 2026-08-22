@@ -750,6 +750,10 @@ describe("desktop packaging scaffold", () => {
     expect(releaseWorkflow).toContain("aether-link-app/.local-run/cmake");
     expect(releaseWorkflow).toContain("aether-link-app/.local-run/nasm");
     expect(releaseWorkflow).not.toContain("aether-link-app/.cache");
+    expect(releaseWorkflow).toContain("Verify live Firebase download aliases");
+    expect(releaseWorkflow).toContain("--max-redirs 0");
+    expect(releaseWorkflow).toContain('"viewer-x86" = "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Viewer-Setup.exe"');
+    expect(releaseWorkflow).toContain('"agent-x86" = "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Agent-Setup.exe"');
   });
 
   it("does not require a system Node installation at runtime", () => {
