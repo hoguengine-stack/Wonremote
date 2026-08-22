@@ -61,7 +61,7 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - Detected: 2026-08-12.
 - Severity: P1.
 - Affected: installed Viewer `0.1.59` on Windows x64; manual and automatic update checks.
-- Status: fixed-not-released.
+- Status: released-physical-verification-required.
 - User-visible symptom: Manual update check displayed `Update check failed` because the installed WebView directly fetched the GitHub release manifest.
 - Minimal trigger: Open an installed `0.1.59` Viewer and use its update-check control.
 - Root cause: GitHub release-asset redirects do not provide a stable browser CORS contract. Separately, Tauri passed Windows verbatim (`\\?\\`) resource paths to bundled Node.js, which failed with `EISDIR`.
@@ -368,7 +368,7 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - Fix commit(s): `02e1531`.
 - Permanent guard: Remove the duplicate device read but expose the Viewer session only after the atomic commit, reject devices without a server-generated heartbeat from the last 60 seconds in both direct-rule and callable paths, track normal and secure connection attempts through cleanup before logout or close, listen for the offer with a one-shot realtime subscription, ignore duplicate active `start-stream` commands, retain one session-scoped initial keyframe until WebRTC opens and request one fresh keyframe after every negotiation, defer the selected stream-mode command until the realtime control channel is ready, keep the established per-profile JPEG merge width so a tile does not exceed the WebRTC message limit, and enter sessions in windowed mode unless the user explicitly requests fullscreen.
 - Regression proof: Focused RED reproduced the realtime offer delay contract, duplicate start guard, missing initial-keyframe buffer, premature stream-mode dispatch, stale normal/secure connection-attempt guards, stale or future-dated online-device rules, renegotiation first-frame loss, and forced-fullscreen contract. Focused GREEN passes 104 Node tests across eight files; application and Cloud Functions `npx tsc --noEmit`, `npm run recurrence:verify`, and `git diff --check` pass. The Firestore emulator command is blocked because Java is not installed on this PC; the source-level Firebase security policy tests pass.
-- Release proof: Not released. A version bump and installer build remain forbidden until the user explicitly requests `빌드`.
+- Release proof: `v0.1.73` published the two x86 installers and signed manifest through successful GitHub Actions run `32604699424`.
 - Remaining blocker: Measure click-to-first-presented-frame on the Viewer and Agent physical PCs after the next explicitly requested release build.
 
 ## INC-20260823-001: A healthy WebRTC session was closed by a stale reconnect timer
@@ -376,14 +376,14 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - Detected: 2026-08-23.
 - Severity: P1.
 - Affected: Viewer WebRTC error classification/reconnect lifecycle, Agent ICE signaling, packaged RTC configuration, runtime loading, and first-keyframe synchronization.
-- Status: source-fixed-physical-verification-required.
+- Status: released-physical-verification-required.
 - User-visible symptom: The first WebRTC channels opened about one second after `start-stream`, closed again within roughly half a second, and repeated negotiation until the remote screen appeared about 30 seconds later.
 - Minimal trigger: Let a trickle-ICE candidate write/add/listener operation report an error while the tile and control channels are opening or already healthy.
 - Root cause and contributors: Candidate-level diagnostics were treated as fatal transport failures; Viewer reconnect timers scheduled before `webrtc-open` were not cancelled after the channels became healthy; Agent and Viewer repeated the same fatal candidate policy; the x86 Agent loaded its WebRTC runtime only on demand; channel-open synchronization could send both a buffered keyframe and an unnecessary fresh keyframe; and the first `set-stream-mode fast` command restarted the capture process during initial connection. Release builds also had no enforced path for passing the same optional TURN configuration to the packaged Agent.
 - Fix commit(s): `02e1531`.
 - Permanent guard: Classify candidate-level failures as diagnostics while retaining timeout, SDP, and confirmed channel failures as fatal; do not tear down on the transient WebRTC `disconnected` state; resubscribe failed Agent signaling/candidate listeners without closing a healthy peer; cancel pending Viewer reconnect work immediately on `webrtc-open`; never schedule reconnect while the current channel is open; prewarm the architecture-specific Agent WebRTC runtime; send either the buffered initial keyframe or request one fresh keyframe, never both; update capture sleep/quality/merge settings through the running process instead of restarting capture; remove inherited runtime ICE variables before launching the packaged Agent; map one release ICE configuration into both Viewer and packaged Agent; and reject partial TURN or relay-only-without-TURN release configuration.
 - Regression proof: `npx vitest run src/domain/webrtcStability.test.ts src/firebase/agentWebRtcSignaling.test.ts src/firebase/agentPeerConnection.test.ts src/firebase/viewerWebRtcTransport.test.ts src/remoteSessionLayout.test.ts src/agent/agentCommandExecution.test.ts` passed 98 tests across six files; the release ICE packaging contract, packaged-Agent build-only RTC configuration test, and runtime stream-profile parser test passed; `npx tsc --noEmit`, `npm run recurrence:verify`, and `git diff --check` passed.
-- Release proof: none; no version bump, installer build, publication, or physical installation was requested.
+- Release proof: `v0.1.73` published the two x86 installers and signed manifest through successful GitHub Actions run `32604699424`.
 - Remaining blocker: Configure and physically verify an operating TURN service for symmetric-NAT/UDP-blocked sites, then measure click-to-first-presented-frame on LAN and relay paths after the next explicitly requested build.
 
 ## INC-20260823-002: Live Firebase x86 download aliases targeted removed release assets
@@ -391,12 +391,12 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - Detected: 2026-08-23.
 - Severity: P1.
 - Affected: Firebase Hosting download aliases and the post-release delivery gate.
-- Status: open.
+- Status: fixed-deployed.
 - User-visible symptom: `/download/viewer-x86` and `/download/agent-x86` redirected to removed `*-Setup-x86.exe` asset names even though the release contained only the approved stable Viewer and Agent installers.
 - Minimal trigger: Publish the two-installer x86 release contract while Firebase Hosting still serves an older redirect configuration.
 - Root cause and contributors: Source configuration and tests were correct, but Hosting had not been redeployed and the release workflow validated repository configuration rather than the four live download aliases.
-- Fix commit(s): pending local commit.
+- Fix commit(s): `1c9b8d2`.
 - Permanent guard: After every GitHub release publish, issue a live no-follow HEAD request for `viewer`, `agent`, `viewer-x86`, and `agent-x86`; require HTTP 302 and exact stable Viewer or Agent asset destinations before declaring delivery successful.
-- Regression proof: pending.
-- Release proof: GitHub release `v0.1.73` and Actions run `32604699424` exposed the stale live-alias drift; Hosting redeploy and post-deploy verification are pending.
-- Remaining blocker: Deploy the current Hosting configuration and verify all four live aliases.
+- Regression proof: `npx vitest run src/desktopPackaging.test.ts` passed 57 tests; after Hosting deployment at `2026-08-22T23:27:59Z`, live no-follow HEAD checks returned HTTP 302 with exact stable Viewer/Agent destinations and followed requests returned HTTP 200 for all four aliases.
+- Release proof: GitHub release `v0.1.73` contains exactly the two x86 installers and signed manifest; Firebase Hosting and Firestore rules deployment completed successfully against project `wonremote-a7fd3`.
+- Remaining blocker: none for the download-alias path.
