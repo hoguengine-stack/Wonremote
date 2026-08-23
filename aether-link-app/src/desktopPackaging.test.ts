@@ -387,7 +387,7 @@ describe("desktop packaging scaffold", () => {
     const appSource = readFileSync(path.join(projectRoot, "src", "App.tsx"), "utf8");
     const blobHashSource = readFileSync(path.join(projectRoot, "src", "domain", "blobHash.ts"), "utf8");
 
-    expect(appSource).toContain("const fileSha256 = await sha256BlobHex(file)");
+    expect(appSource).toMatch(/fileSha256(?:\s*:\s*string)?\s*=\s*await\s+sha256BlobHex\(file\)/);
     expect(appSource).toContain("fileSha256,");
     expect(blobHashSource).toContain("sha256.create()");
     expect(blobHashSource).toContain("blob.slice(offset, offset + chunkBytes)");

@@ -410,6 +410,7 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - User-visible symptom: After opening Task Manager or Device Manager from the Viewer tools menu, mouse and keyboard input no longer controlled that foreground window.
 - Minimal trigger: Run `system taskmgr` or `system devmgmt.msc` from a medium-integrity Agent and then send a normal mouse or keyboard action.
 - Root cause and contributors: Windows can auto-elevate these management tools above the Agent input process; UIPI then rejects medium-integrity `SendInput` events directed at the elevated foreground window.
+- Fix commit(s): `5ec6e01`.
 - Permanent guard: Launch Task Manager, Device Manager, and Services directly with a scoped `RunAsInvoker` environment instead of a shell command so their viewing UI stays at the Agent integrity level; keep privileged mutations outside this path; expose Win+R through the same Viewer/Agent/Rust whitelist.
 - Regression proof: Six focused Node files passed 108 tests, the focused Rust system-command policy test passed, and `git diff --check` passed.
 - Release proof: none; build and publication were not requested.
@@ -424,6 +425,7 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - User-visible symptom: A composing Korean syllable became visible remotely only when the next syllable started.
 - Minimal trigger: Focus the remote canvas, switch the Viewer PC to Korean, and compose a multi-jamo syllable.
 - Root cause and contributors: Composition input was intentionally suppressed until `compositionend`; no protocol existed to atomically replace the previously displayed preedit text during `compositionupdate`.
+- Fix commit(s): `5ec6e01`.
 - Permanent guard: Send every changed preedit value as one bounded atomic replace-text command, suppress the duplicate trailing input event, and validate the command across Viewer state, WebRTC Agent control, and Rust Unicode input construction.
 - Regression proof: Six focused Node files passed 108 tests, the focused Rust IME replacement test passed, and `git diff --check` passed.
 - Release proof: none; build and publication were not requested.
@@ -438,7 +440,23 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - User-visible symptom: File transfer progress was not visible as a real-time loading bar.
 - Minimal trigger: Send a sufficiently large file while a remote session is active.
 - Root cause and contributors: All three transfer paths already reported real byte progress, but the toolbar rendered that state as transient text only.
+- Fix commit(s): `5ec6e01`.
 - Permanent guard: Bind existing WebRTC acknowledgement, Firebase Storage upload, and Firestore chunk byte percentages to an always-visible accessible overlay progress bar; show an immediate preparation state and prevent an older multi-file clear timer from hiding the active transfer.
 - Regression proof: Focused WebRTC transport, Firebase Storage, remote layout, command, and input tests were included in the six Node files and all 108 tests passed; `git diff --check` passed.
 - Release proof: none; build and publication were not requested.
 - Remaining blocker: Physical transfer verification after the next requested build.
+
+## INC-20260824-004: Release contract test rejected valid guarded checksum code
+
+- Detected: 2026-08-24.
+- Severity: P1.
+- Affected: GitHub Actions `Verify release contract tests` and the `v0.1.74` publication path.
+- Status: fixed-source-ci-retry-required.
+- User-visible symptom: The requested release stopped before packaging even though file uploads still calculated SHA-256 before creating metadata.
+- Minimal trigger: Add checksum error cleanup by declaring `fileSha256` before a `try` block, then run `src/desktopPackaging.test.ts`.
+- Root cause and contributors: The static release guard asserted one exact JavaScript declaration string instead of the required checksum assignment behavior, so an equivalent guarded implementation produced a false failure.
+- Fix commit(s): v0.1.74 release repair commit following `5ec6e01`.
+- Permanent guard: Match the checksum assignment semantically enough to allow `const`, `let`, and a type annotation while still requiring `await sha256BlobHex(file)` and the `fileSha256` metadata field.
+- Regression proof: The exact seven-file release-contract test command must pass before the CI retry is accepted.
+- Release proof: none; GitHub Actions run `32662834338` failed before packaging and publication.
+- Remaining blocker: Retry the release pipeline once with the corrected guard and verify the two installers plus signed manifest.
