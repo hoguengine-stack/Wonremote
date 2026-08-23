@@ -3,6 +3,7 @@ import {
   buildKeyboardCommand,
   buildMouseCommand,
   buildPasteTextCommand,
+  buildReplaceUnicodeTextCommand,
   buildUnicodeTextCommand,
   buildSystemCommand,
   decodeUtf8Base64,
@@ -99,8 +100,17 @@ describe("remote control command helpers", () => {
     expect(buildUnicodeTextCommand(text)).toBe(`text-base64 ${encodeUtf8Base64(text)}`);
   });
 
+  it("encodes one atomic replacement for live IME preedit text", () => {
+    expect(buildReplaceUnicodeTextCommand(1, "한")).toBe(
+      `text-replace-base64 1 ${encodeUtf8Base64("한")}`,
+    );
+    expect(buildReplaceUnicodeTextCommand(2, "")).toBe("text-replace-base64 2 -");
+    expect(() => buildReplaceUnicodeTextCommand(4097, "한")).toThrow("between 0 and 4096");
+  });
+
   it("limits system command names to the supported safe whitelist", () => {
     expect(buildSystemCommand("taskmgr")).toBe("system taskmgr");
+    expect(buildSystemCommand("run")).toBe("system run");
     expect(() => buildSystemCommand("calc && format")).toThrow("Unsupported system command");
   });
 

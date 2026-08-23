@@ -37,6 +37,21 @@ export function consumeRemoteTextInput(
   return { text: value, suppressNextValue: "" };
 }
 
+export function replaceRemoteComposition(previousText: string, nextText: string): {
+  deleteCount: number;
+  text: string;
+  changed: boolean;
+} {
+  if (previousText === nextText) {
+    return { deleteCount: 0, text: "", changed: false };
+  }
+  return {
+    deleteCount: Array.from(previousText).length,
+    text: nextText,
+    changed: true,
+  };
+}
+
 export function pressTrackedMouseButton(
   pressed: Set<MouseButtonCode>,
   browserButton: number,

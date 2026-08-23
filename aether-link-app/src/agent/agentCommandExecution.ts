@@ -216,6 +216,10 @@ export function isAllowedWebRtcAgentControlAction(action: string): boolean {
   if (/^(paste-text-base64|paste_text|paste-text|text-base64)\s+\S+$/.test(normalized)) {
     return true;
   }
+  const replaceTextMatch = /^text-replace-base64\s+(\d+)\s+(\S+)$/.exec(normalized);
+  if (replaceTextMatch) {
+    return boundedIntegerMatch(replaceTextMatch, 1, 0, 4096) !== null;
+  }
   const monitorMatch = /^switch-monitor\s+(\d+)$/.exec(normalized);
   if (monitorMatch) {
     return boundedIntegerMatch(monitorMatch, 1, 0, MAX_AGENT_MONITOR_INDEX) !== null;

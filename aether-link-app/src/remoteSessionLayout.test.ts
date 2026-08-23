@@ -36,6 +36,7 @@ describe("connected remote session layout", () => {
     const block = connectedReturnBlock();
     expect(block).toContain('className="remote-ime-input"');
     expect(block).toContain("onCompositionStart");
+    expect(block).toContain("onCompositionUpdate");
     expect(appSource).toContain("imeInputRef.current?.focus({ preventScroll: true })");
     expect(appSource).toContain("buildUnicodeTextCommand");
     expect(appSource).toContain("const hangulToggle = isHangulToggleKey");
@@ -43,6 +44,22 @@ describe("connected remote session layout", () => {
     expect(appSource).toContain("event.target !== imeInputRef.current");
     expect(appSource).not.toContain("event.currentTarget !== imeInputRef.current");
     expect(stylesSource).toContain(".remote-ime-input");
+  });
+
+  it("renders acknowledged file bytes as an accessible live progress bar", () => {
+    const block = connectedReturnBlock();
+    expect(block).toContain('className="session-transfer-progress"');
+    expect(block).toContain('role="progressbar"');
+    expect(block).toContain("aria-valuenow={transferProgress.progress}");
+    expect(stylesSource).toContain(".session-transfer-progress-track");
+    expect(stylesSource).toContain(".session-transfer-progress-fill");
+    expect(stylesSource).toContain("position: absolute");
+    expect(appSource).toContain("activeTransferIdRef.current === transferId");
+  });
+
+  it("offers the Windows Run dialog in the system tool group", () => {
+    const block = connectedReturnBlock();
+    expect(block).toContain('["run", "실행"]');
   });
 
   it("keeps Ctrl shortcuts on the raw key down and key up path", () => {

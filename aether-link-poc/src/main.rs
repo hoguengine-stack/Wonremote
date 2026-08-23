@@ -506,6 +506,22 @@ mod tests {
     }
 
     #[test]
+    fn live_ime_replacement_deletes_old_preedit_and_inserts_new_text_atomically() {
+        let inputs = text_replacement_inputs("1", "7ZWc").unwrap();
+
+        assert_eq!(inputs.len(), 4);
+        let backspace_down = unsafe { inputs[0].Anonymous.ki };
+        let backspace_up = unsafe { inputs[1].Anonymous.ki };
+        let unicode_down = unsafe { inputs[2].Anonymous.ki };
+        assert_eq!(backspace_down.wScan, 0x0E);
+        assert_eq!(backspace_down.dwFlags.0 & KEYEVENTF_KEYUP.0, 0);
+        assert_ne!(backspace_up.dwFlags.0 & KEYEVENTF_KEYUP.0, 0);
+        assert_ne!(unicode_down.dwFlags.0 & KEYEVENTF_UNICODE.0, 0);
+        assert!(text_replacement_inputs("4097", "-").is_err());
+        assert!(text_replacement_inputs("1", "not-base64!").is_err());
+    }
+
+    #[test]
     fn absolute_mouse_input_targets_the_virtual_desktop() {
         let input = mouse_input(
             32768,
@@ -703,16 +719,23 @@ mod tests {
     }
 
     #[test]
-    fn system_command_args_are_whitelisted() {
-        assert_eq!(
-            system_command_args("taskmgr").unwrap(),
-            vec!["/c", "start", "taskmgr"]
-        );
-        assert_eq!(
-            system_command_args("lock").unwrap(),
-            vec!["/c", "rundll32.exe", "user32.dll,LockWorkStation"]
-        );
-        assert!(system_command_args("calc && format").is_err());
+    fn system_command_specs_are_whitelisted_and_keep_management_tools_controllable() {
+        let task_manager = system_command_spec("taskmgr").unwrap();
+        assert_eq!(task_manager.program, "taskmgr.exe");
+        assert!(task_manager.args.is_empty());
+        assert!(task_manager.run_as_invoker);
+
+        let device_manager = system_command_spec("devmgmt.msc").unwrap();
+        assert_eq!(device_manager.program, "mmc.exe");
+        assert_eq!(device_manager.args, &["devmgmt.msc"]);
+        assert!(device_manager.run_as_invoker);
+
+        let run_dialog = system_command_spec("run").unwrap();
+        assert_eq!(run_dialog.program, "explorer.exe");
+        assert!(run_dialog.args[0].contains("2559a1f3-21d7-11d4-bdaf-00c04f60b9f0"));
+        assert!(!run_dialog.run_as_invoker);
+
+        assert!(system_command_spec("calc && format").is_err());
     }
 }
 
@@ -1534,6 +1557,15 @@ fn inject_input(action: &str) -> std::result::Result<(), String> {
                 .map_err(|error| format!("Invalid UTF-8 text payload: {error}"))?;
             send_inputs(&unicode_keyboard_inputs(&text))?;
         }
+        "text-replace-base64" => {
+            if parts.len() != 3 {
+                return Err("Usage: text-replace-base64 <delete_count> <utf8_base64_or_dash>".to_string());
+            }
+            let inputs = text_replacement_inputs(parts[1], parts[2])?;
+            if !inputs.is_empty() {
+                send_inputs(&inputs)?;
+            }
+        }
         "paste" => {
             if parts.len() != 1 {
                 return Err("Usage: paste".to_string());
@@ -1559,12 +1591,17 @@ fn inject_input(action: &str) -> std::result::Result<(), String> {
             if parts.len() != 2 {
                 return Err("Usage: system <command>".to_string());
             }
-            let args = system_command_args(parts[1])?;
-            Command::new("cmd")
-                .args(args)
+            let spec = system_command_spec(parts[1])?;
+            let mut command = Command::new(spec.program);
+            command
+                .args(spec.args)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
-                .stderr(Stdio::null())
+                .stderr(Stdio::null());
+            if spec.run_as_invoker {
+                command.env("__COMPAT_LAYER", "RunAsInvoker");
+            }
+            command
                 .spawn()
                 .map_err(|error| format!("system command failed: {}", error))?;
         }
@@ -1591,6 +1628,35 @@ fn parse_absolute_pointer_coordinate(value: &str, label: &str) -> std::result::R
         return Err(format!("{label} must be between 0 and 65535"));
     }
     Ok(coordinate)
+}
+
+fn text_replacement_inputs(
+    delete_count_token: &str,
+    payload: &str,
+) -> std::result::Result<Vec<INPUT>, String> {
+    let delete_count = delete_count_token
+        .parse::<usize>()
+        .map_err(|_| "Invalid text replacement delete count")?;
+    if delete_count > 4096 {
+        return Err("Text replacement delete count must be between 0 and 4096".to_string());
+    }
+    let text = if payload == "-" {
+        String::new()
+    } else {
+        let bytes = BASE64_STANDARD
+            .decode(payload)
+            .map_err(|error| format!("Invalid replacement text base64: {error}"))?;
+        String::from_utf8(bytes)
+            .map_err(|error| format!("Invalid replacement UTF-8 text payload: {error}"))?
+    };
+    let backspace = virtual_key_from_token("Backspace")?;
+    let mut inputs = Vec::with_capacity(delete_count * 2 + text.encode_utf16().count() * 2);
+    for _ in 0..delete_count {
+        inputs.push(keyboard_input(backspace, false));
+        inputs.push(keyboard_input(backspace, true));
+    }
+    inputs.extend(unicode_keyboard_inputs(&text));
+    Ok(inputs)
 }
 
 fn virtual_key_from_token(token: &str) -> std::result::Result<VIRTUAL_KEY, String> {
@@ -1666,17 +1732,67 @@ fn mouse_button_flag(
     }
 }
 
-fn system_command_args(command: &str) -> std::result::Result<Vec<&'static str>, String> {
+struct SystemCommandSpec {
+    program: &'static str,
+    args: &'static [&'static str],
+    run_as_invoker: bool,
+}
+
+fn system_command_spec(command: &str) -> std::result::Result<SystemCommandSpec, String> {
     match command {
-        "services.msc" => Ok(vec!["/c", "start", "services.msc"]),
-        "taskmgr" => Ok(vec!["/c", "start", "taskmgr"]),
-        "cmd" => Ok(vec!["/c", "start", "cmd"]),
-        "explorer" => Ok(vec!["/c", "start", "explorer"]),
-        "devmgmt.msc" => Ok(vec!["/c", "start", "devmgmt.msc"]),
-        "lock" => Ok(vec!["/c", "rundll32.exe", "user32.dll,LockWorkStation"]),
-        "logoff" => Ok(vec!["/c", "shutdown", "/l"]),
-        "restart" => Ok(vec!["/c", "shutdown", "/r", "/t", "0"]),
-        "shutdown" => Ok(vec!["/c", "shutdown", "/s", "/t", "0"]),
+        // These tools normally auto-elevate and then reject the medium-integrity Agent's
+        // SendInput events through UIPI. RunAsInvoker keeps their viewing UI controllable;
+        // operations that genuinely require elevation remain intentionally unavailable.
+        "services.msc" => Ok(SystemCommandSpec {
+            program: "mmc.exe",
+            args: &["services.msc"],
+            run_as_invoker: true,
+        }),
+        "taskmgr" => Ok(SystemCommandSpec {
+            program: "taskmgr.exe",
+            args: &[],
+            run_as_invoker: true,
+        }),
+        "cmd" => Ok(SystemCommandSpec {
+            program: "cmd.exe",
+            args: &[],
+            run_as_invoker: false,
+        }),
+        "explorer" => Ok(SystemCommandSpec {
+            program: "explorer.exe",
+            args: &[],
+            run_as_invoker: false,
+        }),
+        "devmgmt.msc" => Ok(SystemCommandSpec {
+            program: "mmc.exe",
+            args: &["devmgmt.msc"],
+            run_as_invoker: true,
+        }),
+        "run" => Ok(SystemCommandSpec {
+            program: "explorer.exe",
+            args: &["shell:::{2559a1f3-21d7-11d4-bdaf-00c04f60b9f0}"],
+            run_as_invoker: false,
+        }),
+        "lock" => Ok(SystemCommandSpec {
+            program: "rundll32.exe",
+            args: &["user32.dll,LockWorkStation"],
+            run_as_invoker: false,
+        }),
+        "logoff" => Ok(SystemCommandSpec {
+            program: "shutdown.exe",
+            args: &["/l"],
+            run_as_invoker: false,
+        }),
+        "restart" => Ok(SystemCommandSpec {
+            program: "shutdown.exe",
+            args: &["/r", "/t", "0"],
+            run_as_invoker: false,
+        }),
+        "shutdown" => Ok(SystemCommandSpec {
+            program: "shutdown.exe",
+            args: &["/s", "/t", "0"],
+            run_as_invoker: false,
+        }),
         _ => Err(format!("Unsupported system command: {}", command)),
     }
 }

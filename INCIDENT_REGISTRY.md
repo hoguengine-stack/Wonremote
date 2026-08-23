@@ -400,3 +400,45 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - Regression proof: `npx vitest run src/desktopPackaging.test.ts` passed 57 tests; after Hosting deployment at `2026-08-22T23:27:59Z`, live no-follow HEAD checks returned HTTP 302 with exact stable Viewer/Agent destinations and followed requests returned HTTP 200 for all four aliases.
 - Release proof: GitHub release `v0.1.73` contains exactly the two x86 installers and signed manifest; Firebase Hosting and Firestore rules deployment completed successfully against project `wonremote-a7fd3`.
 - Remaining blocker: none for the download-alias path.
+
+## INC-20260824-001: Elevated Windows tools blocked subsequent remote input
+
+- Detected: 2026-08-24.
+- Severity: P1.
+- Affected: Agent system-tool launch and persistent Win32 input injection.
+- Status: source-fixed-physical-verification-required.
+- User-visible symptom: After opening Task Manager or Device Manager from the Viewer tools menu, mouse and keyboard input no longer controlled that foreground window.
+- Minimal trigger: Run `system taskmgr` or `system devmgmt.msc` from a medium-integrity Agent and then send a normal mouse or keyboard action.
+- Root cause and contributors: Windows can auto-elevate these management tools above the Agent input process; UIPI then rejects medium-integrity `SendInput` events directed at the elevated foreground window.
+- Permanent guard: Launch Task Manager, Device Manager, and Services directly with a scoped `RunAsInvoker` environment instead of a shell command so their viewing UI stays at the Agent integrity level; keep privileged mutations outside this path; expose Win+R through the same Viewer/Agent/Rust whitelist.
+- Regression proof: Six focused Node files passed 108 tests, the focused Rust system-command policy test passed, and `git diff --check` passed.
+- Release proof: none; build and publication were not requested.
+- Remaining blocker: Physical verification on the installed Agent is required because process integrity and UIPI behavior cannot be proven by source tests alone.
+
+## INC-20260824-002: Korean IME composition was emitted only after syllable commit
+
+- Detected: 2026-08-24.
+- Severity: P1.
+- Affected: Viewer local IME sink, WebRTC control commands, and Rust Unicode input injection.
+- Status: source-fixed-physical-verification-required.
+- User-visible symptom: A composing Korean syllable became visible remotely only when the next syllable started.
+- Minimal trigger: Focus the remote canvas, switch the Viewer PC to Korean, and compose a multi-jamo syllable.
+- Root cause and contributors: Composition input was intentionally suppressed until `compositionend`; no protocol existed to atomically replace the previously displayed preedit text during `compositionupdate`.
+- Permanent guard: Send every changed preedit value as one bounded atomic replace-text command, suppress the duplicate trailing input event, and validate the command across Viewer state, WebRTC Agent control, and Rust Unicode input construction.
+- Regression proof: Six focused Node files passed 108 tests, the focused Rust IME replacement test passed, and `git diff --check` passed.
+- Release proof: none; build and publication were not requested.
+- Remaining blocker: Physical verification with the Windows Korean IME after the next requested build.
+
+## INC-20260824-003: File transfer exposed numbers but no progress bar
+
+- Detected: 2026-08-24.
+- Severity: P2.
+- Affected: Viewer WebRTC, Firebase Storage, Firestore fallback transfer feedback, and remote-session toolbar.
+- Status: source-fixed-physical-verification-required.
+- User-visible symptom: File transfer progress was not visible as a real-time loading bar.
+- Minimal trigger: Send a sufficiently large file while a remote session is active.
+- Root cause and contributors: All three transfer paths already reported real byte progress, but the toolbar rendered that state as transient text only.
+- Permanent guard: Bind existing WebRTC acknowledgement, Firebase Storage upload, and Firestore chunk byte percentages to an always-visible accessible overlay progress bar; show an immediate preparation state and prevent an older multi-file clear timer from hiding the active transfer.
+- Regression proof: Focused WebRTC transport, Firebase Storage, remote layout, command, and input tests were included in the six Node files and all 108 tests passed; `git diff --check` passed.
+- Release proof: none; build and publication were not requested.
+- Remaining blocker: Physical transfer verification after the next requested build.

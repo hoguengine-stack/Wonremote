@@ -106,6 +106,7 @@ import {
   buildKeyboardCommand,
   buildMouseCommand,
   buildPasteTextCommand,
+  buildReplaceUnicodeTextCommand,
   buildUnicodeTextCommand,
   buildSwitchMonitorCommand,
   buildSystemCommand,
@@ -118,6 +119,7 @@ import {
   consumeRemoteTextInput,
   finishRemoteComposition,
   isRemoteTextInputKeystroke,
+  replaceRemoteComposition,
   normalizeWheelDelta,
   pressTrackedKey,
   pressTrackedMouseButton,
@@ -2030,6 +2032,7 @@ function RemoteSessionPanel({
   const panelRef = React.useRef<HTMLElement | null>(null);
   const imeInputRef = React.useRef<HTMLTextAreaElement | null>(null);
   const imeComposingRef = React.useRef(false);
+  const imeCompositionValueRef = React.useRef("");
   const suppressNextImeValueRef = React.useRef("");
   const remotePreviewRef = React.useRef<HTMLDivElement | null>(null);
   const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
@@ -2938,17 +2941,29 @@ function RemoteSessionPanel({
 
   const handleImeCompositionStart = () => {
     imeComposingRef.current = true;
+    imeCompositionValueRef.current = "";
     suppressNextImeValueRef.current = "";
+  };
+
+  const sendImeCompositionReplacement = (nextText: string) => {
+    const replacement = replaceRemoteComposition(imeCompositionValueRef.current, nextText);
+    imeCompositionValueRef.current = nextText;
+    if (replacement.changed) {
+      onInputEvent(buildReplaceUnicodeTextCommand(replacement.deleteCount, replacement.text));
+    }
+  };
+
+  const handleImeCompositionUpdate = (event: React.CompositionEvent<HTMLTextAreaElement>) => {
+    sendImeCompositionReplacement(event.data);
   };
 
   const handleImeCompositionEnd = (event: React.CompositionEvent<HTMLTextAreaElement>) => {
     imeComposingRef.current = false;
     const result = finishRemoteComposition(event.data, event.currentTarget.value);
+    sendImeCompositionReplacement(result.text);
+    imeCompositionValueRef.current = "";
     suppressNextImeValueRef.current = result.suppressNextValue;
     event.currentTarget.value = "";
-    if (result.text) {
-      onInputEvent(buildUnicodeTextCommand(result.text));
-    }
   };
 
   const handleImeInput = (event: React.FormEvent<HTMLTextAreaElement>) => {
@@ -3136,6 +3151,15 @@ function RemoteSessionPanel({
   };
 
   // Files
+  const scheduleTransferProgressClear = (transferId: string) => {
+    window.setTimeout(() => {
+      if (activeTransferIdRef.current === transferId) {
+        activeTransferIdRef.current = "";
+        setTransferProgress(null);
+      }
+    }, 2500);
+  };
+
   const transferSingleFile = async (file: File) => {
     if (!sessionId) return;
     const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath?.trim();
@@ -3146,11 +3170,26 @@ function RemoteSessionPanel({
 
     const transferId = `transfer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     activeTransferIdRef.current = transferId;
-    const startedAtMs = performance.now();
-    const fileSha256 = await sha256BlobHex(file);
+    setTransferProgress({
+      fileName: remoteFilename,
+      progress: 0,
+      speed: "전송 준비 중",
+      timeLeft: "",
+    });
+    let fileSha256: string;
+    try {
+      fileSha256 = await sha256BlobHex(file);
+    } catch (error) {
+      if (activeTransferIdRef.current === transferId) {
+        setTransferProgress(null);
+      }
+      throw error;
+    }
     if (!fileSha256) {
+      setTransferProgress(null);
       throw new Error("File checksum is unavailable in this runtime.");
     }
+    const startedAtMs = performance.now();
 
     if (isViewerFirebaseEnabled()) {
       const realtimeTransport = webRtcTransportRef.current;
@@ -3173,7 +3212,7 @@ function RemoteSessionPanel({
               fileName: remoteFilename,
               ...formatTransferStats(file.size, file.size, startedAtMs, performance.now()),
             });
-            window.setTimeout(() => setTransferProgress(null), 2500);
+            scheduleTransferProgressClear(transferId);
             return;
           }
         } catch (error) {
@@ -3204,7 +3243,7 @@ function RemoteSessionPanel({
           fileName: remoteFilename,
           ...formatTransferStats(file.size, file.size, startedAtMs, performance.now()),
         });
-        window.setTimeout(() => setTransferProgress(null), 2500);
+        scheduleTransferProgressClear(transferId);
         return;
       } catch (err) {
         setTransferProgress(null);
@@ -3245,7 +3284,7 @@ function RemoteSessionPanel({
           ...formatTransferStats(sentBytes, file.size, startedAtMs, performance.now()),
         });
       }
-      window.setTimeout(() => setTransferProgress(null), 2500);
+      scheduleTransferProgressClear(transferId);
     } catch (err) {
       setTransferProgress(null);
       throw err;
@@ -3368,11 +3407,12 @@ function RemoteSessionPanel({
         autoCorrect="off"
         spellCheck={false}
         onCompositionStart={handleImeCompositionStart}
+        onCompositionUpdate={handleImeCompositionUpdate}
         onCompositionEnd={handleImeCompositionEnd}
         onInput={handleImeInput}
       />
       <div className="remote-work-area remote-canvas-viewport" data-testid="remote-canvas-viewport">
-        <div className="remote-screen connected">
+          <div className="remote-screen connected">
           <div
             ref={remotePreviewRef}
             className="remote-preview"
@@ -3396,10 +3436,32 @@ function RemoteSessionPanel({
                 transformOrigin: "center center",
               }}
             />
+            </div>
           </div>
-        </div>
 
-        {isChatOpen && (
+          {transferProgress && (
+            <div
+              className="session-transfer-progress"
+              role="progressbar"
+              aria-label={`${transferProgress.fileName} 파일 전송`}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={transferProgress.progress}
+            >
+              <span className="session-transfer-status">
+                {transferProgress.fileName} {transferProgress.progress}% · {transferProgress.speed}
+                {transferProgress.timeLeft && ` · ${transferProgress.timeLeft}`}
+              </span>
+              <span className="session-transfer-progress-track" aria-hidden="true">
+                <span
+                  className="session-transfer-progress-fill"
+                  style={{ width: `${transferProgress.progress}%` }}
+                />
+              </span>
+            </div>
+          )}
+
+          {isChatOpen && (
           <aside className="remote-chat-panel" aria-label="실시간 채팅">
             <div className="remote-chat-header">
               <span>실시간 채팅</span>
@@ -3522,11 +3584,6 @@ function RemoteSessionPanel({
         </div>
 
         <div className="session-command-actions">
-          {transferProgress && (
-            <span className="session-transfer-status">
-              {transferProgress.fileName} {transferProgress.progress}% · {transferProgress.speed} · {transferProgress.timeLeft}
-            </span>
-          )}
           <details className="session-tool-menu" data-testid="secondary-tools">
             <summary>
               <SlidersHorizontal size={17} />
@@ -3543,6 +3600,7 @@ function RemoteSessionPanel({
                     ["cmd", "CMD"],
                     ["explorer", "탐색기"],
                     ["devmgmt.msc", "장치관리자"],
+                    ["run", "실행"],
                     ["lock", "화면 잠금"],
                     ["logoff", "로그오프"],
                     ["restart", "재시작"],

@@ -22,6 +22,7 @@ export const SUPPORTED_SYSTEM_COMMANDS = [
   "cmd",
   "explorer",
   "devmgmt.msc",
+  "run",
   "lock",
   "logoff",
   "restart",
@@ -152,6 +153,13 @@ export function buildPasteTextCommand(text: string): string {
 
 export function buildUnicodeTextCommand(text: string): string {
   return `text-base64 ${encodeUtf8Base64(text)}`;
+}
+
+export function buildReplaceUnicodeTextCommand(deleteCount: number, text: string): string {
+  if (!Number.isSafeInteger(deleteCount) || deleteCount < 0 || deleteCount > 4096) {
+    throw new RangeError("Text replacement delete count must be between 0 and 4096.");
+  }
+  return `text-replace-base64 ${deleteCount} ${text ? encodeUtf8Base64(text) : "-"}`;
 }
 
 export function buildSystemCommand(command: string): string {

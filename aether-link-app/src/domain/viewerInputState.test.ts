@@ -3,6 +3,7 @@ import {
   consumeRemoteTextInput,
   finishRemoteComposition,
   isRemoteTextInputKeystroke,
+  replaceRemoteComposition,
   pressTrackedKey,
   pressTrackedMouseButton,
   releaseTrackedKeyByRemoteKey,
@@ -35,6 +36,13 @@ describe("Viewer input state", () => {
   it("emits plain local text once and ignores intermediate composition input", () => {
     expect(consumeRemoteTextInput("ㅎ", true, "")).toEqual({ text: "", suppressNextValue: "" });
     expect(consumeRemoteTextInput("abc", false, "")).toEqual({ text: "abc", suppressNextValue: "" });
+  });
+
+  it("replaces Korean preedit text on every composition update", () => {
+    expect(replaceRemoteComposition("", "ㅎ")).toEqual({ deleteCount: 0, text: "ㅎ", changed: true });
+    expect(replaceRemoteComposition("ㅎ", "하")).toEqual({ deleteCount: 1, text: "하", changed: true });
+    expect(replaceRemoteComposition("하", "한")).toEqual({ deleteCount: 1, text: "한", changed: true });
+    expect(replaceRemoteComposition("한", "한")).toEqual({ deleteCount: 0, text: "", changed: false });
   });
 
   it("ignores unsupported and duplicate mouse-button down transitions", () => {
