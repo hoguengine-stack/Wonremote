@@ -94,6 +94,21 @@ describe("Firebase first-run registration payloads", () => {
     expect(payload).toMatchObject({ lastSeenAtServer: "server-time" });
   });
 
+  it("writes the Agent-reported Windows computer name during first-run", async () => {
+    await registerAgentFirstRunWithFirebase({
+      businessNumber: "3600602052",
+      desktopName: "DESKTOP-CADI3TD",
+      installId: "agent-3d00c5bf",
+      password: "1234",
+    });
+
+    const payload = vi.mocked(mockState.transaction.set).mock.calls[0][1] as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      desktopName: "DESKTOP-CADI3TD",
+      deviceName: "메인포스",
+    });
+  });
+
   it("moves a user store name and retires only the previous Agent document during reconciliation", async () => {
     mockState.transaction.get.mockImplementation(async (reference: { segments: string[] }) => {
       if (reference.segments[1] === "123-45-67890:AGENT-CBFFB65C") {

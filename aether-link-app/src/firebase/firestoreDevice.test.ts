@@ -16,7 +16,7 @@ describe("firestore device mapping", () => {
       businessNumber: "123-45-67890",
       storeName: "상호명 미설정",
       deviceNumber: "AGENT-LOCALENV-425D1CB",
-      deviceName: "Agent AGENT-LOCALENV-425D1CB",
+      deviceName: "메인포스",
       ownerUid: "uid-1",
       status: "online",
       storeNameSource: "default",
@@ -168,6 +168,31 @@ describe("firestore device mapping", () => {
       status: "online",
       lastSeenAt: "2026-06-16T06:00:00.000Z",
       version: "0.1.21",
+    });
+  });
+
+  it("uses the current Agent hostname and migrates a generated legacy device name", () => {
+    const nextDevice = buildFirestoreDevice({
+      businessNumber: "1234567890",
+      desktopName: "DESKTOP-CADI3TD",
+      installId: "agent-localenv-425d1cbe",
+      ownerUid: "uid-1",
+      nowIso: "2026-06-16T06:00:00.000Z",
+    });
+
+    const merged = mergeFirstRunDeviceDocument(nextDevice, {
+      businessNumber: "123-45-67890",
+      deviceName: "Agent AGENT-LOCALENV-425D1CB",
+      desktopName: "DESKTOP-OLD-NAME",
+      deviceNumber: "AGENT-LOCALENV-425D1CB",
+      status: "online",
+      storeName: "상호명 미설정",
+      lastSeenAt: "2026-06-15T00:00:00.000Z",
+    }, true);
+
+    expect(merged).toMatchObject({
+      deviceName: "메인포스",
+      desktopName: "DESKTOP-CADI3TD",
     });
   });
 

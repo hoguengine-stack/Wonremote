@@ -154,6 +154,7 @@ export async function registerFirstRunAgent(input: AgentFirstRunInput & { apiUrl
           businessNumber: input.businessNumber,
           password: input.password,
           installId: input.installId,
+          desktopName: input.desktopName,
           version: input.version,
         }),
       });

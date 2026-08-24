@@ -473,6 +473,7 @@ export async function registerFirstRunAgentWithFirebase(
 
   const device = buildFirestoreDevice({
     businessNumber: input.businessNumber,
+    desktopName: input.desktopName,
     installId: input.installId,
     nowIso: new Date().toISOString(),
     ownerUid: credential.user.uid,
@@ -483,6 +484,7 @@ export async function registerFirstRunAgentWithFirebase(
   const deviceDocument = mergeFirstRunDeviceDocument(
     device,
     existingSnapshot.exists() ? existingSnapshot.data() : undefined,
+    Boolean(input.desktopName?.trim()),
   );
 
   await safeSetDoc(

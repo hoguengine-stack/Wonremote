@@ -30,6 +30,7 @@ describe("agent registration recovery", () => {
       {
         apiUrl: "http://127.0.0.1:8787",
         businessNumber: "123-45-67890",
+        desktopName: "STORE-POS-01",
         installId: "82220F6D",
         registeredDeviceId: "123-45-67890:AGENT-82220F6D",
         version: "0.1.16",
@@ -43,12 +44,14 @@ describe("agent registration recovery", () => {
 
     expect(registerFirstRun).toHaveBeenCalledWith({
       businessNumber: "123-45-67890",
+      desktopName: "STORE-POS-01",
       installId: "82220F6D",
       password: "1234",
       version: WONREMOTE_APP_VERSION,
     });
     expect(recovered).toMatchObject({
       businessNumber: "123-45-67890",
+      desktopName: "STORE-POS-01",
       installId: "82220F6D",
       registeredAt: "2026-06-16T01:00:00.000Z",
       registeredDeviceId: "123-45-67890:AGENT-82220F6D",

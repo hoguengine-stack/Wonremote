@@ -103,6 +103,12 @@ import {
 } from "./domain/storageTransferCleanup";
 import { webRtcReconnectDelayMs } from "./domain/webrtcStability";
 import {
+  DEVICE_TYPE_PRESETS,
+  resolveDeviceTypeEditor,
+  resolveDeviceTypeValue,
+  type DeviceTypeChoice,
+} from "./domain/deviceType";
+import {
   buildKeyboardCommand,
   buildMouseCommand,
   buildPasteTextCommand,
@@ -896,7 +902,6 @@ function ViewerApp() {
                 storeName: input.storeName,
               }
             : {
-                desktopName: input.desktopName,
                 deviceName: input.deviceName,
                 storeName: input.storeName,
               };
@@ -1182,12 +1187,14 @@ function DeviceEditDialog({
   useModalEscape(onClose);
   const primaryDevice = target.devices[0];
   const isGroupEdit = target.mode === "group";
+  const initialDeviceType = resolveDeviceTypeEditor(primaryDevice.deviceName);
   const [form, setForm] = useState({
     businessNumber: primaryDevice.businessNumber,
     desktopName: primaryDevice.desktopName,
-    deviceName: primaryDevice.deviceName,
+    deviceName: initialDeviceType.value,
     storeName: primaryDevice.storeName,
   });
+  const [deviceTypeChoice, setDeviceTypeChoice] = useState<DeviceTypeChoice>(initialDeviceType.choice);
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isDeleteArmed, setIsDeleteArmed] = useState(false);
@@ -1195,12 +1202,14 @@ function DeviceEditDialog({
   const [updatePaused, setUpdatePaused] = useState(primaryDevice.updatePaused ?? false);
 
   useEffect(() => {
+    const nextDeviceType = resolveDeviceTypeEditor(primaryDevice.deviceName);
     setForm({
       businessNumber: primaryDevice.businessNumber,
       desktopName: primaryDevice.desktopName,
-      deviceName: primaryDevice.deviceName,
+      deviceName: nextDeviceType.value,
       storeName: primaryDevice.storeName,
     });
+    setDeviceTypeChoice(nextDeviceType.choice);
     setIsDeleteArmed(false);
     setUpdateRing(primaryDevice.updateRing ?? "general");
     setUpdatePaused(primaryDevice.updatePaused ?? false);
@@ -1273,20 +1282,40 @@ function DeviceEditDialog({
           {!isGroupEdit && (
             <>
               <label>
-                장비명
-                <input
-                  value={form.deviceName}
-                  onChange={(event) => setForm((prev) => ({ ...prev, deviceName: event.target.value }))}
-                  placeholder="장비명"
-                />
+                장비 종류
+                <select
+                  value={deviceTypeChoice}
+                  onChange={(event) => {
+                    const choice = event.target.value as DeviceTypeChoice;
+                    setDeviceTypeChoice(choice);
+                    setForm((prev) => ({
+                      ...prev,
+                      deviceName: resolveDeviceTypeValue(choice, choice === "custom" ? "" : prev.deviceName),
+                    }));
+                  }}
+                >
+                  {DEVICE_TYPE_PRESETS.map((deviceType) => (
+                    <option key={deviceType} value={deviceType}>{deviceType}</option>
+                  ))}
+                  <option value="custom">직접입력</option>
+                </select>
+                {deviceTypeChoice === "custom" && (
+                  <input
+                    required
+                    value={form.deviceName}
+                    onChange={(event) => setForm((prev) => ({ ...prev, deviceName: event.target.value }))}
+                    placeholder="장비 종류 직접입력"
+                  />
+                )}
               </label>
               <label>
                 데스크탑명
                 <input
+                  readOnly
                   value={form.desktopName}
-                  onChange={(event) => setForm((prev) => ({ ...prev, desktopName: event.target.value }))}
                   placeholder="데스크탑명"
                 />
+                <small className="field-help">Agent PC의 Windows 컴퓨터 이름을 자동으로 표시합니다.</small>
               </label>
               <label>
                 업데이트 그룹
@@ -1550,6 +1579,7 @@ function AgentFirstRunApp() {
   const [password, setPassword] = useState("");
   const [apiUrl, setApiUrl] = useState("http://127.0.0.1:8787");
   const [installId, setInstallId] = useState(getOrCreateAgentInstallId);
+  const [desktopName, setDesktopName] = useState("");
   const [isInstallIdentityReady, setIsInstallIdentityReady] = useState(
     () => !(window as any).__TAURI_INTERNALS__,
   );
@@ -1570,13 +1600,15 @@ function AgentFirstRunApp() {
         if (!cancelled && config?.registeredDeviceId) {
           setRegisteredConfig(config);
         }
-        const persistentInstallId = await invoke<string>("get_or_create_agent_install_id", {
-          legacyInstallId: installId,
-        });
+        const [persistentInstallId, detectedDesktopName] = await Promise.all([
+          invoke<string>("get_or_create_agent_install_id", { legacyInstallId: installId }),
+          invoke<string>("get_computer_name").catch(() => ""),
+        ]);
         if (cancelled) {
           return;
         }
         setInstallId(persistentInstallId);
+        setDesktopName(detectedDesktopName);
         window.localStorage.setItem("wonremote-agent-install-id", persistentInstallId);
       } catch (identityError) {
         if (!cancelled) {
@@ -1606,6 +1638,7 @@ function AgentFirstRunApp() {
         businessNumber,
         password,
         installId,
+        desktopName: desktopName || undefined,
         version: agentVersion,
         apiUrl: firebaseMode ? undefined : apiUrl,
       });

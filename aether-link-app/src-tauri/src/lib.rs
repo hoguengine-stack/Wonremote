@@ -1111,6 +1111,21 @@ fn get_app_mode() -> String {
     }
 }
 
+fn sanitize_computer_name(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() || value.chars().any(char::is_control) {
+        return Err("Windows computer name is unavailable.".to_string());
+    }
+    Ok(value.chars().take(255).collect())
+}
+
+#[tauri::command]
+fn get_computer_name() -> Result<String, String> {
+    let value = env::var("COMPUTERNAME")
+        .map_err(|_| "Windows COMPUTERNAME environment variable is unavailable.".to_string())?;
+    sanitize_computer_name(&value)
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SaveConfigInput {
@@ -2084,6 +2099,7 @@ pub fn run() {
         .manage(AgentState::new())
         .invoke_handler(tauri::generate_handler![
             get_app_mode,
+            get_computer_name,
             save_agent_config,
             get_agent_config,
             get_or_create_agent_install_id,
@@ -2446,6 +2462,16 @@ mod registry_tests {
         assert!(mode_value_requests_agent(Some("AGENT")));
         assert!(!mode_value_requests_agent(Some("viewer")));
         assert!(!mode_value_requests_agent(None));
+    }
+
+    #[test]
+    fn test_computer_name_is_trimmed_and_rejects_invalid_values() {
+        assert_eq!(
+            sanitize_computer_name("  DESKTOP-CADI3TD  "),
+            Ok("DESKTOP-CADI3TD".to_string()),
+        );
+        assert!(sanitize_computer_name("   ").is_err());
+        assert!(sanitize_computer_name("DESKTOP\nBAD").is_err());
     }
 
     #[test]

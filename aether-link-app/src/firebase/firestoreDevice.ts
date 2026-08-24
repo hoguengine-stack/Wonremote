@@ -1,5 +1,6 @@
 import type { DeviceDisplayInfo, DeviceStatus, DeviceUpdateRing, DeviceUpdateState, ManagedDevice } from "../domain/types";
 import { DEFAULT_STORE_NAME, normalizeStoreNameForDisplay } from "../domain/deviceDefaults";
+import { DEFAULT_DEVICE_TYPE, isGeneratedAgentDeviceName } from "../domain/deviceType";
 import {
   buildAgentDeviceNumber,
   buildDesktopName,
@@ -36,6 +37,7 @@ export interface FirestoreDeviceDocument {
 
 interface BuildFirestoreDeviceInput {
   businessNumber: string;
+  desktopName?: string;
   installId: string;
   nowIso: string;
   ownerUid: string;
@@ -50,8 +52,9 @@ export function buildFirestoreDevice(input: BuildFirestoreDeviceInput): ManagedD
     businessNumber,
     storeName: DEFAULT_STORE_NAME,
     deviceNumber,
-    deviceName: `Agent ${deviceNumber}`,
-    desktopName: buildDesktopName(businessNumber, input.installId),
+    deviceName: DEFAULT_DEVICE_TYPE,
+    desktopName: input.desktopName?.trim().slice(0, 255)
+      || buildDesktopName(businessNumber, input.installId),
     status: "online",
     lastSeenAt: input.nowIso,
     storeNameSource: "default",
@@ -66,6 +69,7 @@ export function buildFirestoreDevice(input: BuildFirestoreDeviceInput): ManagedD
 export function mergeFirstRunDeviceDocument(
   device: ManagedDevice & { ownerUid: string },
   existing: Partial<FirestoreDeviceDocument> | undefined,
+  preferIncomingDesktopName = false,
 ): ManagedDevice & { ownerUid: string } {
   const merged = { ...device };
   if (!existing) {
@@ -82,10 +86,14 @@ export function mergeFirstRunDeviceDocument(
       merged.storeNameSource = "user";
     }
   }
-  if (typeof existing.deviceName === "string" && existing.deviceName.trim()) {
+  if (
+    typeof existing.deviceName === "string"
+    && existing.deviceName.trim()
+    && !isGeneratedAgentDeviceName(existing.deviceName)
+  ) {
     merged.deviceName = existing.deviceName.trim();
   }
-  if (typeof existing.desktopName === "string" && existing.desktopName.trim()) {
+  if (!preferIncomingDesktopName && typeof existing.desktopName === "string" && existing.desktopName.trim()) {
     merged.desktopName = existing.desktopName.trim();
   }
   const updateRing = sanitizeUpdateRing(existing.updateRing);

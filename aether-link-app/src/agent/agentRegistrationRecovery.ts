@@ -32,6 +32,7 @@ export async function reconcileAgentRegistration(
     businessNumber: config.businessNumber!,
     installId: config.installId,
     password: "1234",
+    ...(config.desktopName?.trim() ? { desktopName: config.desktopName.trim() } : {}),
     ...(config.registeredDeviceId?.trim() &&
     config.registeredDeviceId.trim() !== buildFirebaseDeviceId(config.businessNumber!, config.installId)
       ? { previousDeviceId: config.registeredDeviceId.trim() }
@@ -41,6 +42,7 @@ export async function reconcileAgentRegistration(
   const recoveredConfig: AgentLocalConfig = {
     ...config,
     businessNumber: result.device.businessNumber,
+    desktopName: config.desktopName?.trim() || result.device.desktopName,
     installId: config.installId,
     registeredAt: deps.nowIso(),
     registeredDeviceId: result.device.id,

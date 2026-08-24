@@ -9,6 +9,7 @@ export interface AgentCredentials {
 export interface AgentLocalConfig {
   apiUrl?: string;
   businessNumber?: string;
+  desktopName?: string;
   installId: string;
   registeredAt?: string;
   registeredDeviceId?: string;
@@ -58,6 +59,7 @@ export async function bootstrapAgent(deps: AgentBootstrapDeps): Promise<AgentBoo
   });
   const config: AgentLocalConfig = {
     businessNumber: result.device.businessNumber,
+    desktopName: result.device.desktopName,
     installId,
     registeredAt: deps.nowIso(),
     registeredDeviceId: result.device.id,

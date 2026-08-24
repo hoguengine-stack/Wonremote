@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile, rm, cp, access } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
-import { networkInterfaces } from "node:os";
+import { hostname, networkInterfaces } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { bootstrapAgent } from "./agentBootstrap";
@@ -16,6 +16,7 @@ import {
 } from "./agentRegistrationRecovery";
 import { resolveAgentAppDir, resolveAgentPocPath } from "./agentPaths";
 import { resolveAgentCredentials } from "./agentRuntime";
+import { resolveAgentComputerName } from "./agentComputerName";
 import {
   beginAgentCaptureGeneration,
   currentSessionId,
@@ -1010,7 +1011,7 @@ async function main() {
     writeConfig: (config) => writeAgentConfig(configPath, config),
   } satisfies AgentBootstrapDeps);
 
-  let activeConfig = result.config;
+  let activeConfig = await refreshAgentComputerName(result.config);
 
   if (result.status === "already_registered") {
     console.log(`Agent already registered: ${result.config.registeredDeviceId}`);
@@ -1713,14 +1714,15 @@ function isFirebasePermissionDenied(message: string, error: unknown): boolean {
 }
 
 async function sendHeartbeatWithRecovery(config: AgentLocalConfig): Promise<AgentLocalConfig> {
+  const currentConfig = await refreshAgentComputerName(config);
   try {
-    await sendHeartbeat(config);
-    return config;
+    await sendHeartbeat(currentConfig);
+    return currentConfig;
   } catch (error: any) {
     if (error.status !== 404) {
       throw error;
     }
-    const recoveredConfig = await recoverConfigAfterMissingDevice(config);
+    const recoveredConfig = await recoverConfigAfterMissingDevice(currentConfig);
     if (!recoveredConfig) {
       throw error;
     }
@@ -1728,6 +1730,26 @@ async function sendHeartbeatWithRecovery(config: AgentLocalConfig): Promise<Agen
     await sendHeartbeat(activeConfig);
     return activeConfig;
   }
+}
+
+async function refreshAgentComputerName(config: AgentLocalConfig): Promise<AgentLocalConfig> {
+  if (!config.businessNumber?.trim() || !config.installId?.trim()) {
+    return config;
+  }
+  const desktopName = resolveAgentComputerName({
+    businessNumber: config.businessNumber,
+    env: process.env,
+    installId: config.installId,
+    platform: process.platform,
+    readHostname: hostname,
+    storedDesktopName: config.desktopName,
+  });
+  if (desktopName === config.desktopName) {
+    return config;
+  }
+  const refreshedConfig = { ...config, desktopName };
+  await writeAgentConfig(getAgentConfigPath(), refreshedConfig);
+  return refreshedConfig;
 }
 
 async function recoverConfigAfterMissingDevice(config: AgentLocalConfig): Promise<AgentLocalConfig | null> {
@@ -1786,6 +1808,7 @@ async function sendHeartbeat(config: AgentLocalConfig): Promise<void> {
   const result = await sendAgentHeartbeat({
     apiBaseUrl: API_BASE_URL,
     deviceId: config.registeredDeviceId,
+    desktopName: config.desktopName,
     installId: config.installId,
     version: WONREMOTE_APP_VERSION,
     displays,
@@ -2117,18 +2140,28 @@ async function promptCredentials(): Promise<AgentCredentials> {
 
 async function registerFirstRun(inputBody: {
   businessNumber: string;
+  desktopName?: string;
   installId: string;
   password: string;
   version?: string;
 }): Promise<AgentFirstRunResult> {
+  const desktopName = resolveAgentComputerName({
+    businessNumber: inputBody.businessNumber,
+    env: process.env,
+    installId: inputBody.installId,
+    platform: process.platform,
+    readHostname: hostname,
+    storedDesktopName: inputBody.desktopName,
+  });
+  const registrationBody = { ...inputBody, desktopName };
   if (USE_FIREBASE) {
-    return registerAgentFirstRunWithFirebase(inputBody);
+    return registerAgentFirstRunWithFirebase(registrationBody);
   }
 
   let response: Response;
   try {
     response = await fetch(`${API_BASE_URL}/api/agent/first-run`, {
-      body: JSON.stringify(inputBody),
+      body: JSON.stringify(registrationBody),
       headers: { "content-type": "application/json" },
       method: "POST",
     });

@@ -11,6 +11,7 @@ import type {
   ManagedDevice,
 } from "./types";
 import { DEFAULT_STORE_NAME, normalizeStoreNameForDisplay } from "./deviceDefaults";
+import { DEFAULT_DEVICE_TYPE, isGeneratedAgentDeviceName } from "./deviceType";
 
 export function authenticateAdmin(username: string, password: string): boolean {
   return username.trim() === "admin" && password === "admin1234";
@@ -66,7 +67,8 @@ export function registerAgentConnection(
     storeNameSource: finalStoreNameSource,
     deviceNumber: cleaned.deviceNumber,
     deviceName: cleaned.deviceName,
-    desktopName: buildDesktopName(cleaned.businessNumber, cleaned.deviceNumber),
+    desktopName: input.desktopName?.trim().slice(0, 255)
+      || buildDesktopName(cleaned.businessNumber, cleaned.deviceNumber),
     status: "online",
     lastSeenAt: nowIso,
     connectionCode: generateConnectionCode(),
@@ -100,22 +102,37 @@ export function registerAgentFirstRun(
   validateAgentPassword(password);
 
   const deviceNumber = buildFirstRunDeviceNumber(input.installId);
+  const deviceId = `${businessNumber}:${deviceNumber}`;
+  const existingDevice = devices.find((device) => device.id === deviceId);
   const derivedInput: AgentConnectionInput = {
     businessNumber,
     password,
     storeName: DEFAULT_STORE_NAME,
     deviceNumber,
-    deviceName: `Agent ${deviceNumber}`,
+    deviceName: DEFAULT_DEVICE_TYPE,
+    desktopName: input.desktopName,
     version: input.version,
   };
   const result = registerAgentConnection(devices, derivedInput, nowIso);
-  const device = result.devices.find((item) => item.id === result.session.deviceId);
-  if (!device) {
+  const registeredDevice = result.devices.find((item) => item.id === result.session.deviceId);
+  if (!registeredDevice) {
     throw new Error("Agent 장비 등록 결과를 확인할 수 없습니다.");
   }
+  const device: ManagedDevice = {
+    ...registeredDevice,
+    deviceName:
+      existingDevice?.deviceName?.trim() && !isGeneratedAgentDeviceName(existingDevice.deviceName)
+        ? existingDevice.deviceName.trim()
+        : registeredDevice.deviceName,
+    desktopName:
+      !input.desktopName?.trim() && existingDevice?.desktopName?.trim()
+        ? existingDevice.desktopName.trim()
+        : registeredDevice.desktopName,
+  };
+  const nextDevices = result.devices.map((item) => (item.id === device.id ? device : item));
 
   return {
-    devices: result.devices,
+    devices: nextDevices,
     device,
   };
 }
@@ -146,6 +163,7 @@ export function applyAgentHeartbeat(
   }
 
   const normalizedStoreName = normalizeStoreNameForDisplay(currentDevice.storeName, currentDevice.businessNumber);
+  const reportedDesktopName = input.desktopName?.trim().slice(0, 255);
   const shouldCorrectStoreName =
     normalizedStoreName === DEFAULT_STORE_NAME && currentDevice.storeName !== DEFAULT_STORE_NAME;
   const device: ManagedDevice = {
@@ -155,6 +173,7 @@ export function applyAgentHeartbeat(
     lastSeenAt: nowIso,
     status: "online",
     connectionCode: currentDevice.connectionCode ?? generateConnectionCode(),
+    desktopName: reportedDesktopName || currentDevice.desktopName,
     version: input.version ?? currentDevice.version,
     displays: sanitizeDisplays(input.displays) ?? currentDevice.displays,
     activeDisplayIndex:

@@ -103,6 +103,7 @@ describe("Agent Firebase command subscription", () => {
     const result = await sendAgentHeartbeatWithFirebase({
       deviceId: "device-1",
       installId: "install-1",
+      desktopName: "DESKTOP-CADI3TD",
       version: "0.1.44",
       activeDisplayIndex: 1,
       displays: [],
@@ -115,10 +116,17 @@ describe("Agent Firebase command subscription", () => {
       expect.objectContaining({ path: "devices/device-1" }),
       expect.objectContaining({
         lastSeenAtServer: "server-time",
+        desktopName: "DESKTOP-CADI3TD",
         status: "online",
       }),
     );
-    expect(result.device).toMatchObject({ id: "device-1", status: "online", version: "0.1.44", activeDisplayIndex: 1 });
+    expect(result.device).toMatchObject({
+      id: "device-1",
+      status: "online",
+      desktopName: "DESKTOP-CADI3TD",
+      version: "0.1.44",
+      activeDisplayIndex: 1,
+    });
   });
 
   it("maps Firestore not-found heartbeat updates to status 404", async () => {

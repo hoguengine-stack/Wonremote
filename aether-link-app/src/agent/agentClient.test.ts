@@ -114,6 +114,27 @@ describe("agent client", () => {
     });
   });
 
+  it("synchronizes the current computer name after a local heartbeat", async () => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({
+      device: { id: "123-45-67890:AGENT-ABC123", status: "online" },
+    }), {
+      headers: { "content-type": "application/json" },
+      status: 200,
+    }));
+
+    await sendAgentHeartbeat({
+      apiBaseUrl: "http://127.0.0.1:8787",
+      desktopName: "STORE-POS-01",
+      deviceId: "123-45-67890:AGENT-ABC123",
+      fetchImpl,
+      installId: "agent-abc123",
+    });
+
+    expect(JSON.parse(String(fetchImpl.mock.calls[0][1]?.body))).toMatchObject({
+      desktopName: "STORE-POS-01",
+    });
+  });
+
   it("polls queued viewer commands for the registered agent", async () => {
     const fetchImpl = vi.fn(async () => {
       return new Response(
@@ -211,6 +232,7 @@ describe("agent client", () => {
 
     const result = await sendAgentHeartbeat({
       apiBaseUrl: "http://127.0.0.1:8787",
+      desktopName: "STORE-POS-01",
       deviceId: "123-45-67890:AGENT-ABC123",
       fetchImpl,
       installId: "agent-abc123",
@@ -221,6 +243,7 @@ describe("agent client", () => {
     expect(firebaseMock.sendAgentHeartbeatWithFirebase).toHaveBeenCalledWith(
       expect.objectContaining({
         deviceId: "123-45-67890:AGENT-ABC123",
+        desktopName: "STORE-POS-01",
         installId: "agent-abc123",
         version: "0.1.25",
       }),

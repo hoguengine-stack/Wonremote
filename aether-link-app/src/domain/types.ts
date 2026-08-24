@@ -88,6 +88,7 @@ export interface AgentConnectionInput {
   storeName: string;
   deviceNumber: string;
   deviceName: string;
+  desktopName?: string;
   version?: string;
 }
 
@@ -95,6 +96,7 @@ export interface AgentFirstRunInput {
   businessNumber: string;
   password: string;
   installId: string;
+  desktopName?: string;
   previousDeviceId?: string;
   version?: string;
 }
@@ -102,6 +104,7 @@ export interface AgentFirstRunInput {
 export interface AgentHeartbeatInput {
   deviceId: string;
   installId: string;
+  desktopName?: string;
   version?: string;
   displays?: DeviceDisplayInfo[];
   activeDisplayIndex?: number;

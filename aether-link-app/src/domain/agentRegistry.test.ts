@@ -74,7 +74,7 @@ describe("agent registry domain", () => {
       businessNumber: "123-45-67890",
       storeName: "상호명 미설정",
       deviceNumber: "AGENT-ABC123",
-      deviceName: "Agent AGENT-ABC123",
+      deviceName: "메인포스",
       desktopName: "DESKTOP-67890-AGENT-ABC123",
       status: "online",
       lastSeenAt: "2026-06-10T01:20:00.000Z",
@@ -193,7 +193,7 @@ describe("agent registry domain", () => {
         deviceNumber: "AGENT-TESTINSTALLID",
         desktopName: "DESKTOP-67890-AGENT-TESTINSTALLID",
         storeName: "상호명 미설정",
-        deviceName: "Agent AGENT-TESTINSTALLID",
+        deviceName: "메인포스",
       });
     });
 
@@ -246,6 +246,22 @@ describe("agent registry domain", () => {
       expect.objectContaining({ index: 1, x: -1024, y: 0, width: 1024, height: 768, primary: false }),
     ]);
     expect(heartbeat.device.activeDisplayIndex).toBe(1);
+  });
+
+  it("updates the desktop name from the Agent-reported Windows computer name", () => {
+    const registered = registerAgentFirstRun([], {
+      businessNumber: "1234567890",
+      password: "1234",
+      installId: "agent-hostname",
+    });
+
+    const heartbeat = applyAgentHeartbeat(registered.devices, {
+      deviceId: registered.device.id,
+      installId: "agent-hostname",
+      desktopName: "DESKTOP-CADI3TD",
+    });
+
+    expect(heartbeat.device.desktopName).toBe("DESKTOP-CADI3TD");
   });
 
   it("stores sanitized MAC addresses from heartbeat for Wake-on-LAN", () => {

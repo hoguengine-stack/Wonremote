@@ -15,6 +15,7 @@ import {
 interface SendAgentHeartbeatOptions {
   apiBaseUrl: string;
   deviceId: string;
+  desktopName?: string;
   displays?: DeviceDisplayInfo[];
   fetchImpl?: typeof fetch;
   installId: string;
@@ -43,6 +44,7 @@ interface PostAgentSessionApprovalOptions {
 export async function sendAgentHeartbeat({
   apiBaseUrl,
   deviceId,
+  desktopName,
   displays,
   fetchImpl = fetch,
   installId,
@@ -57,6 +59,7 @@ export async function sendAgentHeartbeat({
     return withAgentOperationContext("firebase heartbeat", () =>
       sendAgentHeartbeatWithFirebase({
         deviceId,
+        desktopName,
         displays,
         installId,
         activeDisplayIndex,
@@ -74,6 +77,7 @@ export async function sendAgentHeartbeat({
     response = await fetchImpl(`${apiBaseUrl}/api/agent/heartbeat`, {
       body: JSON.stringify({
         deviceId,
+        desktopName,
         installId,
         version,
         displays,

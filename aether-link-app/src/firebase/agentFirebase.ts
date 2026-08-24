@@ -152,6 +152,7 @@ export async function registerAgentFirstRunWithFirebase(
   const nowIso = new Date().toISOString();
   const device = buildFirestoreDevice({
     businessNumber: input.businessNumber,
+    desktopName: input.desktopName,
     installId: input.installId,
     nowIso,
     ownerUid: credential.user.uid,
@@ -170,6 +171,7 @@ export async function registerAgentFirstRunWithFirebase(
     deviceDocument = mergeFirstRunDeviceDocument(
       device,
       existingSnapshot.exists() ? existingSnapshot.data() : undefined,
+      Boolean(input.desktopName?.trim()),
     );
 
     if (previousSnapshot?.exists()) {
@@ -233,6 +235,7 @@ export async function sendAgentHeartbeatWithFirebase(
   const services = getAgentFirebaseServices(env);
   const deviceRef = doc(services.db, "devices", input.deviceId);
   const nowIso = new Date().toISOString();
+  const desktopName = input.desktopName?.trim().slice(0, 255);
   try {
     // Firestore rules keep installId immutable; a mismatched Agent update is rejected there.
     await safeUpdateDoc(deviceRef, {
@@ -248,6 +251,7 @@ export async function sendAgentHeartbeatWithFirebase(
       status: "online",
       updatedAt: serverTimestamp(),
       version: input.version,
+      ...(desktopName ? { desktopName } : {}),
       ...(input.updateTelemetry ? updateTelemetryDocument(input.updateTelemetry) : {}),
     });
   } catch (error) {
@@ -261,7 +265,7 @@ export async function sendAgentHeartbeatWithFirebase(
     businessNumber: "",
     deviceNumber: "",
     deviceName: "",
-    desktopName: "",
+    desktopName: desktopName ?? "",
     storeName: "",
     lastSeenAt: nowIso,
     status: "online",

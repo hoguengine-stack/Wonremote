@@ -47,6 +47,7 @@ describe("agent bootstrap", () => {
     });
     expect(deps.writeConfig).toHaveBeenCalledWith({
       businessNumber: "123-45-67890",
+      desktopName: "DESKTOP-67890-AGENT-CLI-001",
       installId: "agent-cli-001",
       registeredAt: "2026-06-11T01:00:00.000Z",
       registeredDeviceId: "123-45-67890:AGENT-CLI-001",
@@ -61,6 +62,7 @@ describe("agent bootstrap", () => {
   it("does not prompt again when a registered local config already exists", async () => {
     const existingConfig: AgentLocalConfig = {
       businessNumber: "123-45-67890",
+      desktopName: "STORE-POS-01",
       installId: "agent-cli-001",
       registeredAt: "2026-06-11T01:00:00.000Z",
       registeredDeviceId: "123-45-67890:AGENT-CLI-001",
@@ -82,6 +84,7 @@ describe("agent bootstrap", () => {
   it("normalizes stale config versions to the running app version", async () => {
     const existingConfig: AgentLocalConfig = {
       businessNumber: "123-45-67890",
+      desktopName: "STORE-POS-01",
       installId: "agent-cli-001",
       registeredAt: "2026-06-11T01:00:00.000Z",
       registeredDeviceId: "123-45-67890:AGENT-CLI-001",
