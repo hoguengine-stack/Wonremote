@@ -3,6 +3,14 @@ import { parseWebRtcControlAction } from "../domain/webrtcControl";
 import { parseWebRtcFileChunk, serializeWebRtcFileAck } from "../domain/webrtcFileTransfer";
 
 const firestoreMocks = vi.hoisted(() => ({
+  onSnapshot: vi.fn((
+    _target: { path?: string },
+    _next?: (snapshot: {
+      data?: () => Record<string, unknown> | undefined;
+      docs?: Array<{ id: string; data: () => Record<string, unknown> }>;
+    }) => void,
+    _error?: (error: Error) => void,
+  ) => () => undefined),
   safeAddDoc: vi.fn(async () => ({ id: "candidate-1" })),
   safeSetDoc: vi.fn(async () => undefined),
 }));
@@ -13,7 +21,7 @@ vi.mock("firebase/firestore", () => ({
   getDoc: vi.fn(),
   getDocs: vi.fn(),
   limit: vi.fn(),
-  onSnapshot: vi.fn(() => () => undefined),
+  onSnapshot: firestoreMocks.onSnapshot,
   orderBy: vi.fn(),
   query: vi.fn(),
   serverTimestamp: vi.fn(() => "server-time"),
@@ -63,8 +71,8 @@ class FakePeerConnection {
   close = vi.fn();
   createOffer = vi.fn(async () => ({ type: "offer" as RTCSdpType, sdp: "viewer-offer" }));
   setLocalDescription = vi.fn(async () => undefined);
-  setRemoteDescription = vi.fn(async () => undefined);
-  addIceCandidate = vi.fn(async () => undefined);
+  setRemoteDescription = vi.fn(async (_description?: RTCSessionDescriptionInit) => undefined);
+  addIceCandidate = vi.fn(async (_candidate?: RTCIceCandidateInit) => undefined);
 
   createDataChannel(label: string, options: RTCDataChannelInit) {
     const channel = new FakeDataChannel(label, options);
@@ -256,6 +264,146 @@ describe("Viewer WebRTC transport", () => {
     expect(onError).not.toHaveBeenCalled();
     expect(peer.close).not.toHaveBeenCalled();
     expect(transport.sendControl("key-down A")).toBe(true);
+    transport.close();
+  });
+
+  it("queues Agent ICE candidates until the matching Answer remote description is applied", async () => {
+    const { startFirebaseViewerWebRtcTransport } = await import("./viewerFirebase");
+    const transport = await startFirebaseViewerWebRtcTransport(
+      "session-candidate-before-answer",
+      { onDiagnostic: vi.fn(), onFrame: vi.fn() },
+      {} as ImportMetaEnv,
+    );
+    await vi.waitFor(() => expect(firestoreMocks.safeSetDoc).toHaveBeenCalledOnce());
+
+    const peer = FakePeerConnection.latest;
+    let remoteDescriptionApplied = false;
+    let completeRemoteDescription: (() => void) | undefined;
+    const successfullyAppliedCandidates: RTCIceCandidateInit[] = [];
+    peer.setRemoteDescription.mockImplementationOnce(() => new Promise<void>((resolve) => {
+      completeRemoteDescription = () => {
+        remoteDescriptionApplied = true;
+        resolve();
+      };
+    }));
+    peer.addIceCandidate.mockImplementation(async (candidate?: RTCIceCandidateInit) => {
+      if (!remoteDescriptionApplied) {
+        throw new Error("Remote description must be applied before ICE candidates.");
+      }
+      if (candidate) {
+        successfullyAppliedCandidates.push(candidate);
+      }
+    });
+
+    const offerWrite = firestoreMocks.safeSetDoc.mock.calls[0] as unknown as [
+      unknown,
+      { offer: { negotiationId: string } },
+    ];
+    const negotiationId = offerWrite[1].offer.negotiationId;
+    const signalCallback = firestoreMocks.onSnapshot.mock.calls.find(
+      ([target]) => target.path === "sessions/session-candidate-before-answer/webrtc/signal",
+    )?.[1];
+    const candidateCallback = firestoreMocks.onSnapshot.mock.calls.find(
+      ([target]) => target.path === "sessions/session-candidate-before-answer/agentCandidates",
+    )?.[1];
+    expect(signalCallback).toBeTypeOf("function");
+    expect(candidateCallback).toBeTypeOf("function");
+
+    const candidate = { candidate: "candidate:agent-before-answer" };
+    candidateCallback?.({
+      docs: [{
+        id: "agent-candidate-before-answer",
+        data: () => ({ candidate, negotiationId }),
+      }],
+    });
+    await Promise.resolve();
+    expect.soft(peer.addIceCandidate).not.toHaveBeenCalled();
+
+    signalCallback?.({
+      data: () => ({
+        answer: { type: "answer", sdp: "agent-answer", negotiationId },
+        negotiationId,
+      }),
+    });
+    expect(peer.setRemoteDescription).toHaveBeenCalledOnce();
+    completeRemoteDescription?.();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect.soft(peer.addIceCandidate).toHaveBeenCalledTimes(1);
+    expect.soft(successfullyAppliedCandidates).toEqual([candidate]);
+    transport.close();
+  });
+
+  it("automatically retries an Agent ICE candidate once after its first post-Answer application fails", async () => {
+    vi.useFakeTimers();
+    const { startFirebaseViewerWebRtcTransport } = await import("./viewerFirebase");
+    const onDiagnostic = vi.fn();
+    const transport = await startFirebaseViewerWebRtcTransport(
+      "session-candidate-retry",
+      { onDiagnostic, onFrame: vi.fn() },
+      {} as ImportMetaEnv,
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(firestoreMocks.safeSetDoc).toHaveBeenCalledOnce();
+
+    const peer = FakePeerConnection.latest;
+    const offerWrite = firestoreMocks.safeSetDoc.mock.calls[0] as unknown as [
+      unknown,
+      { offer: { negotiationId: string } },
+    ];
+    const negotiationId = offerWrite[1].offer.negotiationId;
+    const signalCallback = firestoreMocks.onSnapshot.mock.calls.find(
+      ([target]) => target.path === "sessions/session-candidate-retry/webrtc/signal",
+    )?.[1];
+    const candidateCallback = firestoreMocks.onSnapshot.mock.calls.find(
+      ([target]) => target.path === "sessions/session-candidate-retry/agentCandidates",
+    )?.[1];
+    expect(signalCallback).toBeTypeOf("function");
+    expect(candidateCallback).toBeTypeOf("function");
+
+    signalCallback?.({
+      data: () => ({
+        answer: { type: "answer", sdp: "agent-answer", negotiationId },
+        negotiationId,
+      }),
+    });
+    expect(peer.setRemoteDescription).toHaveBeenCalledOnce();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    peer.addIceCandidate
+      .mockRejectedValueOnce(new Error("transient candidate rejection"))
+      .mockResolvedValueOnce(undefined);
+    const candidateSnapshot = {
+      docs: [{
+        id: "agent-candidate-retry",
+        data: () => ({
+          candidate: { candidate: "candidate:agent-retry" },
+          negotiationId,
+        }),
+      }],
+    };
+
+    candidateCallback?.(candidateSnapshot);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(onDiagnostic).toHaveBeenCalledWith(
+      expect.stringContaining("agent-candidate-rejected"),
+    );
+    expect(peer.addIceCandidate).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(49);
+    expect(peer.addIceCandidate).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await Promise.resolve();
+    expect(peer.addIceCandidate).toHaveBeenCalledTimes(2);
+
+    candidateCallback?.(candidateSnapshot);
+    await Promise.resolve();
+    expect(peer.addIceCandidate).toHaveBeenCalledTimes(2);
     transport.close();
   });
 

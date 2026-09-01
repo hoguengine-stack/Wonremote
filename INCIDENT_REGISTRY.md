@@ -460,3 +460,18 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - Regression proof: `src/desktopPackaging.test.ts` passed 57 tests locally; the complete release-contract test step passed in GitHub Actions run `32663031781`.
 - Release proof: GitHub Actions run `32663031781` published `v0.1.74` with exactly the x86-compatible Viewer installer, Agent installer, and signed manifest; all four live Firebase aliases passed exact no-follow redirect checks.
 - Remaining blocker: none for this release-test path.
+
+## INC-20260831-001: Viewer discarded Agent ICE candidates received before the Answer
+
+- Detected: 2026-08-31T09:05:06Z.
+- Severity: P1.
+- Affected: Viewer Firebase WebRTC signaling in `v0.1.75`; the shared x86 payload on 32-bit and 64-bit Windows, packaged and installed modes.
+- Status: fixed-not-released.
+- User-visible symptom: An online Agent accepts Firestore-backed system-tool commands, but the Viewer remote session remains blank.
+- Minimal trigger: Deliver an Agent trickle-ICE candidate snapshot before the Viewer finishes applying the matching WebRTC Answer.
+- Root cause and contributors: The Viewer subscribed to Agent candidates independently from the Answer, called `addIceCandidate` before `setRemoteDescription` could finish, and marked the candidate ID as applied before that call succeeded. A candidate rejected in this ordering was therefore never retried.
+- Fix commit(s): pending; source change is intentionally uncommitted until the next requested release batch.
+- Permanent guard: Queue matching Agent candidates until the Answer remote description resolves, mark IDs applied only after successful native application, retain rejected candidates, automatically retry each candidate once, allow later snapshots to retry again, and clear every pending candidate/timer during transport shutdown.
+- Regression proof: Focused RED produced one new failure because `addIceCandidate` ran before the Answer and was not replayed. After the fix, `npx vitest run src/firebase/viewerWebRtcTransport.test.ts` exited `0` with 1 file and 8 tests passed, including candidate-before-Answer ordering, automatic retry, and duplicate suppression.
+- Release proof: not released.
+- Remaining blocker: Build and release only when explicitly requested, then verify `AGENT-E0D50FD0` physically. If that site still times out, confirm and configure a production TURN relay because the current release contract permits STUN-only builds.

@@ -788,8 +788,12 @@ export async function startFirebaseViewerWebRtcTransport(
   const viewerCandidates = collection(services.db, "sessions", sessionId, "viewerCandidates");
   const agentCandidates = collection(services.db, "sessions", sessionId, "agentCandidates");
   const appliedCandidateIds = new Set<string>();
+  const applyingCandidateIds = new Set<string>();
+  const automaticallyRetriedCandidateIds = new Set<string>();
+  const pendingAgentCandidates = new Map<string, RTCIceCandidateInit>();
   const negotiationId = createFirebaseSessionId("rtc");
   let answerApplied = false;
+  let answerApplyInFlight = false;
   let channelOpened = false;
   let controlChannelOpened = false;
   let fileChannelOpened = false;
@@ -797,6 +801,7 @@ export async function startFirebaseViewerWebRtcTransport(
   let resourcesClosed = false;
   let unsubscribeSignal: Unsubscribe | null = null;
   let unsubscribeAgentCandidates: Unsubscribe | null = null;
+  let candidateRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let connectWatchdog: ReturnType<typeof setTimeout> | null = null;
   let pendingControlActions: string[] = [];
   const frameAssembler = new WebRtcFrameAssembler();
@@ -831,6 +836,10 @@ export async function startFirebaseViewerWebRtcTransport(
     }
     resourcesClosed = true;
     clearConnectWatchdog();
+    if (candidateRetryTimer) {
+      clearTimeout(candidateRetryTimer);
+      candidateRetryTimer = null;
+    }
     unsubscribeSignal?.();
     unsubscribeAgentCandidates?.();
     try {
@@ -850,6 +859,9 @@ export async function startFirebaseViewerWebRtcTransport(
     }
     rejectAllFileWaiters(new Error("WebRTC file channel closed."));
     pendingControlActions = [];
+    pendingAgentCandidates.clear();
+    applyingCandidateIds.clear();
+    automaticallyRetriedCandidateIds.clear();
     peer.close();
   };
 
@@ -869,6 +881,55 @@ export async function startFirebaseViewerWebRtcTransport(
     }
     handlers.onDiagnostic?.(formatWebRtcConnectionFailure(reason, detail));
   };
+
+  function schedulePendingAgentCandidateRetry(candidateId: string) {
+    if (
+      resourcesClosed ||
+      closedByCaller ||
+      automaticallyRetriedCandidateIds.has(candidateId)
+    ) {
+      return;
+    }
+    automaticallyRetriedCandidateIds.add(candidateId);
+    if (candidateRetryTimer) {
+      return;
+    }
+    candidateRetryTimer = setTimeout(() => {
+      candidateRetryTimer = null;
+      flushPendingAgentCandidates();
+    }, 50);
+  }
+
+  function flushPendingAgentCandidates() {
+    if (!answerApplied || resourcesClosed || closedByCaller) {
+      return;
+    }
+    for (const [candidateId, candidate] of pendingAgentCandidates) {
+      if (appliedCandidateIds.has(candidateId) || applyingCandidateIds.has(candidateId)) {
+        continue;
+      }
+      applyingCandidateIds.add(candidateId);
+      void peer
+        .addIceCandidate(candidate)
+        .then(() => {
+          if (resourcesClosed) {
+            return;
+          }
+          pendingAgentCandidates.delete(candidateId);
+          appliedCandidateIds.add(candidateId);
+        })
+        .catch((error) => {
+          reportDiagnostic(
+            "agent-candidate-rejected",
+            error instanceof Error ? error.message : String(error),
+          );
+          schedulePendingAgentCandidateRetry(candidateId);
+        })
+        .finally(() => {
+          applyingCandidateIds.delete(candidateId);
+        });
+    }
+  }
 
   const channel = peer.createDataChannel(WEBRTC_TILE_CHANNEL_LABEL, viewerTileDataChannelOptions());
   const controlChannel = peer.createDataChannel(WEBRTC_CONTROL_CHANNEL_LABEL, { ordered: true });
@@ -999,22 +1060,34 @@ export async function startFirebaseViewerWebRtcTransport(
       const answerNegotiationId = answer?.negotiationId ?? signal?.negotiationId;
       if (
         answerApplied ||
+        answerApplyInFlight ||
         answerNegotiationId !== negotiationId ||
         answer?.type !== "answer" ||
         typeof answer.sdp !== "string"
       ) {
         return;
       }
-      answerApplied = true;
+      answerApplyInFlight = true;
       void peer
         .setRemoteDescription({ type: "answer", sdp: answer.sdp })
+        .then(() => {
+          answerApplyInFlight = false;
+          if (resourcesClosed || closedByCaller) {
+            return;
+          }
+          answerApplied = true;
+          flushPendingAgentCandidates();
+        })
         .catch((error) => reportUnavailable(
           "answer-apply-failed",
           error instanceof Error ? error.message : String(error),
-        ));
+        ))
+        .finally(() => {
+          answerApplyInFlight = false;
+        });
     },
     (error) => {
-      if (answerApplied) {
+      if (answerApplied || answerApplyInFlight) {
         reportDiagnostic("signal-listener-failed-after-answer", error.message);
       } else {
         reportUnavailable("signal-listener-failed", error.message);
@@ -1026,24 +1099,26 @@ export async function startFirebaseViewerWebRtcTransport(
     agentCandidates,
     (snapshot) => {
       snapshot.docs.forEach((candidateDoc) => {
-        if (appliedCandidateIds.has(candidateDoc.id)) {
+        if (
+          appliedCandidateIds.has(candidateDoc.id) ||
+          applyingCandidateIds.has(candidateDoc.id) ||
+          pendingAgentCandidates.has(candidateDoc.id)
+        ) {
           return;
         }
-        appliedCandidateIds.add(candidateDoc.id);
         const candidateData = candidateDoc.data();
         if (candidateData.negotiationId !== negotiationId) {
+          appliedCandidateIds.add(candidateDoc.id);
           return;
         }
         const candidate = candidateData.candidate;
         if (candidate) {
-          void peer
-            .addIceCandidate(candidate as RTCIceCandidateInit)
-            .catch((error) => reportDiagnostic(
-              "agent-candidate-rejected",
-              error instanceof Error ? error.message : String(error),
-            ));
+          pendingAgentCandidates.set(candidateDoc.id, candidate as RTCIceCandidateInit);
+        } else {
+          appliedCandidateIds.add(candidateDoc.id);
         }
       });
+      flushPendingAgentCandidates();
     },
     (error) => reportDiagnostic("agent-candidate-listener-failed", error.message),
   );
