@@ -71,8 +71,8 @@ class FakePeerConnection {
   close = vi.fn();
   createOffer = vi.fn(async () => ({ type: "offer" as RTCSdpType, sdp: "viewer-offer" }));
   setLocalDescription = vi.fn(async () => undefined);
-  setRemoteDescription = vi.fn(async (_description?: RTCSessionDescriptionInit) => undefined);
-  addIceCandidate = vi.fn(async (_candidate?: RTCIceCandidateInit) => undefined);
+  setRemoteDescription = vi.fn(async (_description?: RTCSessionDescriptionInit): Promise<void> => undefined);
+  addIceCandidate = vi.fn(async (_candidate?: RTCIceCandidateInit): Promise<void> => undefined);
 
   createDataChannel(label: string, options: RTCDataChannelInit) {
     const channel = new FakeDataChannel(label, options);

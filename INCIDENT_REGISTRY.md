@@ -470,8 +470,23 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - User-visible symptom: An online Agent accepts Firestore-backed system-tool commands, but the Viewer remote session remains blank.
 - Minimal trigger: Deliver an Agent trickle-ICE candidate snapshot before the Viewer finishes applying the matching WebRTC Answer.
 - Root cause and contributors: The Viewer subscribed to Agent candidates independently from the Answer, called `addIceCandidate` before `setRemoteDescription` could finish, and marked the candidate ID as applied before that call succeeded. A candidate rejected in this ordering was therefore never retried.
-- Fix commit(s): pending; source change is intentionally uncommitted until the next requested release batch.
+- Fix commit(s): `b6555b2`.
 - Permanent guard: Queue matching Agent candidates until the Answer remote description resolves, mark IDs applied only after successful native application, retain rejected candidates, automatically retry each candidate once, allow later snapshots to retry again, and clear every pending candidate/timer during transport shutdown.
 - Regression proof: Focused RED produced one new failure because `addIceCandidate` ran before the Answer and was not replayed. After the fix, `npx vitest run src/firebase/viewerWebRtcTransport.test.ts` exited `0` with 1 file and 8 tests passed, including candidate-before-Answer ordering, automatic retry, and duplicate suppression.
 - Release proof: not released.
 - Remaining blocker: Build and release only when explicitly requested, then verify `AGENT-E0D50FD0` physically. If that site still times out, confirm and configure a production TURN relay because the current release contract permits STUN-only builds.
+
+## INC-20260901-001: WebRTC regression mock failed the release TypeScript build
+
+- Detected: 2026-09-01T00:13:25Z.
+- Severity: P1.
+- Affected: GitHub Actions release run `33453692045`, step `Build two x86 installers and signed compatibility manifest`; `v0.1.76` test source typing.
+- Status: fixed-not-released.
+- User-visible symptom: The requested `v0.1.76` release stopped before installer artifacts were produced.
+- Minimal trigger: Compile `src/firebase/viewerWebRtcTransport.test.ts` after assigning a `Promise<void>` implementation to a mock inferred as returning `Promise<undefined>`.
+- Root cause and contributors: Focused Vitest transpilation passed without a full TypeScript check, while the FakePeerConnection mock inferred an unnecessarily narrow `Promise<undefined>` return type that rejected the test's valid `Promise<void>` implementation during the production TypeScript build.
+- Fix commit(s): pending.
+- Permanent guard: Explicitly type WebRTC mock promises as `Promise<void>` and run the application TypeScript build before pushing a release preparation commit.
+- Regression proof: After explicitly typing both WebRTC mock methods as `Promise<void>`, `npm run build` exited `0` through Vite, backend bundling, Rust PoC, and Agent packaging; `npx vitest run src/firebase/viewerWebRtcTransport.test.ts` exited `0` with 1 file and 8 tests passed; `npm run recurrence:verify` exited `0`.
+- Release proof: GitHub Actions run `33453692045` failed at the build step with `Type 'Promise<void>' is not assignable to type 'Promise<undefined>'`; no release assets were published.
+- Remaining blocker: Obtain the first passing replacement run and published `v0.1.76` release evidence.
