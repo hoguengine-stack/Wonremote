@@ -500,7 +500,7 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - User-visible symptom: Launching the Viewer automatically reopened the last remote device without the user pressing Connect.
 - Minimal trigger: Leave a serialized active session in `wonremote-viewer-active-session`, close the Viewer, and launch it while Firebase authentication is restored.
 - Root cause and contributors: The startup authentication effect treated the persisted session as a reconnect contract, fetched its status, and called `setSession` for pending or connected state.
-- Fix commit(s): pending.
+- Fix commit(s): `395ac4f`.
 - Permanent guard: Consume persisted session metadata only for orphan-session cleanup, remove it before the cleanup request, restore it only when that request fails so a later startup can retry, and forbid startup code from assigning it to Viewer session state; preserve user-triggered Connect and in-session WebRTC reconnect paths.
 - Regression proof: `npx vitest run src/domain/sessionPersistence.test.ts src/viewerStartupSession.test.ts` exited `0` with 2 files and 6 tests passed. The startup-policy guard requires persisted metadata consumption and orphan cleanup without `setSession` or `fetchSessionStatus`, while retaining `openSession(device.id)` only in the direct Connect handler.
 - Release proof: not released.
