@@ -515,7 +515,7 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - User-visible symptom: Pressing End Session left the remote screen visible until network cleanup completed.
 - Minimal trigger: End a connected session while `closeSession` or a pending `openSession` request has measurable latency.
 - Root cause and contributors: `handleCloseSession` awaited every pending connection and the remote close request before clearing Viewer session state; fullscreen exit was also awaited before invoking the parent close handler.
-- Fix commit(s): pending.
+- Fix commit(s): `51ae9ca`.
 - Permanent guard: Clear Viewer session state and disable remote input synchronously, invalidate late connection attempts, finish input-release ordering and remote cleanup in the background, and persist failed cleanup separately from the active-session record.
 - Regression proof: `npx vitest run src/domain/sessionPersistence.test.ts src/viewerStartupSession.test.ts src/remoteSessionLayout.test.ts src/agent/agentSessionLifecycle.test.ts` exited `0` with 4 files and 33 tests passed; `npx tsc --noEmit` exited `0`. Guards require local `setSession(null)` before remote close, an input-release barrier before `closeSession`, durable late-open cleanup, and stale targeted `stop-stream` rejection.
 - Release proof: not released.
