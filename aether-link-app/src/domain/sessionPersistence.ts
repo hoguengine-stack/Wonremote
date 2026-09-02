@@ -2,6 +2,11 @@ import type { RemoteSession } from "./types";
 
 export const ACTIVE_SESSION_STORAGE_KEY = "wonremote-viewer-active-session";
 
+interface ActiveSessionStorage {
+  getItem(key: string): string | null;
+  removeItem(key: string): void;
+}
+
 export function serializeActiveSession(session: RemoteSession): string {
   return JSON.stringify({
     deviceId: session.deviceId,
@@ -32,4 +37,10 @@ export function parseActiveSession(value: string | null): RemoteSession | null {
   } catch {
     return null;
   }
+}
+
+export function consumeActiveSessionForStartupCleanup(storage: ActiveSessionStorage): RemoteSession | null {
+  const session = parseActiveSession(storage.getItem(ACTIVE_SESSION_STORAGE_KEY));
+  storage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
+  return session;
 }

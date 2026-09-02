@@ -92,7 +92,7 @@ import {
 } from "./domain/streamPerformanceMode";
 import {
   ACTIVE_SESSION_STORAGE_KEY,
-  parseActiveSession,
+  consumeActiveSessionForStartupCleanup,
   serializeActiveSession,
 } from "./domain/sessionPersistence";
 import { sha256BlobHex } from "./domain/blobHash";
@@ -296,7 +296,7 @@ function ViewerApp() {
   const [isManualUpdateChecking, setIsManualUpdateChecking] = useState(false);
   const [viewerUpdateDialog, setViewerUpdateDialog] = useState<ViewerUpdateDialogState | null>(null);
   const [isRefreshingDevices, setIsRefreshingDevices] = useState(false);
-  const sessionRestoreAttemptedRef = useRef(false);
+  const startupSessionCleanupAttemptedRef = useRef(false);
   const connectAttemptIdRef = useRef(0);
   const pendingConnectAttemptsRef = useRef<Set<Promise<{ cleanupSucceeded: boolean; connected: boolean }>>>(new Set());
   const sessionShutdownInProgressRef = useRef(false);
@@ -550,25 +550,18 @@ function ViewerApp() {
   const isRemoteFocusMode = Boolean(session);
 
   useEffect(() => {
-    if (!isAuthenticated || !isViewerFirebaseEnabled() || sessionRestoreAttemptedRef.current) {
+    if (!isAuthenticated || !isViewerFirebaseEnabled() || startupSessionCleanupAttemptedRef.current) {
       return;
     }
-    sessionRestoreAttemptedRef.current = true;
-    const storedSession = parseActiveSession(window.localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY));
+    startupSessionCleanupAttemptedRef.current = true;
+    const storedSession = consumeActiveSessionForStartupCleanup(window.localStorage);
     if (!storedSession) {
-      window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
       return;
     }
-    let active = true;
-    void fetchSessionStatus(storedSession.id)
-      .then((state) => {
-        if (!active || (state !== "connected" && state !== "pending")) return;
-        setSession({ ...storedSession, state });
-      })
-      .catch(() => window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY));
-    return () => {
-      active = false;
-    };
+    void closeSession(storedSession.id).catch((error) => {
+      window.localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, serializeActiveSession(storedSession));
+      console.warn("Persisted remote session cleanup will retry on next Viewer startup.", error);
+    });
   }, [isAuthenticated]);
 
   useEffect(() => {
