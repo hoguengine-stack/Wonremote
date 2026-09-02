@@ -11,8 +11,9 @@ describe("Viewer startup session policy", () => {
     const cleanupBlock = appSource.slice(cleanupStart, cleanupEnd);
 
     expect(cleanupStart).toBeGreaterThan(-1);
-    expect(cleanupBlock).toContain("closeSession(storedSession.id)");
-    expect(cleanupBlock).toContain("serializeActiveSession(storedSession)");
+    expect(cleanupBlock).toContain("closeSession(cleanupSession.id)");
+    expect(cleanupBlock).toContain("enqueueSessionCleanup(window.localStorage, storedSession)");
+    expect(cleanupBlock).toContain("readSessionCleanupQueue(window.localStorage)");
     expect(cleanupBlock).not.toContain("setSession(");
     expect(cleanupBlock).not.toContain("fetchSessionStatus(");
   });

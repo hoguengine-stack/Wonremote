@@ -205,11 +205,23 @@ describe("connected remote session layout", () => {
     expect(appSource).toContain("const attemptId = ++connectAttemptIdRef.current");
     expect(appSource).toContain("attemptId !== connectAttemptIdRef.current");
     expect(appSource).not.toContain("await closeSession(result.session.id).catch(() => {})");
-    const closeStart = appSource.indexOf("async function handleCloseSession()");
+    const closeStart = appSource.indexOf("function handleCloseSession(");
     const closeEnd = appSource.indexOf("async function handleConnectDevice", closeStart);
+    const closeBlock = appSource.slice(closeStart, closeEnd);
     expect(closeStart).toBeGreaterThanOrEqual(0);
-    expect(appSource.slice(closeStart, closeEnd)).toContain("connectAttemptIdRef.current += 1");
-    expect(appSource.slice(closeStart, closeEnd)).toContain("Promise.all([...pendingConnectAttemptsRef.current])");
+    expect(closeBlock).toContain("connectAttemptIdRef.current += 1");
+    expect(closeBlock).not.toContain("Promise.all([...pendingConnectAttemptsRef.current])");
+    expect(closeBlock.indexOf("setSession(null)")).toBeLessThan(closeBlock.indexOf("closeSession(closingSession.id)"));
+    expect(closeBlock).toContain("inputReleaseBarrier");
+    expect(closeBlock).toContain("enqueueSessionCleanup(window.localStorage, closingSession)");
+    expect(closeBlock).toContain("removeSessionCleanup(window.localStorage, closingSession.id)");
+
+    const leaveStart = appSource.indexOf("function leaveRemoteSession()");
+    const leaveEnd = appSource.indexOf("const sendClipboardImage", leaveStart);
+    const leaveBlock = appSource.slice(leaveStart, leaveEnd);
+    expect(leaveBlock.indexOf("onCloseSession(inputReleaseBarrier)")).toBeLessThan(
+      leaveBlock.indexOf("setFullscreen(false)"),
+    );
 
     const logoutStart = appSource.indexOf("async function handleLogout()");
     const logoutEnd = appSource.indexOf("async function markInput", logoutStart);

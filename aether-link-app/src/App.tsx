@@ -93,6 +93,9 @@ import {
 import {
   ACTIVE_SESSION_STORAGE_KEY,
   consumeActiveSessionForStartupCleanup,
+  enqueueSessionCleanup,
+  readSessionCleanupQueue,
+  removeSessionCleanup,
   serializeActiveSession,
 } from "./domain/sessionPersistence";
 import { sha256BlobHex } from "./domain/blobHash";
@@ -555,13 +558,16 @@ function ViewerApp() {
     }
     startupSessionCleanupAttemptedRef.current = true;
     const storedSession = consumeActiveSessionForStartupCleanup(window.localStorage);
-    if (!storedSession) {
-      return;
+    if (storedSession) {
+      enqueueSessionCleanup(window.localStorage, storedSession);
     }
-    void closeSession(storedSession.id).catch((error) => {
-      window.localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, serializeActiveSession(storedSession));
-      console.warn("Persisted remote session cleanup will retry on next Viewer startup.", error);
-    });
+    for (const cleanupSession of readSessionCleanupQueue(window.localStorage)) {
+      void closeSession(cleanupSession.id)
+        .then(() => removeSessionCleanup(window.localStorage, cleanupSession.id))
+        .catch((error) => {
+          console.warn("Persisted remote session cleanup will retry on next Viewer startup.", error);
+        });
+    }
   }, [isAuthenticated]);
 
   useEffect(() => {
@@ -713,27 +719,25 @@ function ViewerApp() {
     }
   }
 
-  async function handleCloseSession() {
+  function handleCloseSession(inputReleaseBarrier: Promise<unknown> = Promise.resolve()) {
+    const closingSession = session;
     sessionShutdownInProgressRef.current = true;
     connectAttemptIdRef.current += 1;
-    try {
-      const pendingResults = await Promise.all([...pendingConnectAttemptsRef.current]);
-      if (pendingResults.some(({ cleanupSucceeded }) => !cleanupSucceeded)) {
-        setApiError("취소된 원격 세션을 정리하지 못했습니다.");
-        return;
-      }
-      if (!session) {
-        return;
-      }
-      await closeSession(session.id);
-      setSession(null);
-      window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
-      setApiError("");
-    } catch (error) {
-      setApiError(error instanceof Error ? error.message : "세션 종료 실패");
-    } finally {
-      sessionShutdownInProgressRef.current = false;
+    setSession(null);
+    window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
+    setApiError("");
+    sessionShutdownInProgressRef.current = false;
+    if (!closingSession) {
+      return;
     }
+    enqueueSessionCleanup(window.localStorage, closingSession);
+    void inputReleaseBarrier
+      .catch(() => undefined)
+      .then(() => closeSession(closingSession.id))
+      .then(() => removeSessionCleanup(window.localStorage, closingSession.id))
+      .catch((error) => {
+        setApiError(error instanceof Error ? error.message : "세션 종료 실패");
+      });
   }
 
   async function runTrackedSessionOpen(
@@ -753,7 +757,9 @@ function ViewerApp() {
           sessionShutdownInProgressRef.current ||
           attemptId !== connectAttemptIdRef.current
         ) {
+          enqueueSessionCleanup(window.localStorage, result.session);
           await closeSession(result.session.id);
+          removeSessionCleanup(window.localStorage, result.session.id);
           return { cleanupSucceeded: true, connected: false };
         }
         setSession(result.session);
@@ -2053,7 +2059,7 @@ function RemoteSessionPanel({
   sessionId: string;
   session: RemoteSession | null;
   onInputEvent: (action: string, options?: { localOnly?: boolean }) => void | Promise<void>;
-  onCloseSession: () => void | Promise<void>;
+  onCloseSession: (inputReleaseBarrier?: Promise<unknown>) => void;
 }) {
   const panelRef = React.useRef<HTMLElement | null>(null);
   const imeInputRef = React.useRef<HTMLTextAreaElement | null>(null);
@@ -2155,16 +2161,16 @@ function RemoteSessionPanel({
     }
   }
 
-  async function leaveRemoteSession() {
-    releaseAllInputs();
+  function leaveRemoteSession() {
+    const inputReleaseBarrier = releaseAllInputs();
+    onCloseSession(inputReleaseBarrier);
     setIsSessionFullscreen(false);
     setIsFullscreenToolbarOpen(false);
     if ((window as any).__TAURI_INTERNALS__) {
-      await getCurrentWindow().setFullscreen(false).catch(() => {});
+      void getCurrentWindow().setFullscreen(false).catch(() => {});
     } else if (document.fullscreenElement) {
-      await document.exitFullscreen().catch(() => {});
+      void document.exitFullscreen().catch(() => {});
     }
-    await onCloseSession();
   }
 
   const sendClipboardImage = React.useCallback(async (image: Blob, knownSha256?: string) => {
@@ -2705,21 +2711,23 @@ function RemoteSessionPanel({
     }
   };
 
-  const releaseAllInputs = () => {
+  const releaseAllInputs = (): Promise<void> => {
+    const releaseTasks: Promise<unknown>[] = [];
     cancelPendingPointerMove();
     if (pressedKeysRef.current.size > 0 || suppressedKeyUpsRef.current.size > 0) {
       pressedKeysRef.current.clear();
-      onInputEvent("key-release-all");
+      releaseTasks.push(Promise.resolve(onInputEvent("key-release-all")));
     }
     suppressedKeyUpsRef.current.clear();
     if (pressedButtonsRef.current.size > 0) {
       const point = lastPointerPointRef.current;
       for (const button of pressedButtonsRef.current) {
-        onInputEvent(buildMouseCommand("up", point.dx, point.dy, button));
+        releaseTasks.push(Promise.resolve(onInputEvent(buildMouseCommand("up", point.dx, point.dy, button))));
       }
       pressedButtonsRef.current.clear();
     }
     activePointerIdRef.current = null;
+    return Promise.allSettled(releaseTasks).then(() => undefined);
   };
 
   const handlePanelBlur = (event: React.FocusEvent<HTMLElement>) => {

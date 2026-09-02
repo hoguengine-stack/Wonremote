@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   ACTIVE_SESSION_STORAGE_KEY,
+  SESSION_CLEANUP_STORAGE_KEY,
   consumeActiveSessionForStartupCleanup,
+  enqueueSessionCleanup,
   parseActiveSession,
+  readSessionCleanupQueue,
+  removeSessionCleanup,
   serializeActiveSession,
 } from "./sessionPersistence";
 
@@ -38,6 +42,7 @@ describe("viewer active session persistence", () => {
     const storage = {
       getItem: (key: string) => stored.get(key) ?? null,
       removeItem: (key: string) => stored.delete(key),
+      setItem: (key: string, value: string) => stored.set(key, value),
     };
 
     expect(consumeActiveSessionForStartupCleanup(storage)).toMatchObject({ id: "session-1" });
@@ -49,9 +54,37 @@ describe("viewer active session persistence", () => {
     const storage = {
       getItem: (key: string) => stored.get(key) ?? null,
       removeItem: (key: string) => stored.delete(key),
+      setItem: (key: string, value: string) => stored.set(key, value),
     };
 
     expect(consumeActiveSessionForStartupCleanup(storage)).toBeNull();
     expect(stored.has(ACTIVE_SESSION_STORAGE_KEY)).toBe(false);
+  });
+
+  it("keeps failed remote cleanup separate from the active session snapshot", () => {
+    const stored = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => stored.get(key) ?? null,
+      removeItem: (key: string) => stored.delete(key),
+      setItem: (key: string, value: string) => stored.set(key, value),
+    };
+    const first = {
+      deviceId: "device-1",
+      id: "session-1",
+      startedAt: "2026-09-02T00:00:00.000Z",
+      state: "connected" as const,
+    };
+    const second = { ...first, deviceId: "device-2", id: "session-2" };
+
+    enqueueSessionCleanup(storage, first);
+    enqueueSessionCleanup(storage, first);
+    enqueueSessionCleanup(storage, second);
+    expect(readSessionCleanupQueue(storage).map((session) => session.id)).toEqual(["session-1", "session-2"]);
+    expect(stored.has(ACTIVE_SESSION_STORAGE_KEY)).toBe(false);
+
+    removeSessionCleanup(storage, "session-1");
+    expect(readSessionCleanupQueue(storage).map((session) => session.id)).toEqual(["session-2"]);
+    removeSessionCleanup(storage, "session-2");
+    expect(stored.has(SESSION_CLEANUP_STORAGE_KEY)).toBe(false);
   });
 });

@@ -505,3 +505,18 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - Regression proof: `npx vitest run src/domain/sessionPersistence.test.ts src/viewerStartupSession.test.ts` exited `0` with 2 files and 6 tests passed. The startup-policy guard requires persisted metadata consumption and orphan cleanup without `setSession` or `fetchSessionStatus`, while retaining `openSession(device.id)` only in the direct Connect handler.
 - Release proof: not released.
 - Remaining blocker: Package and release only when explicitly requested, then verify an installed Viewer opens the device list without entering the previous remote session.
+
+## INC-20260902-002: Viewer waited for remote cleanup before leaving the session screen
+
+- Detected: 2026-09-02.
+- Severity: P1.
+- Affected: Viewer remote-session exit while Firebase/API close or an in-flight connection attempt is slow.
+- Status: source-verified-not-released.
+- User-visible symptom: Pressing End Session left the remote screen visible until network cleanup completed.
+- Minimal trigger: End a connected session while `closeSession` or a pending `openSession` request has measurable latency.
+- Root cause and contributors: `handleCloseSession` awaited every pending connection and the remote close request before clearing Viewer session state; fullscreen exit was also awaited before invoking the parent close handler.
+- Fix commit(s): pending.
+- Permanent guard: Clear Viewer session state and disable remote input synchronously, invalidate late connection attempts, finish input-release ordering and remote cleanup in the background, and persist failed cleanup separately from the active-session record.
+- Regression proof: `npx vitest run src/domain/sessionPersistence.test.ts src/viewerStartupSession.test.ts src/remoteSessionLayout.test.ts src/agent/agentSessionLifecycle.test.ts` exited `0` with 4 files and 33 tests passed; `npx tsc --noEmit` exited `0`. Guards require local `setSession(null)` before remote close, an input-release barrier before `closeSession`, durable late-open cleanup, and stale targeted `stop-stream` rejection.
+- Release proof: not released.
+- Remaining blocker: Package and release only when explicitly requested, then verify installed Viewer teardown latency and Agent stream/input release on two physical PCs.
