@@ -23,6 +23,7 @@ interface SendAgentHeartbeatOptions {
   macAddresses?: string[];
   controlDiagnostics?: AgentControlDiagnostics;
   streamDiagnostics?: AgentStreamDiagnostics;
+  protocolVersion?: number;
   version?: string;
   updateTelemetry?: AgentUpdateTelemetry;
 }
@@ -52,6 +53,7 @@ export async function sendAgentHeartbeat({
   macAddresses,
   controlDiagnostics,
   streamDiagnostics,
+  protocolVersion,
   version,
   updateTelemetry,
 }: SendAgentHeartbeatOptions): Promise<AgentHeartbeatResult> {
@@ -66,6 +68,7 @@ export async function sendAgentHeartbeat({
         macAddresses,
         controlDiagnostics,
         streamDiagnostics,
+        protocolVersion,
         version,
         updateTelemetry,
       }),
@@ -85,6 +88,7 @@ export async function sendAgentHeartbeat({
         macAddresses,
         controlDiagnostics,
         streamDiagnostics,
+        protocolVersion,
         updateTelemetry,
       }),
       headers: { "content-type": "application/json" },

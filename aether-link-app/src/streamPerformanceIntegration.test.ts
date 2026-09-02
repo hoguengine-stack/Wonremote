@@ -21,7 +21,7 @@ describe("stream performance mode integration", () => {
     expect(appSource).toContain("buildSetStreamModeCommand");
     expect(agentSource).toContain('"--jpeg-quality"');
     expect(agentSource).toContain('"--max-merge-width"');
-    expect(agentSource).toContain("streamProfile.maxBufferedAmount");
+    expect(agentSource).toContain("currentStreamProfile.maxBufferedAmount");
   });
 
   it("persists the Viewer mode and sends the matching Agent command", () => {
@@ -47,7 +47,7 @@ describe("stream performance mode integration", () => {
     const agentSource = readFileSync(path.join(projectRoot, "src", "agent", "index.ts"), "utf8");
     const frameBlock = readBlock(agentSource, "const sendResult = USE_FIREBASE", "if (sendResult === \"sent\")");
 
-    expect(frameBlock).toContain("data.keyframe === true ? undefined : streamProfile.maxBufferedAmount");
+    expect(frameBlock).toContain("framePayload.keyframe ? undefined : currentStreamProfile.maxBufferedAmount");
   });
 
   it("keeps benchmark comparison work out of the realtime capture loop", () => {

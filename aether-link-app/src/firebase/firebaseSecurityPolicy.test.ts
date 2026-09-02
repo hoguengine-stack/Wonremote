@@ -108,6 +108,11 @@ describe("Firebase security deployment policy", () => {
     expect(functionsSource).toContain("firestoreTimestampMillis(device.lastSeenAtServer)");
     expect(functionsSource).toContain("heartbeatAgeMs < -DEVICE_HEARTBEAT_FUTURE_TOLERANCE_MS");
     expect(functionsSource).toContain("heartbeatAgeMs > DEVICE_HEARTBEAT_MAX_AGE_MS");
+    const secureConnectBlock = functionsSource.slice(
+      functionsSource.indexOf("export const connectSecureSession"),
+      functionsSource.indexOf("export const openSession"),
+    );
+    expect(secureConnectBlock).toContain("await readOwnedOnlineDevice(deviceId, uid)");
     expect(rules).toContain("function canAccessSession(sessionId)");
     expect(rules).toContain("function canReadSession()");
     expect(rules).toContain("function isOwnSessionClose(sessionId)");

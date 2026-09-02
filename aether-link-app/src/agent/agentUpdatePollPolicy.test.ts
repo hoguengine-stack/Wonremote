@@ -6,6 +6,7 @@ import {
   MIN_TEST_AGENT_UPDATE_CHECK_INTERVAL_MS,
   resolveAgentUpdateCheckIntervalMs,
   resolveAgentUpdateFailureRetryMs,
+  shouldRetryFailedAgentUpdate,
   shouldAttemptAgentUpdateCheck,
 } from "./agentUpdatePollPolicy";
 
@@ -63,5 +64,13 @@ describe("Agent update polling policy", () => {
       AGENT_UPDATE_FAILURE_RETRY_MS,
     );
     expect(resolveAgentUpdateFailureRetryMs(30_000)).toBe(30_000);
+  });
+
+  it("retries the same failed target only after the failure cooldown", () => {
+    const failedAt = "2026-07-11T00:00:00.000Z";
+    expect(shouldRetryFailedAgentUpdate({ failedAt, nowMs: Date.parse(failedAt) + 59_999, retryAfterMs: 60_000 }))
+      .toBe(false);
+    expect(shouldRetryFailedAgentUpdate({ failedAt, nowMs: Date.parse(failedAt) + 60_000, retryAfterMs: 60_000 }))
+      .toBe(true);
   });
 });

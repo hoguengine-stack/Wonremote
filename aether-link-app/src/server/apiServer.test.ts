@@ -115,7 +115,7 @@ describe("WonRemote local API server", () => {
       id: "222-33-44444:AGENT-POS-77",
       storeName: "상호명 미설정",
       deviceNumber: "AGENT-POS-77",
-      deviceName: "Agent AGENT-POS-77",
+      deviceName: "메인포스",
       status: "online",
     });
 

@@ -28,6 +28,10 @@ jobs:
       VITE_WONREMOTE_RTC_TURN_CREDENTIAL: ${{ secrets.WONREMOTE_RTC_TURN_CREDENTIAL }}
       VITE_WONREMOTE_RTC_RELAY_ONLY: ${{ vars.WONREMOTE_RTC_RELAY_ONLY }}
       VITE_WONREMOTE_RTC_CONNECT_TIMEOUT_MS: ${{ vars.WONREMOTE_RTC_CONNECT_TIMEOUT_MS }}
+      VITE_WONREMOTE_RTC_DYNAMIC_CREDENTIALS: ${{ vars.WONREMOTE_RTC_DYNAMIC_CREDENTIALS }}
+      WONREMOTE_AUTHENTICODE_PFX_BASE64: ${{ secrets.WONREMOTE_AUTHENTICODE_PFX_BASE64 }}
+      WONREMOTE_AUTHENTICODE_PFX_PASSWORD: ${{ secrets.WONREMOTE_AUTHENTICODE_PFX_PASSWORD }}
+      WONREMOTE_REQUIRE_AUTHENTICODE: "YES"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -104,10 +108,14 @@ jobs:
       - name: Verify installer update E2E
         run: npm run test:update-e2e
 
-      - name: Build two x86 installers and signed compatibility manifest
-        run: |
-          npm run release:exes
-          npm run release:manifest
+      - name: Build two x86 installers
+        run: npm run release:exes
+
+      - name: Apply and verify Authenticode signatures
+        run: npm run release:sign
+
+      - name: Build signed update manifest from final installer bytes
+        run: npm run release:manifest
 
       - name: Verify Tauri resource paths
         run: cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc --release --lib test_node_resource_paths

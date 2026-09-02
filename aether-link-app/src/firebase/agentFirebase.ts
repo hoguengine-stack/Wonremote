@@ -15,6 +15,7 @@ import {
   type Unsubscribe,
 } from "firebase/firestore";
 import { getDownloadURL, ref } from "firebase/storage";
+import { httpsCallable } from "firebase/functions";
 import { orderAgentCommands } from "../domain/agentCommandOrdering";
 import type {
   AgentCommand,
@@ -29,7 +30,7 @@ import type {
   FileTransferReceipt,
   TransferredFile,
 } from "../domain/types";
-import { requireTurnWhenRelayOnly, resolveRtcIceServers, shouldUseRelayOnly } from "../domain/rtcTransport";
+import { resolveRtcConfiguration } from "../domain/rtcTransport";
 import {
   formatWebRtcConnectionFailure,
   isTerminalWebRtcConnectionState,
@@ -156,6 +157,7 @@ export async function registerAgentFirstRunWithFirebase(
     installId: input.installId,
     nowIso,
     ownerUid: credential.user.uid,
+    protocolVersion: input.protocolVersion,
     version: input.version,
   });
   const deviceRef = doc(services.db, "devices", device.id);
@@ -250,6 +252,7 @@ export async function sendAgentHeartbeatWithFirebase(
       streamDiagnostics: input.streamDiagnostics ?? null,
       status: "online",
       updatedAt: serverTimestamp(),
+      protocolVersion: input.protocolVersion,
       version: input.version,
       ...(desktopName ? { desktopName } : {}),
       ...(input.updateTelemetry ? updateTelemetryDocument(input.updateTelemetry) : {}),
@@ -268,6 +271,7 @@ export async function sendAgentHeartbeatWithFirebase(
     desktopName: desktopName ?? "",
     storeName: "",
     lastSeenAt: nowIso,
+    protocolVersion: input.protocolVersion,
     status: "online",
     version: input.version,
     activeDisplayIndex: input.activeDisplayIndex,
@@ -535,7 +539,9 @@ export async function startAgentWebRtcTransportWithFirebase(
     );
     return null;
   }
-  requireTurnWhenRelayOnly(env);
+  const rtcConfiguration = await resolveRtcConfiguration(env, async () =>
+    httpsCallable(services.functions, "getRtcConfiguration")({}),
+  );
   const agentCandidates = collection(services.db, "sessions", sessionId, "agentCandidates");
   const viewerCandidates = collection(services.db, "sessions", sessionId, "viewerCandidates");
   const recentNegotiationIds = new Set<string>();
@@ -655,8 +661,8 @@ export async function startAgentWebRtcTransportWithFirebase(
     activeRemoteDescriptionSet = false;
     channelOpened = false;
     const peer = await createAgentPeerConnection({
-      iceServers: resolveRtcIceServers(env),
-      iceTransportPolicy: shouldUseRelayOnly(env) ? "relay" : "all",
+      iceServers: rtcConfiguration.iceServers,
+      iceTransportPolicy: rtcConfiguration.iceTransportPolicy,
     });
     if (closedByCaller || activeNegotiationId !== offer.negotiationId) {
       await peer.close();

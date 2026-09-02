@@ -2,7 +2,9 @@ import { initializeApp } from "firebase-admin/app";
 import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import { HttpsError, onCall } from "firebase-functions/v2/https";
 import { randomUUID } from "node:crypto";
+import { defineSecret, defineString } from "firebase-functions/params";
 import { generateSecurityCode } from "./securityCode.js";
+import { createTemporaryTurnCredential } from "./turnCredentials.js";
 import { normalizeWakeMac, selectWakeRelay } from "./wakeRelay.js";
 
 export {
@@ -18,6 +20,28 @@ const db = getFirestore();
 const SECURE_SESSION_TTL_MS = 120_000;
 const DEVICE_HEARTBEAT_MAX_AGE_MS = 60_000;
 const DEVICE_HEARTBEAT_FUTURE_TOLERANCE_MS = 5_000;
+const CURRENT_REMOTE_PROTOCOL_VERSION = 2;
+const MIN_SUPPORTED_REMOTE_PROTOCOL_VERSION = 1;
+const TURN_SHARED_SECRET = defineSecret("WONREMOTE_TURN_SHARED_SECRET");
+const TURN_URLS = defineString("WONREMOTE_TURN_URLS", { default: "" });
+
+export const getRtcConfiguration = onCall({ secrets: [TURN_SHARED_SECRET] }, async (request) => {
+  const uid = requireAuthUid(request.auth?.uid);
+  const urls = TURN_URLS.value().split(",").map((value) => value.trim()).filter(Boolean);
+  const secret = TURN_SHARED_SECRET.value();
+  if (urls.length === 0 || !secret.trim()) {
+    throw new HttpsError("failed-precondition", "WonRemote TURN relay is not configured.");
+  }
+  const temporary = createTemporaryTurnCredential({ identity: uid, secret });
+  return {
+    expiresAt: temporary.expiresAt,
+    iceServers: [
+      { urls: ["stun:stun.l.google.com:19302"] },
+      { urls, username: temporary.username, credential: temporary.credential },
+    ],
+    iceTransportPolicy: "all",
+  };
+});
 
 type DeviceDocument = {
   businessNumber?: string;
@@ -25,6 +49,7 @@ type DeviceDocument = {
   lastSeenAtServer?: unknown;
   macAddresses?: unknown;
   ownerUid?: string;
+  protocolVersion?: number;
   status?: string;
 };
 
@@ -84,6 +109,8 @@ export const connectSecureSession = onCall(async (request) => {
   const deviceId = requireString(request.data?.deviceId, "deviceId");
   const code = normalizeSecurityCode(requireString(request.data?.code, "code"));
   let result: { inputLog: string[]; session: SessionResponse } | null = null;
+
+  await readOwnedOnlineDevice(deviceId, uid);
 
   await db.runTransaction(async (transaction) => {
     const challengeRef = db.collection("secureChallenges").doc(challengeId);
@@ -259,6 +286,7 @@ export const wakeDevice = onCall(async (request) => {
 interface SessionResponse {
   deviceId: string;
   id: string;
+  protocolVersion: number;
   startedAt: string;
   state: "connected";
 }
@@ -273,6 +301,7 @@ function queueOpenSession(
   const session: SessionResponse = {
     deviceId,
     id: sessionRef.id,
+    protocolVersion: CURRENT_REMOTE_PROTOCOL_VERSION,
     startedAt,
     state: "connected",
   };
@@ -300,6 +329,15 @@ function queueOpenSession(
 
 async function readOwnedOnlineDevice(deviceId: string, uid: string): Promise<DeviceDocument & { id: string }> {
   const device = await readOwnedDevice(deviceId, uid);
+  const protocolVersion = Number.isSafeInteger(device.protocolVersion)
+    ? Number(device.protocolVersion)
+    : MIN_SUPPORTED_REMOTE_PROTOCOL_VERSION;
+  if (protocolVersion < MIN_SUPPORTED_REMOTE_PROTOCOL_VERSION || protocolVersion > CURRENT_REMOTE_PROTOCOL_VERSION) {
+    throw new HttpsError(
+      "failed-precondition",
+      `Remote protocol v${protocolVersion} is not supported by this Viewer service.`,
+    );
+  }
   const heartbeatAtMs = firestoreTimestampMillis(device.lastSeenAtServer);
   const heartbeatAgeMs = heartbeatAtMs === null ? null : Date.now() - heartbeatAtMs;
   if (

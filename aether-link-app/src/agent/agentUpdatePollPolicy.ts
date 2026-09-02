@@ -36,3 +36,15 @@ export function shouldAttemptAgentUpdateCheck(
 export function resolveAgentUpdateFailureRetryMs(intervalMs: number): number {
   return Math.min(Math.max(AGENT_UPDATE_FAILURE_RETRY_MS, MIN_AGENT_UPDATE_CHECK_INTERVAL_MS), intervalMs);
 }
+
+export function shouldRetryFailedAgentUpdate(input: {
+  failedAt: string | undefined;
+  nowMs: number;
+  retryAfterMs: number;
+}): boolean {
+  const failedAtMs = Date.parse(input.failedAt ?? "");
+  if (!Number.isFinite(failedAtMs) || input.nowMs < failedAtMs) {
+    return true;
+  }
+  return input.nowMs - failedAtMs >= Math.max(0, input.retryAfterMs);
+}

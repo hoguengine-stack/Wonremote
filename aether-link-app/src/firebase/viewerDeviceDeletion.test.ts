@@ -2,6 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { collection, doc, getDoc, getDocs, writeBatch } from "firebase/firestore";
 import { deleteFirebaseDevice } from "./viewerFirebase";
 
+vi.mock("firebase/auth", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("firebase/auth")>()),
+  getIdTokenResult: vi.fn(async () => ({ claims: {} })),
+}));
+
 const CENTRAL_VIEWER_UID = "Xjjdvk0Nx1eqCvND4yIOHbM53tl1";
 
 const mockState = vi.hoisted(() => ({

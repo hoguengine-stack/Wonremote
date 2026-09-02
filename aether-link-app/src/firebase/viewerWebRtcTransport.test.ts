@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseWebRtcControlAction } from "../domain/webrtcControl";
-import { parseWebRtcFileChunk, serializeWebRtcFileAck } from "../domain/webrtcFileTransfer";
+import { WEBRTC_FILE_CHUNK_BYTES, parseWebRtcFileChunk, serializeWebRtcFileAck } from "../domain/webrtcFileTransfer";
 
 const firestoreMocks = vi.hoisted(() => ({
   onSnapshot: vi.fn((
@@ -404,6 +404,35 @@ describe("Viewer WebRTC transport", () => {
     candidateCallback?.(candidateSnapshot);
     await Promise.resolve();
     expect(peer.addIceCandidate).toHaveBeenCalledTimes(2);
+    transport.close();
+  });
+
+  it("stops before sending the next file chunk when its AbortSignal is cancelled", async () => {
+    const { startFirebaseViewerWebRtcTransport } = await import("./viewerFirebase");
+    const transport = await startFirebaseViewerWebRtcTransport(
+      "session-file-cancel",
+      { onFrame: vi.fn() },
+      {} as ImportMetaEnv,
+    );
+    const fileChannel = FakePeerConnection.latest.channels.get("wonremote-files")!;
+    fileChannel.readyState = "open";
+    fileChannel.onopen?.();
+    const controller = new AbortController();
+    fileChannel.send.mockImplementationOnce(() => {
+      controller.abort();
+    });
+    const file = new Blob([new Uint8Array(WEBRTC_FILE_CHUNK_BYTES * 2)]);
+
+    const transferPromise = transport.sendFile({
+      file,
+      filename: "large.bin",
+      fileSha256: "a".repeat(64),
+      signal: controller.signal,
+      transferId: "transfer-cancel",
+    });
+
+    await expect(transferPromise).rejects.toMatchObject({ name: "AbortError" });
+    expect(fileChannel.send).toHaveBeenCalledOnce();
     transport.close();
   });
 

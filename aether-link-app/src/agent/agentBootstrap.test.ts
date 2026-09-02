@@ -3,6 +3,7 @@ import { bootstrapAgent } from "./agentBootstrap";
 import type { AgentBootstrapDeps, AgentLocalConfig } from "./agentBootstrap";
 import { WONREMOTE_APP_VERSION } from "../domain/appVersion";
 import type { ManagedDevice } from "../domain/types";
+import { CURRENT_REMOTE_PROTOCOL_VERSION } from "../domain/remoteProtocol";
 
 const registeredDevice: ManagedDevice = {
   id: "123-45-67890:AGENT-CLI-001",
@@ -43,6 +44,7 @@ describe("agent bootstrap", () => {
       businessNumber: "1234567890",
       password: "1234",
       installId: "agent-cli-001",
+      protocolVersion: CURRENT_REMOTE_PROTOCOL_VERSION,
       version: WONREMOTE_APP_VERSION,
     });
     expect(deps.writeConfig).toHaveBeenCalledWith({

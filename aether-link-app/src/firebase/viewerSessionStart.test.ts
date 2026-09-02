@@ -5,7 +5,7 @@ const state = vi.hoisted(() => ({
     commit: vi.fn<() => Promise<void>>(async () => undefined),
     set: vi.fn(),
   },
-  getDoc: vi.fn(async () => ({ exists: () => true, data: () => ({ status: "online" }) })),
+  getDoc: vi.fn(async () => ({ id: "device-1", exists: () => true, data: () => ({ protocolVersion: 2, status: "online" }) })),
   safeBatchSet: vi.fn((batch: { set: (...args: unknown[]) => unknown }, ref: unknown, data: unknown, options?: unknown) =>
     options === undefined ? batch.set(ref, data) : batch.set(ref, data, options)),
 }));
@@ -66,6 +66,18 @@ describe("Viewer direct session start", () => {
       state: "pending",
     });
     expect(state.batch.commit).toHaveBeenCalledOnce();
-    expect(state.getDoc).not.toHaveBeenCalled();
+    expect(state.getDoc).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a future device protocol before creating the session batch", async () => {
+    state.getDoc.mockResolvedValueOnce({
+      id: "device-1",
+      exists: () => true,
+      data: () => ({ protocolVersion: 99, status: "online" }),
+    });
+    const { openFirebaseSession } = await import("./viewerFirebase");
+
+    await expect(openFirebaseSession("device-1", {} as ImportMetaEnv)).rejects.toThrow("protocol v99");
+    expect(state.batch.commit).not.toHaveBeenCalled();
   });
 });

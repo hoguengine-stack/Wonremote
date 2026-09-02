@@ -43,9 +43,7 @@ import { prepareViewerDeviceList, resolveViewerOfflineAfterMs } from "../domain/
 import { DEFAULT_STORE_NAME, normalizeStoreNameForDisplay } from "../domain/deviceDefaults";
 import { createFirebaseSessionId, mapFirebaseSessionHistory } from "../domain/firebaseSession";
 import {
-  requireTurnWhenRelayOnly,
-  resolveRtcIceServers,
-  shouldUseRelayOnly,
+  resolveRtcConfiguration,
   viewerTileDataChannelOptions,
 } from "../domain/rtcTransport";
 import {
@@ -76,6 +74,11 @@ import { resolveFirebaseConfig } from "./firebaseConfig";
 import { WebRtcFrameAssembler, type RemoteTileFrame } from "../domain/webrtcFrameAssembly";
 import { buildAgentAuthEmail, buildAgentAuthPassword, buildViewerAuthCredentials } from "./firebaseIdentity";
 import { buildFirestoreDevice, mapFirestoreDevice, mergeFirstRunDeviceDocument } from "./firestoreDevice";
+import {
+  CURRENT_REMOTE_PROTOCOL_VERSION,
+  evaluateRemoteProtocolCompatibility,
+  remoteProtocolErrorMessage,
+} from "../domain/remoteProtocol";
 import { getWonRemoteFirebaseServices } from "./firebaseServices";
 import { throwExplainedFirebaseAuthError } from "./firebaseError";
 import { safeAddDoc, safeBatchSet, safeBatchUpdate, safeSetDoc, safeUpdateDoc } from "./firestoreWrite";
@@ -153,6 +156,7 @@ export interface ViewerWebRtcTransport {
     transferId: string;
     purpose?: "file" | "clipboard-image";
     mimeType?: "image/png";
+    signal?: AbortSignal;
     onProgress?: (receivedBytes: number, totalBytes: number) => void;
   }) => Promise<boolean>;
 }
@@ -419,7 +423,7 @@ export async function deleteFirebaseDevice(
 
   if (references.length === 0) {
     const batch = writeBatch(services.db);
-    batch.update(deviceRef, {
+    safeBatchUpdate(batch, deviceRef, {
       deletedAt: serverTimestamp(),
       status: "offline",
       updatedAt: serverTimestamp(),
@@ -432,7 +436,7 @@ export async function deleteFirebaseDevice(
     const batch = writeBatch(services.db);
     references.slice(offset, offset + maxBatchDeletes).forEach((reference) => batch.delete(reference));
     if (offset + maxBatchDeletes >= references.length) {
-      batch.update(deviceRef, {
+      safeBatchUpdate(batch, deviceRef, {
         deletedAt: serverTimestamp(),
         status: "offline",
         updatedAt: serverTimestamp(),
@@ -477,6 +481,7 @@ export async function registerFirstRunAgentWithFirebase(
     installId: input.installId,
     nowIso: new Date().toISOString(),
     ownerUid: credential.user.uid,
+    protocolVersion: input.protocolVersion,
     version: input.version,
   });
   const deviceRef = doc(services.db, "devices", device.id);
@@ -647,6 +652,7 @@ export async function uploadFirebaseFileToStorage(
     transferId: string;
     totalBytes: number;
     fileSha256?: string;
+    signal?: AbortSignal;
     onProgress?: (sentBytes: number, totalBytes: number) => void;
   },
   env: ViewerFirebaseEnv = import.meta.env,
@@ -669,14 +675,32 @@ export async function uploadFirebaseFileToStorage(
     },
   });
 
+  if (input.signal?.aborted) {
+    uploadTask.cancel();
+    throw new DOMException("File transfer cancelled.", "AbortError");
+  }
+
   await new Promise<void>((resolve, reject) => {
+    const cancelUpload = () => uploadTask.cancel();
+    input.signal?.addEventListener("abort", cancelUpload, { once: true });
     uploadTask.on(
       "state_changed",
       (snapshot) => input.onProgress?.(snapshot.bytesTransferred, snapshot.totalBytes),
-      reject,
-      resolve,
+      (error) => {
+        input.signal?.removeEventListener("abort", cancelUpload);
+        reject(input.signal?.aborted ? new DOMException("File transfer cancelled.", "AbortError") : error);
+      },
+      () => {
+        input.signal?.removeEventListener("abort", cancelUpload);
+        resolve();
+      },
     );
   });
+
+  if (input.signal?.aborted) {
+    await deleteObject(uploadTask.snapshot.ref).catch(() => undefined);
+    throw new DOMException("File transfer cancelled.", "AbortError");
+  }
 
   await safeAddDoc(collection(services.db, "sessions", sessionId, "files"), {
     delivery: "firebase-storage",
@@ -779,10 +803,12 @@ export async function startFirebaseViewerWebRtcTransport(
   env: ViewerFirebaseEnv = import.meta.env,
 ): Promise<ViewerWebRtcTransport> {
   const services = getViewerFirebaseServices(env);
-  requireTurnWhenRelayOnly(env);
+  const rtcConfiguration = await resolveRtcConfiguration(env, async () =>
+    httpsCallable(services.functions, "getRtcConfiguration")({}),
+  );
   const peer = new RTCPeerConnection({
-    iceServers: resolveRtcIceServers(env),
-    iceTransportPolicy: shouldUseRelayOnly(env) ? "relay" : "all",
+    iceServers: rtcConfiguration.iceServers,
+    iceTransportPolicy: rtcConfiguration.iceTransportPolicy,
   });
   const signalRef = doc(services.db, "sessions", sessionId, "webrtc", "signal");
   const viewerCandidates = collection(services.db, "sessions", sessionId, "viewerCandidates");
@@ -1188,6 +1214,7 @@ export async function startFirebaseViewerWebRtcTransport(
     transferId: string;
     purpose?: "file" | "clipboard-image";
     mimeType?: "image/png";
+    signal?: AbortSignal;
     onProgress?: (receivedBytes: number, totalBytes: number) => void;
   }): Promise<boolean> => {
     if (!fileChannelOpened || fileChannel.readyState !== "open") {
@@ -1197,6 +1224,9 @@ export async function startFirebaseViewerWebRtcTransport(
     fileAckStates.delete(input.transferId);
     try {
       for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
+        if (input.signal?.aborted) {
+          throw new DOMException("File transfer cancelled.", "AbortError");
+        }
         if (!fileChannelOpened || fileChannel.readyState !== "open") {
           throw new Error("WebRTC file channel closed during transfer.");
         }
@@ -1221,6 +1251,9 @@ export async function startFirebaseViewerWebRtcTransport(
         const sentChunks = chunkIndex + 1;
         if (sentChunks % WEBRTC_FILE_WINDOW_CHUNKS === 0 || sentChunks === totalChunks) {
           const ack = await waitForFileAck(input.transferId, sentChunks);
+          if (input.signal?.aborted) {
+            throw new DOMException("File transfer cancelled.", "AbortError");
+          }
           input.onProgress?.(ack.receivedBytes, input.file.size);
           if (sentChunks === totalChunks && ack.status !== "complete") {
             throw new Error("Agent did not confirm the completed WebRTC file transfer.");
@@ -1360,6 +1393,7 @@ async function openFirebaseSessionDirect(
 ): Promise<{ session: RemoteSession; inputLog: string[] }> {
   const services = getViewerFirebaseServices(env);
   const userId = requireCurrentUserId(services.auth.currentUser?.uid);
+  await requireFirebaseOnlineCompatibleDeviceDirect(deviceId, env);
   const session = buildConnectedSession(deviceId);
   const batch = writeBatch(services.db);
   safeBatchSet(batch, doc(services.db, "sessions", session.id), {
@@ -1379,6 +1413,26 @@ async function openFirebaseSessionDirect(
     inputLog: [`${new Date().toLocaleTimeString()} start-stream queued via Firestore fallback`],
     session,
   };
+}
+
+async function requireFirebaseOnlineCompatibleDeviceDirect(
+  deviceId: string,
+  env: ViewerFirebaseEnv,
+): Promise<ManagedDevice> {
+  const services = getViewerFirebaseServices(env);
+  const deviceSnapshot = await getDoc(doc(services.db, "devices", deviceId));
+  if (!deviceSnapshot.exists()) {
+    throw new Error("Firebase device not found.");
+  }
+  const device = mapFirestoreDevice(deviceSnapshot.id, deviceSnapshot.data());
+  if (device.status !== "online") {
+    throw new Error("Only online agents can accept connections.");
+  }
+  const protocolDecision = evaluateRemoteProtocolCompatibility(device.protocolVersion);
+  if (!protocolDecision.compatible) {
+    throw new Error(remoteProtocolErrorMessage(protocolDecision));
+  }
+  return device;
 }
 
 async function wakeFirebaseDeviceDirect(
@@ -1417,14 +1471,7 @@ async function requestFirebaseSecureSessionDirect(
 ): Promise<{ challengeId: string; expiresAt: string }> {
   const services = getViewerFirebaseServices(env);
   const userId = requireCurrentUserId(services.auth.currentUser?.uid);
-  const deviceSnapshot = await getDoc(doc(services.db, "devices", deviceId));
-  if (!deviceSnapshot.exists()) {
-    throw new Error("Firebase device not found.");
-  }
-  const device = deviceSnapshot.data() as { status?: unknown };
-  if (device.status !== "online") {
-    throw new Error("Only online agents can accept secure connections.");
-  }
+  await requireFirebaseOnlineCompatibleDeviceDirect(deviceId, env);
 
   const nowMs = Date.now();
   const challengeId = buildSecureChallengeId(nowMs);
@@ -1480,6 +1527,7 @@ async function connectFirebaseSecureSessionDirect(
     throw new Error("Invalid secure connection code.");
   }
 
+  await requireFirebaseOnlineCompatibleDeviceDirect(input.deviceId, env);
   await safeUpdateDoc(challengeRef, {
     state: "used",
     updatedAt: serverTimestamp(),
@@ -1585,6 +1633,7 @@ function buildConnectedSession(deviceId: string): RemoteSession {
   return {
     deviceId,
     id: createFirebaseSessionId(deviceId),
+    protocolVersion: CURRENT_REMOTE_PROTOCOL_VERSION,
     startedAt,
     state: "connected",
   };

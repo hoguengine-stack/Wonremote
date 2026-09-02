@@ -20,6 +20,7 @@ export interface FirestoreDeviceDocument {
   storeName: string;
   storeNameSource?: string;
   version?: string;
+  protocolVersion?: unknown;
   activeDisplayIndex?: number;
   displays?: unknown;
   macAddresses?: unknown;
@@ -42,6 +43,7 @@ interface BuildFirestoreDeviceInput {
   nowIso: string;
   ownerUid: string;
   version?: string;
+  protocolVersion?: number;
 }
 
 export function buildFirestoreDevice(input: BuildFirestoreDeviceInput): ManagedDevice & { ownerUid: string } {
@@ -62,6 +64,9 @@ export function buildFirestoreDevice(input: BuildFirestoreDeviceInput): ManagedD
   };
   if (typeof input.version === "string" && input.version.trim()) {
     device.version = input.version.trim();
+  }
+  if (Number.isSafeInteger(input.protocolVersion) && input.protocolVersion! >= 0) {
+    device.protocolVersion = input.protocolVersion;
   }
   return device;
 }
@@ -121,6 +126,13 @@ export function mapFirestoreDevice(id: string, data: Partial<FirestoreDeviceDocu
   assignIfDefined(device, "storeNameSource", sanitizeOptionalString(data.storeNameSource));
   assignIfDefined(device, "connectionCode", sanitizeOptionalString(data.connectionCode));
   assignIfDefined(device, "version", sanitizeOptionalString(data.version));
+  assignIfDefined(
+    device,
+    "protocolVersion",
+    Number.isSafeInteger(Number(data.protocolVersion)) && Number(data.protocolVersion) >= 0
+      ? Number(data.protocolVersion)
+      : undefined,
+  );
   assignIfDefined(
     device,
     "activeDisplayIndex",

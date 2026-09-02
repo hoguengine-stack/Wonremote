@@ -36,7 +36,7 @@ export interface AgentCommandRuntime {
   sendWakeOnLan: (macAddress: string) => MaybePromise;
   setClipboardText: (text: string) => MaybePromise;
   setSleep: (milliseconds: number) => MaybePromise;
-  setStreamMode: (mode: "fast" | "normal") => MaybePromise;
+  setStreamMode: (mode: "auto" | "fast" | "normal") => MaybePromise;
   showSecurityCode: (code: string) => MaybePromise;
   startStream: (sessionId: string) => MaybePromise;
   stopStream: () => MaybePromise;

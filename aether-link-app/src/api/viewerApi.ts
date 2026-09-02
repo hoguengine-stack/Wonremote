@@ -349,6 +349,7 @@ export async function uploadFileToStorage(
     transferId: string;
     totalBytes: number;
     fileSha256?: string;
+    signal?: AbortSignal;
     onProgress?: (sentBytes: number, totalBytes: number) => void;
   },
 ): Promise<{ storagePath: string }> {

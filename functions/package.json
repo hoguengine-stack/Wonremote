@@ -5,7 +5,7 @@
   "main": "lib/index.js",
   "scripts": {
     "build": "tsc",
-    "test": "npm run build && node --test lib/securityCode.test.js lib/wakeRelay.test.js",
+    "test": "npm run build && node --test lib/securityCode.test.js lib/turnCredentials.test.js lib/wakeRelay.test.js",
     "deploy": "firebase deploy --only functions,firestore:rules,storage"
   },
   "dependencies": {

@@ -39,6 +39,7 @@ import {
   type StreamCaptureBackend,
 } from "./agentStreamPolicy";
 import { WONREMOTE_APP_VERSION } from "../domain/appVersion";
+import { CURRENT_REMOTE_PROTOCOL_VERSION } from "../domain/remoteProtocol";
 import { decideUpdateEligibility } from "../domain/updateFleetPolicy";
 import { computeSha256 } from "./checksum";
 import { saveTransferredFileChunk } from "./fileTransferReceiver";
@@ -47,6 +48,7 @@ import {
   resolveAgentUpdateCheckIntervalMs,
   resolveAgentUpdateFailureRetryMs,
   shouldAttemptAgentUpdateCheck,
+  shouldRetryFailedAgentUpdate,
 } from "./agentUpdatePollPolicy";
 import { isSourceTreeUpdateTarget } from "./updateSafety";
 import {
@@ -88,6 +90,7 @@ import { runAgentWebRtcRuntimeSmoke } from "./agentWebRtcRuntimeSmoke";
 import { prewarmAgentPeerConnectionRuntime } from "../firebase/agentPeerConnection";
 import { loadInstallerUpdateResult } from "./updateResult";
 import {
+  getAdaptiveStreamPerformanceProfile,
   getStreamPerformanceProfile,
   type StreamPerformanceMode,
 } from "../domain/streamPerformanceMode";
@@ -210,8 +213,9 @@ let sessionGeneration = 0;
 let webRtcTransport: AgentWebRtcTransport | null = null;
 let webRtcTransportStartGeneration: number | null = null;
 let currentOutputIndex = 0;
-let currentStreamMode: StreamPerformanceMode = "normal";
+let currentStreamMode: StreamPerformanceMode = "auto";
 let currentLoopSleepMs = getStreamPerformanceProfile(currentStreamMode).loopSleepMs;
+let currentStreamProfile = getStreamPerformanceProfile(currentStreamMode);
 let streamRestartCount = 0;
 let lastStreamFrameAt: string | undefined;
 let lastStreamError: string | undefined;
@@ -222,6 +226,8 @@ let streamDroppedFrameCount = 0;
 let streamBackpressured = false;
 let streamBufferedAmount = 0;
 let streamFrameSequence = 0;
+let adaptiveProfileAppliedAtMs = 0;
+let adaptiveProfileDroppedFrames = 0;
 let keyframeRetryTimer: ReturnType<typeof setTimeout> | null = null;
 type StreamFramePayload = Parameters<AgentWebRtcTransport["sendFrame"]>[0];
 let pendingInitialKeyframe: {
@@ -269,12 +275,12 @@ function flushPendingInitialKeyframe(expectedSessionGeneration: number): boolean
   return true;
 }
 
-function applyStreamProfileToRunningCapture(): boolean {
+function applyStreamProfileToRunningCapture(profile = getStreamPerformanceProfile(currentStreamMode)): boolean {
   if (!streamProcess || !streamDesired) {
     return false;
   }
-  const profile = getStreamPerformanceProfile(currentStreamMode);
   try {
+    currentStreamProfile = profile;
     streamProcess.stdin.write(
       `set-stream-profile ${currentLoopSleepMs} ${profile.jpegQuality} ${profile.maxMergeWidth}\n`,
     );
@@ -284,6 +290,24 @@ function applyStreamProfileToRunningCapture(): boolean {
       `[Capture profile update failed] ${error instanceof Error ? error.message : error}`,
     );
     return false;
+  }
+}
+
+function updateAdaptiveStreamProfile(): void {
+  if (currentStreamMode !== "auto" || !streamProcess || Date.now() - adaptiveProfileAppliedAtMs < 2_000) {
+    return;
+  }
+  const droppedFrames = Math.max(0, streamDroppedFrameCount - adaptiveProfileDroppedFrames);
+  const profile = getAdaptiveStreamPerformanceProfile({
+    backpressured: streamBackpressured,
+    bufferedAmount: streamBufferedAmount,
+    droppedFrames,
+  });
+  adaptiveProfileAppliedAtMs = Date.now();
+  adaptiveProfileDroppedFrames = streamDroppedFrameCount;
+  if (currentLoopSleepMs !== profile.loopSleepMs) {
+    currentLoopSleepMs = profile.loopSleepMs;
+    applyStreamProfileToRunningCapture(profile);
   }
 }
 
@@ -356,6 +380,7 @@ async function startStreaming(
 
   const pocPath = POC_PATH;
   const streamProfile = getStreamPerformanceProfile(currentStreamMode);
+  currentStreamProfile = streamProfile;
   ensureSessionWebRtcTransport(deviceId, sessionId, transportGeneration);
   
   const env = {
@@ -404,7 +429,7 @@ async function startStreaming(
         const sendResult = USE_FIREBASE
           ? webRtcTransport?.sendFrame(
               framePayload,
-              framePayload.keyframe ? undefined : streamProfile.maxBufferedAmount,
+              framePayload.keyframe ? undefined : currentStreamProfile.maxBufferedAmount,
             )
           : undefined;
         if (USE_FIREBASE && framePayload.keyframe) {
@@ -464,6 +489,7 @@ async function startStreaming(
             body: JSON.stringify({ tiles: data.tiles, width: data.width, height: data.height }),
           });
         }
+        updateAdaptiveStreamProfile();
       }
     } catch (e) {
       // ignore
@@ -1230,8 +1256,16 @@ async function checkUpdate(config: AgentLocalConfig) {
       return;
     }
 
-    if (retainedFailure && currentUpdateTelemetry.targetVersion === data.latestVersion) {
+    const failedTargetCoolingDown = retainedFailure
+      && currentUpdateTelemetry.targetVersion === data.latestVersion
+      && !shouldRetryFailedAgentUpdate({
+        failedAt: currentUpdateTelemetry.updatedAt,
+        nowMs: Date.now(),
+        retryAfterMs: resolveAgentUpdateFailureRetryMs(UPDATE_CHECK_INTERVAL_MS),
+      });
+    if (failedTargetCoolingDown) {
       console.error(`[WonRemote Agent] Automatic retry blocked for failed update ${data.latestVersion}.`);
+      scheduleAgentUpdateRetry();
       isUpdating = false;
       return;
     }
@@ -1810,6 +1844,7 @@ async function sendHeartbeat(config: AgentLocalConfig): Promise<void> {
     deviceId: config.registeredDeviceId,
     desktopName: config.desktopName,
     installId: config.installId,
+    protocolVersion: CURRENT_REMOTE_PROTOCOL_VERSION,
     version: WONREMOTE_APP_VERSION,
     displays,
     activeDisplayIndex: currentOutputIndex,
@@ -1923,6 +1958,7 @@ function createAgentCommandRuntime(deviceId: string): AgentCommandRuntime {
       }
       currentStreamMode = mode;
       currentLoopSleepMs = profile.loopSleepMs;
+      currentStreamProfile = profile;
       console.log(`Switching stream performance mode to ${mode} (sleep: ${profile.loopSleepMs}ms, quality: ${profile.jpegQuality}, merge: ${profile.maxMergeWidth}px)`);
       if (activeSessionId && !applyStreamProfileToRunningCapture()) {
         await startStreaming(deviceId, activeSessionId, currentOutputIndex, currentLoopSleepMs);
@@ -2143,6 +2179,7 @@ async function registerFirstRun(inputBody: {
   desktopName?: string;
   installId: string;
   password: string;
+  protocolVersion?: number;
   version?: string;
 }): Promise<AgentFirstRunResult> {
   const desktopName = resolveAgentComputerName({

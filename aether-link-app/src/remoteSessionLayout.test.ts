@@ -198,21 +198,22 @@ describe("connected remote session layout", () => {
       .not.toContain("scheduleWebRtcReconnect()");
   });
 
-  it("prevents an older connection attempt from replacing a newer session", () => {
-    expect(appSource).toContain("const connectAttemptIdRef = useRef(0)");
+  it("prevents a stale connection attempt from surviving Viewer shutdown", () => {
+    expect(appSource).toContain("const connectionEpochRef = useRef(0)");
+    expect(appSource).toContain("const pendingConnectDeviceIdsRef = useRef<Set<string>>(new Set())");
     expect(appSource).toContain("const sessionShutdownInProgressRef = useRef(false)");
     expect(appSource).toContain("async function runTrackedSessionOpen(");
-    expect(appSource).toContain("const attemptId = ++connectAttemptIdRef.current");
-    expect(appSource).toContain("attemptId !== connectAttemptIdRef.current");
+    expect(appSource).toContain("const connectionEpoch = connectionEpochRef.current");
+    expect(appSource).toContain("connectionEpoch !== connectionEpochRef.current");
     expect(appSource).not.toContain("await closeSession(result.session.id).catch(() => {})");
     const closeStart = appSource.indexOf("function handleCloseSession(");
     const closeEnd = appSource.indexOf("async function handleConnectDevice", closeStart);
     const closeBlock = appSource.slice(closeStart, closeEnd);
     expect(closeStart).toBeGreaterThanOrEqual(0);
-    expect(closeBlock).toContain("connectAttemptIdRef.current += 1");
+    expect(closeBlock).not.toContain("connectionEpochRef.current += 1");
     expect(closeBlock).not.toContain("Promise.all([...pendingConnectAttemptsRef.current])");
-    expect(closeBlock.indexOf("setSession(null)")).toBeLessThan(closeBlock.indexOf("closeSession(closingSession.id)"));
-    expect(closeBlock).toContain("inputReleaseBarrier");
+    expect(closeBlock).toContain("closeSessionTab(sessions, targetSessionId, activeSessionId)");
+    expect(closeBlock).toContain("closingDeviceIdsRef.current.add(closingSession.deviceId)");
     expect(closeBlock).toContain("enqueueSessionCleanup(window.localStorage, closingSession)");
     expect(closeBlock).toContain("removeSessionCleanup(window.localStorage, closingSession.id)");
 
@@ -226,10 +227,13 @@ describe("connected remote session layout", () => {
     const logoutStart = appSource.indexOf("async function handleLogout()");
     const logoutEnd = appSource.indexOf("async function markInput", logoutStart);
     expect(logoutStart).toBeGreaterThanOrEqual(0);
+    expect(appSource.slice(logoutStart, logoutEnd)).toContain("connectionEpochRef.current += 1");
     expect(appSource.slice(logoutStart, logoutEnd)).toContain("Promise.all([...pendingConnectAttemptsRef.current])");
-    expect(appSource.slice(logoutStart, logoutEnd)).toContain("await closeSession(session.id)");
+    expect(appSource.slice(logoutStart, logoutEnd)).toContain(
+      "await Promise.all(sessions.map((openSession) => closeSession(openSession.id)))",
+    );
     expect(appSource.slice(logoutStart, logoutEnd)).toContain("await logoutAdmin()");
-    expect(appSource).toContain('await runTrackedSessionOpen(() => openSession(device.id), "세션 연결 실패")');
+    expect(appSource).toContain('await runTrackedSessionOpen(device.id, () => openSession(device.id), "세션 연결 실패")');
     expect(appSource).toContain("() => connectSecureSession({");
   });
 

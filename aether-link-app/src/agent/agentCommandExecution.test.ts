@@ -384,7 +384,7 @@ describe("Agent command execution", () => {
 
   it("changes the active stream profile without restarting capture", () => {
     const source = readFileSync(path.resolve(process.cwd(), "src", "agent", "index.ts"), "utf8");
-    const helperStart = source.indexOf("function applyStreamProfileToRunningCapture()");
+    const helperStart = source.indexOf("function applyStreamProfileToRunningCapture(");
     const helperEnd = source.indexOf("async function startStreaming(", helperStart);
     const helperBlock = source.slice(helperStart, helperEnd);
     const modeStart = source.indexOf("setStreamMode: async (mode) =>");

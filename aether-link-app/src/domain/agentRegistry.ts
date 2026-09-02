@@ -120,6 +120,7 @@ export function registerAgentFirstRun(
   }
   const device: ManagedDevice = {
     ...registeredDevice,
+    protocolVersion: sanitizeProtocolVersion(input.protocolVersion) ?? existingDevice?.protocolVersion,
     deviceName:
       existingDevice?.deviceName?.trim() && !isGeneratedAgentDeviceName(existingDevice.deviceName)
         ? existingDevice.deviceName.trim()
@@ -174,6 +175,7 @@ export function applyAgentHeartbeat(
     status: "online",
     connectionCode: currentDevice.connectionCode ?? generateConnectionCode(),
     desktopName: reportedDesktopName || currentDevice.desktopName,
+    protocolVersion: sanitizeProtocolVersion(input.protocolVersion) ?? currentDevice.protocolVersion,
     version: input.version ?? currentDevice.version,
     displays: sanitizeDisplays(input.displays) ?? currentDevice.displays,
     activeDisplayIndex:
@@ -190,6 +192,11 @@ export function applyAgentHeartbeat(
     devices: sortDevices(nextDevices),
     device,
   };
+}
+
+function sanitizeProtocolVersion(value: unknown): number | undefined {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
 export function verifyAgentInstall(

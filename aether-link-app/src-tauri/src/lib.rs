@@ -65,6 +65,7 @@ const RTC_TURN_USERNAME: Option<&str> = option_env!("VITE_WONREMOTE_RTC_TURN_USE
 const RTC_TURN_CREDENTIAL: Option<&str> = option_env!("VITE_WONREMOTE_RTC_TURN_CREDENTIAL");
 const RTC_RELAY_ONLY: Option<&str> = option_env!("VITE_WONREMOTE_RTC_RELAY_ONLY");
 const RTC_CONNECT_TIMEOUT_MS: Option<&str> = option_env!("VITE_WONREMOTE_RTC_CONNECT_TIMEOUT_MS");
+const RTC_DYNAMIC_CREDENTIALS: Option<&str> = option_env!("VITE_WONREMOTE_RTC_DYNAMIC_CREDENTIALS");
 const PUBLIC_FIREBASE_API_KEY: &str = "AIzaSyDb1Ihymmrt1SSYvbOAB2NjRV9PiWMY2y8";
 const PUBLIC_FIREBASE_AUTH_DOMAIN: &str = "wonremote-a7fd3.firebaseapp.com";
 const PUBLIC_FIREBASE_PROJECT_ID: &str = "wonremote-a7fd3";
@@ -1879,6 +1880,7 @@ fn apply_rtc_env(command: &mut Command) {
         ("WONREMOTE_RTC_TURN_CREDENTIAL", RTC_TURN_CREDENTIAL),
         ("WONREMOTE_RTC_RELAY_ONLY", RTC_RELAY_ONLY),
         ("WONREMOTE_RTC_CONNECT_TIMEOUT_MS", RTC_CONNECT_TIMEOUT_MS),
+        ("WONREMOTE_RTC_DYNAMIC_CREDENTIALS", RTC_DYNAMIC_CREDENTIALS),
     ];
 
     for (key, build_value) in values {

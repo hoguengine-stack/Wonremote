@@ -114,6 +114,64 @@ describe("Firebase Storage file upload", () => {
     expect(metadata).not.toHaveProperty("downloadUrl");
   });
 
+  it("cancels an in-flight Storage upload and does not write file metadata", async () => {
+    let reportUploadError: ((error: Error) => void) | undefined;
+    const cancel = vi.fn(() => {
+      reportUploadError?.(new Error("storage canceled"));
+      return true;
+    });
+    const storageRef = { fullPath: "sessions/session-device-1/files/transfer-cancel/payload.bin" };
+    vi.mocked(uploadBytesResumable).mockImplementationOnce(() => ({
+      cancel,
+      on: vi.fn((_event, _onProgress, onError) => {
+        reportUploadError = onError;
+        return vi.fn();
+      }),
+      snapshot: { ref: storageRef },
+    }) as any);
+    const controller = new AbortController();
+    const uploadPromise = uploadFirebaseFileToStorage("session-device-1", {
+      file: new Blob(["payload"]),
+      filename: "payload.bin",
+      signal: controller.signal,
+      totalBytes: 7,
+      transferId: "transfer-cancel",
+    });
+
+    await Promise.resolve();
+    controller.abort();
+
+    await expect(uploadPromise).rejects.toMatchObject({ name: "AbortError" });
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(addDoc).not.toHaveBeenCalled();
+  });
+
+  it("removes a completed Storage object when cancellation wins before metadata creation", async () => {
+    const controller = new AbortController();
+    const storageRef = { fullPath: "sessions/session-device-1/files/transfer-late/payload.bin" };
+    vi.mocked(uploadBytesResumable).mockImplementationOnce(() => ({
+      cancel: vi.fn(),
+      on: vi.fn((_event, _onProgress, _onError, onComplete) => {
+        controller.abort();
+        onComplete();
+        return vi.fn();
+      }),
+      snapshot: { ref: storageRef },
+    }) as any);
+
+    const uploadPromise = uploadFirebaseFileToStorage("session-device-1", {
+      file: new Blob(["payload"]),
+      filename: "payload.bin",
+      signal: controller.signal,
+      totalBytes: 7,
+      transferId: "transfer-late",
+    });
+
+    await expect(uploadPromise).rejects.toMatchObject({ name: "AbortError" });
+    expect(deleteObject).toHaveBeenCalledWith(storageRef);
+    expect(addDoc).not.toHaveBeenCalled();
+  });
+
   it("deletes the session-owned Storage object after Agent receipt", async () => {
     await deleteFirebaseStorageFile("sessions/session-device-1/files/transfer-1/large_report.txt");
 

@@ -1,5 +1,6 @@
 import type { AgentFirstRunInput, AgentFirstRunResult, ManagedDevice } from "../domain/types";
 import { WONREMOTE_APP_VERSION } from "../domain/appVersion";
+import { CURRENT_REMOTE_PROTOCOL_VERSION } from "../domain/remoteProtocol";
 
 export interface AgentCredentials {
   businessNumber: string;
@@ -55,6 +56,7 @@ export async function bootstrapAgent(deps: AgentBootstrapDeps): Promise<AgentBoo
     businessNumber: credentials.businessNumber,
     password: credentials.password,
     installId,
+    protocolVersion: CURRENT_REMOTE_PROTOCOL_VERSION,
     version: WONREMOTE_APP_VERSION,
   });
   const config: AgentLocalConfig = {

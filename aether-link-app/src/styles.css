@@ -1962,6 +1962,70 @@ input:focus {
   gap: 12px;
 }
 
+.device-filter-bar {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.device-filter-segments {
+  background: #e9eff3;
+  border: 1px solid #d5dee6;
+  border-radius: 6px;
+  display: inline-flex;
+  padding: 2px;
+}
+
+.device-filter-segments button,
+.favorite-filter-button,
+.bulk-device-actions button {
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: #526170;
+  font-size: 12px;
+  font-weight: 800;
+  min-height: 30px;
+  padding: 0 10px;
+}
+
+.device-filter-segments button.active,
+.favorite-filter-button.active {
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(26, 42, 55, 0.14);
+  color: #176d62;
+}
+
+.favorite-filter-button {
+  align-items: center;
+  border: 1px solid #d5dee6;
+  display: inline-flex;
+  gap: 5px;
+}
+
+.bulk-device-actions {
+  align-items: center;
+  background: #edf7f5;
+  border: 1px solid #bcdad4;
+  border-radius: 6px;
+  display: flex;
+  gap: 5px;
+  margin-left: auto;
+  padding: 3px 4px 3px 10px;
+}
+
+.bulk-device-actions strong {
+  color: #176d62;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.bulk-device-actions button {
+  background: #ffffff;
+  border: 1px solid #c9dbd7;
+}
+
 .device-workspace .fleet-summary {
   background: #ffffff;
   border: 1px solid #d6dfe6;
@@ -2004,6 +2068,105 @@ input:focus {
   background: #f1f7f6;
 }
 
+.device-status-heading,
+.device-status-cell,
+.store-name-line {
+  align-items: center;
+  display: flex;
+  gap: 7px;
+  min-width: 0;
+}
+
+.device-status-heading input,
+.device-status-cell input {
+  accent-color: #176d62;
+  flex: 0 0 auto;
+}
+
+.favorite-device-button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: #8a98a7;
+  display: inline-flex;
+  flex: 0 0 auto;
+  justify-content: center;
+  padding: 2px;
+}
+
+.favorite-device-button.active {
+  color: #b47b08;
+}
+
+.connect-button.connect-icon.diagnostics {
+  background: #edf7f5;
+  border-color: #bcdad4;
+  color: #176d62;
+}
+
+.diagnostics-panel {
+  max-width: 680px;
+  width: min(680px, 100%);
+}
+
+.diagnostics-summary-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.diagnostics-summary-grid > div,
+.diagnostics-columns > section {
+  background: #f5f8fa;
+  border: 1px solid #dce4eb;
+  border-radius: 6px;
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+}
+
+.diagnostics-summary-grid small {
+  color: #667584;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.diagnostics-summary-grid strong {
+  color: #223142;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.diagnostics-columns {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.diagnostics-columns h3 {
+  color: #314152;
+  font-size: 12px;
+  margin: 0 0 3px;
+}
+
+.diagnostics-columns code {
+  color: #536272;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.diagnostic-ok { color: #176d62 !important; }
+.diagnostic-error { color: #b42318 !important; }
+.diagnostic-error-message {
+  background: #fff1f0;
+  border: 1px solid #ffd0cc;
+  border-radius: 6px;
+  color: #9f1d16;
+  font-size: 12px;
+  margin: 0;
+  padding: 9px 10px;
+}
+
 /* Remote session command workspace */
 .remote-focus-mode .session-panel,
 .session-panel[data-testid="remote-session-workspace"] {
@@ -2018,6 +2181,71 @@ input:focus {
   overflow: hidden;
   padding: 0;
   position: relative;
+}
+
+.session-panel-inactive {
+  display: none !important;
+}
+
+.remote-session-tabs {
+  align-items: center;
+  background: #101922;
+  border-bottom: 1px solid #2b3a46;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  min-height: 34px;
+  overflow-x: auto;
+  padding: 4px 8px;
+}
+
+.remote-session-tab {
+  align-items: center;
+  background: #18242e;
+  border: 1px solid #31434f;
+  border-radius: 5px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  max-width: 230px;
+}
+
+.remote-session-tab.active {
+  background: #174f49;
+  border-color: #2b8d7f;
+}
+
+.remote-session-tab > button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: #dce8eb;
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 800;
+  gap: 6px;
+  min-height: 24px;
+  min-width: 0;
+  padding: 0 7px;
+}
+
+.remote-session-tab > button:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-session-tab i {
+  background: #33b79f;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  height: 6px;
+  width: 6px;
+}
+
+.remote-session-tab .remote-session-tab-close {
+  border-left: 1px solid rgba(255, 255, 255, 0.13);
+  color: #9fb0b8;
+  padding: 0 5px;
 }
 
 .remote-work-area {
@@ -2370,6 +2598,79 @@ input:focus {
   height: 100%;
   transition: width 120ms linear;
 }
+
+.session-transfer-queue {
+  background: rgba(12, 22, 30, 0.97);
+  border: 1px solid #35525c;
+  border-radius: 6px;
+  bottom: 16px;
+  display: grid;
+  gap: 7px;
+  max-height: min(320px, 55%);
+  overflow: auto;
+  padding: 9px;
+  position: absolute;
+  right: 16px;
+  width: min(330px, calc(100% - 32px));
+  z-index: 6;
+}
+
+.session-transfer-queue-heading,
+.session-transfer-queue-item {
+  align-items: center;
+  display: grid;
+  gap: 7px;
+}
+
+.session-transfer-queue-heading {
+  grid-template-columns: 1fr auto;
+}
+
+.session-transfer-queue-heading strong {
+  color: #dce9e7;
+  font-size: 12px;
+}
+
+.session-transfer-queue-heading button,
+.session-transfer-queue-item button {
+  background: #22323d;
+  border: 1px solid #405661;
+  border-radius: 4px;
+  color: #dce9e7;
+  min-height: 26px;
+  padding: 0 8px;
+}
+
+.session-transfer-queue-item {
+  border-top: 1px solid #263a44;
+  grid-template-columns: minmax(0, 1fr) 90px auto;
+  padding-top: 7px;
+}
+
+.session-transfer-queue-item > span:first-child {
+  min-width: 0;
+}
+
+.session-transfer-queue-item strong,
+.session-transfer-queue-item small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-transfer-queue-item strong {
+  color: #e8f0f2;
+  font-size: 11px;
+}
+
+.session-transfer-queue-item small {
+  color: #8eabb4;
+  font-size: 10px;
+}
+
+.session-transfer-queue-item.failed small { color: #ff9f9f; }
+.session-transfer-queue-item.completed small { color: #8ed6ca; }
 
 .session-end-button {
   background: #3a1c23;

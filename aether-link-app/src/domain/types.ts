@@ -33,6 +33,7 @@ export interface ManagedDevice {
   lastSeenAt: string;
   connectionCode?: string;
   version?: string;
+  protocolVersion?: number;
   displays?: DeviceDisplayInfo[];
   activeDisplayIndex?: number;
   macAddresses?: string[];
@@ -99,6 +100,7 @@ export interface AgentFirstRunInput {
   desktopName?: string;
   previousDeviceId?: string;
   version?: string;
+  protocolVersion?: number;
 }
 
 export interface AgentHeartbeatInput {
@@ -106,6 +108,7 @@ export interface AgentHeartbeatInput {
   installId: string;
   desktopName?: string;
   version?: string;
+  protocolVersion?: number;
   displays?: DeviceDisplayInfo[];
   activeDisplayIndex?: number;
   macAddresses?: string[];
@@ -145,6 +148,7 @@ export interface RemoteSession {
   deviceId: string;
   state: "pending" | "connected";
   startedAt: string;
+  protocolVersion?: number;
 }
 
 export interface AgentRegistrationResult {

@@ -520,3 +520,93 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - Regression proof: `npx vitest run src/domain/sessionPersistence.test.ts src/viewerStartupSession.test.ts src/remoteSessionLayout.test.ts src/agent/agentSessionLifecycle.test.ts` exited `0` with 4 files and 33 tests passed; `npx tsc --noEmit` exited `0`. Guards require local `setSession(null)` before remote close, an input-release barrier before `closeSession`, durable late-open cleanup, and stale targeted `stop-stream` rejection.
 - Release proof: not released.
 - Remaining blocker: Package and release only when explicitly requested, then verify installed Viewer teardown latency and Agent stream/input release on two physical PCs.
+
+## INC-20260902-003: Viewer allowed a new connection before prior session cleanup completed
+
+- Detected: 2026-09-02.
+- Severity: P1.
+- Affected: Viewer session shutdown, immediate reconnect, and Agent stream ownership.
+- Status: source-verified-not-released.
+- User-visible symptom: Ending one remote session and immediately connecting again could overlap the old close request with the new session and leave stale Agent stream or input ownership.
+- Minimal trigger: Delay `closeSession`, press End Session, and press Connect on a device before the delayed close resolves.
+- Root cause and contributors: The Viewer set the shutdown gate to false immediately after clearing local UI state instead of retaining it through the input-release barrier and remote close promise.
+- Fix commit(s): pending.
+- Permanent guard: Clear the local remote view immediately, but retain the shutdown gate until input release and remote cleanup settle; invalidate late open attempts and persist failed cleanup for the next startup.
+- Regression proof: The focused Viewer startup/session source test requires local tab removal before remote close and forbids releasing the gate before the close promise finalizer; TypeScript compilation passes.
+- Release proof: not released.
+- Remaining blocker: Package only when explicitly requested and physically verify immediate close followed by reconnect.
+
+## INC-20260902-004: Agent permanently suppressed retry of a failed target version
+
+- Detected: 2026-09-02.
+- Severity: P1.
+- Affected: Installed Agent automatic updates after a transient download, verification, or installer failure.
+- Status: source-verified-not-released.
+- User-visible symptom: After one update attempt failed, the Agent could keep reporting the same target version without ever trying that version again.
+- Minimal trigger: Retain failed update telemetry for the current latest version and run the periodic update check again.
+- Root cause and contributors: The retained-failure guard treated a matching target version as a permanent block and did not distinguish a short retry cooldown from permanent suppression.
+- Fix commit(s): pending.
+- Permanent guard: Enforce a bounded failure cooldown, schedule the short retry timer, and permit the same target version after the cooldown expires.
+- Regression proof: Focused Agent update policy tests cover invalid timestamps, cooldown blocking, and retry after expiry; the Agent policy suite passes.
+- Release proof: not released.
+- Remaining blocker: Package only when explicitly requested and physically induce one failed Agent update before confirming automatic recovery.
+
+## INC-20260902-005: Adding a file batch could hide transfers that were still queued
+
+- Detected: 2026-09-02.
+- Severity: P1.
+- Affected: Viewer remote-session file transfer queue when another file batch is selected before the current batch finishes.
+- Status: source-verified-not-released.
+- User-visible symptom: Previously queued files could disappear from the transfer list even though their transfer loop was still pending.
+- Minimal trigger: Queue multiple files, then select another batch while at least one original file is queued but not yet transferring.
+- Root cause and contributors: The queue append state update retained only entries already marked `transferring`, so valid `queued` entries and terminal history were discarded before the new batch was appended.
+- Fix commit(s): pending.
+- Permanent guard: Preserve every non-terminal transfer across batch appends and apply the display limit only to terminal history; never truncate queued or transferring entries.
+- Regression proof: The focused queue test covers a completed item, an active transfer, an existing queued item, and a new item at the display limit; the queue, cancellation, WebRTC, and session tests pass with TypeScript compilation.
+- Release proof: not released.
+- Remaining blocker: Package only when explicitly requested and physically enqueue a second file batch while the first batch is active.
+
+## INC-20260902-006: Multi-session asynchronous work was not isolated per device
+
+- Detected: 2026-09-02.
+- Severity: P1.
+- Affected: Viewer multi-session tab close, concurrent device connection, logout, and asynchronous clipboard paste.
+- Status: source-verified-not-released.
+- User-visible symptom: Closing one tab could cancel another device connection, a late clipboard read could target an inactive tab, and logout could race a tab cleanup request.
+- Minimal trigger: Open or connect two device tabs, close one while the other connects, initiate Ctrl+V before switching tabs, or log out while tab cleanup is pending.
+- Root cause and contributors: Connection invalidation and shutdown used one global attempt counter, each panel treated its own ID as the active ID, and background close promises were not tracked for logout.
+- Fix commit(s): pending.
+- Permanent guard: Use the global epoch only for logout, isolate close state by device, deduplicate only same-device connection attempts, verify the active tab before and after asynchronous clipboard reads, and await tracked close tasks before logout.
+- Regression proof: Focused Viewer startup/session tests assert per-device connection deduplication, unrelated connection preservation, active-tab clipboard guards, and logout close-task waiting; TypeScript compilation passes.
+- Release proof: not released.
+- Remaining blocker: Package only when explicitly requested and physically exercise two simultaneous device tabs, tab switching during Ctrl+V, rapid close/reconnect, and logout during cleanup.
+
+## INC-20260902-007: Cancelled file attempts could affect a retry or publish Storage metadata
+
+- Detected: 2026-09-02.
+- Severity: P1.
+- Affected: Viewer file retry state and Firebase Storage transfer metadata.
+- Status: source-verified-not-released.
+- User-visible symptom: A quick retry could be overwritten by the previous attempt's late cancellation, or a file cancelled at upload completion could still be announced to the Agent.
+- Minimal trigger: Cancel a transfer and immediately press Retry, or cancel after Storage bytes finish but before the Firestore file document is created.
+- Root cause and contributors: Retries reused the original transfer ID, and the Storage path checked cancellation only before upload rather than again at the upload-to-metadata boundary.
+- Fix commit(s): pending.
+- Permanent guard: Allocate a fresh transfer ID for every retry, isolate cancellation controllers per attempt, recheck the abort signal after Storage completion, delete the uploaded object on late cancellation, and never create its metadata document.
+- Regression proof: Focused Viewer source tests require a fresh retry ID; Firebase Storage tests verify both in-flight cancellation and completion-boundary cleanup without metadata creation.
+- Release proof: not released.
+- Remaining blocker: Package only when explicitly requested and physically cancel/retry a large file near upload completion.
+
+## INC-20260902-008: Direct and secure session paths bypassed protocol compatibility checks
+
+- Detected: 2026-09-02.
+- Severity: P1.
+- Affected: Firebase direct session creation and secure-code session completion in both Viewer fallback and Cloud Functions paths.
+- Status: source-verified-not-released.
+- User-visible symptom: A future incompatible Agent protocol could receive a start-stream command through a fallback or secure connection path even though normal connection was blocked.
+- Minimal trigger: Advertise a protocol version newer than the Viewer, then use Firestore direct mode or complete an already-issued secure challenge.
+- Root cause and contributors: Compatibility validation was initially added to the visible normal-connect handler and callable normal session function but not repeated at every authoritative session-creation boundary.
+- Fix commit(s): pending.
+- Permanent guard: Validate online state and protocol immediately before every direct or callable session creation, including secure challenge completion; treat missing protocol as legacy v1 and reject versions outside the supported range.
+- Regression proof: Direct-session tests reject future protocol before committing a session batch, the security-policy test requires secure callable revalidation, and focused protocol, Viewer, Functions, and TypeScript checks pass.
+- Release proof: not released.
+- Remaining blocker: Package only when explicitly requested and physically verify one mixed-version compatible connection plus one deliberately incompatible fixture.

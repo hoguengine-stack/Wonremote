@@ -66,6 +66,7 @@ describe("agent registry domain", () => {
       businessNumber: "1234567890",
       password: "1234",
       installId: "agent-abc123",
+      protocolVersion: 2,
     }, "2026-06-10T01:20:00.000Z");
 
     expect(result.devices).toHaveLength(1);
@@ -78,6 +79,7 @@ describe("agent registry domain", () => {
       desktopName: "DESKTOP-67890-AGENT-ABC123",
       status: "online",
       lastSeenAt: "2026-06-10T01:20:00.000Z",
+      protocolVersion: 2,
     });
   });
 
@@ -262,6 +264,29 @@ describe("agent registry domain", () => {
     });
 
     expect(heartbeat.device.desktopName).toBe("DESKTOP-CADI3TD");
+  });
+
+  it("updates the advertised remote protocol and preserves it on malformed heartbeats", () => {
+    const registered = registerAgentFirstRun([], {
+      businessNumber: "1234567890",
+      password: "1234",
+      installId: "agent-protocol",
+      protocolVersion: 1,
+    });
+
+    const upgraded = applyAgentHeartbeat(registered.devices, {
+      deviceId: registered.device.id,
+      installId: "agent-protocol",
+      protocolVersion: 2,
+    });
+    expect(upgraded.device.protocolVersion).toBe(2);
+
+    const preserved = applyAgentHeartbeat(upgraded.devices, {
+      deviceId: registered.device.id,
+      installId: "agent-protocol",
+      protocolVersion: Number.NaN,
+    });
+    expect(preserved.device.protocolVersion).toBe(2);
   });
 
   it("stores sanitized MAC addresses from heartbeat for Wake-on-LAN", () => {

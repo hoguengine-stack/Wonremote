@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   requireTurnWhenRelayOnly,
+  resolveRtcConfiguration,
   resolveRtcIceServers,
   shouldUseRelayOnly,
+  shouldUseDynamicTurnCredentials,
   viewerTileDataChannelOptions,
 } from "./rtcTransport";
 
@@ -53,5 +55,25 @@ describe("rtc transport configuration", () => {
         WONREMOTE_RTC_TURN_URLS: "turn:turn.example:3478",
       }),
     ).not.toThrow();
+  });
+
+  it("loads short-lived TURN credentials and falls back to configured static TURN", async () => {
+    const dynamic = await resolveRtcConfiguration(
+      { WONREMOTE_RTC_DYNAMIC_CREDENTIALS: "true" },
+      async () => ({ data: {
+        iceServers: [{ urls: ["turn:relay.example:3478"], username: "expiry:user", credential: "signed" }],
+        iceTransportPolicy: "all",
+      } }),
+    );
+    expect(shouldUseDynamicTurnCredentials({ WONREMOTE_RTC_DYNAMIC_CREDENTIALS: "1" })).toBe(true);
+    expect(dynamic).toMatchObject({ source: "dynamic", iceServers: [{ username: "expiry:user" }] });
+
+    const fallback = await resolveRtcConfiguration({
+      WONREMOTE_RTC_DYNAMIC_CREDENTIALS: "true",
+      WONREMOTE_RTC_TURN_URLS: "turn:static.example:3478",
+      WONREMOTE_RTC_TURN_USERNAME: "static-user",
+      WONREMOTE_RTC_TURN_CREDENTIAL: "static-secret",
+    }, async () => { throw new Error("callable unavailable"); });
+    expect(fallback).toMatchObject({ source: "static" });
   });
 });

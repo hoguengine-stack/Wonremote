@@ -1,4 +1,4 @@
-export type StreamPerformanceMode = "fast" | "normal";
+export type StreamPerformanceMode = "auto" | "fast" | "normal";
 
 export interface StreamPerformanceProfile {
   readonly loopSleepMs: number;
@@ -8,6 +8,12 @@ export interface StreamPerformanceProfile {
 }
 
 const PROFILES: Readonly<Record<StreamPerformanceMode, StreamPerformanceProfile>> = Object.freeze({
+  auto: Object.freeze({
+    loopSleepMs: 25,
+    jpegQuality: 78,
+    maxMergeWidth: 384,
+    maxBufferedAmount: 1024 * 1024,
+  }),
   fast: Object.freeze({
     loopSleepMs: 16,
     jpegQuality: 75,
@@ -23,10 +29,11 @@ const PROFILES: Readonly<Record<StreamPerformanceMode, StreamPerformanceProfile>
 });
 
 export function normalizeStreamPerformanceMode(value: unknown): StreamPerformanceMode {
-  return typeof value === "string" && value.trim().toLowerCase() === "fast" ? "fast" : "normal";
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return normalized === "fast" || normalized === "normal" ? normalized : "auto";
 }
 
-export function getStreamPerformanceProfile(mode: unknown = "normal"): StreamPerformanceProfile {
+export function getStreamPerformanceProfile(mode: unknown = "auto"): StreamPerformanceProfile {
   return PROFILES[normalizeStreamPerformanceMode(mode)];
 }
 
@@ -35,6 +42,20 @@ export function buildSetStreamModeCommand(mode: StreamPerformanceMode): string {
 }
 
 export function parseSetStreamModeCommand(action: string): StreamPerformanceMode | null {
-  const match = /^set-stream-mode\s+(fast|normal)$/.exec(action.trim().toLowerCase());
+  const match = /^set-stream-mode\s+(auto|fast|normal)$/.exec(action.trim().toLowerCase());
   return match ? match[1] as StreamPerformanceMode : null;
+}
+
+export function getAdaptiveStreamPerformanceProfile(input: {
+  backpressured: boolean;
+  bufferedAmount: number;
+  droppedFrames: number;
+}): StreamPerformanceProfile {
+  if (input.backpressured || input.bufferedAmount >= 1024 * 1024 || input.droppedFrames >= 3) {
+    return { loopSleepMs: 66, jpegQuality: 60, maxMergeWidth: 128, maxBufferedAmount: 2 * 1024 * 1024 };
+  }
+  if (input.bufferedAmount >= 256 * 1024 || input.droppedFrames > 0) {
+    return { loopSleepMs: 40, jpegQuality: 68, maxMergeWidth: 192, maxBufferedAmount: 1536 * 1024 };
+  }
+  return { loopSleepMs: 20, jpegQuality: 76, maxMergeWidth: 384, maxBufferedAmount: 1024 * 1024 };
 }
