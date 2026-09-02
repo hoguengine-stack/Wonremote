@@ -610,3 +610,18 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - Regression proof: Direct-session tests reject future protocol before committing a session batch, the security-policy test requires secure callable revalidation, and focused protocol, Viewer, Functions, and TypeScript checks pass.
 - Release proof: not released.
 - Remaining blocker: Package only when explicitly requested and physically verify one mixed-version compatible connection plus one deliberately incompatible fixture.
+
+## INC-20260902-009: Release CI required an unprovisioned Authenticode certificate
+
+- Detected: 2026-09-02.
+- Severity: P1.
+- Affected: GitHub Actions release packaging after both x86 installers were built.
+- Status: source-verified-retry-pending.
+- User-visible symptom: The `v0.1.77` release workflow stopped before manifest creation and published no update assets.
+- Minimal trigger: Run a release preparation commit without the Authenticode PFX secrets while `WONREMOTE_REQUIRE_AUTHENTICODE` is hard-coded to `YES`.
+- Root cause and contributors: The workflow made optional code signing mandatory before a trusted code-signing certificate had been provisioned in repository secrets.
+- Fix commit(s): pending.
+- Permanent guard: Keep signing in the build-before-manifest sequence, but require it only through the repository variable after its matching PFX secrets are provisioned; a packaging test forbids hard-coding the requirement.
+- Regression proof: Pending focused desktop packaging test and replacement CI run.
+- Release proof: Initial GitHub Actions run `33607882492` failed at `Apply and verify Authenticode signatures` and skipped publication; replacement run pending.
+- Remaining blocker: Retry the release workflow and verify exactly two installers plus the signed update manifest.

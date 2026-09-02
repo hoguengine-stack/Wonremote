@@ -756,6 +756,19 @@ describe("desktop packaging scaffold", () => {
     expect(releaseWorkflow).toContain('"agent-x86" = "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Agent-Setup.exe"');
   });
 
+  it("does not require Authenticode until the release certificate is provisioned", () => {
+    const releaseWorkflow = readFileSync(path.join(projectRoot, "..", ".github", "workflows", "publish-release.yml"), "utf8");
+
+    expect(releaseWorkflow).toContain("WONREMOTE_REQUIRE_AUTHENTICODE: ${{ vars.WONREMOTE_REQUIRE_AUTHENTICODE }}");
+    expect(releaseWorkflow).not.toContain('WONREMOTE_REQUIRE_AUTHENTICODE: "YES"');
+    expect(releaseWorkflow.indexOf("run: npm run release:sign")).toBeGreaterThan(
+      releaseWorkflow.indexOf("run: npm run release:exes"),
+    );
+    expect(releaseWorkflow.indexOf("run: npm run release:manifest")).toBeGreaterThan(
+      releaseWorkflow.indexOf("run: npm run release:sign"),
+    );
+  });
+
   it("does not require a system Node installation at runtime", () => {
     const tauriLib = readFileSync(path.join(projectRoot, "src-tauri", "src", "lib.rs"), "utf8");
 
