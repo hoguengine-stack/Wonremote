@@ -1921,8 +1921,8 @@ function DeviceTable({
       <div className="device-table">
         <div className="table-row table-head">
           <span>상태</span>
-          <span>장비</span>
           <span>매장</span>
+          <span>장비</span>
           <span>소프트웨어</span>
           <span>작업</span>
         </div>
@@ -1948,13 +1948,13 @@ function DeviceTable({
                 {isOnline ? <Wifi size={14} /> : <WifiOff size={14} />}
                 {isOnline ? "온라인" : "오프라인"}
               </span>
-              <span className="device-identity-cell">
-                <b>{device.desktopName}</b>
-                <small>{device.deviceName} · {device.deviceNumber}</small>
-              </span>
               <span className="store-cell">
                 <b>{device.storeName}</b>
                 <small>{device.businessNumber}</small>
+              </span>
+              <span className="device-identity-cell">
+                <b>{device.desktopName}</b>
+                <small>{device.deviceName} · {device.deviceNumber}</small>
               </span>
               <span className="software-cell">
                 <span className={`version-badge ${updateInfo.kind}`}>{updateInfo.label}</span>

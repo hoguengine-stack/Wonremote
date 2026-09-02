@@ -1790,8 +1790,8 @@ input:focus {
   }
 
   .table-row:not(.table-head) > .status-pill { grid-column: 1; grid-row: 1; }
-  .table-row:not(.table-head) > .device-identity-cell { grid-column: 2; grid-row: 1; }
-  .table-row:not(.table-head) > .store-cell { grid-column: 2; grid-row: 2; }
+  .table-row:not(.table-head) > .store-cell { grid-column: 2; grid-row: 1; }
+  .table-row:not(.table-head) > .device-identity-cell { grid-column: 2; grid-row: 2; }
   .table-row:not(.table-head) > .software-cell { grid-column: 2; grid-row: 3; }
   .table-row:not(.table-head) > .device-actions { align-self: center; grid-column: 3; grid-row: 1 / 4; }
 
