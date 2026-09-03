@@ -17,6 +17,11 @@
     ],
     "redirects": [
       {
+        "source": "/download/agent.apk",
+        "destination": "https://github.com/hoguengine-stack/Wonremote/releases/download/android-agent-latest/WonRemote-Agent.apk",
+        "type": 302
+      },
+      {
         "source": "/download/viewer",
         "destination": "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Viewer-Setup.exe",
         "type": 302

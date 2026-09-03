@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "52940136204",
+    "project_id": "wonremote-a7fd3",
+    "storage_bucket": "wonremote-a7fd3.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:52940136204:android:7e0bc1979f2b2517dc3329",
+        "android_client_info": {
+          "package_name": "com.wonremote.agent"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCH0psreSqmSaZ9QGqWmWu8bRVtYGDiNXY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:52940136204:android:639b32a56ab46992dc3329",
+        "android_client_info": {
+          "package_name": "com.wonremote.viewer"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCH0psreSqmSaZ9QGqWmWu8bRVtYGDiNXY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

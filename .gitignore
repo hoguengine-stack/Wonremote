@@ -4,6 +4,8 @@ node_modules/
 # Build outputs
 dist/
 target/
+.gradle/
+**/build/
 .firebase/
 aether-link-app/dist/
 aether-link-app/dist-agent/
@@ -15,6 +17,7 @@ aether-link-app/dist-server/
 aether-link-app/dist-poc/
 aether-link-app/dist-native/
 aether-link-app/release-exe/
+aether-link-app/release-apk/
 aether-link-app/src-tauri/gen/schemas/
 aether-link-poc/target/
 functions/lib/
@@ -30,6 +33,8 @@ aether-link-poc/benchmark_*.json
 # Environment files
 .env
 .env.*
+mobile/android/local.properties
+mobile/android/keystore.properties
 
 # Editor and OS noise
 .idea/
@@ -39,6 +44,7 @@ Thumbs.db
 Desktop.ini
 
 # Temporary verification artifacts
+.codex-tmp/wonremote-backups/
 playwright-report/
 test-results/
 coverage/

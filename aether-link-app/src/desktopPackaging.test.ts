@@ -567,6 +567,7 @@ describe("desktop packaging scaffold", () => {
   it("builds only native x86 payloads behind two stable downloads", () => {
     const packageReleaseScript = readFileSync(path.join(projectRoot, "scripts", "package-release-exes.js"), "utf8");
     const publishScript = readFileSync(path.join(projectRoot, "scripts", "publish-github-release.ps1"), "utf8");
+    const publishAndroidScript = readFileSync(path.join(projectRoot, "scripts", "publish-android-agent.ps1"), "utf8");
     const firebaseConfig = JSON.parse(readFileSync(path.join(projectRoot, "..", "firebase.json"), "utf8"));
     const redirects = Object.fromEntries(
       firebaseConfig.hosting.redirects.map((redirect: { source: string; destination: string }) => [
@@ -585,7 +586,11 @@ describe("desktop packaging scaffold", () => {
 
     expect(redirects["/download/viewer-x86"]).toContain("WonRemote-Viewer-Setup.exe");
     expect(redirects["/download/agent-x86"]).toContain("WonRemote-Agent-Setup.exe");
-    expect(firebaseConfig.hosting.redirects).toHaveLength(4);
+    expect(redirects["/download/agent.apk"]).toContain("android-agent-latest/WonRemote-Agent.apk");
+    expect(publishAndroidScript).toContain('"android-agent-latest"');
+    expect(publishAndroidScript).toContain('"WonRemote-Agent.apk"');
+    expect(existsSync(path.join(projectRoot, "public", "download", "agent.apk"))).toBe(false);
+    expect(firebaseConfig.hosting.redirects).toHaveLength(5);
     for (const obsoletePath of [
       "/download/viewer-agent",
       "/download/portable",
@@ -670,6 +675,7 @@ describe("desktop packaging scaffold", () => {
     expect(Object.keys(redirects).filter((key) => key.startsWith("/download/")).sort()).toEqual([
       "/download/agent",
       "/download/agent-x86",
+      "/download/agent.apk",
       "/download/viewer",
       "/download/viewer-x86",
     ]);

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">WonRemote Agent</string>
+    <string name="accessibility_description">등록된 뷰어에서 Android 화면의 터치와 텍스트 입력을 제어합니다.</string>
+    <string name="default_agent_password" translatable="false">1234</string>
+    <string name="registered_agent_status">Agent 가동 중\n%1$s</string>
+</resources>
