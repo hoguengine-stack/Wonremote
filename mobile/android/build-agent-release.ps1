@@ -2,9 +2,20 @@ $ErrorActionPreference = "Stop"
 
 $AndroidDir = $PSScriptRoot
 $RepoRoot = Resolve-Path (Join-Path $AndroidDir "..\..")
-$ApkSource = Join-Path $AndroidDir "agent\build\outputs\apk\release\agent-release.apk"
-$ApkDestination = Join-Path $RepoRoot "aether-link-app\release-apk\WonRemote-Agent.apk"
-$ZipDestination = Join-Path $RepoRoot "aether-link-app\public\download\agent.zip"
+$Products = @(
+  @{
+    Name = "Agent"
+    Source = Join-Path $AndroidDir "agent\build\outputs\apk\release\agent-release.apk"
+    Apk = Join-Path $RepoRoot "aether-link-app\release-apk\WonRemote-Agent.apk"
+    Zip = Join-Path $RepoRoot "aether-link-app\public\download\agent.zip"
+  },
+  @{
+    Name = "Viewer"
+    Source = Join-Path $AndroidDir "viewer\build\outputs\apk\release\viewer-release.apk"
+    Apk = Join-Path $RepoRoot "aether-link-app\release-apk\WonRemote-Viewer.apk"
+    Zip = Join-Path $RepoRoot "aether-link-app\public\download\viewer.zip"
+  }
+)
 
 if (-not (Test-Path (Join-Path $AndroidDir "keystore.properties"))) {
   throw "mobile/android/keystore.properties is required. Keep the release key outside Git and reuse it for every update."
@@ -23,8 +34,8 @@ if (-not $env:GRADLE_USER_HOME) {
 
 Push-Location $AndroidDir
 try {
-  & .\gradlew.bat :agent:assembleRelease --build-cache
-  if ($LASTEXITCODE -ne 0) { throw "Android Agent release build failed." }
+  & .\gradlew.bat :agent:assembleRelease :viewer:assembleRelease --build-cache --parallel
+  if ($LASTEXITCODE -ne 0) { throw "Android Agent/Viewer release build failed." }
 }
 finally {
   Pop-Location
@@ -35,17 +46,19 @@ $ApkSigner = Get-ChildItem (Join-Path $env:ANDROID_HOME "build-tools\*\apksigner
   Select-Object -First 1 -ExpandProperty FullName
 if (-not $ApkSigner) { throw "Android SDK apksigner was not found." }
 
-& $ApkSigner verify --verbose $ApkSource
-if ($LASTEXITCODE -ne 0) { throw "Android Agent APK signature verification failed." }
+foreach ($Product in $Products) {
+  & $ApkSigner verify --verbose $Product.Source
+  if ($LASTEXITCODE -ne 0) { throw "Android $($Product.Name) APK signature verification failed." }
 
-New-Item -ItemType Directory -Force (Split-Path -Parent $ApkDestination) | Out-Null
-Copy-Item -Force $ApkSource $ApkDestination
-$ZipDirectory = Split-Path -Parent $ZipDestination
-New-Item -ItemType Directory -Force $ZipDirectory | Out-Null
-Compress-Archive -LiteralPath $ApkDestination -DestinationPath $ZipDestination -CompressionLevel Optimal -Force
-$Hash = (Get-FileHash -Algorithm SHA256 $ApkDestination).Hash.ToLowerInvariant()
-$ZipHash = (Get-FileHash -Algorithm SHA256 $ZipDestination).Hash.ToLowerInvariant()
-Write-Output "Android Agent APK ready: $ApkDestination"
-Write-Output "SHA-256: $Hash"
-Write-Output "Firebase ZIP ready: $ZipDestination"
-Write-Output "ZIP SHA-256: $ZipHash"
+  New-Item -ItemType Directory -Force (Split-Path -Parent $Product.Apk) | Out-Null
+  Copy-Item -Force $Product.Source $Product.Apk
+  New-Item -ItemType Directory -Force (Split-Path -Parent $Product.Zip) | Out-Null
+  Compress-Archive -LiteralPath $Product.Apk -DestinationPath $Product.Zip -CompressionLevel Optimal -Force
+
+  $ApkHash = (Get-FileHash -Algorithm SHA256 $Product.Apk).Hash.ToLowerInvariant()
+  $ZipHash = (Get-FileHash -Algorithm SHA256 $Product.Zip).Hash.ToLowerInvariant()
+  Write-Output "Android $($Product.Name) APK ready: $($Product.Apk)"
+  Write-Output "APK SHA-256: $ApkHash"
+  Write-Output "Firebase ZIP ready: $($Product.Zip)"
+  Write-Output "ZIP SHA-256: $ZipHash"
+}

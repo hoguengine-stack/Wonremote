@@ -19,6 +19,7 @@ aether-link-app/dist-native/
 aether-link-app/release-exe/
 aether-link-app/release-apk/
 aether-link-app/public/download/agent.zip
+aether-link-app/public/download/viewer.zip
 aether-link-app/src-tauri/gen/schemas/
 aether-link-poc/target/
 functions/lib/

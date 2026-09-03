@@ -32,12 +32,34 @@
             "value": "public, max-age=300"
           }
         ]
+      },
+      {
+        "source": "/download/viewer.zip",
+        "headers": [
+          {
+            "key": "Content-Type",
+            "value": "application/zip"
+          },
+          {
+            "key": "Content-Disposition",
+            "value": "attachment; filename=WonRemote-Viewer.zip"
+          },
+          {
+            "key": "Cache-Control",
+            "value": "public, max-age=300"
+          }
+        ]
       }
     ],
     "redirects": [
       {
         "source": "/download/agent.apk",
         "destination": "/download/agent.zip",
+        "type": 302
+      },
+      {
+        "source": "/download/viewer.apk",
+        "destination": "/download/viewer.zip",
         "type": 302
       },
       {

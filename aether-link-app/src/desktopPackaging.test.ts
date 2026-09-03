@@ -587,10 +587,14 @@ describe("desktop packaging scaffold", () => {
     expect(redirects["/download/viewer-x86"]).toContain("WonRemote-Viewer-Setup.exe");
     expect(redirects["/download/agent-x86"]).toContain("WonRemote-Agent-Setup.exe");
     expect(redirects["/download/agent.apk"]).toBe("/download/agent.zip");
+    expect(redirects["/download/viewer.apk"]).toBe("/download/viewer.zip");
     expect(buildAndroidScript).toContain("Compress-Archive");
     expect(buildAndroidScript).toContain("public\\download\\agent.zip");
+    expect(buildAndroidScript).toContain("public\\download\\viewer.zip");
+    expect(buildAndroidScript).toContain(":agent:assembleRelease :viewer:assembleRelease");
     expect(existsSync(path.join(projectRoot, "public", "download", "agent.apk"))).toBe(false);
-    expect(firebaseConfig.hosting.redirects).toHaveLength(5);
+    expect(existsSync(path.join(projectRoot, "public", "download", "viewer.apk"))).toBe(false);
+    expect(firebaseConfig.hosting.redirects).toHaveLength(6);
     for (const obsoletePath of [
       "/download/viewer-agent",
       "/download/portable",
@@ -599,6 +603,18 @@ describe("desktop packaging scaffold", () => {
     ]) {
       expect(redirects[obsoletePath]).toBeUndefined();
     }
+  });
+
+  it("keeps Android full-display sharing explicitly stoppable", () => {
+    const androidRoot = path.join(projectRoot, "..", "mobile", "android", "agent", "src", "main", "java", "com", "wonremote", "agent");
+    const activity = readFileSync(path.join(androidRoot, "MainActivity.java"), "utf8");
+    const service = readFileSync(path.join(androidRoot, "AgentService.java"), "utf8");
+
+    expect(activity).toContain("MediaProjectionConfig.createConfigForDefaultDisplay()");
+    expect(activity).toContain("AgentService.stopProjection(this)");
+    expect(activity).toContain("Settings.ACTION_APPLICATION_DETAILS_SETTINGS");
+    expect(service).toContain("ACTION_STOP_PROJECTION");
+    expect(service).toContain('"화면 공유 중지"');
   });
 
   it("can create a signed production update manifest for a GitHub release installer", () => {
@@ -678,6 +694,7 @@ describe("desktop packaging scaffold", () => {
       "/download/agent.apk",
       "/download/viewer",
       "/download/viewer-x86",
+      "/download/viewer.apk",
     ]);
   });
 

@@ -20,10 +20,12 @@ import com.google.firebase.firestore.ListenerRegistration;
 public final class AgentService extends Service {
     private static final String CHANNEL_ID = "wonremote-agent";
     private static final String ACTION_PROJECTION = "com.wonremote.agent.PROJECTION";
+    private static final String ACTION_STOP_PROJECTION = "com.wonremote.agent.STOP_PROJECTION";
     private static final String EXTRA_RESULT_CODE = "result_code";
     private static final String EXTRA_RESULT_DATA = "result_data";
     private static final int NOTIFICATION_ID = 177;
     private static final long HEARTBEAT_MS = 20_000;
+    private static volatile boolean projectionReady;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private AgentRepository repository;
@@ -45,11 +47,25 @@ public final class AgentService extends Service {
         context.startForegroundService(intent);
     }
 
+    static void stopProjection(Context context) {
+        projectionReady = false;
+        context.startForegroundService(
+            new Intent(context, AgentService.class).setAction(ACTION_STOP_PROJECTION)
+        );
+    }
+
+    static boolean isProjectionReady() {
+        return projectionReady;
+    }
+
     @Override
     public void onCreate() {
         super.onCreate();
         repository = new AgentRepository(this);
-        streamer = new ScreenFrameStreamer(this);
+        streamer = new ScreenFrameStreamer(this, ready -> {
+            projectionReady = ready;
+            handler.post(() -> updateNotification(ready ? "온라인 · 화면 공유 준비됨" : "온라인"));
+        });
         createNotificationChannel();
         Notification notification = notification("연결 준비 중");
         if (Build.VERSION.SDK_INT >= 34) {
@@ -83,6 +99,8 @@ public final class AgentService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && ACTION_PROJECTION.equals(intent.getAction())) {
             acceptProjection(intent);
+        } else if (intent != null && ACTION_STOP_PROJECTION.equals(intent.getAction())) {
+            stopProjection();
         }
         return START_STICKY;
     }
@@ -96,6 +114,7 @@ public final class AgentService extends Service {
             remoteSession = null;
         }
         streamer.stop();
+        projectionReady = false;
         repository.markOffline();
         super.onDestroy();
     }
@@ -122,13 +141,22 @@ public final class AgentService extends Service {
             new Intent(this, MainActivity.class),
             PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
-        return new Notification.Builder(this, CHANNEL_ID)
+        Notification.Builder builder = new Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher)
             .setContentTitle("WonRemote Agent")
             .setContentText(status)
             .setContentIntent(open)
-            .setOngoing(true)
-            .build();
+            .setOngoing(true);
+        if (projectionReady) {
+            PendingIntent stop = PendingIntent.getService(
+                this,
+                1,
+                new Intent(this, AgentService.class).setAction(ACTION_STOP_PROJECTION),
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+            );
+            builder.addAction(android.R.drawable.ic_menu_close_clear_cancel, "화면 공유 중지", stop);
+        }
+        return builder.build();
     }
 
     private void updateNotification(String status) {
@@ -158,10 +186,21 @@ public final class AgentService extends Service {
             return;
         }
         streamer.start(projection);
-        updateNotification("온라인 · 화면 공유 준비됨");
+        projectionReady = streamer.isReady();
+        updateNotification(projectionReady ? "온라인 · 화면 공유 준비됨" : "화면 공유 권한 필요");
         if (pendingSessionId != null) {
             remoteController().start(pendingSessionId);
         }
+    }
+
+    private void stopProjection() {
+        pendingSessionId = null;
+        if (remoteSession != null) {
+            remoteSession.stopSession();
+        }
+        streamer.stopProjection();
+        projectionReady = false;
+        updateNotification("온라인");
     }
 
     private void handleCommand(String action) {

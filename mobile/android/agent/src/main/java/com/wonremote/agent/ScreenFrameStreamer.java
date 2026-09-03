@@ -24,6 +24,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.function.Consumer;
 
 final class ScreenFrameStreamer {
     private static final int TILE_SIZE = 128;
@@ -36,6 +37,7 @@ final class ScreenFrameStreamer {
     private final Context context;
     private final HandlerThread captureThread = new HandlerThread("wonremote-capture");
     private final Object channelLock = new Object();
+    private final Consumer<Boolean> readinessListener;
 
     private Handler captureHandler;
     private MediaProjection projection;
@@ -50,8 +52,9 @@ final class ScreenFrameStreamer {
     private long lastKeyframeAt;
     private int sequence;
 
-    ScreenFrameStreamer(Context context) {
+    ScreenFrameStreamer(Context context, Consumer<Boolean> readinessListener) {
         this.context = context.getApplicationContext();
+        this.readinessListener = readinessListener;
         captureThread.start();
         captureHandler = new Handler(captureThread.getLooper());
     }
@@ -93,6 +96,7 @@ final class ScreenFrameStreamer {
             captureHandler
         );
         needsKeyframe = true;
+        readinessListener.accept(isReady());
     }
 
     boolean isReady() {
@@ -107,9 +111,13 @@ final class ScreenFrameStreamer {
     }
 
     void stop() {
+        stopProjection();
+        captureThread.quitSafely();
+    }
+
+    void stopProjection() {
         setChannel(null);
         releaseProjection(true);
-        captureThread.quitSafely();
     }
 
     private void onImageAvailable(ImageReader reader) {
@@ -273,6 +281,7 @@ final class ScreenFrameStreamer {
     }
 
     private void releaseProjection(boolean stopProjection) {
+        boolean wasReady = isReady();
         MediaProjection currentProjection = projection;
         projection = null;
         if (virtualDisplay != null) {
@@ -290,6 +299,9 @@ final class ScreenFrameStreamer {
         pixels = null;
         tileHashes = null;
         needsKeyframe = true;
+        if (wasReady) {
+            readinessListener.accept(false);
+        }
     }
 
     private void recycleBitmap() {
