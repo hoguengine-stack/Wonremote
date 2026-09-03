@@ -4,6 +4,7 @@ $AndroidDir = $PSScriptRoot
 $RepoRoot = Resolve-Path (Join-Path $AndroidDir "..\..")
 $ApkSource = Join-Path $AndroidDir "agent\build\outputs\apk\release\agent-release.apk"
 $ApkDestination = Join-Path $RepoRoot "aether-link-app\release-apk\WonRemote-Agent.apk"
+$ZipDestination = Join-Path $RepoRoot "aether-link-app\public\download\agent.zip"
 
 if (-not (Test-Path (Join-Path $AndroidDir "keystore.properties"))) {
   throw "mobile/android/keystore.properties is required. Keep the release key outside Git and reuse it for every update."
@@ -39,6 +40,12 @@ if ($LASTEXITCODE -ne 0) { throw "Android Agent APK signature verification faile
 
 New-Item -ItemType Directory -Force (Split-Path -Parent $ApkDestination) | Out-Null
 Copy-Item -Force $ApkSource $ApkDestination
+$ZipDirectory = Split-Path -Parent $ZipDestination
+New-Item -ItemType Directory -Force $ZipDirectory | Out-Null
+Compress-Archive -LiteralPath $ApkDestination -DestinationPath $ZipDestination -CompressionLevel Optimal -Force
 $Hash = (Get-FileHash -Algorithm SHA256 $ApkDestination).Hash.ToLowerInvariant()
+$ZipHash = (Get-FileHash -Algorithm SHA256 $ZipDestination).Hash.ToLowerInvariant()
 Write-Output "Android Agent APK ready: $ApkDestination"
 Write-Output "SHA-256: $Hash"
+Write-Output "Firebase ZIP ready: $ZipDestination"
+Write-Output "ZIP SHA-256: $ZipHash"
