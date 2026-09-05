@@ -1,5 +1,5 @@
 {
-  "status": "ready-to-deploy",
+  "status": "verified",
   "intent": "Check Agent updates on startup, hourly, and explicit user request while eliminating unchanged update telemetry writes and their dependent security-rule reads; also resume only the registered Android Agent and user-enabled Control Add-On automatically after device boot while keeping the Android Viewer manual.",
   "requestReview": {
     "impact": "changed",
@@ -68,11 +68,11 @@
     },
     {
       "id": "request-waste-development-guard",
-      "acceptance": "Completion and future commit checks reject missing request reviews; request-affecting changes must declare a bounded daily budget, lifecycle evidence, and a changed request-boundary test. History regression checks cover an idle day without polling.",
+      "acceptance": "Completion and future commit checks reject missing request reviews; request-affecting changes must declare a bounded daily budget, lifecycle evidence, and a changed request-boundary test. History regression checks cover an idle day without polling, while post-deployment proof-only edits validate the committed release boundary instead of unrelated workspace files.",
       "boundaries": ["change contract", "commit trailers", "local and CI recurrence gate", "offline request-count regression"],
       "contractTests": ["aether-link-app/scripts/verify-recurrence-coverage.test.js", "aether-link-app/src/firebase/viewerConnectionHistory.test.ts"],
       "proofLevel": "automated-runtime",
-      "verification": "npx vitest run scripts/verify-recurrence-coverage.test.js src/firebase/viewerConnectionHistory.test.ts passed 16 tests. Missing review and lifecycle/budget guards failed before implementation and passed after. History checks advance 24h idle and a further 24h after unsubscribe, with no repeated getDocs or subscription creation. Tests are offline and do not prove aggregate production usage.",
+      "verification": "2026-09-05: npx vitest run scripts/verify-recurrence-coverage.test.js passed 14 tests. Missing review and lifecycle/budget guards fail, untracked workspace files cannot replace committed release boundaries, post-deployment proof-only edits reuse the committed boundary set, and actual code edits remain restricted to their current changed files. Earlier history checks passed 24h idle and unsubscribe request-count scenarios. Tests are offline and do not prove aggregate production usage.",
       "physicalGap": "The gate validates review completeness and stated budgets, not the truth of unmeasured fleet assumptions. Existing request paths beyond the history subscription require a separate audit."
     },
     {
@@ -125,7 +125,7 @@
       "boundaries": ["cached x86 Viewer build", "Agent-default NSIS bundle", "x86 payload verification", "signed update manifest", "GitHub Release", "stable Firebase aliases"],
       "contractTests": ["aether-link-app/src/desktopPackaging.test.ts", "aether-link-app/tests/e2e/test_installer_update_flow.ts"],
       "proofLevel": "deployment-required",
-      "verification": "2026-09-05 predeploy: cached x86 build produced exactly Viewer and Agent NSIS installers for v0.1.78 and payload verification passed (Viewer ac00010c93413392840a2aa804e22a11b66078bd645e6e13e88815c4c16860da; Agent 85d7c46695666a87a0e378e4e2f0a49713e1ecfcda023ae32437d1d439ef66ac). The signed update manifest was generated and verified from those bytes. Installer update E2E passed upgrade, two rollback paths and the backup-required gate. The PC/Android packaging contract passed 65 tests after three predeploy contract failures were corrected. Local Authenticode credentials are not configured; GitHub publication and live alias verification remain pending.",
+      "verification": "2026-09-05 deployed: commit 2e08a1d triggered GitHub Actions run 33933165835, which completed successfully and published non-draft Release 383083078 with exactly WonRemote-Viewer-Setup.exe, WonRemote-Agent-Setup.exe and wonremote-update-manifest.json. The live manifest signature and both x86/x64 compatibility entries verified against the downloaded bytes (Viewer b46825e023e54645c8de90cbea3cbc1b8257ec50fa584803eba01294a3cc3e4a; Agent fa500dd7c4a6f3e87fb2470e3602cee75e8173dbb8a6fb870994bba39776556a). Firebase viewer, agent, viewer-x86 and agent-x86 aliases each return 302 to the matching latest GitHub asset. Installer update E2E and the 65-test PC/Android packaging contract passed before publication. GitHub Authenticode credentials are not configured, so both published installers report NotSigned.",
       "physicalGap": "Installer launch and automatic update still require physical Windows verification after publication."
     },
     {
@@ -134,7 +134,7 @@
       "boundaries": ["Gradle release build", "Android release keystore", "APK v2 signature verification", "ZIP packaging", "frontend public copy", "Firebase Hosting", "live route and byte verification"],
       "contractTests": ["aether-link-app/src/desktopPackaging.test.ts", "aether-link-app/src/mobileViewerPackaging.test.ts"],
       "proofLevel": "deployment-required",
-      "verification": "2026-09-05 predeploy: parallel Gradle release build completed in 1m19s for Agent, Viewer and Control Add-On. All three APKs report versionName 0.1.78, pass APK Signature Scheme v2 verification and match the signing certificate of their current live predecessor. Fresh public ZIPs exactly match the Firebase dist copies (Agent 9fd7a2ef5b9351bda6a5af7ba301befaf44f17a3b05bf802db8d47be6a5d4e83; Viewer 38c9da770d6d9ec2151cae365d2afd5ff3e05a4719e30f5b2f6abb9aa0c5cb57; Control Add-On d27d53e7f4e6e4b3b7d4e08a28746652431aa34e2b59b48421f908e6b071836a). The PC/Android packaging contract passed 65 tests. Firebase deployment and live-byte verification remain pending.",
+      "verification": "2026-09-05 deployed: the Firebase wonremote-a7fd3 Hosting release completed successfully and its root returns HTTP 200. The live agent.apk, viewer.apk and control-addon.apk routes each delivered the newly built ZIP byte-for-byte (Agent 9fd7a2ef5b9351bda6a5af7ba301befaf44f17a3b05bf802db8d47be6a5d4e83; Viewer 38c9da770d6d9ec2151cae365d2afd5ff3e05a4719e30f5b2f6abb9aa0c5cb57; Control Add-On d27d53e7f4e6e4b3b7d4e08a28746652431aa34e2b59b48421f908e6b071836a). Before deployment all three contained APKs reported versionName 0.1.78, passed APK Signature Scheme v2 verification and matched the signing certificate of their live predecessor. The 65-test PC/Android packaging contract passed.",
       "physicalGap": "Installation, request-time screen consent and remote control require physical Android verification after publication."
     }
   ]

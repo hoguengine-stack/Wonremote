@@ -249,6 +249,16 @@ function readWorkingTreeFiles() {
   return tracked.split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
 }
 
+const POST_DEPLOYMENT_PROOF_FILES = new Set(["CHANGE_CONTRACT.json", "INCIDENT_REGISTRY.md"]);
+
+export function selectContractFiles(worktreeFiles, committedFiles) {
+  const working = worktreeFiles.map((value) => value.replaceAll("\\", "/"));
+  if (working.length > 0 && !working.every((value) => POST_DEPLOYMENT_PROOF_FILES.has(value))) {
+    return working;
+  }
+  return [...new Set(committedFiles.map((value) => value.replaceAll("\\", "/")))];
+}
+
 export function verifyRecurrenceCoverage(stage = "complete") {
   const base = resolveAuditBase();
   const commits = readCommits(base);
@@ -271,7 +281,8 @@ export function verifyRecurrenceCoverage(stage = "complete") {
   }
 
   const worktreeFiles = readWorkingTreeFiles();
-  const contractFiles = worktreeFiles.length > 0 ? worktreeFiles : (processCommits[0]?.files ?? []);
+  const committedFiles = processCommits.flatMap((commit) => commit.files ?? []);
+  const contractFiles = selectContractFiles(worktreeFiles, committedFiles);
   if (contractFiles.length > 0) {
     if (!existsSync(changeContractPath)) {
       throw new Error("Development omission gate failed: CHANGE_CONTRACT.json is missing.");

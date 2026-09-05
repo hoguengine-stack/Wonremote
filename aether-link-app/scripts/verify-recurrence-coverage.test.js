@@ -10,6 +10,7 @@ import {
   incidentValidationErrors,
   parseIncidentTrailer,
   requestReviewErrors,
+  selectContractFiles,
   worktreeValidationErrors,
 } from "./verify-recurrence-coverage.js";
 
@@ -216,8 +217,16 @@ describe("recurrence coverage gate", () => {
     expect(workflow).toContain("github.ref == 'refs/heads/main'");
     const gate = readFileSync(path.join(appRoot, "scripts", "verify-recurrence-coverage.js"), "utf8");
     expect(gate).not.toContain('git(["ls-files", "--others", "--exclude-standard"])');
-    expect(gate).toContain("worktreeFiles.length > 0 ? worktreeFiles : (processCommits[0]?.files ?? [])");
+    expect(gate).toContain("selectContractFiles(worktreeFiles, committedFiles)");
     expect(gate).toContain("worktreeValidationErrors(contract, contractFiles, registry, stage)");
+  });
+
+  it("uses committed boundaries for clean or post-deployment proof-only changes", () => {
+    const committed = ["src/release.test.ts", "src/release.ts"];
+    expect(selectContractFiles([], committed)).toEqual(committed);
+    expect(selectContractFiles(["CHANGE_CONTRACT.json", "INCIDENT_REGISTRY.md"], committed)).toEqual(committed);
+    expect(selectContractFiles(["src/current.ts", "CHANGE_CONTRACT.json"], committed))
+      .toEqual(["src/current.ts", "CHANGE_CONTRACT.json"]);
   });
 
   it("rejects missing request review rather than silently treating it as no impact", () => {
