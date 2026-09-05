@@ -1,23 +1,77 @@
 {
   "status": "verified",
-  "intent": "Make CI run the predeployment contract gate for every main-branch change that is explicitly ready for deployment, not only version-release commits.",
+  "intent": "Publish WonRemote v0.1.79 with automatic startup device loading, a compact Android Viewer, concurrent remote sessions, verified PC and Android downloads, and reliable hosted-UI refresh for installed Android Viewers.",
   "requestReview": {
-    "impact": "none",
-    "reason": "This changes only GitHub Actions gate selection and cannot alter application, Firebase, WebRTC, update, or device request traffic."
+    "impact": "changed",
+    "reason": "Authentication owns one bounded startup device/status refresh. Sessions open only from explicit Connect actions, with no polling or automatic reconnect. Android launch revalidates one Hosting document but adds no Firestore operation.",
+    "assumptions": "Scoped example, not fleet billing: one Viewer authenticates once and explicitly opens two Agents once in a day. The budget covers startup device/status refresh plus two session creations, start commands, signaling documents, Viewer ICE candidates, listener delivery, and dependent rule reads. Idle time, rerenders, tab switching, returning to the list, and Hosting document revalidation add zero Firestore operations. WebRTC media and TURN bytes remain separate.",
+    "dailyBudget": { "clients": 1, "readsPerClient": 100, "writesPerClient": 40, "maxReads": 100, "maxWrites": 40 },
+    "checks": {
+      "idle": "Real Chromium fake time proves one startup list request, zero history reads, zero subscriptions, and no additional Firestore request over 24 hours.",
+      "rerender": "Repeated auth callbacks and session switching reuse existing request and session owners without another list read, session open, or transport start.",
+      "concurrency": "Pending/open per-device guards coalesce duplicate Connect actions; the tested two-session path opens two distinct explicitly selected devices once each.",
+      "failure": "Quota/list and WebRTC failures retain manual retry and cannot start an automatic retry loop; Hosting revalidation retains the existing WebView error boundary.",
+      "cleanup": "Logout rejects stale list results; closing one session releases its input and transport without closing the other session."
+    },
+    "contractTests": ["aether-link-app/src/viewerDeviceRefresh.test.ts"]
   },
-  "changeType": "fix",
-  "risk": "medium",
-  "releaseImpact": "none",
-  "rollback": "Revert the CI workflow commit; application binaries, Hosting content, and registered data remain unchanged.",
-  "incident": "INC-20260905-007",
+  "changeType": "feature",
+  "risk": "high",
+  "releaseImpact": "build-and-deploy",
+  "rollback": "Repoint stable PC downloads to v0.1.78, restore the prior Android ZIPs and Hosting version, then revert the v0.1.79 feature and follow-up fix commits without changing registered device data.",
   "outcomes": [
     {
+      "id": "authenticated-startup-device-refresh",
+      "acceptance": "After restored Firebase authentication or successful local login, the Viewer loads registered devices exactly once without a manual click; repeated callbacks, rerenders, and 24-hour idle add no request.",
+      "boundaries": ["Viewer authentication callback", "local login", "React StrictMode request ownership", "device list UI", "logout and reauthentication"],
+      "contractTests": ["aether-link-app/src/viewerDeviceRefresh.test.ts"],
+      "proofLevel": "automated-runtime",
+      "verification": "2026-09-05: `npx vitest run src/viewerDeviceRefresh.test.ts` passed 9/9 in real Chromium, including one startup request, repeated auth callbacks, 24-hour idle, manual history/reconnect, logout cancellation, and reauthentication.",
+      "physicalGap": "Installed desktop and Android launch behavior and live Firebase billing remain physical checks."
+    },
+    {
+      "id": "android-viewer-multi-session-ui",
+      "acceptance": "Android portrait and landscape layouts have no horizontal overflow, keep primary controls reachable, and allow two remote sessions to remain connected, switch by named tabs, and close independently with input limited to the selected session.",
+      "boundaries": ["shared Viewer session state", "Android `/viewer` route", "mobile dashboard", "bottom command bar", "WebRTC panel mounting", "input release and per-tab close"],
+      "contractTests": ["aether-link-app/src/viewerDeviceRefresh.test.ts"],
+      "proofLevel": "automated-runtime",
+      "verification": "2026-09-05: The focused Chromium case failed before the fix because the command bar was 749px above the bottom of a 390x844 viewport, then passed. The full file passed 9/9 and proves portrait/landscape layout, two transports opened once, tab switching, isolated close, and active-session input ownership.",
+      "physicalGap": "Physical Android WebView keyboard, touch, rotation, concurrent Agents, and WebRTC/TURN resource use require device verification."
+    },
+    {
+      "id": "release-pc-x86-v0.1.79",
+      "acceptance": "GitHub Release v0.1.79 contains exactly the stable x86 Viewer installer, stable x86 Agent installer, and signed update manifest; all four Windows aliases resolve to those assets.",
+      "boundaries": ["cached x86 Viewer build", "Agent-default NSIS bundle", "x86 payload verification", "signed update manifest", "GitHub Release", "stable Firebase aliases"],
+      "contractTests": ["aether-link-app/src/desktopPackaging.test.ts"],
+      "proofLevel": "deployment-required",
+      "verification": "2026-09-05: GitHub Actions run 33948717932 succeeded and published non-draft Release 383152572 with exactly three assets. Live manifest verification passed all Ed25519 signatures and hashes: Viewer `9d5e3b1e52c222829b73482363828301abd78998551aac32be3736a7b43abd99`, Agent `1221c5c1e23561b789a9962d3c73cbe65d7482276b79d85688f3a690c297d968`. Viewer, Agent, viewer-x86, and agent-x86 aliases each returned HTTP 302 to the correct latest asset.",
+      "physicalGap": "Installer launch and automatic update require physical Windows verification."
+    },
+    {
+      "id": "release-android-v0.1.79",
+      "acceptance": "Firebase Hosting serves signed v0.1.79 Android Agent, Viewer, and Control Add-On ZIP downloads through the three stable Android routes and serves the deployed multi-session Viewer UI.",
+      "boundaries": ["Gradle release build", "Android release keystore", "APK v2 signature verification", "ZIP packaging", "shared Viewer web build", "Firebase Hosting", "live route and byte verification"],
+      "contractTests": ["aether-link-app/src/desktopPackaging.test.ts", "aether-link-app/src/viewerDeviceRefresh.test.ts"],
+      "proofLevel": "deployment-required",
+      "verification": "2026-09-05: Gradle built Agent, Viewer, and Control Add-On v0.1.79 in 31 seconds; all three APKs passed v2 signature verification with one signer. Firebase deployment succeeded. Live ZIP hashes matched local archives: Agent `11e9bb03afea3cdb05f5cc209e559a934495a4ba8befa9fd0459a4357887c17d`, Viewer `6e4b05123074668cfd2669fd9b76acf8df47a50f6566a0ba783109173d65c537`, Add-On `9a6f74dcc43eaeb5977e9c24380dd58202150d01f3a90e5cd651d1d6be6d27db`; the live JS contained the multi-session marker.",
+      "physicalGap": "APK installation, screen consent, remote control, and multi-session behavior remain physical Android checks."
+    },
+    {
+      "id": "android-viewer-launch-revalidation",
+      "acceptance": "Launching an already installed Android Viewer revalidates `/viewer` and receives the currently deployed shared UI instead of treating the previous document as fresh for one hour.",
+      "boundaries": ["existing Android Viewer APK", "WebView LOAD_DEFAULT navigation", "Firebase Hosting `/viewer` rewrite", "Cache-Control response", "current hashed Viewer assets"],
+      "contractTests": ["aether-link-app/src/mobileViewerPackaging.test.ts"],
+      "proofLevel": "deployment-required",
+      "verification": "2026-09-05: `npx vitest run src/mobileViewerPackaging.test.ts` passed 1/1. After Hosting redeployment, live `/viewer` returned HTTP 200 with `Cache-Control: no-store, must-revalidate, no-cache` and loaded the v0.1.79 multi-session asset.",
+      "physicalGap": "Physically relaunch an already installed Android Viewer to confirm the new hosted UI appears. Native APK replacement still requires Android installation approval or managed-device privileges."
+    },
+    {
       "id": "deploy-only-ci-predeploy-stage",
-      "acceptance": "A main-branch push whose contract is ready-to-deploy with deploy impact runs the predeployment gate, while ordinary and proof-only pushes continue to require the completed verified contract.",
-      "boundaries": ["GitHub main push", "committed CHANGE_CONTRACT.json", "workflow stage selection", "predeploy or complete recurrence gate", "CI check result"],
+      "acceptance": "Main pushes ready for deployment use the predeploy gate, while ordinary and proof-only pushes require the completed verified contract, preventing false CI failures without weakening release checks.",
+      "boundaries": ["GitHub main push", "committed change contract", "workflow stage selection", "predeploy or complete recurrence gate", "CI check result"],
       "contractTests": ["aether-link-app/src/desktopPackaging.test.ts"],
       "proofLevel": "automated-runtime",
-      "verification": "2026-09-05: `npx vitest run src/desktopPackaging.test.ts -t \"builds releases from gated main commits so release caches remain reusable\"` passed 1/1. The contract pins main-push stage selection to `ready-to-deploy` plus `deploy` or `build-and-deploy`, while release creation remains restricted to `Prepare WonRemote v...` commits.",
+      "verification": "2026-09-05: The focused workflow contract passed 1/1, `npm run change:verify` passed, and GitHub Actions run 33949370940 completed successfully on the corrected workflow commit.",
       "physicalGap": "none"
     }
   ]

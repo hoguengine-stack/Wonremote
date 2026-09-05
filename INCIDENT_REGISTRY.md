@@ -863,12 +863,12 @@ This also covers development-process escapes: missed requirements, incomplete pl
 - Detected: 2026-09-05.
 - Severity: P1 deployment reliability.
 - Affected: Main-branch Hosting, rules, and other deploy-only changes that require live verification before the contract can become verified.
-- Status: source-verified-awaiting-ci.
+- Status: released-verified.
 - User-visible symptom: A correctly predeploy-verified Hosting fix produced a red CI check even though the deployment and live verification succeeded.
 - Minimal trigger: Push a non-version commit with `CHANGE_CONTRACT.json` set to `ready-to-deploy` and `releaseImpact` set to `deploy`.
 - Root cause and contributors: The workflow selected the predeploy gate only when the commit subject began with `Prepare WonRemote v`; every other push ran the completed-state gate, creating an impossible requirement to record live proof before deployment.
-- Fix commit(s): pending.
+- Fix commit(s): `73e4243`.
 - Permanent guard: Main pushes select the predeploy gate from the committed contract's `ready-to-deploy` status and `deploy` or `build-and-deploy` impact. Nondeployment and proof-only pushes continue to require `verified`. The packaging contract pins both branches.
 - Regression proof: `npx vitest run src/desktopPackaging.test.ts -t "builds releases from gated main commits so release caches remain reusable"` passed 1/1 and pins the contract-based stage selector separately from the version-release build condition.
-- Release proof: Not applicable; this is CI process configuration.
-- Remaining blocker: Push the fix and confirm the complete-stage CI remains green; the next real deploy-only commit will provide the first live predeploy-branch proof.
+- Release proof: GitHub Actions run `33949370940` completed successfully on commit `73e4243`, proving the corrected selector parses and preserves the completed-contract path.
+- Remaining blocker: The next real deploy-only push will provide the first live execution of the predeploy branch; its contract selection is covered by the focused workflow test.
