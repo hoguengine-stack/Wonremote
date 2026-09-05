@@ -936,6 +936,7 @@ This also covers development-process escapes: missed requirements, incomplete pl
 - Physical-log correction: Android 16 arm64 v0.1.83 logcat proved `org.jni_zero.JniInit` was removed despite `org.webrtc` keep rules; preserve `org.jni_zero.**` and require JniInit in release mapping verification.
 - Regression proof: 4 native artifact-verifier tests passed; existing broken release mapping is rejected. Focused ControlAddonClient test and Add-On compilation passed. Signed Android release build verified preserved JNI mapping and all three APK signatures.
 - Release proof: Android Agent, Viewer and Control Add-On v0.1.83 ZIPs and android-update.json versionCode 1083 deployed to Hosting. GitHub Actions run `33985944437` succeeded and released signed x86 Viewer and Agent installers plus updater manifest.
+- Correction release proof: v0.1.84 Android ZIPs and android-update.json versionCode 1084 are live on Firebase Hosting. GitHub Release v0.1.84 contains the two x86 installers and signed manifest; every uploaded byte size matches the local artifact.
 - Remaining blocker: Signed optimized APK on the affected physical device: background request, permission denial/approval, first frame, reconnect, and logcat.
 
 ## INC-20260905-008: Android remote request failed to preserve or request screen sharing
