@@ -1,6 +1,6 @@
 {
   "status": "verified",
-  "intent": "Android Agent background connection crash is reproducibly captured from another Windows PC.",
+  "intent": "Android Agent background connection crash can be captured from another Windows PC without a console closing on startup.",
   "changeType": "fix",
   "risk": "high",
   "releaseImpact": "none",
@@ -35,7 +35,7 @@
     },
     {
       "id": "android-crash-log-capture",
-      "acceptance": "On another Windows PC, an operator can clear Android logs, reproduce the first and second Viewer connection attempts, and receive a ZIP containing timestamped logcat, device properties and Agent package state.",
+      "acceptance": "On another Windows PC, an operator can open a visible launcher, clear Android logs, reproduce the first and second Viewer connection attempts, and receive a ZIP containing timestamped logcat, device properties and Agent package state.",
       "boundaries": [
         "Windows PowerShell",
         "ADB discovery",
@@ -51,7 +51,7 @@
         "aether-link-app/src/androidCrashLogCollector.test.ts"
       ],
       "proofLevel": "physical-required",
-      "verification": "2026-09-06: PowerShell collect-android-crash-log.ps1 -SelfTest passed. The script parses, creates and removes its own timestamped capture directory without requiring a device. Physical capture remains required.",
+      "verification": "2026-09-06: npx vitest run src/androidCrashLogCollector.test.ts passed 2 tests. The launcher retains the PowerShell window with -NoExit and calls the collector; the collector self-test creates and removes its own timestamped folder without a device.",
       "physicalGap": "Requires the affected Android device connected to a separate Windows PC with USB debugging authorized; run the capture through both connection attempts and provide the generated ZIP."
     }
   ]
