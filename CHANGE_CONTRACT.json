@@ -1,6 +1,6 @@
 {
   "status": "verified",
-  "intent": "Android Agent crash logs can be captured from another Windows PC without truncating a discovered ADB path.",
+  "intent": "Android Agent crash logs can be captured from another Windows PC using one launcher file without a missing PowerShell script.",
   "changeType": "fix",
   "risk": "high",
   "releaseImpact": "none",
@@ -8,20 +8,20 @@
   "incident": "INC-20260906-004",
   "requestReview": {
     "impact": "changed",
-    "reason": "The manually launched local collector downloads one official Android Platform-Tools ZIP only when adb.exe is absent; it does not access Firebase or add background app traffic.",
-    "assumptions": "One operator on one Windows PC launches the collector once. If ADB is absent, that launch reads one Google-hosted ZIP and writes zero remote records; later runs reuse the extracted adb.exe. There are no timers, listeners, automatic retries or app service requests.",
+    "reason": "The manually launched local launcher downloads the collector script once when missing, and the collector downloads official Platform-Tools once only when adb.exe is absent; it does not access Firebase or add background app traffic.",
+    "assumptions": "One operator on one Windows PC launches the launcher once. If only the launcher is downloaded, it reads one GitHub-hosted script. If ADB is also absent, the script reads one additional Google-hosted ZIP. There are zero remote writes, timers, listeners, automatic retries or app service requests.",
     "dailyBudget": {
       "clients": 1,
-      "readsPerClient": 1,
+      "readsPerClient": 2,
       "writesPerClient": 0,
-      "maxReads": 1,
+      "maxReads": 2,
       "maxWrites": 0
     },
     "checks": {
       "idle": "The collector has no scheduled task, timer, listener or background process; no launch means zero requests.",
       "rerender": "The collector has no UI lifecycle or remount path; each explicit launch is counted as one client launch.",
-      "concurrency": "The script performs one synchronous Invoke-WebRequest per launch and shares no running service; concurrent manual launches may each download once and are outside the one-operator budget.",
-      "failure": "Invoke-WebRequest errors terminate because ErrorActionPreference is Stop; no retry loop is present.",
+      "concurrency": "The launcher and collector each perform one synchronous download at most per manual launch and share no running service; concurrent manual launches may each download and are outside the one-operator budget.",
+      "failure": "Download failures terminate and leave the console open; no retry loop is present.",
       "cleanup": "The downloaded ZIP is removed after successful extraction, while extracted adb.exe is retained for future runs."
     },
     "contractTests": [
@@ -53,7 +53,7 @@
     },
     {
       "id": "android-crash-log-capture",
-      "acceptance": "On another Windows PC, an operator can launch a visible collector that returns the complete existing ADB path including C:\\Android\\sdk\\platform-tools, clears Android logs, reproduces two Viewer connection attempts, and receives a ZIP containing logcat, device properties and Agent package state.",
+      "acceptance": "On another Windows PC, an operator can double-click one launcher file; it retrieves the collector only if missing, finds a complete existing ADB path, clears Android logs, reproduces two Viewer connection attempts, and receives a ZIP containing logcat, device properties and Agent package state.",
       "boundaries": [
         "Windows PowerShell",
         "ADB discovery",
@@ -69,7 +69,7 @@
         "aether-link-app/src/androidCrashLogCollector.test.ts"
       ],
       "proofLevel": "physical-required",
-      "verification": "2026-09-06: PowerShell collector self-test creates one fake adb.exe and verifies Get-FirstExistingPath returns its full path rather than the first character. npx vitest run src/androidCrashLogCollector.test.ts passed 3 tests.",
+      "verification": "2026-09-06: npx vitest run src/androidCrashLogCollector.test.ts passed 3 tests for the single-file launcher, visible failure handling, Platform-Tools fallback and full ADB path. PowerShell collector self-test passed.",
       "physicalGap": "Requires the affected Android device connected to a separate Windows PC with USB debugging authorized; run the capture through both connection attempts and provide the generated ZIP."
     }
   ]

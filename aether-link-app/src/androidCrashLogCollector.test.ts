@@ -21,6 +21,7 @@ describe("Android crash log collector", () => {
     expect(command).toContain("-NoExit");
     expect(command).toContain("pause");
     expect(command).toContain("collect-android-crash-log.ps1");
+    expect(command).toContain("raw.githubusercontent.com/hoguengine-stack/Wonremote/main/mobile/android/collect-android-crash-log.ps1");
   });
 
   it("downloads the official Platform-Tools package when ADB is absent", () => {
