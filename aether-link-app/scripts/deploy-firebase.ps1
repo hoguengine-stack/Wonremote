@@ -2,6 +2,7 @@ param(
   [string]$Project = "",
   [switch]$SkipAppBuild,
   [switch]$SparkOnly,
+  [switch]$IncludeStorage,
   [switch]$SkipStorage
 )
 
@@ -65,13 +66,14 @@ if (-not $SparkOnly) {
   }
 }
 
+$DeployStorage = $IncludeStorage -and -not $SkipStorage
 $DeployTargets = if ($SparkOnly) {
-  if ($SkipStorage) { "firestore:rules,hosting" } else { "firestore:rules,storage,hosting" }
+  if ($DeployStorage) { "firestore:rules,storage,hosting" } else { "firestore:rules,hosting" }
 } else {
-  if ($SkipStorage) { "functions,firestore:rules,hosting" } else { "functions,firestore:rules,storage,hosting" }
+  if ($DeployStorage) { "functions,firestore:rules,storage,hosting" } else { "functions,firestore:rules,hosting" }
 }
-if ($SkipStorage) {
-  Write-Warning "Skipping Firebase Storage rules deploy. Online 500MB file transfer remains blocked until Firebase Storage is initialized and storage.rules is deployed."
+if (-not $DeployStorage) {
+  Write-Warning "Skipping Firebase Storage rules deploy. Initialize Firebase Storage, then rerun with -IncludeStorage before enabling online 500MB file transfer."
 }
 $DeployArgs = @("deploy", "--only", $DeployTargets)
 if ($Project.Trim()) {

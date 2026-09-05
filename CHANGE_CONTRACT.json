@@ -1,6 +1,6 @@
 {
   "status": "ready-to-deploy",
-  "intent": "Make Android remote requests surface screen-share consent when possible and prevent session cleanup from stopping an already approved MediaProjection.",
+  "intent": "Make Android remote requests surface screen-share consent when possible, preserve approved MediaProjection through session cleanup, and deploy Hosting without an uninitialized Firebase Storage service.",
   "requestReview": {
     "impact": "none",
     "reason": "The fix changes only Android local activity, projection, and session lifecycle handling. It adds no Firebase request, timer, listener, retry, polling, or persistence write."
@@ -8,8 +8,8 @@
   "changeType": "fix",
   "risk": "high",
   "releaseImpact": "build-and-deploy",
-  "rollback": "Revert the Android Agent consent and session-lifecycle commit; registered devices and server data remain unchanged.",
-  "incident": "INC-20260905-008",
+  "rollback": "Revert the Android Agent consent and session-lifecycle commit or the Firebase deploy target change; registered devices and server data remain unchanged.",
+  "incident": "INC-20260906-001",
   "outcomes": [
     {
       "id": "android-viewer-request-consent",
@@ -28,6 +28,15 @@
       "proofLevel": "automated-runtime",
       "verification": "2026-09-05: The focused Android JUnit class passed 4/4, covering current-session stop matching, stale callback rejection, and consent fallback. The packaging contract passed 1/1 and pins projection-preserving cancel, stop-command, and session-close paths.",
       "physicalGap": "The Android red screen-sharing indicator and first remote frame require physical verification."
+    },
+    {
+      "id": "firebase-hosting-deploy-without-storage",
+      "acceptance": "The normal deployment command publishes Viewer and Android ZIP Hosting content without failing when Firebase Storage has not been initialized; Storage rules deploy only when explicitly requested after Storage setup.",
+      "boundaries": ["npm firebase:deploy", "deploy-firebase.ps1 target selection", "Firebase CLI", "Firebase Hosting static download routes"],
+      "contractTests": ["aether-link-app/src/desktopPackaging.test.ts"],
+      "proofLevel": "deployment-required",
+      "verification": "pending",
+      "physicalGap": "Live Firebase Hosting download route verification is pending deployment."
     }
   ]
 }

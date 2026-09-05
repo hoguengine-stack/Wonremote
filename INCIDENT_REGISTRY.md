@@ -873,6 +873,21 @@ This also covers development-process escapes: missed requirements, incomplete pl
 - Release proof: GitHub Actions run `33949370940` completed successfully on commit `73e4243`, proving the corrected selector parses and preserves the completed-contract path.
 - Remaining blocker: The next real deploy-only push will provide the first live execution of the predeploy branch; its contract selection is covered by the focused workflow test.
 
+## INC-20260906-001: Normal Firebase deploy required an uninitialized Storage service
+
+- Detected: 2026-09-06.
+- Severity: P1 release-blocking.
+- Affected: Normal `npm run firebase:deploy` path and Hosting deployment of Android ZIP downloads.
+- Status: source-verified-not-released.
+- User-visible symptom: A requested release built successfully but Firebase deployment stopped before Hosting updated because the project has not initialized Firebase Storage.
+- Minimal trigger: Run the normal deploy command in a project with `storage.rules` configured but no initialized Firebase Storage bucket.
+- Root cause and contributors: The deploy script included `storage` by default even though static APK ZIP delivery uses Hosting and the Storage-backed 500MB transfer feature is not provisioned.
+- Fix commit(s): pending.
+- Permanent guard: Default to `functions,firestore:rules,hosting`; Storage rules deploy requires an explicit `-IncludeStorage` after the Storage service is initialized. The packaging test pins both target selections.
+- Regression proof: Pending focused packaging test and live Hosting deployment.
+- Release proof: Pending.
+- Remaining blocker: Execute the corrected deploy path and confirm the public download routes.
+
 ## INC-20260905-008: Android remote request failed to preserve or request screen sharing
 
 - Detected: 2026-09-05.

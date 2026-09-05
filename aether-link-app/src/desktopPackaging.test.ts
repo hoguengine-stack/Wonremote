@@ -297,6 +297,8 @@ describe("desktop packaging scaffold", () => {
     expect(deployScript).toContain("functions");
     expect(deployScript).toContain("firebase.json");
     expect(deployScript).toContain(".firebaserc");
+    expect(deployScript).toContain("IncludeStorage");
+    expect(deployScript).toContain('$DeployStorage = $IncludeStorage -and -not $SkipStorage');
     expect(deployScript).toContain('"firestore:rules,storage,hosting"');
     expect(deployScript).toContain('"firestore:rules,hosting"');
     expect(deployScript).toContain('"functions,firestore:rules,storage,hosting"');
