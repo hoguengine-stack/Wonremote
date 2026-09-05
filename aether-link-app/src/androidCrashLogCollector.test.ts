@@ -19,6 +19,7 @@ describe("Android crash log collector", () => {
   it("keeps the launch console open when the capture script reports an error", () => {
     const command = readFileSync(launcher, "utf8");
     expect(command).toContain("-NoExit");
+    expect(command).toContain("pause");
     expect(command).toContain("collect-android-crash-log.ps1");
   });
 
@@ -26,5 +27,6 @@ describe("Android crash log collector", () => {
     const source = readFileSync(script, "utf8");
     expect(source).toContain("https://dl.google.com/android/repository/platform-tools-latest-windows.zip");
     expect(source).toContain("Expand-Archive");
+    expect(source).toContain("C:\\Android\\sdk\\platform-tools\\adb.exe");
   });
 });

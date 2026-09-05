@@ -5,7 +5,10 @@ $AgentPackage = "com.wonremote.agent"
 $PlatformToolsUrl = "https://dl.google.com/android/repository/platform-tools-latest-windows.zip"
 
 function Get-AdbPath {
-  $candidates = @((Join-Path $PSScriptRoot "adb.exe"))
+  $candidates = @(
+    (Join-Path $PSScriptRoot "adb.exe"),
+    "C:\Android\sdk\platform-tools\adb.exe"
+  )
   if ($env:ANDROID_HOME) { $candidates += Join-Path $env:ANDROID_HOME "platform-tools\adb.exe" }
   if ($env:LOCALAPPDATA) { $candidates += Join-Path $env:LOCALAPPDATA "Android\Sdk\platform-tools\adb.exe" }
   $paths = $candidates | Where-Object { Test-Path $_ }
