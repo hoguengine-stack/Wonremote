@@ -873,6 +873,21 @@ This also covers development-process escapes: missed requirements, incomplete pl
 - Release proof: GitHub Actions run `33949370940` completed successfully on commit `73e4243`, proving the corrected selector parses and preserves the completed-contract path.
 - Remaining blocker: The next real deploy-only push will provide the first live execution of the predeploy branch; its contract selection is covered by the focused workflow test.
 
+## INC-20260906-002: Normal Firebase deploy required unavailable Functions infrastructure
+
+- Detected: 2026-09-06.
+- Severity: P1 release-blocking.
+- Affected: Normal `npm run firebase:deploy` path after Hosting/Firestore preparation.
+- Status: source-verified-not-released.
+- User-visible symptom: A requested static release could not reach Hosting because the command attempted a Functions deploy requiring Cloud Build and Artifact Registry on a Spark project.
+- Minimal trigger: Run the normal deploy command on a Spark project where the release contains no Functions changes.
+- Root cause and contributors: The script treated Functions as a default deployment target even though Functions need Blaze billing and are unrelated to static Viewer/Android download publication.
+- Fix commit(s): pending.
+- Permanent guard: Default to Firestore rules and Hosting only; Functions deployment requires explicit `-IncludeFunctions` after Cloud Build and Artifact Registry are available. The packaging test pins both target selections.
+- Regression proof: Pending focused packaging test and live Hosting deployment.
+- Release proof: Pending.
+- Remaining blocker: Execute the corrected deploy path and confirm public Hosting routes.
+
 ## INC-20260906-001: Normal Firebase deploy required an uninitialized Storage service
 
 - Detected: 2026-09-06.

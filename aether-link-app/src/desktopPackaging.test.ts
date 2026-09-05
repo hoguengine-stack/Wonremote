@@ -298,12 +298,15 @@ describe("desktop packaging scaffold", () => {
     expect(deployScript).toContain("firebase.json");
     expect(deployScript).toContain(".firebaserc");
     expect(deployScript).toContain("IncludeStorage");
+    expect(deployScript).toContain("IncludeFunctions");
     expect(deployScript).toContain('$DeployStorage = $IncludeStorage -and -not $SkipStorage');
+    expect(deployScript).toContain('$DeployFunctions = $IncludeFunctions -and -not $SparkOnly');
     expect(deployScript).toContain('"firestore:rules,storage,hosting"');
     expect(deployScript).toContain('"firestore:rules,hosting"');
     expect(deployScript).toContain('"functions,firestore:rules,storage,hosting"');
     expect(deployScript).toContain('"functions,firestore:rules,hosting"');
     expect(deployScript).toContain("Skipping Firebase Storage rules deploy");
+    expect(deployScript).toContain("Skipping Firebase Functions deploy");
     expect(deployScript).toContain("firebase");
     expect(deployScript).toContain("firebase-tools");
     expect(deployScript).toContain('if ($LASTEXITCODE -ne 0) { throw "Firebase deployment failed with exit code $LASTEXITCODE." }');

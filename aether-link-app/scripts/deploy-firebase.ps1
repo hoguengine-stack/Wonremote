@@ -2,6 +2,7 @@ param(
   [string]$Project = "",
   [switch]$SkipAppBuild,
   [switch]$SparkOnly,
+  [switch]$IncludeFunctions,
   [switch]$IncludeStorage,
   [switch]$SkipStorage
 )
@@ -55,7 +56,10 @@ if (-not $SkipAppBuild) {
   }
 }
 
-if (-not $SparkOnly) {
+$DeployFunctions = $IncludeFunctions -and -not $SparkOnly
+$DeployStorage = $IncludeStorage -and -not $SkipStorage
+
+if ($DeployFunctions) {
   Push-Location $FunctionsDir
   try {
     npm run build
@@ -66,11 +70,16 @@ if (-not $SparkOnly) {
   }
 }
 
-$DeployStorage = $IncludeStorage -and -not $SkipStorage
 $DeployTargets = if ($SparkOnly) {
   if ($DeployStorage) { "firestore:rules,storage,hosting" } else { "firestore:rules,hosting" }
 } else {
-  if ($DeployStorage) { "functions,firestore:rules,storage,hosting" } else { "functions,firestore:rules,hosting" }
+  if ($DeployFunctions -and $DeployStorage) { "functions,firestore:rules,storage,hosting" }
+  elseif ($DeployFunctions) { "functions,firestore:rules,hosting" }
+  elseif ($DeployStorage) { "firestore:rules,storage,hosting" }
+  else { "firestore:rules,hosting" }
+}
+if (-not $DeployFunctions) {
+  Write-Warning "Skipping Firebase Functions deploy. Use -IncludeFunctions only after the project can enable Cloud Build and Artifact Registry."
 }
 if (-not $DeployStorage) {
   Write-Warning "Skipping Firebase Storage rules deploy. Initialize Firebase Storage, then rerun with -IncludeStorage before enabling online 500MB file transfer."
