@@ -867,7 +867,10 @@ describe("desktop packaging scaffold", () => {
     expect(releaseWorkflow).toContain('branches: ["main"]');
     expect(releaseWorkflow).not.toContain('tags: ["v*"]');
     expect(releaseWorkflow).toContain("startsWith(github.event.head_commit.message, 'Prepare WonRemote v')");
-    expect(releaseWorkflow).toContain("HEAD_COMMIT_MESSAGE:");
+    expect(releaseWorkflow).toContain('require("./CHANGE_CONTRACT.json")');
+    expect(releaseWorkflow).toContain('c.status === "ready-to-deploy"');
+    expect(releaseWorkflow).toContain('["deploy", "build-and-deploy"].includes(c.releaseImpact)');
+    expect(releaseWorkflow).toContain('$DEPLOYMENT_STAGE" == "predeploy"');
     expect(releaseWorkflow).toContain("verify-recurrence-coverage.js --stage predeploy");
     expect(releaseWorkflow).toContain("npm run change:verify:predeploy");
     expect(releaseWorkflow).toContain('$env:GITHUB_REF_TYPE -ne "branch" -or $env:GITHUB_REF_NAME -ne "main"');

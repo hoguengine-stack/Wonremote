@@ -848,12 +848,27 @@ This also covers development-process escapes: missed requirements, incomplete pl
 - Detected: 2026-09-05.
 - Severity: P1 update reliability.
 - Affected: Existing Android Viewer APKs loading the shared `/viewer` route.
-- Status: source-verified-not-released.
+- Status: released-physical-verification-required.
 - User-visible symptom: Relaunching an already installed Viewer could keep the previous hosted UI for up to one hour after deployment.
 - Minimal trigger: Deploy a new shared Viewer UI, then relaunch an already installed Android Viewer within the previous one-hour cache lifetime.
 - Root cause and contributors: The Android shell correctly used the shared web Viewer, but Firebase Hosting served its navigation document with `Cache-Control: max-age=3600`; release checks verified asset bytes without checking the launch document's live cache policy.
-- Fix commit(s): pending.
+- Fix commit(s): `e183216`.
 - Permanent guard: `/viewer` must use `no-cache, no-store, must-revalidate`. The mobile packaging contract pins that header, and every Android web-UI deployment must verify the live response header and a release-specific UI marker before completion.
-- Regression proof: `npx vitest run src/mobileViewerPackaging.test.ts` passed 1/1 and requires the exact `/viewer` no-cache policy. Post-deployment live-header verification remains pending.
-- Release proof: Not yet redeployed with the corrected header.
-- Remaining blocker: Redeploy Hosting, verify the live header, then physically relaunch an installed Android Viewer on a device.
+- Regression proof: `npx vitest run src/mobileViewerPackaging.test.ts` passed 1/1 and requires the exact `/viewer` no-cache policy. After redeployment, the live route returned HTTP 200 with `Cache-Control: no-store, must-revalidate, no-cache` and the v0.1.79 multi-session UI marker.
+- Release proof: Firebase Hosting redeployment completed on 2026-09-05; the live `/viewer` response no longer advertises the previous one-hour freshness lifetime.
+- Remaining blocker: Physically relaunch an already installed Android Viewer and confirm the deployed UI appears. Native APK replacement still requires Android installation approval or managed-device privileges.
+
+## INC-20260905-007: Deploy-only commits could not pass the main-branch CI gate
+
+- Detected: 2026-09-05.
+- Severity: P1 deployment reliability.
+- Affected: Main-branch Hosting, rules, and other deploy-only changes that require live verification before the contract can become verified.
+- Status: source-verified-awaiting-ci.
+- User-visible symptom: A correctly predeploy-verified Hosting fix produced a red CI check even though the deployment and live verification succeeded.
+- Minimal trigger: Push a non-version commit with `CHANGE_CONTRACT.json` set to `ready-to-deploy` and `releaseImpact` set to `deploy`.
+- Root cause and contributors: The workflow selected the predeploy gate only when the commit subject began with `Prepare WonRemote v`; every other push ran the completed-state gate, creating an impossible requirement to record live proof before deployment.
+- Fix commit(s): pending.
+- Permanent guard: Main pushes select the predeploy gate from the committed contract's `ready-to-deploy` status and `deploy` or `build-and-deploy` impact. Nondeployment and proof-only pushes continue to require `verified`. The packaging contract pins both branches.
+- Regression proof: `npx vitest run src/desktopPackaging.test.ts -t "builds releases from gated main commits so release caches remain reusable"` passed 1/1 and pins the contract-based stage selector separately from the version-release build condition.
+- Release proof: Not applicable; this is CI process configuration.
+- Remaining blocker: Push the fix and confirm the complete-stage CI remains green; the next real deploy-only commit will provide the first live predeploy-branch proof.

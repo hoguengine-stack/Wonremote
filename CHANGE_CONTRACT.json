@@ -1,34 +1,24 @@
 {
-  "status": "ready-to-deploy",
-  "intent": "Ensure every existing Android Viewer shell revalidates the hosted Viewer UI when the app launches.",
+  "status": "verified",
+  "intent": "Make CI run the predeployment contract gate for every main-branch change that is explicitly ready for deployment, not only version-release commits.",
   "requestReview": {
-    "impact": "changed",
-    "reason": "The `/viewer` navigation response changes from a one-hour freshness lifetime to mandatory launch-time revalidation. No timer, Firestore operation, listener, retry, or persistence write is added.",
-    "assumptions": "One Android Viewer shell makes one Firebase Hosting navigation request each time it launches. This request may return the document or a conditional response; it creates zero Firestore document reads and zero writes. Session, device-list, reconnect, WebRTC, and TURN traffic are unchanged.",
-    "dailyBudget": { "clients": 1, "readsPerClient": 0, "writesPerClient": 0, "maxReads": 0, "maxWrites": 0 },
-    "checks": {
-      "idle": "The Hosting header contains no timer or client loop; after the launch navigation it generates zero idle Firestore reads and writes over 24 hours.",
-      "rerender": "A server response header cannot add a React render request; rerenders retain the existing Viewer request owners.",
-      "concurrency": "Each app launch performs its own bounded navigation revalidation without shared mutable request state.",
-      "failure": "The existing Android WebView error screen remains the network-failure boundary; the cache policy adds no retry loop.",
-      "cleanup": "No timer, listener, or callback is created, so app shutdown has no new lifecycle owner to clean up."
-    },
-    "contractTests": ["aether-link-app/src/mobileViewerPackaging.test.ts"]
+    "impact": "none",
+    "reason": "This changes only GitHub Actions gate selection and cannot alter application, Firebase, WebRTC, update, or device request traffic."
   },
   "changeType": "fix",
   "risk": "medium",
-  "releaseImpact": "deploy",
-  "rollback": "Revert the `/viewer` Hosting header commit and redeploy Firebase Hosting; Android APK binaries and registered data remain unchanged.",
-  "incident": "INC-20260905-006",
+  "releaseImpact": "none",
+  "rollback": "Revert the CI workflow commit; application binaries, Hosting content, and registered data remain unchanged.",
+  "incident": "INC-20260905-007",
   "outcomes": [
     {
-      "id": "android-viewer-launch-revalidation",
-      "acceptance": "Launching an already installed Android Viewer revalidates `/viewer` with Firebase Hosting and receives the currently deployed shared UI instead of treating the prior document as fresh for one hour.",
-      "boundaries": ["existing Android Viewer APK", "WebView LOAD_DEFAULT navigation", "Firebase Hosting `/viewer` rewrite", "Cache-Control response", "current hashed Viewer assets"],
-      "contractTests": ["aether-link-app/src/mobileViewerPackaging.test.ts"],
-      "proofLevel": "deployment-required",
-      "verification": "Pending",
-      "physicalGap": "A physical relaunch of an already installed Android Viewer remains required after live header verification. Native APK replacement still requires Android installation approval or managed-device privileges."
+      "id": "deploy-only-ci-predeploy-stage",
+      "acceptance": "A main-branch push whose contract is ready-to-deploy with deploy impact runs the predeployment gate, while ordinary and proof-only pushes continue to require the completed verified contract.",
+      "boundaries": ["GitHub main push", "committed CHANGE_CONTRACT.json", "workflow stage selection", "predeploy or complete recurrence gate", "CI check result"],
+      "contractTests": ["aether-link-app/src/desktopPackaging.test.ts"],
+      "proofLevel": "automated-runtime",
+      "verification": "2026-09-05: `npx vitest run src/desktopPackaging.test.ts -t \"builds releases from gated main commits so release caches remain reusable\"` passed 1/1. The contract pins main-push stage selection to `ready-to-deploy` plus `deploy` or `build-and-deploy`, while release creation remains restricted to `Prepare WonRemote v...` commits.",
+      "physicalGap": "none"
     }
   ]
 }
