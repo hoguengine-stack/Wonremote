@@ -1,31 +1,31 @@
 {
   "status": "verified",
-  "intent": "Android Agent crash logs can be captured from another Windows PC with the current collector code on every manual launcher run.",
+  "intent": "Android Agent WebRTC initialization does not terminate when a PC Viewer starts a remote connection.",
   "changeType": "fix",
   "risk": "high",
-  "releaseImpact": "none",
-  "rollback": "Remove the local diagnostic script; no installed application, device setting or service data is changed.",
+  "releaseImpact": "build-and-deploy",
+  "rollback": "Revert the JNI keep rule and release verifier change, then redeploy the prior signed Android Agent APK.",
   "incident": "INC-20260906-004",
   "requestReview": {
-    "impact": "changed",
-    "reason": "The manually launched local launcher downloads the current collector script once per explicit run, and the collector downloads official Platform-Tools once only when adb.exe is absent; it does not access Firebase or add background app traffic.",
-    "assumptions": "One operator on one Windows PC launches the launcher once. Each manual launch reads one GitHub-hosted collector script; if ADB is absent, it reads one additional Google-hosted ZIP. There are zero remote writes, timers, listeners, automatic retries or app service requests.",
+    "impact": "none",
+    "reason": "The R8 keep rule and offline release-mapping verifier alter neither application requests nor diagnostic collector behavior.",
+    "assumptions": "No request lifecycle changes are included.",
     "dailyBudget": {
-      "clients": 1,
-      "readsPerClient": 2,
+      "clients": 0,
+      "readsPerClient": 0,
       "writesPerClient": 0,
-      "maxReads": 2,
+      "maxReads": 0,
       "maxWrites": 0
     },
     "checks": {
-      "idle": "The collector has no scheduled task, timer, listener or background process; no launch means zero requests.",
-      "rerender": "The collector has no UI lifecycle or remount path; each explicit launch is counted as one client launch.",
-      "concurrency": "The launcher and collector each perform one synchronous download at most per manual launch and share no running service; concurrent manual launches may each download and are outside the one-operator budget.",
-      "failure": "Download failures terminate and leave the console open; no retry loop is present.",
-      "cleanup": "The downloaded ZIP is removed after successful extraction, while extracted adb.exe is retained for future runs."
+      "idle": "No request path changes.",
+      "rerender": "No UI request lifecycle changes.",
+      "concurrency": "No request concurrency changes.",
+      "failure": "No request retry changes.",
+      "cleanup": "No request resource changes."
     },
     "contractTests": [
-      "aether-link-app/src/androidCrashLogCollector.test.ts"
+      "aether-link-app/src/androidNativeRelease.test.ts"
     ]
   },
   "outcomes": [
@@ -44,33 +44,11 @@
       ],
       "contractTests": [
         "aether-link-app/src/androidNativeRelease.test.ts",
-        "mobile/android/agent/src/test/java/com/wonremote/agent/ControlAddonClientTest.java",
-        "aether-link-app/src/androidCrashLogCollector.test.ts"
+        "mobile/android/agent/src/test/java/com/wonremote/agent/ControlAddonClientTest.java"
       ],
       "proofLevel": "physical-required",
-      "verification": "2026-09-06: focused Android native release, discovery and packaging tests passed 12 tests; focused Agent/Add-On test and compilation passed. Signed Android 0.1.83 Agent, Viewer and Control Add-On release build passed with WebRTC JNI mapping verification, signature verification and generated update metadata. Firebase Hosting publishes android-update.json versionCode 1083. GitHub Actions run 33985944437 passed and published v0.1.83 x86 Viewer/Agent installers plus signed update manifest. Download aliases redirect to the current release assets.",
-      "physicalGap": "Reproduce reported crash with logcat on affected device, then verify signed optimized APK background request, permission refusal, approval, first frame, disconnect and repeated connection on arm64/armv7."
-    },
-    {
-      "id": "android-crash-log-capture",
-      "acceptance": "On another Windows PC, an operator can double-click one launcher file; every explicit run retrieves the current collector code, then finds a complete existing ADB path or reports an actionable USB debugging state before capturing the two Viewer connection attempts into a ZIP.",
-      "boundaries": [
-        "Windows PowerShell",
-        "ADB discovery",
-        "authorized USB device",
-        "logcat clearing",
-        "Viewer-triggered reproduction",
-        "logcat dump",
-        "device/package diagnostics",
-        "ZIP artifact"
-      ],
-      "contractTests": [
-        "mobile/android/collect-android-crash-log.ps1 -SelfTest",
-        "aether-link-app/src/androidCrashLogCollector.test.ts"
-      ],
-      "proofLevel": "physical-required",
-      "verification": "2026-09-06: PowerShell collector self-test verifies a full authorized device serial is accepted and an unauthorized device is rejected without a null value method call. npx vitest run src/androidCrashLogCollector.test.ts passed 3 tests, including deletion of a prior temporary collector and visible stop on current-download failure.",
-      "physicalGap": "Requires the affected Android device connected to a separate Windows PC with USB debugging authorized; run the capture through both connection attempts and provide the generated ZIP."
+      "verification": "2026-09-06: physical Android 16 arm64 v0.1.83 log proves libjingle_peerconnection_so aborts because R8 removed org.jni_zero.JniInit. npx vitest run src/androidNativeRelease.test.ts passed 5 tests, including the JniInit keep rule and missing-mapping rejection. The existing v0.1.83 mapping now correctly fails verify-native-release.mjs for JniInit, proving it cannot pass a future Android release gate.",
+      "physicalGap": "Build and install a newly signed Android Agent on the reported Android 16 arm64 device, then verify background Viewer request, approval, first frame, disconnect and repeat connection."
     }
   ]
 }

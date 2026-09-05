@@ -6,6 +6,7 @@ export function verifyNativeMapping(mapping) {
   const required = new Set([
     "org.webrtc.ContextUtils", "org.webrtc.PeerConnectionFactory",
     "org.webrtc.PeerConnection", "org.webrtc.DataChannel", "org.webrtc.NetworkMonitor",
+    "org.jni_zero.JniInit",
   ]);
   let nativeClass = false;
   for (const line of mapping.split(/\r?\n/)) {
