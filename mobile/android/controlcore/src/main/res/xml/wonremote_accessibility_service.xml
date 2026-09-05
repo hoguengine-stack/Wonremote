@@ -2,8 +2,8 @@
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:accessibilityEventTypes="typeViewFocused|typeViewTextChanged|typeWindowStateChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows|flagReportViewIds"
     android:canPerformGestures="true"
     android:canRetrieveWindowContent="true"
-    android:description="@string/accessibility_description"
-    android:notificationTimeout="100"
-    android:settingsActivity="com.wonremote.agent.MainActivity" />
+    android:description="@string/wonremote_control_accessibility_description"
+    android:notificationTimeout="100" />

@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -37,13 +37,6 @@ export async function copyPngFileToWindowsClipboardAndRemove(filePath: string): 
   try {
     await copyPngFileToWindowsClipboard(filePath);
   } finally {
-    const { rm } = await import("node:fs/promises");
     await rm(filePath, { force: true });
   }
-}
-
-export async function ensureClipboardImageRoot(env: Record<string, string | undefined> = process.env): Promise<string> {
-  const root = resolveClipboardImageRoot(env);
-  await mkdir(root, { recursive: true });
-  return root;
 }

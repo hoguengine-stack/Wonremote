@@ -4,7 +4,6 @@ import {
   pointerReleaseActions,
   recordPendingPointerAction,
   recordSuccessfulPointerAction,
-  shouldInjectPointerAction,
 } from "./agentPointerState";
 
 describe("Agent pointer state", () => {
@@ -23,15 +22,6 @@ describe("Agent pointer state", () => {
     recordSuccessfulPointerAction("mouse-up 100 200 right", state);
 
     expect(pointerReleaseActions(state)).toEqual([]);
-  });
-
-  it("always forwards explicit button transitions even when tracked state may be stale", () => {
-    const state = createAgentPointerState();
-    expect(shouldInjectPointerAction("mouse-down 100 200 left", state)).toBe(true);
-    recordSuccessfulPointerAction("mouse-down 100 200 left", state);
-    expect(shouldInjectPointerAction("mouse-down 100 200 left", state)).toBe(true);
-    expect(shouldInjectPointerAction("mouse-up 100 200 right", state)).toBe(true);
-    expect(shouldInjectPointerAction("mouse-up 100 200 left", state)).toBe(true);
   });
 
   it("tracks mouse-down intent before acknowledgement so shutdown can release it", () => {

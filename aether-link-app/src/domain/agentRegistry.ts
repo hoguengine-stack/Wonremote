@@ -12,6 +12,14 @@ import type {
 } from "./types";
 import { DEFAULT_STORE_NAME, normalizeStoreNameForDisplay } from "./deviceDefaults";
 import { DEFAULT_DEVICE_TYPE, isGeneratedAgentDeviceName } from "./deviceType";
+import { sanitizeDeviceSystemInfo } from "./deviceSystemInfo";
+import { normalizeDevicePlatform } from "./devicePlatform";
+
+export const DEVICE_CONTACT_NAME_MAX_LENGTH = 100;
+export const DEVICE_INSTALL_LOCATION_MAX_LENGTH = 255;
+export const DEVICE_TAG_MAX_LENGTH = 50;
+export const DEVICE_TAG_MAX_COUNT = 20;
+export const DEVICE_NOTES_MAX_LENGTH = 2_000;
 
 export function authenticateAdmin(username: string, password: string): boolean {
   return username.trim() === "admin" && password === "admin1234";
@@ -69,10 +77,12 @@ export function registerAgentConnection(
     deviceName: cleaned.deviceName,
     desktopName: input.desktopName?.trim().slice(0, 255)
       || buildDesktopName(cleaned.businessNumber, cleaned.deviceNumber),
+    platform: normalizeDevicePlatform(input.platform),
     status: "online",
     lastSeenAt: nowIso,
     connectionCode: generateConnectionCode(),
     version: input.version,
+    ...sanitizeExistingDeviceOperationalMetadata(existing),
   };
 
   const index = devices.findIndex((item) => item.id === id);
@@ -111,6 +121,7 @@ export function registerAgentFirstRun(
     deviceNumber,
     deviceName: DEFAULT_DEVICE_TYPE,
     desktopName: input.desktopName,
+    platform: input.platform,
     version: input.version,
   };
   const result = registerAgentConnection(devices, derivedInput, nowIso);
@@ -121,6 +132,7 @@ export function registerAgentFirstRun(
   const device: ManagedDevice = {
     ...registeredDevice,
     protocolVersion: sanitizeProtocolVersion(input.protocolVersion) ?? existingDevice?.protocolVersion,
+    platform: normalizeDevicePlatform(input.platform ?? existingDevice?.platform),
     deviceName:
       existingDevice?.deviceName?.trim() && !isGeneratedAgentDeviceName(existingDevice.deviceName)
         ? existingDevice.deviceName.trim()
@@ -170,12 +182,15 @@ export function applyAgentHeartbeat(
   const device: ManagedDevice = {
     ...currentDevice,
     storeName: shouldCorrectStoreName ? normalizedStoreName : currentDevice.storeName,
+    ...(input.presenceMode === "manual" ? { presenceMode: "manual" as const } : {}),
+    ...(typeof input.heartbeatRequestId === "string" ? { heartbeatRequestId: input.heartbeatRequestId.slice(0, 100) } : {}),
     storeNameSource: shouldCorrectStoreName ? "default" : currentDevice.storeNameSource,
     lastSeenAt: nowIso,
     status: "online",
     connectionCode: currentDevice.connectionCode ?? generateConnectionCode(),
     desktopName: reportedDesktopName || currentDevice.desktopName,
     protocolVersion: sanitizeProtocolVersion(input.protocolVersion) ?? currentDevice.protocolVersion,
+    platform: normalizeDevicePlatform(input.platform ?? currentDevice.platform),
     version: input.version ?? currentDevice.version,
     displays: sanitizeDisplays(input.displays) ?? currentDevice.displays,
     activeDisplayIndex:
@@ -183,6 +198,7 @@ export function applyAgentHeartbeat(
         ? Math.max(0, Math.trunc(input.activeDisplayIndex))
         : currentDevice.activeDisplayIndex,
     macAddresses: sanitizeMacAddresses(input.macAddresses) ?? currentDevice.macAddresses,
+    systemInfo: sanitizeDeviceSystemInfo(input.systemInfo) ?? currentDevice.systemInfo,
     controlDiagnostics: sanitizeControlDiagnostics(input.controlDiagnostics) ?? currentDevice.controlDiagnostics,
     streamDiagnostics: sanitizeStreamDiagnostics(input.streamDiagnostics) ?? currentDevice.streamDiagnostics,
   };
@@ -241,7 +257,7 @@ export function resolveDeviceStatuses(
         nowTime - lastSeenTime > offlineAfterMs;
       return {
         ...device,
-        status: isStale ? "offline" : device.status,
+        status: isStale && device.presenceMode !== "manual" ? "offline" : device.status,
       };
     }),
   );
@@ -288,12 +304,97 @@ export function updateDeviceMetadata(
     deviceName: nextDeviceName,
     desktopName: nextDesktopName,
   };
+  applyOperationalMetadataUpdate(device, input);
   const nextDevices = devices.map((item, itemIndex) => (itemIndex === index ? device : item));
 
   return {
     devices: sortDevices(nextDevices),
     device,
   };
+}
+
+export function sanitizeDeviceOperationalMetadataText(
+  value: unknown,
+  maxLength: number,
+): string | undefined {
+  return typeof value === "string" && value.trim()
+    ? value.trim().slice(0, maxLength)
+    : undefined;
+}
+
+export function sanitizeDeviceTags(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const tags: string[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    const tag = sanitizeDeviceOperationalMetadataText(item, DEVICE_TAG_MAX_LENGTH);
+    if (!tag) {
+      continue;
+    }
+    const key = tag.toLocaleLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      tags.push(tag);
+    }
+    if (tags.length >= DEVICE_TAG_MAX_COUNT) {
+      break;
+    }
+  }
+  return tags.length > 0 ? tags : undefined;
+}
+
+function sanitizeExistingDeviceOperationalMetadata(
+  device: Partial<ManagedDevice> | undefined,
+): Partial<Pick<ManagedDevice, "contactName" | "installLocation" | "tags" | "notes">> {
+  if (!device) {
+    return {};
+  }
+  const metadata: Partial<Pick<ManagedDevice, "contactName" | "installLocation" | "tags" | "notes">> = {};
+  const contactName = sanitizeDeviceOperationalMetadataText(device.contactName, DEVICE_CONTACT_NAME_MAX_LENGTH);
+  const installLocation = sanitizeDeviceOperationalMetadataText(
+    device.installLocation,
+    DEVICE_INSTALL_LOCATION_MAX_LENGTH,
+  );
+  const tags = sanitizeDeviceTags(device.tags);
+  const notes = sanitizeDeviceOperationalMetadataText(device.notes, DEVICE_NOTES_MAX_LENGTH);
+  if (contactName) metadata.contactName = contactName;
+  if (installLocation) metadata.installLocation = installLocation;
+  if (tags) metadata.tags = tags;
+  if (notes) metadata.notes = notes;
+  return metadata;
+}
+
+function applyOperationalMetadataUpdate(device: ManagedDevice, input: DeviceMetadataUpdateInput): void {
+  applyOptionalTextUpdate(device, "contactName", input.contactName, DEVICE_CONTACT_NAME_MAX_LENGTH);
+  applyOptionalTextUpdate(device, "installLocation", input.installLocation, DEVICE_INSTALL_LOCATION_MAX_LENGTH);
+  applyOptionalTextUpdate(device, "notes", input.notes, DEVICE_NOTES_MAX_LENGTH);
+  if (input.tags !== undefined) {
+    const tags = sanitizeDeviceTags(input.tags);
+    if (tags) {
+      device.tags = tags;
+    } else {
+      delete device.tags;
+    }
+  }
+}
+
+function applyOptionalTextUpdate(
+  device: ManagedDevice,
+  key: "contactName" | "installLocation" | "notes",
+  value: string | undefined,
+  maxLength: number,
+): void {
+  if (value === undefined) {
+    return;
+  }
+  const sanitized = sanitizeDeviceOperationalMetadataText(value, maxLength);
+  if (sanitized) {
+    device[key] = sanitized;
+  } else {
+    delete device[key];
+  }
 }
 
 export function groupDevicesByStore(devices: ManagedDevice[]): DeviceGroup[] {

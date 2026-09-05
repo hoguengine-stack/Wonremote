@@ -122,10 +122,13 @@ describe("connected remote session layout", () => {
     expect(block).toContain("session-fullscreen-active");
     expect(block).toContain('className="session-fullscreen-exit"');
     expect(block).toContain("창모드");
-    expect(appSource).toContain("const [isSessionFullscreen, setIsSessionFullscreen] = useState(false)");
-    expect(appSource).toContain("setIsSessionFullscreen(false)");
+    expect(appSource).toContain("useState(initialViewPreferences.fullscreen)");
+    expect(appSource).toContain("deviceViewPreferencesKey(preferenceDeviceId)");
+    expect(appSource).toContain("clipboardSync: isClipboardSyncOn");
+    expect(appSource).toContain("selectedDisplayIndex,");
+    expect(appSource).toContain("zoom,");
     expect(appSource).not.toContain("setFullscreen(isRemoteFocusMode)");
-    expect(appSource).toContain("setFullscreen(nextFullscreen)");
+    expect(appSource).toContain("applySessionFullscreen(!isSessionFullscreen)");
     expect(block).toContain("isFullscreenToolbarOpen");
     expect(block).toContain("session-fullscreen-tools-open");
     expect(block).toContain('className="session-fullscreen-toolbar-toggle"');
@@ -182,18 +185,27 @@ describe("connected remote session layout", () => {
     expect(appSource).toContain("setIsWebRtcConnectionReady(true)");
   });
 
-  it("cancels a queued reconnect after WebRTC opens and ignores diagnostics", () => {
+  it("falls back to the reliable command queue until WebRTC control is actually open", () => {
+    const start = appSource.indexOf("const onInputEvent = React.useCallback");
+    const end = appSource.indexOf("const dangerConfirmUntilRef", start);
+    const inputBlock = appSource.slice(start, end);
+
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    expect(inputBlock).toContain("transport?.isControlReady() === true");
+    expect(inputBlock).toContain("? transport.sendControl(action)");
+    expect(inputBlock).toContain("localOnly: sentOverWebRtc || !shouldUseReliableInputFallback(action)");
+  });
+
+  it("uses manual reconnect and never schedules automatic retries", () => {
     const openStart = appSource.indexOf('if (state === "webrtc-open")');
     const diagnosticStart = appSource.indexOf("onDiagnostic:", openStart);
     const openBlock = appSource.slice(openStart, diagnosticStart);
-    const reconnectStart = appSource.indexOf("const scheduleWebRtcReconnect = () =>");
-    const reconnectEnd = appSource.indexOf("const startWebRtc = async () =>", reconnectStart);
-    const reconnectBlock = appSource.slice(reconnectStart, reconnectEnd);
 
     expect(openBlock).toContain("webRtcConnectionOpen = true");
-    expect(openBlock).toContain("window.clearTimeout(webRtcReconnectTimer)");
-    expect(openBlock).toContain("webRtcReconnectTimer = null");
-    expect(reconnectBlock).toContain("webRtcConnectionOpen");
+    expect(openBlock).toContain("setNeedsManualReconnect(false)");
+    expect(appSource).not.toContain("webRtcReconnectTimer");
+    expect(appSource).toContain('aria-label="원격 연결 새로고침"');
     expect(appSource.slice(diagnosticStart, appSource.indexOf("onError:", diagnosticStart)))
       .not.toContain("scheduleWebRtcReconnect()");
   });
@@ -282,5 +294,46 @@ describe("connected remote session layout", () => {
     expect(stylesSource).not.toMatch(/^\.input-log\s*\{/m);
     expect(stylesSource).not.toMatch(/^\.session-diagnostics\s*\{/m);
     expect(stylesSource).not.toMatch(/^\.diagnostic-pill(?:\.warning)?\s*\{/m);
+  });
+
+  it("supports same-group split sessions with an adjustable divider", () => {
+    expect(appSource).toContain("validateSameGroupSplit(selectedDevices)");
+    expect(appSource).toContain("좌우 분할 접속");
+    expect(appSource).toContain('role="separator"');
+    expect(appSource).toContain("clampSplitRatio");
+    expect(appSource).toContain("divider.offsetWidth / 2");
+    expect(appSource).toContain('splitPosition={splitIndex === 0 ? "left"');
+    expect(appSource).toContain("onFocusCapture={() => !isActive && onSelectSession(sessionId)}");
+    expect(appSource).toContain("if (!isActive || !isClipboardSyncOn");
+    expect(stylesSource).toContain(".remote-focus-mode .content-grid.content-grid-split");
+    expect(stylesSource).toContain(".remote-split-divider");
+    expect(stylesSource).toContain("var(--split-right)");
+
+    const moveStart = appSource.indexOf("const handleCanvasPointerMove");
+    const moveEnd = appSource.indexOf("const handleCanvasPointerCancel", moveStart);
+    const wheelStart = appSource.indexOf("const handleCanvasWheel");
+    const wheelEnd = appSource.indexOf("const handleKeyDown", wheelStart);
+    const keyDownStart = appSource.indexOf("const handleKeyDown");
+    const keyUpStart = appSource.indexOf("const handleKeyUp", keyDownStart);
+    expect(appSource.slice(moveStart, moveEnd)).toContain("if (!isActive)");
+    expect(appSource.slice(wheelStart, wheelEnd)).toContain("if (!isActive)");
+    expect(appSource.slice(keyDownStart, keyUpStart)).toContain("if (!isActive)");
+  });
+
+  it("keeps the remote session alive through a normal reboot reconnect and uses 5 percent zoom steps", () => {
+    const restartStart = appSource.indexOf('if (command === "restart")');
+    const restartEnd = appSource.indexOf("onInputEvent(buildSystemCommand(command))", restartStart);
+    const restartBlock = appSource.slice(restartStart, restartEnd);
+
+    expect(restartStart).toBeGreaterThanOrEqual(0);
+    expect(restartBlock).toContain('setRebootReconnectState("restarting")');
+    expect(restartBlock).not.toContain("onCloseSession");
+    expect(appSource).toContain('setRebootReconnectState("reconnecting")');
+    expect(appSource).toContain('setRebootReconnectState("idle")');
+    expect(appSource).toContain("webRtcReconnectGeneration");
+    expect(appSource).toContain("value - 0.05");
+    expect(appSource).toContain("value + 0.05");
+    expect(appSource).not.toContain("value - 0.25");
+    expect(appSource).not.toContain("value + 0.25");
   });
 });

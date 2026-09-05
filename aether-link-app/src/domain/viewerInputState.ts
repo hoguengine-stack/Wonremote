@@ -2,17 +2,35 @@ import type { MouseButtonCode } from "./remoteControlCommands";
 
 type RemoteTextKeystroke = {
   key: string;
+  code?: string;
   ctrlKey?: boolean;
   altKey?: boolean;
   metaKey?: boolean;
+  shiftKey?: boolean;
   isComposing?: boolean;
 };
 
 export function isRemoteTextInputKeystroke(event: RemoteTextKeystroke): boolean {
+  if (event.code === "Enter" || event.code === "NumpadEnter") {
+    return false;
+  }
   if (event.ctrlKey || event.altKey || event.metaKey) {
     return false;
   }
-  return event.isComposing || event.key === "Process" || event.key.length === 1;
+  if (event.isComposing || event.key === "Process") {
+    return true;
+  }
+  return !event.shiftKey && event.key.length === 1;
+}
+
+export function isExactCtrlShortcut(event: RemoteTextKeystroke, key: string): boolean {
+  return Boolean(
+    event.ctrlKey
+    && !event.shiftKey
+    && !event.altKey
+    && !event.metaKey
+    && event.key.toLowerCase() === key.toLowerCase(),
+  );
 }
 
 export function finishRemoteComposition(text: string, inputValue = ""): {

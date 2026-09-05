@@ -68,7 +68,8 @@ service cloud.firestore {
         && request.resource.data.state == "connected"
         && isCentralViewer()
         && deviceDoc(request.resource.data.deviceId).data.status == "online"
-        && hasFreshDeviceHeartbeat(request.resource.data.deviceId)
+        && (deviceDoc(request.resource.data.deviceId).data.get("presenceMode", "periodic") == "manual"
+          || hasFreshDeviceHeartbeat(request.resource.data.deviceId))
         && deviceDoc(request.resource.data.deviceId).data.ownerUid is string;
     }
 
@@ -116,6 +117,10 @@ service cloud.firestore {
           "storeNameSource",
           "deviceName",
           "desktopName",
+          "contactName",
+          "installLocation",
+          "tags",
+          "notes",
           "deletedAt",
           "status",
           "updatedAt",

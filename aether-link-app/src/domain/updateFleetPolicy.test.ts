@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   decideUpdateEligibility,
   hashDeviceIdToPercentageBucket,
-  summarizeUpdateFleetHealth,
 } from "./updateFleetPolicy";
 
 describe("update fleet policy", () => {
@@ -43,23 +42,6 @@ describe("update fleet policy", () => {
     });
     expect(decideUpdateEligibility({ id, updateRing: "pilot", version: "1.1.0" }, { ...rollout, percentage: bucket + 1 })).toMatchObject({
       eligible: true,
-    });
-  });
-
-  it("summarizes operational update health without exposing device details", () => {
-    expect(summarizeUpdateFleetHealth([
-      { id: "healthy", updateState: "healthy" },
-      { id: "downloading", updateState: "downloading" },
-      { id: "failed", updateState: "failed" },
-      { id: "rollback", updateState: "rollback" },
-      { id: "idle", updateState: "idle" },
-    ])).toEqual({
-      total: 5,
-      healthy: 1,
-      inProgress: 1,
-      failed: 1,
-      rollback: 1,
-      pending: 1,
     });
   });
 });

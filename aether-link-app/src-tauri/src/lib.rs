@@ -115,10 +115,10 @@ struct MainWindowPolicy {
 
 fn main_window_policy(is_agent: bool) -> Option<MainWindowPolicy> {
     is_agent.then_some(MainWindowPolicy {
-        width: 400.0,
-        height: 520.0,
-        min_width: 400.0,
-        min_height: 520.0,
+        width: 340.0,
+        height: 410.0,
+        min_width: 340.0,
+        min_height: 410.0,
         resizable: false,
     })
 }
@@ -1669,6 +1669,19 @@ fn start_installer_update(
 
 #[tauri::command]
 fn check_installer_update(app: tauri::AppHandle) -> Result<ViewerUpdateCheck, String> {
+    check_installer_update_for(&app, "viewer", "viewer-native-update")
+}
+
+#[tauri::command]
+fn check_agent_installer_update(app: tauri::AppHandle) -> Result<ViewerUpdateCheck, String> {
+    check_installer_update_for(&app, "agent", "agent-native-update")
+}
+
+fn check_installer_update_for(
+    app: &tauri::AppHandle,
+    product: &str,
+    log_scope: &str,
+) -> Result<ViewerUpdateCheck, String> {
     let resources = node_resource_paths(&app
         .path()
         .resource_dir()
@@ -1685,7 +1698,7 @@ fn check_installer_update(app: tauri::AppHandle) -> Result<ViewerUpdateCheck, St
         .env("WONREMOTE_APP_DIR", &resources.root)
         .env("WONREMOTE_BUILD_ARCH", runtime_build_arch())
         .env("WONREMOTE_PACKAGE_KIND", packaged_update_kind(&resources.root))
-        .env("WONREMOTE_UPDATE_PRODUCT", "viewer")
+        .env("WONREMOTE_UPDATE_PRODUCT", product)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -1710,7 +1723,7 @@ fn check_installer_update(app: tauri::AppHandle) -> Result<ViewerUpdateCheck, St
         return Err("update checker returned an empty version".to_string());
     }
     append_runtime_log(
-        "viewer-native-update",
+        log_scope,
         &format!("manual check completed: version={} available={}", result.latest_version, result.available),
     );
     Ok(result)
@@ -2107,6 +2120,7 @@ pub fn run() {
             get_or_create_agent_install_id,
             restart_agent_process,
             check_installer_update,
+            check_agent_installer_update,
             start_installer_update,
             wake_device
         ])
@@ -2645,10 +2659,10 @@ mod registry_tests {
     fn test_agent_window_policy_is_compact_and_viewer_is_unchanged() {
         let agent = main_window_policy(true).expect("Agent mode must have a window policy");
 
-        assert_eq!(agent.width, 400.0);
-        assert_eq!(agent.height, 520.0);
-        assert_eq!(agent.min_width, 400.0);
-        assert_eq!(agent.min_height, 520.0);
+        assert_eq!(agent.width, 340.0);
+        assert_eq!(agent.height, 410.0);
+        assert_eq!(agent.min_width, 340.0);
+        assert_eq!(agent.min_height, 410.0);
         assert!(!agent.resizable);
         assert_eq!(main_window_policy(false), None);
     }

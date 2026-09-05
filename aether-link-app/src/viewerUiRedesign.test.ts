@@ -23,6 +23,8 @@ describe("Viewer UI redesign contract", () => {
     expect(appSource).toContain('data-testid="device-workspace"');
     expect(stylesSource).toContain(".viewer-command-header");
     expect(stylesSource).toContain(".device-workspace");
+    expect(stylesSource).toMatch(/\.workspace-live-status\s*\{[^}]*white-space: nowrap;/s);
+    expect(stylesSource).toMatch(/\.viewer-command-header \.viewer-update-button,[\s\S]*?white-space: nowrap;/);
     expect(appSource).toContain('name="username" type="text"');
   });
 
@@ -66,5 +68,14 @@ describe("Viewer UI redesign contract", () => {
     expect(block).not.toContain('data-testid="operation-log"');
     expect(block).not.toContain('className="operation-log"');
     expect(stylesSource).not.toMatch(/^\.operation-log\s*\{/m);
+  });
+
+  it("keeps per-device view settings and searchable operating details", () => {
+    expect(appSource).toContain("deviceViewPreferencesKey(preferenceDeviceId)");
+    expect(appSource).toContain("clipboardSync: isClipboardSyncOn");
+    expect(appSource).toContain("selectedDisplayIndex,");
+    expect(appSource).toContain("담당자");
+    expect(appSource).toContain("설치 위치");
+    expect(appSource).toContain("메모 / 장애 이력");
   });
 });

@@ -243,14 +243,6 @@ export function bindAgentFileMessages(
   };
 }
 
-export function isDataChannelBackpressured(
-  channel: AgentDataChannelLike | null,
-  payloadBytes: number,
-  maxBufferedAmount: number,
-): boolean {
-  return dataChannelBufferedAmount(channel) + Math.max(0, payloadBytes) > maxBufferedAmount;
-}
-
 export function serializeFrameChunks(
   frame: { tiles: unknown[]; width: number; height: number; sequence: number; keyframe: boolean },
   maxMessageBytes: number,

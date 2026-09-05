@@ -1,12 +1,7 @@
 import dgram from "node:dgram";
+import { normalizeWakeMac } from "../domain/wakeRelay";
 
-export function normalizeWakeOnLanMac(value: string): string | null {
-  const compact = value.trim().replace(/[:-]/g, "").toUpperCase();
-  if (!/^[A-F0-9]{12}$/.test(compact) || compact === "000000000000" || compact === "FFFFFFFFFFFF") {
-    return null;
-  }
-  return compact.match(/.{2}/g)?.join(":") ?? null;
-}
+export const normalizeWakeOnLanMac = normalizeWakeMac;
 
 export function parseWakeOnLanCommand(action: string): string | null {
   const match = /^wake-on-lan\s+(.+)$/.exec(action.trim());

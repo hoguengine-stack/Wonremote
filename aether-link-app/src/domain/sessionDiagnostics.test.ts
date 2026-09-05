@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   formatControlDiagnostics,
   formatStreamDiagnostics,
-  shouldWarnAboutControlLimit,
 } from "./sessionDiagnostics";
 
 describe("session diagnostics", () => {
@@ -42,8 +41,6 @@ describe("session diagnostics", () => {
         win32ErrorMessage: "Access is denied.",
       }),
     ).toEqual(["control=user", "integrity=Medium", "win32=5", "control-error=Access is denied."]);
-    expect(shouldWarnAboutControlLimit({ elevated: false, integrityLevel: "Medium" })).toBe(true);
-    expect(shouldWarnAboutControlLimit({ elevated: true, integrityLevel: "High" })).toBe(false);
   });
 
   it("adds an explicit WebRTC/TURN diagnostic when realtime transport is unavailable", () => {

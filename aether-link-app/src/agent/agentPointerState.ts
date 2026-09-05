@@ -50,9 +50,3 @@ export function pointerReleaseActions(state: AgentPointerState): string[] {
     .reverse()
     .map((button) => `mouse-up ${state.lastDx} ${state.lastDy} ${button}`);
 }
-
-export function shouldInjectPointerAction(_action: string, _state: AgentPointerState): boolean {
-  // Viewer already deduplicates physical transitions. Agent state is recovery state only:
-  // suppressing an explicit down here loses the next real input after an ambiguous pipe ack.
-  return true;
-}

@@ -6,6 +6,9 @@ import { hostname, networkInterfaces } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { bootstrapAgent } from "./agentBootstrap";
+import { subscribeLocalSessionData } from "../api/sessionData";
+import { firebaseRequestRetryDelayMs } from "../firebase/requestRetryPolicy";
+import type { SessionData } from "../domain/sessionData";
 import { parseAgentConfigJson } from "./agentConfigJson";
 import { pollAgentCommands, postAgentSessionApproval, sendAgentHeartbeat } from "./agentClient";
 import { waitForApiHealth } from "./agentHealth";
@@ -17,6 +20,7 @@ import {
 import { resolveAgentAppDir, resolveAgentPocPath } from "./agentPaths";
 import { resolveAgentCredentials } from "./agentRuntime";
 import { resolveAgentComputerName } from "./agentComputerName";
+import { discoverAgentSystemInfo } from "./agentSystemInfo";
 import {
   beginAgentCaptureGeneration,
   currentSessionId,
@@ -49,6 +53,7 @@ import {
   resolveAgentUpdateFailureRetryMs,
   shouldAttemptAgentUpdateCheck,
   shouldRetryFailedAgentUpdate,
+  updateTelemetryStateKey,
 } from "./agentUpdatePollPolicy";
 import { isSourceTreeUpdateTarget } from "./updateSafety";
 import {
@@ -82,7 +87,6 @@ import {
   createAgentPointerState,
   recordPendingPointerAction,
   recordSuccessfulPointerAction,
-  shouldInjectPointerAction,
 } from "./agentPointerState";
 import { processWebRtcFileChunk } from "./webrtcFileReceiver";
 import { copyPngFileToWindowsClipboardAndRemove } from "./clipboardImage";
@@ -98,7 +102,7 @@ import {
   authenticateAgentWithFirebase,
   type AgentWebRtcTransport,
   fetchActiveFirebaseSessionsForAgent,
-  fetchSessionDataWithFirebase,
+  subscribeAgentSessionData,
   isAgentFirebaseEnabled,
   loadAgentUpdateRolloutWithFirebase,
   postChatWithFirebase,
@@ -164,10 +168,10 @@ const AGENT_APP_DIR = resolveAgentAppDir(process.env, DEFAULT_APP_DIR);
 const POC_PATH = resolveAgentPocPath(process.env, AGENT_APP_DIR);
 
 const API_BASE_URL = process.env.WONREMOTE_API_URL ?? "http://127.0.0.1:8787";
-const HEARTBEAT_INTERVAL_MS = Number(process.env.WONREMOTE_AGENT_HEARTBEAT_MS ?? 20_000);
 const COMMAND_POLL_INTERVAL_MS = resolveCommandPollIntervalMs(process.env);
 const UPDATE_CHECK_INTERVAL_MS = resolveAgentUpdateCheckIntervalMs(process.env);
 const USE_FIREBASE = isAgentFirebaseEnabled(process.env);
+const AGENT_SYSTEM_INFO = discoverAgentSystemInfo();
 const FIRESTORE_TILE_FALLBACK_POLICY = resolveFirestoreTileFallbackPolicy(process.env);
 const persistentInputInjector = new PersistentInputInjector(POC_PATH);
 
@@ -241,6 +245,8 @@ const pressedKeys = new Set<string>();
 const pointerState = createAgentPointerState();
 const agentCommandQueue = createSerializedAgentCommandQueue();
 const agentCommandPollGate = createAgentCommandPollGate();
+const agentHeartbeatGate = createAgentCommandPollGate();
+let heartbeatRetryAtMs = 0;
 let firebaseCommandUnsubscribe: (() => void) | null = null;
 let firebaseCommandRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let displayCache: { loadedAtMs: number; displays: DeviceDisplayInfo[] } | null = null;
@@ -249,10 +255,8 @@ const DIAGNOSTIC_FAILURE_RETRY_MS = 5 * 60_000;
 const diagnosticFailureCache = new Map<string, { loggedAtMs: number; message: string }>();
 
 let isApprovalPending = false;
-let isSessionActive = false;
 let activeSessionId: string | null = null;
-let sessionPollIntervalId: any = null;
-let lastSessionPollError = "";
+let sessionDataUnsubscribe: (() => void) | null = null;
 let activeSessionRecoveryPermissionBlocked = false;
 let lastActiveSessionRecoveryWarning = "";
 
@@ -361,9 +365,9 @@ async function startStreaming(
     webRtcTransportStartGeneration = null;
     void previousTransport?.close();
   }
-  if (sessionChanged && sessionPollIntervalId) {
-    clearInterval(sessionPollIntervalId);
-    sessionPollIntervalId = null;
+  if (sessionChanged && sessionDataUnsubscribe) {
+    sessionDataUnsubscribe();
+    sessionDataUnsubscribe = null;
   }
   if (sessionChanged && previousSessionId) {
     await releasePressedInputAndClose(
@@ -373,9 +377,9 @@ async function startStreaming(
     );
   }
 
-  // Data polling must stay alive even if the capture backend falls back or exits.
-  if (sessionChanged || !sessionPollIntervalId) {
-    startSessionPolling(sessionId);
+  // Auxiliary subscriptions outlive capture restarts, but not the remote session.
+  if (sessionChanged || !sessionDataUnsubscribe) {
+    startSessionData(sessionId);
   }
 
   const pocPath = POC_PATH;
@@ -605,6 +609,10 @@ function ensureSessionWebRtcTransport(
           console.warn(`[WebRTC] Ignoring stale control action for session ${sessionId}.`);
           return;
         }
+        if (action === "request-keyframe") {
+          streamProcess?.stdin.write("request-keyframe\n");
+          return;
+        }
         await executeAgentCommand(action, "webrtc", createAgentCommandRuntime(deviceId));
       }).catch((error) => {
         console.error(`[WebRTC control failed] ${error instanceof Error ? error.message : error}`);
@@ -712,14 +720,20 @@ function ensureSessionWebRtcTransport(
     });
 }
 
-function startSessionPolling(sessionId: string) {
-  if (sessionPollIntervalId) {
-    clearInterval(sessionPollIntervalId);
-  }
-  isSessionActive = true;
-  sessionPollIntervalId = setInterval(() => {
-    void pollSessionData(sessionId);
-  }, 1500);
+function startSessionData(sessionId: string) {
+  sessionDataUnsubscribe?.();
+  let active = true;
+  const onData = (data: SessionData) => consumeSessionData(sessionId, data, () => active && activeSessionId === sessionId);
+  const onError = (error: Error) => {
+    if (!active) return;
+    active = false;
+    sessionDataUnsubscribe = null;
+    console.error(`[Agent session data] ${error.message}`);
+  };
+  const stop = USE_FIREBASE
+    ? subscribeAgentSessionData(sessionId, onData, onError)
+    : subscribeLocalSessionData(API_BASE_URL, sessionId, "agent", onData, onError);
+  sessionDataUnsubscribe = active ? () => { active = false; stop(); } : null;
 }
 
 async function stopSessionPolling(): Promise<void> {
@@ -751,15 +765,14 @@ async function stopSessionPolling(): Promise<void> {
   streamBackpressured = false;
   streamBufferedAmount = 0;
   resetFirestoreTileFallbackBudget();
-  isSessionActive = false;
   if (streamProcess) {
     console.log("Stopping capture stream due to stop-stream command");
     streamProcess.kill();
     streamProcess = null;
   }
-  if (sessionPollIntervalId) {
-    clearInterval(sessionPollIntervalId);
-    sessionPollIntervalId = null;
+  if (sessionDataUnsubscribe) {
+    sessionDataUnsubscribe();
+    sessionDataUnsubscribe = null;
   }
   await releasePressedInputAndClose(
     persistentInputInjector,
@@ -794,11 +807,9 @@ function logFirestoreTileFallbackLimit() {
   console.warn(`[Firebase Stream] ${lastStreamError}`);
 }
 
-async function pollSessionData(sessionId: string) {
-  try {
-    if (USE_FIREBASE) {
-      const sessionData = await fetchSessionDataWithFirebase(sessionId);
+async function consumeSessionData(sessionId: string, sessionData: SessionData, isCurrent: () => boolean) {
       for (const msg of sessionData.messages) {
+        if (!isCurrent()) return;
         if (msg.sender === "viewer") {
           if (msg.message === "__AUDIO_BEEP_SIGNAL__") {
             console.log("[Audio] Viewer beep signal received.");
@@ -808,73 +819,16 @@ async function pollSessionData(sessionId: string) {
         }
       }
       for (const item of sessionData.clipboards) {
+        if (!isCurrent()) return;
         if (item.sender === "viewer") {
           await setClipboardText(item.text);
           console.log("[Clipboard] Viewer text injected into the agent clipboard.");
         }
       }
       for (const file of sessionData.files) {
+        if (!isCurrent()) return;
         await saveTransferredFileAndReport(sessionId, file);
       }
-      return;
-    }
-
-    // 1. Chat Polling
-    const chatRes = await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/chat`);
-    if (chatRes.ok) {
-      const chatData: any = await chatRes.json();
-      if (chatData.messages && chatData.messages.length > 0) {
-        for (const msg of chatData.messages) {
-          if (msg.sender === "viewer") {
-            if (msg.message === "__AUDIO_BEEP_SIGNAL__") {
-              console.log("[Audio] Viewer beep signal received.");
-            } else {
-              console.log(`[Chat] Viewer: ${msg.message}`);
-            }
-          }
-        }
-      }
-    }
-
-    // 2. Clipboard Polling
-    const clipRes = await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/clipboard`);
-    if (clipRes.ok) {
-      const clipData: any = await clipRes.json();
-      if (clipData.clipboards && clipData.clipboards.length > 0) {
-        for (const item of clipData.clipboards) {
-          if (item.sender === "viewer") {
-            console.log(`[Clipboard] Viewer text received: ${item.text}`);
-            const base64Text = Buffer.from(item.text).toString("base64");
-            const psCmd = `powershell -NoProfile -Command "[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${base64Text}')) | Set-Clipboard"`;
-            exec(psCmd, { windowsHide: true }, (err) => {
-              if (err) {
-                console.error("[Clipboard] Injection failed:", err.message);
-              } else {
-                console.log("[Clipboard] Text injected into the system clipboard.");
-              }
-            });
-          }
-        }
-      }
-    }
-
-    // 3. File Polling
-    const fileRes = await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/files`);
-    if (fileRes.ok) {
-      const fileData: any = await fileRes.json();
-      if (fileData.files && fileData.files.length > 0) {
-        for (const file of fileData.files) {
-          await saveTransferredFileAndReport(sessionId, file);
-        }
-      }
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (message !== lastSessionPollError) {
-      lastSessionPollError = message;
-      console.error(`[Agent session poll] ${message}`);
-    }
-  }
 }
 
 async function saveTransferredFileAndReport(sessionId: string, file: any): Promise<void> {
@@ -1096,7 +1050,6 @@ async function main() {
           approved: true,
           sessionId,
         });
-        isSessionActive = true;
       } else if (text.toLowerCase() === "n" || text.toLowerCase() === "no") {
         isApprovalPending = false;
         console.log("Connection request rejected.");
@@ -1182,13 +1135,11 @@ async function main() {
   });
 
   if (process.argv.includes("--watch")) {
-    console.log(`Heartbeat interval: ${HEARTBEAT_INTERVAL_MS}ms`);
+    console.log("Presence checks: on explicit Viewer refresh only.");
     console.log(`Update check interval: ${UPDATE_CHECK_INTERVAL_MS}ms`);
     setInterval(() => {
-      void runAgentTick(activeConfig).then((nextConfig) => {
-        activeConfig = nextConfig;
-      });
-    }, HEARTBEAT_INTERVAL_MS);
+      void checkUpdate(activeConfig).catch((error) => console.error("Update check failed:", error));
+    }, UPDATE_CHECK_INTERVAL_MS);
     if (USE_FIREBASE) {
       startFirebaseCommandListener(() => activeConfig);
     } else {
@@ -1210,10 +1161,12 @@ let currentUpdateTelemetry: AgentUpdateTelemetry = {
   state: "healthy",
   updatedAt: new Date().toISOString(),
 };
+let lastReportedUpdateTelemetry = updateTelemetryStateKey(currentUpdateTelemetry);
 
 async function setUpdateTelemetry(
   config: AgentLocalConfig,
   patch: Partial<AgentUpdateTelemetry>,
+  persist = true,
 ): Promise<void> {
   currentUpdateTelemetry = {
     ...currentUpdateTelemetry,
@@ -1221,8 +1174,11 @@ async function setUpdateTelemetry(
     currentVersion: WONREMOTE_APP_VERSION,
     updatedAt: new Date().toISOString(),
   };
-  if (USE_FIREBASE && config.registeredDeviceId) {
-    await reportAgentUpdateTelemetryWithFirebase(config.registeredDeviceId, currentUpdateTelemetry).catch((error) => {
+  const stateKey = updateTelemetryStateKey(currentUpdateTelemetry);
+  if (persist && stateKey !== lastReportedUpdateTelemetry && USE_FIREBASE && config.registeredDeviceId) {
+    await reportAgentUpdateTelemetryWithFirebase(config.registeredDeviceId, currentUpdateTelemetry).then(() => {
+      lastReportedUpdateTelemetry = stateKey;
+    }).catch((error) => {
       console.error("[WonRemote Agent] Update telemetry report failed:", error instanceof Error ? error.message : error);
     });
   }
@@ -1246,7 +1202,7 @@ async function checkUpdate(config: AgentLocalConfig) {
   try {
     const retainedFailure = currentUpdateTelemetry.state === "rollback" || currentUpdateTelemetry.state === "failed";
     if (!retainedFailure) {
-      await setUpdateTelemetry(config, { error: undefined, progress: 0, state: "checking", targetVersion: undefined });
+      await setUpdateTelemetry(config, { error: undefined, progress: 0, state: "checking", targetVersion: undefined }, false);
     }
     const data = await loadUpdateCheckData();
     if (!data) {
@@ -1270,7 +1226,7 @@ async function checkUpdate(config: AgentLocalConfig) {
       return;
     }
     if (retainedFailure) {
-      await setUpdateTelemetry(config, { error: undefined, progress: 0, state: "checking", targetVersion: undefined });
+      await setUpdateTelemetry(config, { error: undefined, progress: 0, state: "checking", targetVersion: undefined }, false);
     }
 
     if (data.latestVersion && (data.forceUpdate || isHigherVersion(data.latestVersion, currentVersion))) {
@@ -1481,7 +1437,7 @@ if exist "${path.join(baseDir, "WonRemote", ".update_success")}" (
       ));
       process.exit(0);
     } else {
-      await setUpdateTelemetry(config, { error: undefined, progress: 100, state: "healthy", targetVersion: currentVersion });
+      await setUpdateTelemetry(config, { error: undefined, progress: 100, state: "healthy", targetVersion: undefined });
       isUpdating = false;
     }
   } catch (e) {
@@ -1618,13 +1574,16 @@ async function handleUnregisteredDevice() {
   process.exit(1);
 }
 
-async function runAgentTick(config: AgentLocalConfig): Promise<AgentLocalConfig> {
+async function runAgentTick(config: AgentLocalConfig, heartbeatRequestId: string): Promise<AgentLocalConfig> {
+  if (Date.now() < heartbeatRetryAtMs) return config;
   let activeConfig = config;
   try {
-    activeConfig = await sendHeartbeatWithRecovery(activeConfig);
+    activeConfig = await sendHeartbeatWithRecovery(activeConfig, heartbeatRequestId);
+    heartbeatRetryAtMs = 0;
     await checkUpdate(activeConfig);
     console.log("[Status] Online");
   } catch (error: any) {
+    heartbeatRetryAtMs = Date.now() + firebaseRequestRetryDelayMs(error);
     if (error.status === 404) {
       const recoveredConfig = await recoverConfigAfterMissingDevice(activeConfig);
       if (recoveredConfig) {
@@ -1680,7 +1639,7 @@ function startFirebaseCommandListener(getConfig: () => AgentLocalConfig): void {
     firebaseCommandUnsubscribe?.();
     firebaseCommandUnsubscribe = null;
     console.error(`[Firebase command listener error] ${error instanceof Error ? error.message : String(error)}`);
-    schedule(15_000);
+    schedule(firebaseRequestRetryDelayMs(error));
   };
 
   const connect = async () => {
@@ -1747,10 +1706,10 @@ function isFirebasePermissionDenied(message: string, error: unknown): boolean {
   return code.includes("permission-denied") || /missing or insufficient permissions/i.test(message);
 }
 
-async function sendHeartbeatWithRecovery(config: AgentLocalConfig): Promise<AgentLocalConfig> {
+async function sendHeartbeatWithRecovery(config: AgentLocalConfig, heartbeatRequestId?: string): Promise<AgentLocalConfig> {
   const currentConfig = await refreshAgentComputerName(config);
   try {
-    await sendHeartbeat(currentConfig);
+    await sendHeartbeat(currentConfig, heartbeatRequestId);
     return currentConfig;
   } catch (error: any) {
     if (error.status !== 404) {
@@ -1761,7 +1720,7 @@ async function sendHeartbeatWithRecovery(config: AgentLocalConfig): Promise<Agen
       throw error;
     }
     let activeConfig = recoveredConfig;
-    await sendHeartbeat(activeConfig);
+    await sendHeartbeat(activeConfig, heartbeatRequestId);
     return activeConfig;
   }
 }
@@ -1830,7 +1789,7 @@ async function ensureFirebaseAgentAuth(config: AgentLocalConfig): Promise<void> 
   });
 }
 
-async function sendHeartbeat(config: AgentLocalConfig): Promise<void> {
+async function sendHeartbeat(config: AgentLocalConfig, heartbeatRequestId?: string): Promise<void> {
   if (!config.registeredDeviceId) {
     throw new Error("Agent registered device ID is missing.");
   }
@@ -1840,6 +1799,8 @@ async function sendHeartbeat(config: AgentLocalConfig): Promise<void> {
   const controlDiagnostics = await discoverControlDiagnostics();
   const streamDiagnostics = buildStreamDiagnostics();
   const result = await sendAgentHeartbeat({
+    presenceMode: "manual",
+    heartbeatRequestId,
     apiBaseUrl: API_BASE_URL,
     deviceId: config.registeredDeviceId,
     desktopName: config.desktopName,
@@ -1849,6 +1810,7 @@ async function sendHeartbeat(config: AgentLocalConfig): Promise<void> {
     displays,
     activeDisplayIndex: currentOutputIndex,
     macAddresses,
+    systemInfo: AGENT_SYSTEM_INFO,
     controlDiagnostics,
     streamDiagnostics,
     updateTelemetry: currentUpdateTelemetry,
@@ -1872,6 +1834,14 @@ async function pollCommands(config: AgentLocalConfig): Promise<void> {
 
 async function executeReceivedCommands(config: AgentLocalConfig, commands: AgentCommand[]): Promise<void> {
   for (const command of commands) {
+    if (command.action.startsWith("refresh-status ")) {
+      const requestId = command.action.slice("refresh-status ".length);
+      const age = Date.now() - Date.parse(command.createdAt);
+      if (/^[a-f0-9-]{36}$/.test(requestId) && age >= -60_000 && age < 60_000) {
+        await agentHeartbeatGate.run(() => runAgentTick(config, requestId));
+      }
+      continue;
+    }
     console.log(`Command received: ${command.action}`);
     try {
       await agentCommandQueue.enqueue(() => {
@@ -1907,10 +1877,6 @@ function createAgentCommandRuntime(deviceId: string): AgentCommandRuntime {
     pressedKeys,
     getActiveSessionId: () => activeSessionId,
     injectAction: async (action) => {
-      if (!shouldInjectPointerAction(action, pointerState)) {
-        console.warn(`[Input guard] Ignoring duplicate pointer transition: ${action}`);
-        return;
-      }
       recordPendingPointerAction(action, pointerState);
       await persistentInputInjector.inject(action);
       recordSuccessfulPointerAction(action, pointerState);

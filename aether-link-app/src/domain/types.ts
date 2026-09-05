@@ -1,3 +1,6 @@
+import type { DeviceSystemInfo } from "./deviceSystemInfo";
+import type { DevicePlatform } from "./devicePlatform";
+
 export type DeviceStatus = "online" | "offline";
 
 export type DeviceUpdateState =
@@ -22,6 +25,8 @@ export interface AgentUpdateTelemetry {
 }
 
 export interface ManagedDevice {
+  presenceMode?: "manual";
+  heartbeatRequestId?: string;
   id: string;
   businessNumber: string;
   storeName: string;
@@ -29,6 +34,7 @@ export interface ManagedDevice {
   deviceNumber: string;
   deviceName: string;
   desktopName: string;
+  platform?: DevicePlatform;
   status: DeviceStatus;
   lastSeenAt: string;
   connectionCode?: string;
@@ -37,6 +43,7 @@ export interface ManagedDevice {
   displays?: DeviceDisplayInfo[];
   activeDisplayIndex?: number;
   macAddresses?: string[];
+  systemInfo?: DeviceSystemInfo;
   controlDiagnostics?: AgentControlDiagnostics;
   streamDiagnostics?: AgentStreamDiagnostics;
   updateState?: DeviceUpdateState;
@@ -47,6 +54,10 @@ export interface ManagedDevice {
   updateUpdatedAt?: string;
   updateRing?: DeviceUpdateRing;
   updatePaused?: boolean;
+  contactName?: string;
+  installLocation?: string;
+  tags?: string[];
+  notes?: string;
 }
 
 export interface AgentControlDiagnostics {
@@ -91,6 +102,7 @@ export interface AgentConnectionInput {
   deviceName: string;
   desktopName?: string;
   version?: string;
+  platform?: DevicePlatform;
 }
 
 export interface AgentFirstRunInput {
@@ -101,17 +113,22 @@ export interface AgentFirstRunInput {
   previousDeviceId?: string;
   version?: string;
   protocolVersion?: number;
+  platform?: DevicePlatform;
 }
 
 export interface AgentHeartbeatInput {
+  presenceMode?: "manual";
+  heartbeatRequestId?: string;
   deviceId: string;
   installId: string;
   desktopName?: string;
   version?: string;
   protocolVersion?: number;
+  platform?: DevicePlatform;
   displays?: DeviceDisplayInfo[];
   activeDisplayIndex?: number;
   macAddresses?: string[];
+  systemInfo?: DeviceSystemInfo;
   controlDiagnostics?: AgentControlDiagnostics;
   streamDiagnostics?: AgentStreamDiagnostics;
   updateTelemetry?: AgentUpdateTelemetry;
@@ -136,6 +153,10 @@ export interface DeviceMetadataUpdateInput {
   storeName?: string;
   deviceName?: string;
   desktopName?: string;
+  contactName?: string;
+  installLocation?: string;
+  tags?: string[];
+  notes?: string;
 }
 
 export interface DeviceMetadataUpdateResult {

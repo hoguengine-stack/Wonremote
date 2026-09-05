@@ -1,4 +1,6 @@
-export const DEFAULT_AGENT_UPDATE_CHECK_INTERVAL_MS = 15 * 60 * 1_000;
+import type { AgentUpdateTelemetry } from "../domain/types";
+
+export const DEFAULT_AGENT_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1_000;
 export const AGENT_UPDATE_FAILURE_RETRY_MS = 60 * 1_000;
 export const MIN_AGENT_UPDATE_CHECK_INTERVAL_MS = 60 * 1_000;
 export const MIN_TEST_AGENT_UPDATE_CHECK_INTERVAL_MS = 100;
@@ -47,4 +49,14 @@ export function shouldRetryFailedAgentUpdate(input: {
     return true;
   }
   return input.nowMs - failedAtMs >= Math.max(0, input.retryAfterMs);
+}
+
+export function updateTelemetryStateKey(telemetry: AgentUpdateTelemetry): string {
+  return JSON.stringify([
+    telemetry.currentVersion,
+    telemetry.error ?? null,
+    telemetry.progress ?? null,
+    telemetry.state,
+    telemetry.targetVersion ?? null,
+  ]);
 }

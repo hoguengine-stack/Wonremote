@@ -68,15 +68,26 @@ final class AgentRepository {
     }
 
     Task<Void> heartbeat() {
+        return heartbeat(null);
+    }
+
+    Task<AuthResult> connect() {
+        return ensureAuthenticated(store.businessNumber());
+    }
+
+    Task<Void> heartbeat(String requestId) {
         if (!store.isRegistered()) {
             return Tasks.forException(new IllegalStateException("Agent가 등록되지 않았습니다."));
         }
         String businessNumber = store.businessNumber();
         return ensureAuthenticated(businessNumber).continueWithTask(task -> {
+            if (!task.isSuccessful()) return Tasks.forException(task.getException());
             String installId = store.installId();
             String uid = auth.getCurrentUser().getUid();
+            Map<String, Object> fields = onlineFields(businessNumber, installId, uid);
+            if (requestId != null) fields.put("heartbeatRequestId", requestId);
             return firestore.collection("devices").document(store.deviceId())
-                .set(onlineFields(businessNumber, installId, uid), SetOptions.merge());
+                .set(fields, SetOptions.merge());
         });
     }
 
@@ -126,7 +137,11 @@ final class AgentRepository {
                 batch.update(document.getReference(), delivery);
                 documentIds.add(document.getId());
                 if (action != null && !action.trim().isEmpty()) {
-                    actions.add(action.trim());
+                    com.google.firebase.Timestamp created = document.getTimestamp("createdAt");
+                    if (!action.startsWith("refresh-status ") || (created != null
+                        && Math.abs(System.currentTimeMillis() - created.toDate().getTime()) < 60_000)) {
+                        actions.add(action.trim());
+                    }
                 }
             }
             if (documentIds.isEmpty()) {
@@ -181,6 +196,7 @@ final class AgentRepository {
         fields.put("lastSeenAtServer", FieldValue.serverTimestamp());
         fields.put("ownerUid", ownerUid);
         fields.put("platform", "android");
+        fields.put("presenceMode", "manual");
         fields.put("protocolVersion", PROTOCOL_VERSION);
         fields.put("status", "online");
         fields.put("systemInfo", systemInfo());

@@ -1,0 +1,18 @@
+{
+  "name": "WonRemote Viewer",
+  "short_name": "WonRemote",
+  "id": "/viewer",
+  "start_url": "/viewer",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f4f7f8",
+  "theme_color": "#10202a",
+  "icons": [
+    {
+      "src": "/wonremote-mobile.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

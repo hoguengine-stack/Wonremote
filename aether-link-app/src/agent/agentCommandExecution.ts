@@ -280,8 +280,6 @@ export function isCurrentWebRtcSessionGeneration(
   return expectedGeneration === currentGeneration && expectedSessionId === activeSessionId;
 }
 
-export const isCurrentWebRtcControlGeneration = isCurrentWebRtcSessionGeneration;
-
 export function createSerializedAgentCommandQueue(): SerializedAgentCommandQueue {
   let tail: Promise<void> = Promise.resolve();
   return {

@@ -20,16 +20,16 @@ public final class WonRemoteAccessibilityService extends AccessibilityService {
     private String pressedButton;
     private boolean controlPressed;
 
-    static boolean isConnected() {
+    public static boolean isConnected() {
         return active != null;
     }
 
-    static boolean execute(String action) {
+    public static boolean execute(String action) {
         WonRemoteAccessibilityService service = active;
         return service != null && service.executeAction(action == null ? "" : action.trim());
     }
 
-    static void releasePointer() {
+    public static void releasePointer() {
         WonRemoteAccessibilityService service = active;
         if (service != null) {
             service.pressedButton = null;

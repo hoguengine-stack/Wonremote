@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   consumeRemoteTextInput,
   finishRemoteComposition,
+  isExactCtrlShortcut,
   isRemoteTextInputKeystroke,
   replaceRemoteComposition,
   pressTrackedKey,
@@ -18,9 +19,19 @@ import {
 describe("Viewer input state", () => {
   it("captures ordinary printable keys through the local IME but preserves Ctrl shortcuts", () => {
     expect(isRemoteTextInputKeystroke({ key: "a" })).toBe(true);
-    expect(isRemoteTextInputKeystroke({ key: "Process", isComposing: true })).toBe(true);
+    expect(isRemoteTextInputKeystroke({ key: "Process", isComposing: true, shiftKey: true })).toBe(true);
     expect(isRemoteTextInputKeystroke({ key: "v", ctrlKey: true })).toBe(false);
+    expect(isRemoteTextInputKeystroke({ key: "A", code: "KeyA", shiftKey: true })).toBe(false);
+    expect(isRemoteTextInputKeystroke({ key: "\n", code: "Enter", isComposing: true, shiftKey: true })).toBe(false);
     expect(isRemoteTextInputKeystroke({ key: "F5" })).toBe(false);
+  });
+
+  it("reserves only plain Ctrl shortcuts for Viewer-specific handling", () => {
+    expect(isExactCtrlShortcut({ key: "Escape", ctrlKey: true }, "Escape")).toBe(true);
+    expect(isExactCtrlShortcut({ key: "v", ctrlKey: true }, "v")).toBe(true);
+    expect(isExactCtrlShortcut({ key: "Escape", ctrlKey: true, shiftKey: true }, "Escape")).toBe(false);
+    expect(isExactCtrlShortcut({ key: "v", ctrlKey: true, shiftKey: true }, "v")).toBe(false);
+    expect(isExactCtrlShortcut({ key: "v", ctrlKey: true, altKey: true }, "v")).toBe(false);
   });
 
   it("emits completed Korean composition once even when a trailing input event repeats it", () => {

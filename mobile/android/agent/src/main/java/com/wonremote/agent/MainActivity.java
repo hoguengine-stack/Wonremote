@@ -25,6 +25,8 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 
 public final class MainActivity extends Activity {
+    static final String ACTION_REQUEST_SCREEN_SHARE = "com.wonremote.agent.REQUEST_SCREEN_SHARE";
+
     private static final int ACCENT = Color.rgb(22, 125, 113);
     private static final int DARK = Color.rgb(18, 33, 43);
     private static final int MUTED = Color.rgb(96, 115, 127);
@@ -50,13 +52,16 @@ public final class MainActivity extends Activity {
         getWindow().setNavigationBarColor(DARK);
         store = new AgentStore(this);
         setContentView(buildContent());
-        requestNotificationPermission();
+        if (!ACTION_REQUEST_SCREEN_SHARE.equals(getIntent().getAction())) {
+            requestNotificationPermission();
+        }
 
         if (store.isRegistered()) {
             businessNumber.setText(store.businessNumber());
             showRegistered();
             AgentService.start(this);
         }
+        handleLaunchIntent(getIntent());
     }
 
     private View buildContent() {
@@ -125,6 +130,11 @@ public final class MainActivity extends Activity {
         inputControl.setOnClickListener(view -> requestInputControl());
         content.addView(controlCard, matchWrap());
 
+        addSpace(content, 14);
+        Button exit = button("앱 종료", DANGER);
+        exit.setOnClickListener(view -> confirmExit());
+        content.addView(exit);
+
         scroll.addView(content, new ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT
@@ -171,7 +181,7 @@ public final class MainActivity extends Activity {
                     AgentService.start(this);
                 } else {
                     Throwable error = task.getException();
-                    status.setText(error == null ? "등록 실패" : "등록 실패 · " + error.getMessage());
+                    status.setText(FirebaseQuota.registrationMessage(error));
                 }
             });
         } catch (RuntimeException error) {
@@ -201,6 +211,26 @@ public final class MainActivity extends Activity {
     }
 
     @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleLaunchIntent(intent);
+    }
+
+    private void handleLaunchIntent(Intent intent) {
+        if (intent == null || !ACTION_REQUEST_SCREEN_SHARE.equals(intent.getAction())) {
+            return;
+        }
+        intent.setAction(null);
+        if (!store.isRegistered()) {
+            AgentService.cancelProjectionRequest(this);
+        } else if (!AgentService.isProjectionReady()) {
+            screenShareStatus.setText("화면 공유 · 승인 대기");
+            screenShare.post(this::requestScreenShare);
+        }
+    }
+
+    @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode != 1002) {
@@ -213,10 +243,14 @@ public final class MainActivity extends Activity {
             screenShare.postDelayed(this::updatePermissionLabels, 600);
         } else {
             screenShareStatus.setText("화면 공유 · 권한이 필요합니다");
+            AgentService.cancelProjectionRequest(this);
         }
     }
 
     private void requestScreenShare() {
+        if (AgentService.isProjectionReady()) {
+            return;
+        }
         MediaProjectionManager manager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
         Intent intent = Build.VERSION.SDK_INT >= 34
             ? manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
@@ -225,7 +259,18 @@ public final class MainActivity extends Activity {
     }
 
     private void requestInputControl() {
-        if (WonRemoteAccessibilityService.isConnected()) {
+        if (ControlAddonClient.isReady(this)) {
+            return;
+        }
+        if (!ControlAddonClient.isInstalled(this)) {
+            new AlertDialog.Builder(this)
+                .setTitle("Control Add-On 설치")
+                .setMessage("TeamViewer Universal Add-On과 같은 방식으로 입력 제어를 분리했습니다. Add-On을 설치한 뒤 접근성 권한을 켜세요.")
+                .setNegativeButton("취소", null)
+                .setPositiveButton("다운로드", (dialog, which) -> startActivity(
+                    new Intent(Intent.ACTION_VIEW, Uri.parse(ControlAddonClient.DOWNLOAD_URL))
+                ))
+                .show();
             return;
         }
         if (Build.VERSION.SDK_INT < 33) {
@@ -240,7 +285,7 @@ public final class MainActivity extends Activity {
                 openAccessibilityAfterAppInfo = true;
                 startActivity(new Intent(
                     Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                    Uri.parse("package:" + getPackageName())
+                    Uri.parse("package:" + ControlAddonClient.PACKAGE)
                 ));
             })
             .show();
@@ -250,10 +295,24 @@ public final class MainActivity extends Activity {
         startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
     }
 
+    private void confirmExit() {
+        new AlertDialog.Builder(this)
+            .setTitle("WonRemote Agent 종료")
+            .setMessage("앱을 종료하면 원격 연결 대기, 화면 공유, 상주 알림이 모두 중지됩니다.")
+            .setNegativeButton("취소", null)
+            .setPositiveButton("종료", (dialog, which) -> {
+                AgentService.stop(this);
+                finishAndRemoveTask();
+            })
+            .show();
+    }
+
     private void updatePermissionLabels() {
         boolean registered = store != null && store.isRegistered();
         boolean projectionReady = AgentService.isProjectionReady();
-        boolean inputReady = WonRemoteAccessibilityService.isConnected();
+        boolean addonInstalled = ControlAddonClient.isInstalled(this);
+        boolean addonReady = ControlAddonClient.isReady(this);
+        boolean legacyReady = WonRemoteAccessibilityService.isConnected();
 
         if (!registered) {
             screenShareStatus.setText("화면 공유 · 등록 후 사용 가능");
@@ -270,9 +329,19 @@ public final class MainActivity extends Activity {
         screenShare.setEnabled(registered);
         stopScreenShare.setVisibility(projectionReady ? View.VISIBLE : View.GONE);
 
-        inputControlStatus.setText(inputReady ? "입력 제어 · 준비됨" : "입력 제어 · 권한 필요");
-        inputControl.setText(inputReady ? "입력 제어 준비됨" : "입력 제어 설정");
-        inputControl.setEnabled(registered && !inputReady);
+        if (addonReady) {
+            inputControlStatus.setText("입력 제어 · Control Add-On 준비됨");
+            inputControl.setText("입력 제어 준비됨");
+            inputControl.setEnabled(false);
+        } else if (legacyReady) {
+            inputControlStatus.setText(addonInstalled ? "입력 제어 · 내장 모드 · Add-On 권한 필요" : "입력 제어 · 내장 호환 모드");
+            inputControl.setText(addonInstalled ? "Control Add-On 권한 설정" : "Control Add-On 설치");
+            inputControl.setEnabled(true);
+        } else {
+            inputControlStatus.setText(addonInstalled ? "입력 제어 · Add-On 권한 필요" : "입력 제어 · Add-On 설치 필요");
+            inputControl.setText(addonInstalled ? "입력 제어 권한 설정" : "Control Add-On 설치");
+            inputControl.setEnabled(true);
+        }
     }
 
     private void requestNotificationPermission() {

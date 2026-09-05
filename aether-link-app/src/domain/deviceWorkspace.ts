@@ -45,6 +45,10 @@ export function filterDeviceWorkspace(
         device.deviceNumber,
         device.deviceName,
         device.desktopName,
+        device.contactName,
+        device.installLocation,
+        device.tags?.join(" "),
+        device.notes,
       ]
         .join(" ")
         .toLocaleLowerCase();

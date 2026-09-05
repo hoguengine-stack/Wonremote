@@ -98,4 +98,18 @@ describe("device workspace", () => {
       "offline-1",
     ]);
   });
+
+  it.each([
+    ["kim", { contactName: "Kim Manager" }],
+    ["basement", { installLocation: "Basement rack" }],
+    ["priority", { tags: ["kiosk", "priority"] }],
+    ["printer", { notes: "Printer failure history" }],
+  ])("matches operational metadata query %s", (query, metadata) => {
+    const result = filterDeviceWorkspace([
+      device("matching", metadata),
+      device("other"),
+    ], { query });
+
+    expect(result.map((item) => item.id)).toEqual(["matching"]);
+  });
 });

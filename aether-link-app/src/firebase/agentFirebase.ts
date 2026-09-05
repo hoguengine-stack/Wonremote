@@ -1,4 +1,5 @@
 import { createUserWithEmailAndPassword, signInWithEmailAndPassword } from "firebase/auth";
+import { subscribeFirebaseSessionData } from "./sessionData";
 import {
   collection,
   doc,
@@ -34,6 +35,7 @@ import { resolveRtcConfiguration } from "../domain/rtcTransport";
 import {
   formatWebRtcConnectionFailure,
   isTerminalWebRtcConnectionState,
+  MAX_RECENT_WEBRTC_CANDIDATES,
   resolveWebRtcConnectTimeoutMs,
   webRtcReconnectDelayMs,
 } from "../domain/webrtcStability";
@@ -158,6 +160,7 @@ export async function registerAgentFirstRunWithFirebase(
     nowIso,
     ownerUid: credential.user.uid,
     protocolVersion: input.protocolVersion,
+    platform: input.platform,
     version: input.version,
   });
   const deviceRef = doc(services.db, "devices", device.id);
@@ -241,18 +244,22 @@ export async function sendAgentHeartbeatWithFirebase(
   try {
     // Firestore rules keep installId immutable; a mismatched Agent update is rejected there.
     await safeUpdateDoc(deviceRef, {
+      presenceMode: input.presenceMode,
+      heartbeatRequestId: input.heartbeatRequestId,
       activeDisplayIndex: input.activeDisplayIndex,
       displays: input.displays ?? [],
       installId: input.installId,
       lastSeenAt: nowIso,
       lastSeenAtServer: serverTimestamp(),
       macAddresses: input.macAddresses ?? [],
+      systemInfo: input.systemInfo ?? null,
       controlDiagnostics: input.controlDiagnostics ?? null,
       deletedAt: null,
       streamDiagnostics: input.streamDiagnostics ?? null,
       status: "online",
       updatedAt: serverTimestamp(),
       protocolVersion: input.protocolVersion,
+      platform: input.platform,
       version: input.version,
       ...(desktopName ? { desktopName } : {}),
       ...(input.updateTelemetry ? updateTelemetryDocument(input.updateTelemetry) : {}),
@@ -272,11 +279,13 @@ export async function sendAgentHeartbeatWithFirebase(
     storeName: "",
     lastSeenAt: nowIso,
     protocolVersion: input.protocolVersion,
+    platform: input.platform,
     status: "online",
     version: input.version,
     activeDisplayIndex: input.activeDisplayIndex,
     displays: input.displays ?? [],
     macAddresses: input.macAddresses ?? [],
+    systemInfo: input.systemInfo,
     controlDiagnostics: input.controlDiagnostics,
     streamDiagnostics: input.streamDiagnostics,
   });
@@ -544,6 +553,11 @@ export async function startAgentWebRtcTransportWithFirebase(
   );
   const agentCandidates = collection(services.db, "sessions", sessionId, "agentCandidates");
   const viewerCandidates = collection(services.db, "sessions", sessionId, "viewerCandidates");
+  const recentViewerCandidates = query(
+    viewerCandidates,
+    orderBy("createdAt", "desc"),
+    limit(MAX_RECENT_WEBRTC_CANDIDATES),
+  );
   const recentNegotiationIds = new Set<string>();
   const appliedViewerCandidates = new Set<string>();
   const maxMessageBytes = resolveWebRtcMaxMessageBytes(env);
@@ -863,7 +877,7 @@ export async function startAgentWebRtcTransportWithFirebase(
 
     await peer.setRemoteDescription({ type: "offer", sdp: offer.sdp });
     activeRemoteDescriptionSet = true;
-    void getDocs(viewerCandidates)
+    void getDocs(recentViewerCandidates)
       .then((snapshot) => applyViewerCandidateDocs(snapshot.docs))
       .catch((error) => {
         console.warn(
@@ -974,7 +988,7 @@ export async function startAgentWebRtcTransportWithFirebase(
     unsubscribeViewerCandidates = null;
     try {
       unsubscribeViewerCandidates = onSnapshot(
-        viewerCandidates,
+        recentViewerCandidates,
         (snapshot) => {
           viewerCandidateRetryAttempt = 0;
           applyViewerCandidateDocs(snapshot.docs);
@@ -1028,6 +1042,13 @@ export async function startAgentWebRtcTransportWithFirebase(
       },
     ),
   };
+}
+
+export function subscribeAgentSessionData(
+  sessionId: string, onData: (data: import("../domain/sessionData").SessionData) => void | Promise<void>, onError: (error: Error) => void,
+  env: AgentFirebaseEnv = process.env,
+): Unsubscribe {
+  return subscribeFirebaseSessionData(getAgentFirebaseServices(env).db, sessionId, "agent", onData, onError);
 }
 
 export async function fetchSessionDataWithFirebase(

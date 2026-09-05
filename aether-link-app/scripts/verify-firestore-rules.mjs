@@ -8,6 +8,7 @@ import {
   getDocs,
   getFirestore,
   query,
+  serverTimestamp,
   setDoc,
   where,
 } from "firebase/firestore";
@@ -16,7 +17,7 @@ const CENTRAL_VIEWER_UID = "Xjjdvk0Nx1eqCvND4yIOHbM53tl1";
 const AGENT_UID = "rules-test-agent-uid";
 const UNAUTHORIZED_UID = "rules-test-unauthorized-uid";
 const DEVICE_ID = "123-45-67890:AGENT-RULESTEST";
-const SESSION_ID = "rules-test-session";
+const SESSION_ID = `rules-test-session-${Date.now()}`;
 const emulatorHost = process.env.FIRESTORE_EMULATOR_HOST;
 
 if (!emulatorHost) {
@@ -66,6 +67,7 @@ const managedViewer = createContext("managed-viewer", "rules-test-managed-viewer
   wonremoteViewer: true,
 });
 const unauthorized = createContext("unauthorized", UNAUTHORIZED_UID, "unauthorized@example.com");
+const timeout = setTimeout(() => { console.error("Local Firestore rules verification exceeded 30 seconds."); process.exit(1); }, 30_000);
 
 try {
   await setDoc(doc(agent.db, "devices", DEVICE_ID), {
@@ -75,7 +77,16 @@ try {
     deviceNumber: "AGENT-RULESTEST",
     installId: "rules-test-install",
     status: "online",
+    presenceMode: "manual",
+    lastSeenAtServer: serverTimestamp(),
   });
+
+  // This seed is emulator-only: exercise a long-idle Agent without waiting a minute.
+  const seeded = await fetch(`http://${emulatorHost}/v1/projects/wonremote-a7fd3/databases/(default)/documents/devices/${encodeURIComponent(DEVICE_ID)}?updateMask.fieldPaths=lastSeenAtServer`, {
+    method: "PATCH", headers: { authorization: "Bearer owner", "content-type": "application/json" },
+    body: JSON.stringify({ fields: { lastSeenAtServer: { timestampValue: "2020-01-01T00:00:00Z" } } }),
+  });
+  if (!seeded.ok) throw new Error(`Emulator seed failed: ${seeded.status}`);
 
   const viewerDevices = await getDocs(collection(viewer.db, "devices"));
   if (!viewerDevices.docs.some((snapshot) => snapshot.id === DEVICE_ID)) {
@@ -97,6 +108,15 @@ try {
     deviceId: DEVICE_ID,
     state: "connected",
   });
+
+  await expectPermissionDenied(() => setDoc(doc(unauthorized.db, "sessions", `${SESSION_ID}-unauthorized`), {
+    id: `${SESSION_ID}-unauthorized`, ownerUid: UNAUTHORIZED_UID, deviceId: DEVICE_ID, state: "connected",
+  }), "Unauthorized manual-presence connection");
+  await setDoc(doc(agent.db, "devices", DEVICE_ID), { presenceMode: "periodic" }, { merge: true });
+  await expectPermissionDenied(() => setDoc(doc(viewer.db, "sessions", `${SESSION_ID}-stale-legacy`), {
+    id: `${SESSION_ID}-stale-legacy`, ownerUid: CENTRAL_VIEWER_UID, deviceId: DEVICE_ID, state: "connected",
+  }), "Stale legacy presence connection");
+  await setDoc(doc(agent.db, "devices", DEVICE_ID), { presenceMode: "manual" }, { merge: true });
 
   const agentSessions = await getDocs(query(
     collection(agent.db, "sessions"),
@@ -132,7 +152,10 @@ try {
     managedViewerDeviceAccess: true,
     unauthorizedViewerDenied: true,
     centralViewerDeviceDeletion: true,
+    manualPresenceConnection: true,
+    staleLegacyConnectionDenied: true,
   }));
 } finally {
+  clearTimeout(timeout);
   await Promise.all([agent.app, viewer.app, managedViewer.app, unauthorized.app].map((app) => deleteApp(app)));
 }

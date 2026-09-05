@@ -33,6 +33,8 @@ import {
   Activity,
   Star,
   X,
+  Columns2,
+  GripVertical,
 } from "lucide-react";
 import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -47,13 +49,11 @@ import {
   registerFirstRunAgent,
   fetchSessionStatus,
   sendChatMessage,
-  fetchChatMessages,
+  subscribeSessionData,
   sendClipboardText,
   fetchClipboardText,
-  fetchFileTransferReceipts,
   uploadFileChunk,
   uploadFileToStorage,
-  fetchFiles,
   fetchConnectionHistory,
   fetchTiles,
   updateDeviceMetadata,
@@ -64,10 +64,10 @@ import {
   deleteRemoteDevice,
 } from "./api/viewerApi";
 import { fetchViewerUpdateMetadata } from "./api/viewerUpdate";
+import type { SessionData } from "./domain/sessionData";
 import {
   isViewerFirebaseEnabled,
   startFirebaseViewerWebRtcTransport,
-  subscribeFirebaseDevices,
   subscribeViewerAuthState,
   loadFirebaseUpdateRollout,
   saveFirebaseUpdateRollout,
@@ -77,8 +77,9 @@ import {
   type ViewerWebRtcTransport,
 } from "./firebase/viewerFirebase";
 import { ViewerAccountManager } from "./components/ViewerAccountManager";
-import { groupDevicesByStore, resolveDeviceStatuses } from "./domain/agentRegistry";
-import { resolveViewerOfflineAfterMs } from "./domain/viewerDeviceList";
+import { IosCapabilityProbe } from "./components/IosCapabilityProbe";
+import { isMobileViewerPath } from "./domain/mobileViewer";
+import { groupDevicesByStore } from "./domain/agentRegistry";
 import {
   scheduleVisualPingPresentedMeasurement,
 } from "./domain/visualPing";
@@ -112,7 +113,6 @@ import {
   parseStorageTransferCleanup,
   serializeStorageTransferCleanup,
 } from "./domain/storageTransferCleanup";
-import { webRtcReconnectDelayMs } from "./domain/webrtcStability";
 import {
   DEVICE_TYPE_PRESETS,
   resolveDeviceTypeEditor,
@@ -135,6 +135,7 @@ import {
 import {
   consumeRemoteTextInput,
   finishRemoteComposition,
+  isExactCtrlShortcut,
   isRemoteTextInputKeystroke,
   replaceRemoteComposition,
   normalizeWheelDelta,
@@ -157,8 +158,6 @@ import type {
   ManagedDevice,
   RemoteSession,
   ChatMessage,
-  ClipboardData,
-  TransferredFile,
   ConnectionHistoryEntry,
   DeviceMetadataUpdateInput,
   DeviceUpdateRing,
@@ -184,7 +183,13 @@ import {
   type FileTransferQueueItem,
 } from "./domain/fileTransferQueue";
 import { closeSessionTab, upsertSessionTab } from "./domain/sessionTabs";
+import { clampSplitRatio, validateSameGroupSplit } from "./domain/splitSessionView";
 import { formatControlDiagnostics, formatStreamDiagnostics } from "./domain/sessionDiagnostics";
+import { formatDeviceSystemInfo } from "./domain/deviceSystemInfo";
+import {
+  deviceViewPreferencesKey,
+  parseDeviceViewPreferences,
+} from "./domain/deviceViewPreferences";
 
 type DeviceEditTarget =
   | { mode: "device"; devices: [ManagedDevice] }
@@ -292,7 +297,7 @@ async function readClipboardPngBlob(): Promise<Blob | null> {
 }
 
 export function App() {
-  const [appMode, setAppMode] = useState<"viewer" | "agent" | null>(null);
+  const [appMode, setAppMode] = useState<"viewer" | "agent" | "ios-probe" | null>(null);
 
   useEffect(() => {
     if ((window as any).__TAURI_INTERNALS__) {
@@ -305,7 +310,9 @@ export function App() {
         });
     } else {
       const modeParam = new URLSearchParams(window.location.search).get("mode");
-      setAppMode(modeParam === "agent" ? "agent" : "viewer");
+      setAppMode(window.location.pathname.replace(/\/+$/, "") === "/ios-check"
+        ? "ios-probe"
+        : modeParam === "agent" ? "agent" : "viewer");
     }
   }, []);
 
@@ -313,16 +320,20 @@ export function App() {
     return <div style={{ background: "#0f0f1a", minHeight: "100vh" }}></div>;
   }
 
+  if (appMode === "ios-probe") return <IosCapabilityProbe />;
   return appMode === "agent" ? <AgentFirstRunApp /> : <ViewerApp />;
 }
 
 function ViewerApp() {
+  const isMobileViewer = isMobileViewerPath(window.location.pathname);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isCheckingAutoLogin, setIsCheckingAutoLogin] = useState(() => isViewerFirebaseEnabled());
   const [loginError, setLoginError] = useState("");
   const [devices, setDevices] = useState<ManagedDevice[]>([]);
   const [sessions, setSessions] = useState<RemoteSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [splitSessionIds, setSplitSessionIds] = useState<readonly [string, string] | null>(null);
+  const [splitRatio, setSplitRatio] = useState(50);
   const [apiError, setApiError] = useState("");
   const [query, setQuery] = useState("");
   const [selectedStore, setSelectedStore] = useState("전체");
@@ -336,6 +347,8 @@ function ViewerApp() {
   const [isManualUpdateChecking, setIsManualUpdateChecking] = useState(false);
   const [viewerUpdateDialog, setViewerUpdateDialog] = useState<ViewerUpdateDialogState | null>(null);
   const [isRefreshingDevices, setIsRefreshingDevices] = useState(false);
+  const [deviceListRefreshKey, setDeviceListRefreshKey] = useState(0);
+  const deviceListRequestRef = useRef<Promise<ManagedDevice[]> | null>(null);
   const startupSessionCleanupAttemptedRef = useRef(false);
   const connectionEpochRef = useRef(0);
   const pendingConnectAttemptsRef = useRef<Set<Promise<{ cleanupSucceeded: boolean; connected: boolean }>>>(new Set());
@@ -364,6 +377,7 @@ function ViewerApp() {
           return;
         }
         setIsAuthenticated(hasSession);
+        if (!hasSession) { setDeviceListRefreshKey(0); setIsRefreshingDevices(false); setDevices([]); }
         if (hasSession) {
           setLoginError("");
           setApiError("");
@@ -403,7 +417,7 @@ function ViewerApp() {
 
   // Native commands perform signed checks and installation; the WebView owns user consent.
   useEffect(() => {
-    if ((window as any).__TAURI_INTERNALS__) {
+    if ((window as any).__TAURI_INTERNALS__ || isMobileViewer) {
       return;
     }
 
@@ -511,18 +525,9 @@ function ViewerApp() {
     }
   };
 
-  const handleRefreshDeviceList = async () => {
-    if (isRefreshingDevices) {
-      return;
-    }
-    setIsRefreshingDevices(true);
-    try {
-      setDevices(await fetchDevices());
-      setApiError("");
-    } catch (error) {
-      setApiError(error instanceof Error ? error.message : "Device list refresh failed.");
-    } finally {
-      setIsRefreshingDevices(false);
+  const handleRefreshDeviceList = () => {
+    if (!deviceListRequestRef.current && !isRefreshingDevices) {
+      setDeviceListRefreshKey((current) => current + 1);
     }
   };
 
@@ -591,6 +596,10 @@ function ViewerApp() {
     : null;
   const isRemoteFocusMode = Boolean(session);
   const selectedDevices = devices.filter((device) => selectedDeviceIds.includes(device.id));
+  const activeSplitSessionIds = splitSessionIds
+    && splitSessionIds.every((sessionId) => sessions.some((item) => item.id === sessionId))
+    ? splitSessionIds
+    : null;
 
   const toggleFavoriteDevice = (deviceId: string) => {
     setFavoriteDeviceIds((current) => current.includes(deviceId)
@@ -635,56 +644,37 @@ function ViewerApp() {
   }, [sessions]);
 
   useEffect(() => {
-    if (!isAuthenticated) {
+    if (!isAuthenticated || deviceListRefreshKey === 0) {
       return;
-    }
-
-    if (isViewerFirebaseEnabled()) {
-      const unsubscribe = subscribeFirebaseDevices(
-        (nextDevices) => {
-          setDevices(nextDevices);
-          setApiError("");
-        },
-        (error) => {
-          setApiError(error.message);
-        },
-      );
-      return () => unsubscribe();
     }
 
     let cancelled = false;
-    const refreshDevices = async () => {
-      try {
-        const nextDevices = await fetchDevices();
+    const abort = new AbortController();
+    const request = fetchDevices(true, abort.signal);
+    deviceListRequestRef.current = request;
+    setIsRefreshingDevices(true);
+    void request
+      .then((nextDevices) => {
         if (!cancelled) {
           setDevices(nextDevices);
           setApiError("");
         }
-      } catch (error) {
+      })
+      .catch((error) => {
         if (!cancelled) {
           setApiError(error instanceof Error ? error.message : "장비 목록 갱신 실패");
         }
-      }
-    };
-
-    const intervalId = window.setInterval(() => void refreshDevices(), 2000);
+      })
+      .finally(() => {
+        if (deviceListRequestRef.current === request) deviceListRequestRef.current = null;
+        if (!cancelled) setIsRefreshingDevices(false);
+      });
     return () => {
       cancelled = true;
-      window.clearInterval(intervalId);
+      abort.abort();
+      if (deviceListRequestRef.current === request) deviceListRequestRef.current = null;
     };
-  }, [isAuthenticated]);
-
-  useEffect(() => {
-    if (!isAuthenticated || !isViewerFirebaseEnabled()) {
-      return;
-    }
-    const offlineAfterMs = resolveViewerOfflineAfterMs(import.meta.env);
-    const refreshStatuses = () => {
-      setDevices((current) => resolveDeviceStatuses(current, new Date().toISOString(), offlineAfterMs));
-    };
-    const interval = window.setInterval(refreshStatuses, 5_000);
-    return () => window.clearInterval(interval);
-  }, [isAuthenticated]);
+  }, [isAuthenticated, deviceListRefreshKey]);
 
   useEffect(() => {
     const pendingSessions = sessions.filter((item) => item.state === "pending");
@@ -728,11 +718,7 @@ function ViewerApp() {
 
     try {
       await loginAdmin(username, password);
-      if (isViewerFirebaseEnabled()) {
-        setDevices([]);
-      } else {
-        setDevices(await fetchDevices());
-      }
+      if (!isViewerFirebaseEnabled()) setDevices([]);
       setLoginError("");
       setApiError("");
       sessionShutdownInProgressRef.current = false;
@@ -756,9 +742,12 @@ function ViewerApp() {
       await Promise.all(sessions.map((openSession) => closeSession(openSession.id)));
       await logoutAdmin();
       setIsAuthenticated(false);
+      setDeviceListRefreshKey(0);
+      setIsRefreshingDevices(false);
       sessions.forEach((openSession) => removeSessionCleanup(window.localStorage, openSession.id));
       setSessions([]);
       setActiveSessionId(null);
+      setSplitSessionIds(null);
       window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
       setDevices([]);
       setApiError("");
@@ -789,6 +778,9 @@ function ViewerApp() {
     const closedTabs = closeSessionTab(sessions, targetSessionId, activeSessionId);
     setSessions(closedTabs.sessions);
     setActiveSessionId(closedTabs.activeSessionId);
+    if (splitSessionIds?.includes(targetSessionId)) {
+      setSplitSessionIds(null);
+    }
     setApiError("");
     if (!closingSession) {
       return;
@@ -813,16 +805,20 @@ function ViewerApp() {
     deviceId: string,
     openRequest: () => Promise<{ session: RemoteSession }>,
     failureMessage: string,
-  ): Promise<boolean> {
+  ): Promise<RemoteSession | null> {
     if (sessionShutdownInProgressRef.current) {
-      return false;
+      return null;
     }
     if (closingDeviceIdsRef.current.has(deviceId) || pendingConnectDeviceIdsRef.current.has(deviceId)) {
-      return false;
+      return null;
     }
     pendingConnectDeviceIdsRef.current.add(deviceId);
     const connectionEpoch = connectionEpochRef.current;
-    const connectionTask = (async (): Promise<{ cleanupSucceeded: boolean; connected: boolean }> => {
+    const connectionTask = (async (): Promise<{
+      cleanupSucceeded: boolean;
+      connected: boolean;
+      session: RemoteSession | null;
+    }> => {
       let createdSessionId: string | null = null;
       try {
         const result = await openRequest();
@@ -834,31 +830,31 @@ function ViewerApp() {
           enqueueSessionCleanup(window.localStorage, result.session);
           await closeSession(result.session.id);
           removeSessionCleanup(window.localStorage, result.session.id);
-          return { cleanupSucceeded: true, connected: false };
+          return { cleanupSucceeded: true, connected: false, session: null };
         }
         setSessions((current) => upsertSessionTab(current, result.session));
         setActiveSessionId(result.session.id);
         setApiError("");
-        return { cleanupSucceeded: true, connected: true };
+        return { cleanupSucceeded: true, connected: true, session: result.session };
       } catch (error) {
         if (
           !sessionShutdownInProgressRef.current &&
           connectionEpoch === connectionEpochRef.current
         ) {
           setApiError(error instanceof Error ? error.message : failureMessage);
-          return { cleanupSucceeded: true, connected: false };
+          return { cleanupSucceeded: true, connected: false, session: null };
         }
         if (createdSessionId) {
           setApiError(error instanceof Error ? error.message : "취소된 원격 세션 정리 실패");
-          return { cleanupSucceeded: false, connected: false };
+          return { cleanupSucceeded: false, connected: false, session: null };
         }
-        return { cleanupSucceeded: true, connected: false };
+        return { cleanupSucceeded: true, connected: false, session: null };
       }
     })();
     pendingConnectAttemptsRef.current.add(connectionTask);
     try {
       const result = await connectionTask;
-      return result.connected;
+      return result.connected ? result.session : null;
     } finally {
       pendingConnectAttemptsRef.current.delete(connectionTask);
       pendingConnectDeviceIdsRef.current.delete(deviceId);
@@ -869,42 +865,94 @@ function ViewerApp() {
     if (sessionShutdownInProgressRef.current) {
       return;
     }
-    if (device.status !== "online") {
-      setApiError("온라인 상태의 Agent만 접속할 수 있습니다.");
-      return;
-    }
     if (closingDeviceIdsRef.current.has(device.id)) {
       setApiError("이 장비의 이전 세션을 정리하고 있습니다. 잠시 후 다시 접속하세요.");
       return;
     }
-    const protocolDecision = evaluateRemoteProtocolCompatibility(device.protocolVersion);
-    if (!protocolDecision.compatible) {
-      setApiError(remoteProtocolErrorMessage(protocolDecision));
-      return;
-    }
     const existingSession = sessions.find((item) => item.deviceId === device.id);
     if (existingSession) {
+      setSplitSessionIds(null);
       setActiveSessionId(existingSession.id);
       return;
     }
+    setSplitSessionIds(null);
     await runTrackedSessionOpen(device.id, () => openSession(device.id), "세션 연결 실패");
+  }
+
+  async function handleConnectSplitView() {
+    const issue = validateSameGroupSplit(selectedDevices);
+    if (issue) {
+      setApiError(issue === "count"
+        ? "좌우 분할은 같은 그룹의 장비 2대를 선택해야 합니다."
+        : "좌우 분할은 같은 매장 그룹의 장비만 사용할 수 있습니다.");
+      return;
+    }
+
+    for (const device of selectedDevices) {
+      if (closingDeviceIdsRef.current.has(device.id)) {
+        setApiError("선택한 장비의 이전 세션을 정리하고 있습니다. 잠시 후 다시 시도하세요.");
+        return;
+      }
+    }
+
+    const openedSessions = await Promise.all(selectedDevices.map(async (device) => (
+      sessions.find((item) => item.deviceId === device.id)
+      ?? runTrackedSessionOpen(device.id, () => openSession(device.id), "분할 세션 연결 실패")
+    )));
+    if (!openedSessions[0] || !openedSessions[1]) {
+      return;
+    }
+    setSplitSessionIds([openedSessions[0].id, openedSessions[1].id]);
+    setSplitRatio(50);
+    setActiveSessionId(openedSessions[0].id);
+    setSelectedDeviceIds([]);
+    setApiError("");
+  }
+
+  function handleSelectSession(targetSessionId: string) {
+    if (!splitSessionIds?.includes(targetSessionId)) {
+      setSplitSessionIds(null);
+    }
+    setActiveSessionId(targetSessionId);
+  }
+
+  function updateSplitRatio(clientX: number, divider: HTMLDivElement) {
+    const grid = divider.parentElement;
+    if (!grid) {
+      return;
+    }
+    const rect = grid.getBoundingClientRect();
+    const availableWidth = rect.width - divider.offsetWidth;
+    if (availableWidth > 0) {
+      const dividerCenter = clientX - rect.left - divider.offsetWidth / 2;
+      setSplitRatio(clampSplitRatio((dividerCenter / availableWidth) * 100));
+    }
+  }
+
+  function handleSplitDividerPointerDown(event: React.PointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    updateSplitRatio(event.clientX, event.currentTarget);
+  }
+
+  function handleSplitDividerPointerMove(event: React.PointerEvent<HTMLDivElement>) {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      updateSplitRatio(event.clientX, event.currentTarget);
+    }
+  }
+
+  function handleSplitDividerPointerUp(event: React.PointerEvent<HTMLDivElement>) {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
   }
 
   async function handleSecureConnectRequest(device: ManagedDevice) {
     if (sessionShutdownInProgressRef.current) {
       return;
     }
-    if (device.status !== "online") {
-      setApiError("온라인 상태의 Agent만 보안접속을 요청할 수 있습니다.");
-      return;
-    }
     if (closingDeviceIdsRef.current.has(device.id)) {
       setApiError("이 장비의 이전 세션을 정리하고 있습니다. 잠시 후 다시 접속하세요.");
-      return;
-    }
-    const protocolDecision = evaluateRemoteProtocolCompatibility(device.protocolVersion);
-    if (!protocolDecision.compatible) {
-      setApiError(remoteProtocolErrorMessage(protocolDecision));
       return;
     }
     const existingSession = sessions.find((item) => item.deviceId === device.id);
@@ -1006,8 +1054,12 @@ function ViewerApp() {
                 storeName: input.storeName,
               }
             : {
+                contactName: input.contactName,
                 deviceName: input.deviceName,
+                installLocation: input.installLocation,
+                notes: input.notes,
                 storeName: input.storeName,
+                tags: input.tags,
               };
         const updated = await updateDeviceMetadata(device.id, updateInput);
         updatedDevices.push(updated);
@@ -1083,7 +1135,7 @@ function ViewerApp() {
   }
 
   return (
-    <div className={`app-shell${isRemoteFocusMode ? " remote-focus-mode" : ""}`}>
+    <div className={`app-shell${isMobileViewer ? " mobile-viewer" : ""}${isRemoteFocusMode ? " remote-focus-mode" : ""}`}>
       <aside className="sidebar">
         <div className="brand-row" data-testid="viewer-brand">
           <div className="brand-mark">W</div>
@@ -1162,10 +1214,10 @@ function ViewerApp() {
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="매장, 장비명, 사업자번호 검색"
+              placeholder="매장, 장비, 담당자, 위치, 태그 검색"
             />
           </label>
-          <button
+          {!isMobileViewer && <button
             className="viewer-update-button"
             type="button"
             onClick={() => void handleManualViewerUpdate()}
@@ -1175,7 +1227,7 @@ function ViewerApp() {
           >
             <RotateCcw size={16} className={isManualUpdateChecking ? "is-spinning" : undefined} />
             <span>업데이트</span>
-          </button>
+          </button>}
           {isViewerFirebaseEnabled() && <button className="rollout-button" type="button" onClick={() => void handleOpenRollout()}>
             <SlidersHorizontal size={16} />
             <span>단계 배포</span>
@@ -1187,7 +1239,13 @@ function ViewerApp() {
           </div>
         </header>
 
-        <section className={session && activeDevice ? "content-grid" : "content-grid content-grid-dashboard"}>
+        <section
+          className={`${session && activeDevice ? "content-grid" : "content-grid content-grid-dashboard"}${activeSplitSessionIds ? " content-grid-split" : ""}`}
+          style={activeSplitSessionIds ? {
+            "--split-left": `${splitRatio}fr`,
+            "--split-right": `${100 - splitRatio}fr`,
+          } as React.CSSProperties : undefined}
+        >
           <section className="control-panel device-workspace" data-testid="device-workspace">
             <section className="fleet-summary" aria-label="장비 상태 요약">
               <div className="summary-item online">
@@ -1236,6 +1294,12 @@ function ViewerApp() {
               {selectedDevices.length > 0 && (
                 <div className="bulk-device-actions">
                   <strong>{selectedDevices.length}대 선택</strong>
+                  {selectedDevices.length === 2 && (
+                    <button type="button" onClick={() => void handleConnectSplitView()}>
+                      <Columns2 size={14} />
+                      좌우 분할 접속
+                    </button>
+                  )}
                   <button type="button" onClick={() => setEditTarget({ mode: "group", devices: selectedDevices })}>
                     일괄 관리
                   </button>
@@ -1258,25 +1322,64 @@ function ViewerApp() {
               onToggleSelected={toggleSelectedDevice}
               onDiagnostics={setDiagnosticTarget}
             />
-            <ConnectionHistorySection />
+            <ConnectionHistorySection devices={devices} />
           </section>
 
-          {sessions.map((openSession) => (
-            <RemoteSessionPanel
-              activeSessionId={activeSessionId}
-              device={devices.find((device) => device.id === openSession.deviceId) ?? null}
-              isActive={openSession.id === activeSessionId}
-              key={openSession.id}
-              sessionId={openSession.id}
-              session={openSession}
-              sessions={sessions}
-              sessionDevices={devices}
-              onInputEvent={(action, options) => markInput(openSession, action, options)}
-              onCloseSession={(barrier) => handleCloseSession(openSession.id, barrier)}
-              onCloseSessionTab={(sessionId) => handleCloseSession(sessionId)}
-              onSelectSession={setActiveSessionId}
-            />
-          ))}
+          {sessions.map((openSession) => {
+            const splitIndex = activeSplitSessionIds?.indexOf(openSession.id) ?? -1;
+            return (
+              <RemoteSessionPanel
+                activeSessionId={activeSessionId}
+                device={devices.find((device) => device.id === openSession.deviceId) ?? null}
+                isActive={openSession.id === activeSessionId}
+                isSplit={splitIndex >= 0}
+                isVisible={activeSplitSessionIds ? splitIndex >= 0 : openSession.id === activeSessionId}
+                key={openSession.id}
+                sessionId={openSession.id}
+                session={openSession}
+                sessions={sessions}
+                sessionDevices={devices}
+                splitPosition={splitIndex === 0 ? "left" : splitIndex === 1 ? "right" : null}
+                onInputEvent={(action, options) => markInput(openSession, action, options)}
+                onCloseSession={(barrier) => handleCloseSession(openSession.id, barrier)}
+                onCloseSessionTab={(sessionId) => handleCloseSession(sessionId)}
+                onSelectSession={handleSelectSession}
+              />
+            );
+          })}
+          {activeSplitSessionIds && (
+            <div
+              className="remote-split-divider"
+              role="separator"
+              tabIndex={0}
+              aria-label="좌우 원격 화면 크기 조절"
+              aria-orientation="vertical"
+              aria-valuemin={20}
+              aria-valuemax={80}
+              aria-valuenow={Math.round(splitRatio)}
+              onKeyDown={(event) => {
+                if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+                  event.preventDefault();
+                  setSplitRatio((value) => clampSplitRatio(value + (event.key === "ArrowLeft" ? -5 : 5)));
+                }
+              }}
+              onPointerDown={handleSplitDividerPointerDown}
+              onPointerMove={handleSplitDividerPointerMove}
+              onPointerUp={handleSplitDividerPointerUp}
+              onPointerCancel={handleSplitDividerPointerUp}
+            >
+              <GripVertical size={18} />
+              <button
+                type="button"
+                title="분할 보기 종료"
+                aria-label="분할 보기 종료"
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={() => setSplitSessionIds(null)}
+              >
+                <X size={14} />
+              </button>
+            </div>
+          )}
         </section>
       </main>
       {editTarget && (
@@ -1351,9 +1454,13 @@ function DeviceEditDialog({
   const initialDeviceType = resolveDeviceTypeEditor(primaryDevice.deviceName);
   const [form, setForm] = useState({
     businessNumber: primaryDevice.businessNumber,
+    contactName: primaryDevice.contactName ?? "",
     desktopName: primaryDevice.desktopName,
     deviceName: initialDeviceType.value,
+    installLocation: primaryDevice.installLocation ?? "",
+    notes: primaryDevice.notes ?? "",
     storeName: primaryDevice.storeName,
+    tagText: primaryDevice.tags?.join(", ") ?? "",
   });
   const [deviceTypeChoice, setDeviceTypeChoice] = useState<DeviceTypeChoice>(initialDeviceType.choice);
   const [isSaving, setIsSaving] = useState(false);
@@ -1366,9 +1473,13 @@ function DeviceEditDialog({
     const nextDeviceType = resolveDeviceTypeEditor(primaryDevice.deviceName);
     setForm({
       businessNumber: primaryDevice.businessNumber,
+      contactName: primaryDevice.contactName ?? "",
       desktopName: primaryDevice.desktopName,
       deviceName: nextDeviceType.value,
+      installLocation: primaryDevice.installLocation ?? "",
+      notes: primaryDevice.notes ?? "",
       storeName: primaryDevice.storeName,
+      tagText: primaryDevice.tags?.join(", ") ?? "",
     });
     setDeviceTypeChoice(nextDeviceType.choice);
     setIsDeleteArmed(false);
@@ -1382,7 +1493,11 @@ function DeviceEditDialog({
     }
     setIsSaving(true);
     try {
-      await onSave(form);
+      const { tagText, ...metadata } = form;
+      await onSave({
+        ...metadata,
+        tags: tagText.split(",").map((tag) => tag.trim()).filter(Boolean),
+      });
       if (isViewerFirebaseEnabled()) {
         await Promise.all(target.devices.map((device) => onSaveRollout(device.id, updateRing, updatePaused)));
       }
@@ -1477,6 +1592,42 @@ function DeviceEditDialog({
                   placeholder="데스크탑명"
                 />
                 <small className="field-help">Agent PC의 Windows 컴퓨터 이름을 자동으로 표시합니다.</small>
+              </label>
+              <label>
+                담당자
+                <input
+                  maxLength={100}
+                  value={form.contactName}
+                  onChange={(event) => setForm((prev) => ({ ...prev, contactName: event.target.value }))}
+                  placeholder="담당자 이름"
+                />
+              </label>
+              <label>
+                설치 위치
+                <input
+                  maxLength={255}
+                  value={form.installLocation}
+                  onChange={(event) => setForm((prev) => ({ ...prev, installLocation: event.target.value }))}
+                  placeholder="예: 카운터 좌측 메인 POS"
+                />
+              </label>
+              <label>
+                태그
+                <input
+                  maxLength={400}
+                  value={form.tagText}
+                  onChange={(event) => setForm((prev) => ({ ...prev, tagText: event.target.value }))}
+                  placeholder="예: 메인, 1층, 긴급"
+                />
+              </label>
+              <label className="device-notes-field">
+                메모 / 장애 이력
+                <textarea
+                  maxLength={2000}
+                  value={form.notes}
+                  onChange={(event) => setForm((prev) => ({ ...prev, notes: event.target.value }))}
+                  placeholder="장비 특이사항이나 장애 처리 내용을 기록하세요."
+                />
               </label>
             </>
           )}
@@ -1637,10 +1788,12 @@ function ViewerUpdateDialog({
   state,
   onClose,
   onConfirm,
+  productLabel = "Viewer",
 }: {
   state: ViewerUpdateDialogState;
   onClose: () => void;
   onConfirm: () => void;
+  productLabel?: "Viewer" | "Agent";
 }) {
   const isAvailable = state.kind === "available";
   useModalEscape(isAvailable ? () => undefined : onClose);
@@ -1648,7 +1801,7 @@ function ViewerUpdateDialog({
   const message = isAvailable
     ? `${state.version} 버전 업데이트를 진행합니다.`
     : state.kind === "current"
-      ? `현재 Viewer는 ${state.version} 버전입니다.`
+      ? `현재 ${productLabel}는 ${state.version} 버전입니다.`
       : state.message;
 
   return (
@@ -1674,32 +1827,37 @@ function ViewerUpdateDialog({
   );
 }
 
-function ConnectionHistorySection() {
+function ConnectionHistorySection({ devices }: { devices: ManagedDevice[] }) {
   const [history, setHistory] = useState<ConnectionHistoryEntry[]>([]);
   const [statusFilter, setStatusFilter] = useState<"all" | ConnectionHistoryEntry["status"]>("all");
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [historyError, setHistoryError] = useState("");
+  const devicesRef = useRef(devices);
+  devicesRef.current = devices;
 
   const loadHistory = async () => {
-    setIsRefreshing(true);
-    try {
-      const data = await fetchConnectionHistory();
-      setHistory(data);
-    } catch {
-      // ignore
-    } finally {
-      setIsRefreshing(false);
-    }
+    if (!isRefreshing) setRefreshKey((key) => key + 1);
   };
 
   useEffect(() => {
-    void loadHistory();
-    const interval = setInterval(() => void loadHistory(), 3000);
-    return () => clearInterval(interval);
-  }, []);
+    if (refreshKey === 0) return;
+    let active = true;
+    setIsRefreshing(true);
+    setHistoryError("");
+    void fetchConnectionHistory(devicesRef.current)
+      .then((entries) => { if (active) setHistory(entries); })
+      .catch((error) => { if (active) setHistoryError(error instanceof Error ? error.message : String(error)); })
+      .finally(() => { if (active) setIsRefreshing(false); });
+    return () => { active = false; };
+  }, [refreshKey]);
 
-  const filteredHistory = statusFilter === "all"
-    ? history
-    : history.filter((entry) => entry.status === statusFilter);
+  const filteredHistory = history
+    .filter((entry) => statusFilter === "all" || entry.status === statusFilter)
+    .map((entry) => {
+      const device = devices.find((item) => item.id === entry.deviceId);
+      return device ? { ...entry, storeName: device.storeName, deviceName: device.deviceName } : entry;
+    });
 
   return (
     <section className="device-section" style={{ marginTop: "24px" }}>
@@ -1733,6 +1891,7 @@ function ConnectionHistorySection() {
         </div>
       </div>
       <div className="device-table" style={{ maxHeight: "250px", overflowY: "auto" }}>
+        {historyError && <p role="status">연결 이력을 불러오지 못했습니다: {historyError}</p>}
         <div className="table-row table-head" style={{ gridTemplateColumns: "1.2fr 2fr 2fr 3fr 1.5fr" }}>
           <span>상태</span>
           <span>정보</span>
@@ -1766,9 +1925,46 @@ function ConnectionHistorySection() {
             </div>
           );
         })}
-        {filteredHistory.length === 0 && <div className="empty-row">조건에 맞는 연결 이력이 없습니다.</div>}
+        {filteredHistory.length === 0 && <div className="empty-row">{refreshKey === 0 ? "조회 전" : "조건에 맞는 연결 이력이 없습니다."}</div>}
       </div>
     </section>
+  );
+}
+
+function AgentRestartDialog({
+  isRestarting,
+  onCancel,
+  onConfirm,
+}: {
+  isRestarting: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  useModalEscape(isRestarting ? () => undefined : onCancel);
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={isRestarting ? undefined : onCancel}>
+      <section
+        className="modal-panel compact-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="agent-restart-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="section-heading">
+          <h2 id="agent-restart-title">에이전트를 재시작할까요?</h2>
+        </div>
+        <p className="modal-help">재시작하는 동안 원격 연결이 잠시 중단됩니다.</p>
+        <div className="modal-actions">
+          <button className="secondary-button" type="button" disabled={isRestarting} onClick={onCancel}>
+            취소
+          </button>
+          <button className="primary-button compact" type="button" disabled={isRestarting} onClick={onConfirm}>
+            {isRestarting ? "재시작 중..." : "재시작"}
+          </button>
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -1787,6 +1983,10 @@ function AgentFirstRunApp() {
   const [registeredConfig, setRegisteredConfig] = useState<any | null>(null);
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isRestartDialogOpen, setIsRestartDialogOpen] = useState(false);
+  const [isRestarting, setIsRestarting] = useState(false);
+  const [isAgentUpdateChecking, setIsAgentUpdateChecking] = useState(false);
+  const [agentUpdateDialog, setAgentUpdateDialog] = useState<ViewerUpdateDialogState | null>(null);
 
   useEffect(() => {
     if (!(window as any).__TAURI_INTERNALS__) {
@@ -1877,53 +2077,111 @@ function AgentFirstRunApp() {
     }
   }
 
+  async function handleRestartAgent() {
+    if (isRestarting) return;
+    setIsRestarting(true);
+    try {
+      if ((window as any).__TAURI_INTERNALS__) {
+        await invoke("restart_agent_process");
+      }
+      setIsRestartDialogOpen(false);
+    } catch (restartError) {
+      setError(restartError instanceof Error ? restartError.message : "에이전트 재시작에 실패했습니다.");
+      setIsRestartDialogOpen(false);
+    } finally {
+      setIsRestarting(false);
+    }
+  }
+
+  async function handleAgentUpdateCheck() {
+    if (isAgentUpdateChecking) return;
+    setIsAgentUpdateChecking(true);
+    try {
+      const update = await invoke<{ available: boolean; latestVersion: string }>("check_agent_installer_update");
+      setAgentUpdateDialog(update.available
+        ? { kind: "available", version: update.latestVersion }
+        : { kind: "current", version: update.latestVersion });
+    } catch (updateError) {
+      setAgentUpdateDialog({
+        kind: "error",
+        message: updateError instanceof Error ? updateError.message : "업데이트 서버를 확인할 수 없습니다.",
+      });
+    } finally {
+      setIsAgentUpdateChecking(false);
+    }
+  }
+
+  async function handleConfirmAgentUpdate() {
+    setAgentUpdateDialog(null);
+    try {
+      await invoke("start_installer_update", { restartMode: "agent" });
+    } catch (updateError) {
+      setAgentUpdateDialog({
+        kind: "error",
+        message: updateError instanceof Error ? updateError.message : "업데이트를 시작할 수 없습니다.",
+      });
+    }
+  }
+
   if (registeredConfig) {
     return (
-      <main className="login-screen agent-screen">
-        <div className="login-panel agent-panel active-agent-panel">
-          <div className="login-badge active-agent-badge">
-            <Monitor size={20} />
-            <span>Active Agent · v{agentVersion}</span>
+      <>
+        <main className="login-screen agent-screen">
+          <div className="login-panel agent-panel active-agent-panel">
+            <div className="login-badge active-agent-badge">
+              <Monitor size={20} />
+              <span>Active Agent · v{agentVersion}</span>
+            </div>
+            <h1>Agent 가동 중</h1>
+            {error && <p className="error-text">{error}</p>}
+            <div className="agent-result active-agent-result">
+              <div style={{ display: firebaseMode ? "none" : undefined }}>
+                <span>서버 주소:</span>
+                <strong>{registeredConfig.apiUrl}</strong>
+              </div>
+              <div>
+                <span>등록 장비 ID:</span>
+                <strong>{registeredConfig.registeredDeviceId}</strong>
+              </div>
+              <div>
+                <span>사업자번호:</span>
+                <strong>{registeredConfig.businessNumber}</strong>
+              </div>
+              <div>
+                <span>설치 식별자:</span>
+                <code>{registeredConfig.installId}</code>
+              </div>
+            </div>
+            <p className="agent-status-copy">
+              본 프로그램은 백그라운드에서 원격 제어 대기 상태를 유지합니다. 트레이 아이콘을 통해 관리할 수 있습니다.
+            </p>
+            <div className="agent-action-row">
+              <button className="secondary-button" type="button" disabled={isAgentUpdateChecking} onClick={() => void handleAgentUpdateCheck()}>
+                <RotateCcw size={16} className={isAgentUpdateChecking ? "is-spinning" : undefined} />
+                <span>{isAgentUpdateChecking ? "확인 중..." : "업데이트 확인"}</span>
+              </button>
+              <button className="primary-button" type="button" onClick={() => setIsRestartDialogOpen(true)}>
+                <span>에이전트 재시작</span>
+              </button>
+            </div>
           </div>
-          <h1>Agent 가동 중</h1>
-          {error && <p className="error-text">{error}</p>}
-          <div className="agent-result active-agent-result">
-            <div style={{ display: firebaseMode ? "none" : undefined }}>
-              <span>서버 주소:</span>
-              <strong>{registeredConfig.apiUrl}</strong>
-            </div>
-            <div>
-              <span>등록 장비 ID:</span>
-              <strong>{registeredConfig.registeredDeviceId}</strong>
-            </div>
-            <div>
-              <span>사업자번호:</span>
-              <strong>{registeredConfig.businessNumber}</strong>
-            </div>
-            <div>
-              <span>설치 식별자:</span>
-              <code>{registeredConfig.installId}</code>
-            </div>
-          </div>
-          <p className="agent-status-copy">
-            본 프로그램은 백그라운드에서 원격 제어 대기 상태를 유지합니다. 트레이 아이콘을 통해 관리할 수 있습니다.
-          </p>
-          <button
-            className="primary-button"
-            onClick={() => {
-              if ((window as any).__TAURI_INTERNALS__) {
-                invoke("restart_agent_process").then(() => {
-                  alert("에이전트 프로세스가 재시작되었습니다.");
-                });
-              } else {
-                alert("브라우저 환경 - 재시작 시뮬레이션 완료");
-              }
-            }}
-          >
-            <span>에이전트 재시작</span>
-          </button>
-        </div>
-      </main>
+        </main>
+        {isRestartDialogOpen && (
+          <AgentRestartDialog
+            isRestarting={isRestarting}
+            onCancel={() => setIsRestartDialogOpen(false)}
+            onConfirm={() => void handleRestartAgent()}
+          />
+        )}
+        {agentUpdateDialog && (
+          <ViewerUpdateDialog
+            state={agentUpdateDialog}
+            productLabel="Agent"
+            onClose={() => setAgentUpdateDialog(null)}
+            onConfirm={() => void handleConfirmAgentUpdate()}
+          />
+        )}
+      </>
     );
   }
 
@@ -2069,17 +2327,6 @@ function getOrCreateAgentInstallId(): string {
   return installId;
 }
 
-export function sortDevicesForDisplay(devices: ManagedDevice[]): ManagedDevice[] {
-  const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
-  return [...devices].sort((left, right) => {
-    const statusOrder = Number(right.status === "online") - Number(left.status === "online");
-    if (statusOrder !== 0) {
-      return statusOrder;
-    }
-    return collator.compare(left.desktopName ?? "", right.desktopName ?? "");
-  });
-}
-
 function DeviceTable({
   activeDeviceId,
   devices,
@@ -2154,16 +2401,13 @@ function DeviceTable({
           <span>매장</span>
           <span>장비</span>
           <span>소프트웨어</span>
+          <span>시스템</span>
           <span>작업</span>
         </div>
         {devices.map((device) => {
           const isOnline = device.status === "online";
           const updateInfo = resolveDeviceUpdateInfo(device);
-          const protocolDecision = evaluateRemoteProtocolCompatibility(device.protocolVersion);
-          const canConnect = isOnline && protocolDecision.compatible;
-          const protocolTitle = protocolDecision.compatible
-            ? isOnline ? "더블클릭하면 바로 접속합니다." : "오프라인 장비입니다."
-            : remoteProtocolErrorMessage(protocolDecision);
+          const systemSummary = formatDeviceSystemInfo(device.systemInfo);
           return (
             <div
               className="table-row"
@@ -2173,11 +2417,9 @@ function DeviceTable({
                 onEdit(device);
               }}
               onDoubleClick={() => {
-                if (canConnect) {
-                  void onConnect(device);
-                }
+                void onConnect(device);
               }}
-              title={protocolTitle}
+              title="접속 시 최신 상태를 확인합니다."
             >
               <span className="device-status-cell">
                 <input
@@ -2186,7 +2428,7 @@ function DeviceTable({
                   aria-label={`${device.desktopName} 선택`}
                   onChange={() => onToggleSelected(device.id)}
                 />
-                <span className={`status-pill ${isOnline ? "online" : "offline"}`}>
+                <span className={`status-pill ${isOnline ? "online" : "offline"}`} title="마지막 조회 시 상태">
                   {isOnline ? <Wifi size={14} /> : <WifiOff size={14} />}
                   {isOnline ? "온라인" : "오프라인"}
                 </span>
@@ -2206,10 +2448,20 @@ function DeviceTable({
                   <b>{device.storeName}</b>
                 </span>
                 <small>{device.businessNumber}</small>
+                {(device.contactName || device.installLocation) && (
+                  <small className="device-operations-summary">
+                    {[device.contactName, device.installLocation].filter(Boolean).join(" · ")}
+                  </small>
+                )}
               </span>
               <span className="device-identity-cell">
                 <b>{device.desktopName}</b>
                 <small>{device.deviceName} · {device.deviceNumber}</small>
+                {device.tags && device.tags.length > 0 && (
+                  <span className="device-tag-list">
+                    {device.tags.slice(0, 3).map((tag) => <i key={tag}>{tag}</i>)}
+                  </span>
+                )}
               </span>
               <span className="software-cell">
                 <span className={`version-badge ${updateInfo.kind}`}>{updateInfo.label}</span>
@@ -2217,23 +2469,22 @@ function DeviceTable({
                   <small>{device.controlDiagnostics.elevated ? "관리자 권한" : "사용자 권한"}</small>
                 )}
               </span>
+              <span className="device-system-cell" title={systemSummary}>{systemSummary}</span>
               <span className="device-actions">
                 <button
                   className={activeDeviceId === device.id ? "connect-button connect-icon active" : "connect-button connect-icon"}
-                  disabled={!canConnect}
                   type="button"
-                  title={canConnect ? "접속" : protocolTitle}
-                  aria-label={canConnect ? "접속" : protocolTitle}
+                  title="접속"
+                  aria-label="접속"
                   onClick={() => onConnect(device)}
                 >
                   <PlugZap size={16} />
                 </button>
                 <button
                   className="connect-button connect-icon secure"
-                  disabled={!canConnect}
                   type="button"
-                  title={canConnect ? "보안접속" : protocolTitle}
-                  aria-label={canConnect ? "보안접속" : protocolTitle}
+                  title="보안접속"
+                  aria-label="보안접속"
                   onClick={() => onSecureConnect(device)}
                 >
                   <ShieldCheck size={16} />
@@ -2372,10 +2623,13 @@ function RemoteSessionPanel({
   activeSessionId,
   device,
   isActive,
+  isSplit,
+  isVisible,
   sessionId,
   session,
   sessions,
   sessionDevices,
+  splitPosition,
   onCloseSessionTab,
   onInputEvent: sendInputEvent,
   onCloseSession,
@@ -2384,15 +2638,25 @@ function RemoteSessionPanel({
   activeSessionId: string | null;
   device: ManagedDevice | null;
   isActive: boolean;
+  isSplit: boolean;
+  isVisible: boolean;
   sessionId: string;
   session: RemoteSession | null;
   sessions: RemoteSession[];
   sessionDevices: ManagedDevice[];
+  splitPosition: "left" | "right" | null;
   onCloseSessionTab: (sessionId: string) => void;
   onInputEvent: (action: string, options?: { localOnly?: boolean }) => void | Promise<void>;
   onCloseSession: (inputReleaseBarrier?: Promise<unknown>) => void;
   onSelectSession: (sessionId: string) => void;
 }) {
+  const preferenceDeviceId = device?.id ?? session?.deviceId ?? "";
+  const storedViewPreferences = React.useRef(
+    preferenceDeviceId
+      ? window.localStorage.getItem(deviceViewPreferencesKey(preferenceDeviceId))
+      : null,
+  ).current;
+  const initialViewPreferences = React.useRef(parseDeviceViewPreferences(storedViewPreferences)).current;
   const panelRef = React.useRef<HTMLElement | null>(null);
   const imeInputRef = React.useRef<HTMLTextAreaElement | null>(null);
   const imeComposingRef = React.useRef(false);
@@ -2416,15 +2680,26 @@ function RemoteSessionPanel({
   const storageTransfersRef = React.useRef(
     parseStorageTransferCleanup(window.localStorage.getItem(STORAGE_TRANSFER_CLEANUP_KEY)),
   );
+  const [receiptIds, setReceiptIds] = useState<string[]>(() => [...storageTransfersRef.current]
+    .filter(([, transfer]) => !transfer.received && transfer.path.startsWith(`sessions/${sessionId}/`))
+    .map(([id]) => id));
+  const [sessionDataError, setSessionDataError] = useState("");
+  const [sessionDataRetry, setSessionDataRetry] = useState(0);
+  const sessionDataHandlerRef = useRef<(data: SessionData, isCurrent: () => boolean) => Promise<void>>(async () => {});
+  const clipboardRequestRef = useRef<((text: string) => void) | null>(null);
   const tileSequenceRef = React.useRef<Map<string, number>>(new Map());
   const receivedFrameSequenceRef = React.useRef(0);
   const webRtcTransportRef = React.useRef<ViewerWebRtcTransport | null>(null);
+  const lastDisplayCommandRef = React.useRef<number | null>(null);
   const activeSessionIdRef = React.useRef(activeSessionId);
   React.useEffect(() => {
     activeSessionIdRef.current = activeSessionId;
   }, [activeSessionId]);
   const onInputEvent = React.useCallback((action: string) => {
-    const sentOverWebRtc = webRtcTransportRef.current?.sendControl(action) ?? false;
+    const transport = webRtcTransportRef.current;
+    const sentOverWebRtc = transport?.isControlReady() === true
+      ? transport.sendControl(action)
+      : false;
     return sendInputEvent(action, {
       localOnly: sentOverWebRtc || !shouldUseReliableInputFallback(action),
     });
@@ -2432,14 +2707,21 @@ function RemoteSessionPanel({
   const dangerConfirmUntilRef = React.useRef<Record<string, number>>({});
   const [latencyReport, setLatencyReport] = useState<string>("");
   const [pingState, setPingState] = useState<{ start: number } | null>(null);
-  const [zoom, setZoom] = useState(1);
-  const [isSessionFullscreen, setIsSessionFullscreen] = useState(false);
+  const [zoom, setZoom] = useState(initialViewPreferences.zoom);
+  const [isSessionFullscreen, setIsSessionFullscreen] = useState(initialViewPreferences.fullscreen);
   const [isFullscreenToolbarOpen, setIsFullscreenToolbarOpen] = useState(false);
   const [isWebRtcConnectionReady, setIsWebRtcConnectionReady] = useState(false);
+  const [webRtcReconnectGeneration, setWebRtcReconnectGeneration] = useState(0);
+  const [needsManualReconnect, setNeedsManualReconnect] = useState(false);
+  const [rebootReconnectState, setRebootReconnectState] = useState<"idle" | "restarting" | "reconnecting">("idle");
+  const rebootReconnectStateRef = React.useRef(rebootReconnectState);
+  React.useEffect(() => {
+    rebootReconnectStateRef.current = rebootReconnectState;
+  }, [rebootReconnectState]);
   const [streamPerformanceMode, setStreamPerformanceMode] = useState<StreamPerformanceMode>(() =>
     normalizeStreamPerformanceMode(window.localStorage.getItem("wonremote-stream-performance-mode")),
   );
-  const [selectedDisplayIndex, setSelectedDisplayIndex] = useState(0);
+  const [selectedDisplayIndex, setSelectedDisplayIndex] = useState(initialViewPreferences.selectedDisplayIndex);
   const [transferProgress, setTransferProgress] = useState<{
     fileName: string;
     progress: number;
@@ -2457,14 +2739,27 @@ function RemoteSessionPanel({
   const [isRecording, setIsRecording] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
-  const [isClipboardSyncOn, setIsClipboardSyncOn] = useState(false);
+  const [isClipboardSyncOn, setIsClipboardSyncOn] = useState(initialViewPreferences.clipboardSync);
   const [isChatOpen, setIsChatOpen] = useState(false);
 
   useEffect(() => {
-    setIsSessionFullscreen(false);
     setIsFullscreenToolbarOpen(false);
     setIsWebRtcConnectionReady(false);
+    lastDisplayCommandRef.current = null;
+    if (initialViewPreferences.fullscreen) {
+      void applySessionFullscreen(true);
+    }
   }, [sessionId]);
+
+  useEffect(() => {
+    if (!preferenceDeviceId) return;
+    window.localStorage.setItem(deviceViewPreferencesKey(preferenceDeviceId), JSON.stringify({
+      clipboardSync: isClipboardSyncOn,
+      fullscreen: isSessionFullscreen,
+      selectedDisplayIndex,
+      zoom,
+    }));
+  }, [isClipboardSyncOn, isSessionFullscreen, preferenceDeviceId, selectedDisplayIndex, zoom]);
 
   useEffect(() => {
     if ((window as any).__TAURI_INTERNALS__) return;
@@ -2476,8 +2771,7 @@ function RemoteSessionPanel({
     return () => document.removeEventListener("fullscreenchange", syncBrowserFullscreen);
   }, []);
 
-  async function toggleSessionFullscreen() {
-    const nextFullscreen = !isSessionFullscreen;
+  async function applySessionFullscreen(nextFullscreen: boolean) {
     setIsSessionFullscreen(nextFullscreen);
     setIsFullscreenToolbarOpen(false);
 
@@ -2497,10 +2791,19 @@ function RemoteSessionPanel({
     }
   }
 
+  useEffect(() => {
+    if (isSplit && isSessionFullscreen) {
+      void applySessionFullscreen(false);
+    }
+  }, [isSessionFullscreen, isSplit]);
+
+  async function toggleSessionFullscreen() {
+    await applySessionFullscreen(!isSessionFullscreen);
+  }
+
   function leaveRemoteSession() {
     const inputReleaseBarrier = releaseAllInputs();
     onCloseSession(inputReleaseBarrier);
-    setIsSessionFullscreen(false);
     setIsFullscreenToolbarOpen(false);
     if ((window as any).__TAURI_INTERNALS__) {
       void getCurrentWindow().setFullscreen(false).catch(() => {});
@@ -2553,7 +2856,18 @@ function RemoteSessionPanel({
 
   useEffect(() => {
     if (!device?.displays?.length) {
-      setSelectedDisplayIndex(device?.activeDisplayIndex ?? 0);
+      if (!storedViewPreferences) setSelectedDisplayIndex(device?.activeDisplayIndex ?? 0);
+      return;
+    }
+    if (!storedViewPreferences) {
+      const activeDisplay =
+        device.displays.find((display) => display.index === device.activeDisplayIndex) ??
+        device.displays.find((display) => display.primary) ??
+        device.displays[0];
+      setSelectedDisplayIndex(activeDisplay.index);
+      return;
+    }
+    if (device.displays.some((display) => display.index === selectedDisplayIndex)) {
       return;
     }
     const activeDisplay =
@@ -2561,7 +2875,15 @@ function RemoteSessionPanel({
       device.displays.find((display) => display.primary) ??
       device.displays[0];
     setSelectedDisplayIndex(activeDisplay.index);
-  }, [device?.id, device?.activeDisplayIndex, device?.displays]);
+  }, [device?.activeDisplayIndex, device?.displays, selectedDisplayIndex, storedViewPreferences]);
+
+  useEffect(() => {
+    if (!isWebRtcConnectionReady || lastDisplayCommandRef.current === selectedDisplayIndex) {
+      return;
+    }
+    lastDisplayCommandRef.current = selectedDisplayIndex;
+    onInputEvent(buildSwitchMonitorCommand(selectedDisplayIndex));
+  }, [isWebRtcConnectionReady, onInputEvent, selectedDisplayIndex]);
 
   useEffect(() => {
     if (isActive && session?.state === "connected") {
@@ -2583,18 +2905,10 @@ function RemoteSessionPanel({
     pingStateRef.current = pingState;
   }, [pingState]);
 
-  // Chat/Clipboard/Files polling
-  useEffect(() => {
-    if (!device || !sessionId || !session || session.state !== "connected") {
-      return;
-    }
-
-    let active = true;
-    const pollData = async () => {
-      try {
-        // 1. Chat
-        const chats = await fetchChatMessages(sessionId);
-        if (active && chats.length > 0) {
+  sessionDataHandlerRef.current = async (data, isCurrent) => {
+        if (!isCurrent()) return;
+        const chats = data.messages;
+        if (chats.length > 0) {
           const processed = chats.map((c) => {
             if (c.message === "__AUDIO_BEEP_SIGNAL__") {
               playBeepSound();
@@ -2605,12 +2919,13 @@ function RemoteSessionPanel({
         }
 
         // 2. Clipboard
-        const clips = await fetchClipboardText(sessionId);
-        if (active && clips.length > 0) {
+        const clips = data.clipboards;
+        if (clips.length > 0) {
           for (const clip of clips) {
+            if (!isCurrent()) return;
             if (clip.sender === "agent") {
-              console.log("[Clipboard Sync Received]:", clip.text);
-              if (isClipboardSyncOn) {
+              clipboardRequestRef.current?.(clip.text);
+              if (isActive && isClipboardSyncOn) {
                 await navigator.clipboard.writeText(clip.text).catch(() => {});
               }
             }
@@ -2618,9 +2933,10 @@ function RemoteSessionPanel({
         }
 
         // 3. Files
-        const files = await fetchFiles(sessionId);
-        if (active && files.length > 0) {
+        const files = data.files;
+        if (files.length > 0) {
           for (const file of files) {
+            if (!isCurrent()) return;
             const binaryString = atob(file.fileData);
             const bytes = new Uint8Array(binaryString.length);
             for (let i = 0; i < binaryString.length; i++) {
@@ -2639,18 +2955,19 @@ function RemoteSessionPanel({
           }
         }
 
-        const receipts = await fetchFileTransferReceipts(sessionId);
+        if (!isCurrent()) return;
+        const receipts = data.receipts;
         for (const completedReceipt of receipts) {
           if (completedReceipt.status !== "received") continue;
           const transfer = storageTransfersRef.current.get(completedReceipt.transferId);
           if (!transfer) continue;
           storageTransfersRef.current.set(completedReceipt.transferId, { ...transfer, received: true });
         }
-        window.localStorage.setItem(
-          STORAGE_TRANSFER_CLEANUP_KEY,
-          serializeStorageTransferCleanup(storageTransfersRef.current),
-        );
-        for (const [transferId, transfer] of storageTransfersRef.current) {
+        if (receipts.length) window.localStorage.setItem(STORAGE_TRANSFER_CLEANUP_KEY, serializeStorageTransferCleanup(storageTransfersRef.current));
+        for (const { transferId } of receipts) {
+          if (!isCurrent()) return;
+          const transfer = storageTransfersRef.current.get(transferId);
+          if (!transfer) continue;
           if (!transfer.received) continue;
           try {
             await deleteUploadedFileFromStorage(transfer.path);
@@ -2660,10 +2977,14 @@ function RemoteSessionPanel({
               serializeStorageTransferCleanup(storageTransfersRef.current),
             );
           } catch (error) {
-            console.warn("Firebase Storage 전송 원본 정리 재시도 예정:", error);
+            setSessionDataError("전송 원본 정리 실패. 재시도해 주세요.");
           }
         }
-        if (active && activeTransferIdRef.current && receipts.length > 0) {
+        if (!isCurrent()) return;
+        for (const receipt of receipts) {
+          if (receipt.status !== "partial") setReceiptIds((ids) => ids.filter((id) => id !== receipt.transferId));
+        }
+        if (activeTransferIdRef.current && receipts.length > 0) {
           const receipt = receipts.find((item) => item.transferId === activeTransferIdRef.current);
           if (receipt?.status === "received") {
             setTransferProgress({
@@ -2685,25 +3006,68 @@ function RemoteSessionPanel({
             });
           }
         }
-      } catch (e) {
-        // ignore
-      }
-    };
-
-    const intervalId = setInterval(() => void pollData(), 1500);
-    return () => {
-      active = false;
-      clearInterval(intervalId);
-    };
-  }, [device?.id, sessionId, session?.id, session?.state, isClipboardSyncOn]);
+  };
 
   useEffect(() => {
-    if (!isClipboardSyncOn || !sessionId || !session || session.state !== "connected") {
+    if (!sessionId || session?.state !== "connected") return;
+    let active = true;
+    const unsubscribe = subscribeSessionData(sessionId,
+      (data) => sessionDataHandlerRef.current(data, () => active),
+      (error) => { if (active) setSessionDataError(error.message); },
+      { clipboard: isActive && isClipboardSyncOn });
+    return () => {
+      active = false;
+      clipboardRequestRef.current = null;
+      unsubscribe();
+    };
+  }, [isActive, sessionId, session?.state, isClipboardSyncOn, sessionDataRetry]);
+
+  const receiptKey = JSON.stringify(receiptIds);
+  useEffect(() => {
+    if (!sessionId || session?.state !== "connected" || !receiptIds.length) return;
+    let active = true;
+    const unsubscribe = subscribeSessionData(sessionId,
+      (data) => sessionDataHandlerRef.current(data, () => active),
+      (error) => { if (active) setSessionDataError(error.message); },
+      { queues: false, receiptIds });
+    const timeout = window.setTimeout(() => {
+      if (active) setSessionDataError("파일 수신 확인 시간 초과. 재시도해 주세요.");
+      active = false;
+      unsubscribe();
+    }, 15 * 60_000);
+    return () => { active = false; unsubscribe(); window.clearTimeout(timeout); };
+  }, [sessionId, session?.state, receiptKey, sessionDataRetry]);
+
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      await Promise.resolve();
+      for (const [id, transfer] of storageTransfersRef.current) {
+        if (!active) return;
+        if (!transfer.received) continue;
+        try {
+          await deleteUploadedFileFromStorage(transfer.path);
+          storageTransfersRef.current.delete(id);
+          window.localStorage.setItem(STORAGE_TRANSFER_CLEANUP_KEY, serializeStorageTransferCleanup(storageTransfersRef.current));
+        } catch {
+          if (active) setSessionDataError("전송 원본 정리 실패. 재시도해 주세요.");
+          return;
+        }
+      }
+    })();
+    return () => { active = false; };
+  }, [sessionId, sessionDataRetry]);
+
+  useEffect(() => {
+    if (!isActive || !isClipboardSyncOn || !sessionId || !session || session.state !== "connected") {
       return;
     }
 
     let active = true;
+    let inFlight = false;
     const syncClipboard = async () => {
+      if (!active || inFlight) return;
+      inFlight = true;
       try {
         const image = await readClipboardPngBlob();
         if (image) {
@@ -2721,6 +3085,8 @@ function RemoteSessionPanel({
         await sendClipboardText(sessionId, text, "viewer");
       } catch {
         // Clipboard permission can be unavailable outside the packaged app.
+      } finally {
+        inFlight = false;
       }
     };
 
@@ -2730,7 +3096,7 @@ function RemoteSessionPanel({
       active = false;
       window.clearInterval(intervalId);
     };
-  }, [isClipboardSyncOn, sessionId, session, sendClipboardImage]);
+  }, [isActive, isClipboardSyncOn, sessionId, session, sendClipboardImage]);
 
   // Stream Frame drawing
   useEffect(() => {
@@ -2742,8 +3108,6 @@ function RemoteSessionPanel({
     receivedFrameSequenceRef.current = 0;
     let active = true;
     let webRtcTransport: ViewerWebRtcTransport | null = null;
-    let webRtcReconnectTimer: number | null = null;
-    let webRtcReconnectAttempt = 0;
     let webRtcStartInFlight = false;
     let webRtcConnectionOpen = false;
     type TileFrame = { tiles?: any[]; width?: number; height?: number; sequence?: number; keyframe?: boolean };
@@ -2929,28 +3293,18 @@ function RemoteSessionPanel({
 
     const firebaseEnabled = isViewerFirebaseEnabled();
     if (firebaseEnabled) {
-      const scheduleWebRtcReconnect = () => {
-        if (!active || webRtcConnectionOpen || webRtcReconnectTimer !== null) {
-          return;
-        }
-        const delayMs = webRtcReconnectDelayMs(webRtcReconnectAttempt);
-        webRtcReconnectAttempt += 1;
-        webRtcReconnectTimer = window.setTimeout(() => {
-          webRtcReconnectTimer = null;
-          void startWebRtc();
-        }, delayMs);
-      };
-
       const startWebRtc = async () => {
         if (!active || webRtcStartInFlight) {
           return;
         }
         webRtcStartInFlight = true;
+        setNeedsManualReconnect(false);
         webRtcConnectionOpen = false;
         setIsWebRtcConnectionReady(false);
         webRtcTransport?.close();
         webRtcTransport = null;
         webRtcTransportRef.current = null;
+        let failed = false;
         try {
           const transport = await startFirebaseViewerWebRtcTransport(sessionId, {
             onFrame: drawTileFrame,
@@ -2958,12 +3312,11 @@ function RemoteSessionPanel({
               if (!active) return;
               if (state === "webrtc-open") {
                 webRtcConnectionOpen = true;
-                webRtcReconnectAttempt = 0;
-                if (webRtcReconnectTimer !== null) {
-                  window.clearTimeout(webRtcReconnectTimer);
-                  webRtcReconnectTimer = null;
-                }
+                setNeedsManualReconnect(false);
                 setIsWebRtcConnectionReady(true);
+                if (rebootReconnectStateRef.current === "reconnecting") {
+                  setRebootReconnectState("idle");
+                }
               }
             },
             onDiagnostic: (message) => {
@@ -2973,13 +3326,19 @@ function RemoteSessionPanel({
             },
             onError: (error) => {
               if (!active) return;
+              failed = true;
               webRtcConnectionOpen = false;
               setIsWebRtcConnectionReady(false);
+              if (rebootReconnectStateRef.current !== "idle") {
+                setRebootReconnectState("reconnecting");
+              }
               console.warn("[WebRTC Viewer]", error.message);
-              scheduleWebRtcReconnect();
+              setNeedsManualReconnect(true);
+              webRtcTransport?.close();
+              webRtcTransportRef.current = null;
             },
           });
-          if (!active) {
+          if (!active || failed) {
             transport.close();
             return;
           }
@@ -2988,13 +3347,16 @@ function RemoteSessionPanel({
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           console.warn("[WebRTC Viewer] transport unavailable:", message);
-          scheduleWebRtcReconnect();
+          if (rebootReconnectStateRef.current !== "idle") {
+            setRebootReconnectState("reconnecting");
+          }
+          if (active) setNeedsManualReconnect(true);
         } finally {
           webRtcStartInFlight = false;
         }
       };
 
-      void startWebRtc();
+      queueMicrotask(() => { void startWebRtc(); });
     }
 
     const shouldPollTiles = shouldPollViewerTileFallback({
@@ -3027,9 +3389,6 @@ function RemoteSessionPanel({
     return () => {
       active = false;
       webRtcConnectionOpen = false;
-      if (webRtcReconnectTimer !== null) {
-        window.clearTimeout(webRtcReconnectTimer);
-      }
       webRtcTransport?.close();
       if (webRtcTransportRef.current === webRtcTransport) {
         webRtcTransportRef.current = null;
@@ -3038,7 +3397,7 @@ function RemoteSessionPanel({
         clearInterval(intervalId);
       }
     };
-  }, [device?.id, sessionId, session?.id, session?.state]);
+  }, [device?.id, sessionId, session?.id, session?.state, webRtcReconnectGeneration]);
 
   const cancelPendingPointerMove = () => {
     pendingMoveRef.current = null;
@@ -3133,6 +3492,9 @@ function RemoteSessionPanel({
   };
 
   const handleCanvasPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!isActive) {
+      return;
+    }
     if (activePointerIdRef.current !== null && activePointerIdRef.current !== e.pointerId) {
       return;
     }
@@ -3197,6 +3559,10 @@ function RemoteSessionPanel({
 
   const handleCanvasWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
     e.preventDefault();
+    if (!isActive) {
+      onSelectSession(sessionId);
+      return;
+    }
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -3211,6 +3577,9 @@ function RemoteSessionPanel({
   };
 
   const handleKeyDown = async (event: React.KeyboardEvent<HTMLElement>) => {
+    if (!isActive) {
+      return;
+    }
     if (isEditableTarget(event.target)) {
       return;
     }
@@ -3224,7 +3593,7 @@ function RemoteSessionPanel({
       imeInputRef.current?.focus({ preventScroll: true });
       return;
     }
-    if (event.ctrlKey && event.key === "Escape") {
+    if (isExactCtrlShortcut(event, "Escape")) {
       event.preventDefault();
       if (event.repeat) {
         return;
@@ -3237,7 +3606,7 @@ function RemoteSessionPanel({
       return;
     }
 
-    if (event.ctrlKey && event.key.toLowerCase() === "v") {
+    if (isExactCtrlShortcut(event, "v")) {
       event.preventDefault();
       if (event.repeat) {
         return;
@@ -3281,9 +3650,11 @@ function RemoteSessionPanel({
 
     const isLocalText = isRemoteTextInputKeystroke({
       key: event.key,
+      code: event.code,
       ctrlKey: event.ctrlKey,
       altKey: event.altKey,
       metaKey: event.metaKey,
+      shiftKey: event.shiftKey,
       isComposing: event.nativeEvent.isComposing || event.keyCode === 229,
     });
     if (isLocalText) {
@@ -3312,6 +3683,9 @@ function RemoteSessionPanel({
   };
 
   const handleKeyUp = (event: React.KeyboardEvent<HTMLElement>) => {
+    if (!isActive) {
+      return;
+    }
     const command = buildKeyboardCommand("keyup", event.key, event.code, event.keyCode);
     const fallbackRemoteKey = command.slice("key-up ".length);
     const physicalKey = event.code || fallbackRemoteKey;
@@ -3328,6 +3702,9 @@ function RemoteSessionPanel({
   };
 
   const handleImeCompositionStart = () => {
+    if (!isActive) {
+      return;
+    }
     imeComposingRef.current = true;
     imeCompositionValueRef.current = "";
     suppressNextImeValueRef.current = "";
@@ -3342,10 +3719,17 @@ function RemoteSessionPanel({
   };
 
   const handleImeCompositionUpdate = (event: React.CompositionEvent<HTMLTextAreaElement>) => {
+    if (!isActive) {
+      return;
+    }
     sendImeCompositionReplacement(event.data);
   };
 
   const handleImeCompositionEnd = (event: React.CompositionEvent<HTMLTextAreaElement>) => {
+    if (!isActive) {
+      event.currentTarget.value = "";
+      return;
+    }
     imeComposingRef.current = false;
     const result = finishRemoteComposition(event.data, event.currentTarget.value);
     sendImeCompositionReplacement(result.text);
@@ -3356,6 +3740,10 @@ function RemoteSessionPanel({
 
   const handleImeInput = (event: React.FormEvent<HTMLTextAreaElement>) => {
     const input = event.currentTarget;
+    if (!isActive) {
+      input.value = "";
+      return;
+    }
     const nativeEvent = event.nativeEvent as InputEvent;
     const result = consumeRemoteTextInput(
       input.value,
@@ -3372,8 +3760,10 @@ function RemoteSessionPanel({
   };
 
   useEffect(() => {
-    imeInputRef.current?.focus({ preventScroll: true });
-  }, [sessionId]);
+    if (isActive) {
+      imeInputRef.current?.focus({ preventScroll: true });
+    }
+  }, [isActive, sessionId]);
 
   useEffect(() => {
     const handleWindowPointerUp = (event: PointerEvent) => {
@@ -3522,6 +3912,19 @@ function RemoteSessionPanel({
 
   const handleFetchClipboard = async () => {
     try {
+      if (isActive && isClipboardSyncOn) {
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        const response = new Promise<string>((resolve, reject) => {
+          clipboardRequestRef.current = resolve;
+          timeout = setTimeout(() => reject(new Error("클립보드 응답 시간 초과")), 5_000);
+        });
+        try {
+          await Promise.resolve(onInputEvent("clipboard-request"));
+          await navigator.clipboard.writeText(await response);
+          alert("클립보드 수신 완료");
+        } finally { clearTimeout(timeout); clipboardRequestRef.current = null; }
+        return;
+      }
       await Promise.resolve(onInputEvent("clipboard-request"));
       await new Promise((resolve) => window.setTimeout(resolve, 600));
       const clips = await fetchClipboardText(sessionId);
@@ -3660,6 +4063,7 @@ function RemoteSessionPanel({
           transferId,
         });
         storageTransfersRef.current.set(transferId, { path: upload.storagePath, received: false });
+        setReceiptIds((ids) => ids.includes(transferId) ? ids : [...ids, transferId]);
         window.localStorage.setItem(
           STORAGE_TRANSFER_CLEANUP_KEY,
           serializeStorageTransferCleanup(storageTransfersRef.current),
@@ -3687,6 +4091,7 @@ function RemoteSessionPanel({
     }
 
     const totalChunks = Math.max(1, Math.ceil(file.size / REMOTE_FILE_CHUNK_BYTES));
+    setReceiptIds((ids) => ids.includes(transferId) ? ids : [...ids, transferId]);
     let sentBytes = 0;
 
     try {
@@ -3832,6 +4237,7 @@ function RemoteSessionPanel({
 
   const handleSwitchDisplay = (index: number) => {
     setSelectedDisplayIndex(index);
+    lastDisplayCommandRef.current = index;
     onInputEvent(buildSwitchMonitorCommand(index));
   };
 
@@ -3846,6 +4252,10 @@ function RemoteSessionPanel({
       }
       dangerConfirmUntilRef.current[command] = 0;
     }
+    if (command === "restart") {
+      setRebootReconnectState("restarting");
+      setIsWebRtcConnectionReady(false);
+    }
     onInputEvent(buildSystemCommand(command));
   };
 
@@ -3856,7 +4266,7 @@ function RemoteSessionPanel({
     }
   };
 
-  const sessionTabsBar = sessions.length > 1 ? (
+  const sessionTabsBar = !isSplit && sessions.length > 1 ? (
     <nav className="remote-session-tabs" aria-label="열린 원격 세션">
       {sessions.map((tabSession) => {
         const tabDevice = sessionDevices.find((candidate) => candidate.id === tabSession.deviceId);
@@ -3883,6 +4293,9 @@ function RemoteSessionPanel({
       })}
     </nav>
   ) : null;
+  const splitPanelClass = splitPosition
+    ? ` session-panel-split session-panel-split-${splitPosition}${isActive ? " active" : ""}`
+    : "";
 
   if (!device || !session) {
     return null;
@@ -3890,7 +4303,11 @@ function RemoteSessionPanel({
 
   if (session.state === "pending") {
     return (
-      <section className={`session-panel session-pending-panel${isActive ? "" : " session-panel-inactive"}`} data-testid="remote-session-pending">
+      <section
+        className={`session-panel session-pending-panel${isVisible ? "" : " session-panel-inactive"}${splitPanelClass}`}
+        data-testid="remote-session-pending"
+        onPointerDownCapture={() => !isActive && onSelectSession(sessionId)}
+      >
         {sessionTabsBar}
         <div className="pending-session-header">
           <button className="session-back-button" type="button" onClick={() => void leaveRemoteSession()}>
@@ -3922,12 +4339,14 @@ function RemoteSessionPanel({
   return (
     <section
       ref={panelRef}
-      className={`session-panel${isActive ? "" : " session-panel-inactive"}${isSessionFullscreen ? " session-fullscreen-active" : ""}${isSessionFullscreen && isFullscreenToolbarOpen ? " session-fullscreen-tools-open" : ""}`}
+      className={`session-panel${isVisible ? "" : " session-panel-inactive"}${splitPanelClass}${isSessionFullscreen ? " session-fullscreen-active" : ""}${isSessionFullscreen && isFullscreenToolbarOpen ? " session-fullscreen-tools-open" : ""}`}
       data-testid="remote-session-workspace"
       tabIndex={0}
       onBlur={handlePanelBlur}
+      onFocusCapture={() => !isActive && onSelectSession(sessionId)}
       onKeyDown={handleKeyDown}
       onKeyUp={handleKeyUp}
+      onPointerDownCapture={() => !isActive && onSelectSession(sessionId)}
     >
       {sessionTabsBar}
       <textarea
@@ -4031,6 +4450,14 @@ function RemoteSessionPanel({
             </aside>
           )}
 
+          {sessionDataError && (
+            <div className="error-banner" role="alert">
+              {sessionDataError}
+              <button type="button" title="부가 기능 재시도" aria-label="부가 기능 재시도" onClick={() => {
+                setSessionDataError(""); setSessionDataRetry((value) => value + 1);
+              }}><RotateCcw size={16} /></button>
+            </div>
+          )}
           {isChatOpen && (
           <aside className="remote-chat-panel" aria-label="실시간 채팅">
             <div className="remote-chat-header">
@@ -4097,12 +4524,23 @@ function RemoteSessionPanel({
             <span className="session-live-dot" aria-hidden="true" />
             <div>
               <strong>{device.desktopName}</strong>
-              <small>{device.storeName} · 연결됨</small>
+              <small>
+                {device.storeName} · {rebootReconnectState === "restarting"
+                  ? "재부팅 시작"
+                  : rebootReconnectState === "reconnecting" || !isWebRtcConnectionReady
+                    ? (needsManualReconnect ? "연결 끊김" : "연결 중")
+                    : "연결됨"}
+              </small>
             </div>
           </div>
         </div>
 
         <div className="session-display-controls" data-testid="display-mode-controls" role="group" aria-label="원격 화면 표시 설정">
+          <button type="button" title="원격 연결 새로고침" aria-label="원격 연결 새로고침"
+            disabled={!needsManualReconnect && rebootReconnectState === "idle"}
+            onClick={() => { setNeedsManualReconnect(false); setRebootReconnectState("idle"); setWebRtcReconnectGeneration((value) => value + 1); }}>
+            <RotateCcw size={16} />
+          </button>
           <div className="stream-mode-control" role="group" aria-label="화면 반응 속도">
             <button
               type="button"
@@ -4137,11 +4575,11 @@ function RemoteSessionPanel({
             <button type="button" onClick={setActualSizeZoom} title="실제 크기">100%</button>
           </div>
           <div className="zoom-control" role="group" aria-label="확대 축소">
-            <button type="button" onClick={() => setZoom((value) => Math.max(0.25, Number((value - 0.25).toFixed(2))))} title="축소" aria-label="화면 축소">
+            <button type="button" onClick={() => setZoom((value) => Math.max(0.25, Number((value - 0.05).toFixed(2))))} title="축소" aria-label="화면 축소">
               <ZoomOut size={16} />
             </button>
             <span>{Math.round(zoom * 100)}%</span>
-            <button type="button" onClick={() => setZoom((value) => Math.min(8, Number((value + 0.25).toFixed(2))))} title="확대" aria-label="화면 확대">
+            <button type="button" onClick={() => setZoom((value) => Math.min(8, Number((value + 0.05).toFixed(2))))} title="확대" aria-label="화면 확대">
               <ZoomIn size={16} />
             </button>
           </div>

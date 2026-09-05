@@ -66,9 +66,11 @@ android {
 }
 
 dependencies {
+    implementation(project(":controlcore"))
     implementation(platform("com.google.firebase:firebase-bom:34.18.0"))
     implementation("com.google.firebase:firebase-auth")
     implementation("com.google.firebase:firebase-firestore")
+    implementation("com.google.firebase:firebase-functions")
     implementation("io.github.webrtc-sdk:android:144.7559.14")
     testImplementation("junit:junit:4.13.2")
 }

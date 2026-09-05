@@ -235,6 +235,7 @@ describe("Firebase security deployment policy", () => {
 
   it("normalizes Firebase device metadata store names before writing to Firestore", () => {
     const source = readFileSync(resolve(repoRoot, "aether-link-app/src/firebase/viewerFirebase.ts"), "utf8");
+    const rules = readFileSync(resolve(repoRoot, "firestore.rules"), "utf8");
     const start = source.indexOf("export async function updateFirebaseDeviceMetadata");
     const end = source.indexOf("export async function registerFirstRunAgentWithFirebase");
     const block = source.slice(start, end);
@@ -243,5 +244,15 @@ describe("Firebase security deployment policy", () => {
     expect(end).toBeGreaterThan(start);
     expect(block).toContain("normalizeStoreNameForDisplay(input.storeName, currentDevice.businessNumber)");
     expect(block).toContain('update.storeNameSource = storeName === DEFAULT_STORE_NAME ? "default" : "user"');
+    expect(block).toContain("sanitizeDeviceOperationalMetadataText");
+    expect(block).toContain("sanitizeDeviceTags");
+    expect(block).toContain("update.contactName =");
+    expect(block).toContain("update.installLocation =");
+    expect(block).toContain("update.tags =");
+    expect(block).toContain("update.notes =");
+    expect(block.match(/\?\? deleteField\(\)/g)).toHaveLength(4);
+    for (const field of ["contactName", "installLocation", "tags", "notes"]) {
+      expect(rules).toContain(`"${field}"`);
+    }
   });
 });

@@ -16,4 +16,6 @@ dependencyResolutionManagement {
 
 rootProject.name = "WonRemoteMobile"
 include(":agent")
+include(":controladdon")
+include(":controlcore")
 include(":viewer")

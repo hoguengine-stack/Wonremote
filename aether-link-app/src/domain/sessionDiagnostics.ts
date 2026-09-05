@@ -80,15 +80,6 @@ export function formatControlDiagnostics(diagnostics: AgentControlDiagnostics | 
   return lines;
 }
 
-export function shouldWarnAboutControlLimit(diagnostics: AgentControlDiagnostics | undefined): boolean {
-  return Boolean(
-    diagnostics &&
-      (diagnostics.elevated === false ||
-        (diagnostics.integrityLevel && !["High", "System"].includes(diagnostics.integrityLevel)) ||
-        (typeof diagnostics.win32ErrorCode === "number" && diagnostics.win32ErrorCode !== 0)),
-  );
-}
-
 function formatTimeLabel(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {

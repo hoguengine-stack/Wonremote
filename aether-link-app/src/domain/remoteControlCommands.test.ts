@@ -81,6 +81,34 @@ describe("remote control command helpers", () => {
     expect(isHangulToggleKey("A", "KeyA", 65)).toBe(false);
   });
 
+  it("preserves physical keys for Shift and multi-modifier shortcuts", () => {
+    expect(buildKeyboardCommand("keydown", "A", "KeyA")).toBe("key-down A");
+    expect(buildKeyboardCommand("keydown", "!", "Digit1")).toBe("key-down 1");
+    expect(buildKeyboardCommand("keydown", "_", "Minus")).toBe("key-down OemMinus");
+    expect(buildKeyboardCommand("keydown", "+", "Equal")).toBe("key-down OemPlus");
+    expect(buildKeyboardCommand("keydown", "Enter", "NumpadEnter")).toBe("key-down Enter");
+    expect(buildKeyboardCommand("keydown", "ContextMenu", "ContextMenu")).toBe("key-down ContextMenu");
+    expect(buildKeyboardCommand("keydown", "PrintScreen", "PrintScreen")).toBe("key-down PrintScreen");
+  });
+
+  it("builds ordered key transitions for common remote shortcuts", () => {
+    expect([
+      buildKeyboardCommand("keydown", "Shift", "ShiftLeft"),
+      buildKeyboardCommand("keydown", "Enter", "Enter"),
+      buildKeyboardCommand("keyup", "Enter", "Enter"),
+      buildKeyboardCommand("keyup", "Shift", "ShiftLeft"),
+    ]).toEqual(["key-down Shift", "key-down Enter", "key-up Enter", "key-up Shift"]);
+    expect([
+      buildKeyboardCommand("keydown", "Control", "ControlLeft"),
+      buildKeyboardCommand("keydown", "Shift", "ShiftLeft"),
+      buildKeyboardCommand("keydown", "Escape", "Escape"),
+    ]).toEqual(["key-down Ctrl", "key-down Shift", "key-down Esc"]);
+    expect([
+      buildKeyboardCommand("keydown", "Alt", "AltLeft"),
+      buildKeyboardCommand("keydown", "Tab", "Tab"),
+    ]).toEqual(["key-down Alt", "key-down Tab"]);
+  });
+
   it("builds mouse commands without changing the existing absolute coordinate mechanism", () => {
     expect(buildMouseCommand("move", 100, 200)).toBe("move 100 200");
     expect(buildMouseCommand("down", 100, 200, 2)).toBe("mouse-down 100 200 right");

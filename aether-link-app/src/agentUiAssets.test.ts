@@ -17,8 +17,11 @@ describe("Agent compact UI and product icons", () => {
 
     expect(activeScreen).toContain("active-agent-panel");
     expect(activeScreen).toContain("active-agent-result");
+    expect(activeScreen).toContain("AgentRestartDialog");
+    expect(activeScreen).not.toContain("alert(");
     expect(activeScreen).not.toContain('color: "#fff"');
     expect(styles).toContain(".agent-screen");
+    expect(styles).toMatch(/\.agent-screen\s*\{[^}]*background: #ffffff;[^}]*padding: 0;/s);
     expect(styles).toContain("overflow: hidden;");
     expect(styles).toContain(".active-agent-result strong");
     expect(styles).toContain("color: #111827;");
@@ -38,6 +41,7 @@ describe("Agent compact UI and product icons", () => {
     expect(viewerSvg).toContain('fill="#000000"');
     expect(agentSvg).toContain('fill="#1c7a70"');
     expect(agentSvg).toContain('fill="#000000"');
+    expect(agentSvg).toContain("<title>WonRemote Agent A</title>");
     expect(existsSync(path.join(projectRoot, "src-tauri", "icons", "viewer.ico"))).toBe(true);
     expect(existsSync(path.join(projectRoot, "src-tauri", "icons", "agent.ico"))).toBe(true);
     expect(readFileSync(path.join(projectRoot, "src-tauri", "icons", "viewer.ico"))).not.toEqual(

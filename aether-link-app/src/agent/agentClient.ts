@@ -11,8 +11,11 @@ import {
   pollAgentCommandsWithFirebase,
   sendAgentHeartbeatWithFirebase,
 } from "../firebase/agentFirebase";
+import type { DeviceSystemInfo } from "../domain/deviceSystemInfo";
 
 interface SendAgentHeartbeatOptions {
+  presenceMode?: "manual";
+  heartbeatRequestId?: string;
   apiBaseUrl: string;
   deviceId: string;
   desktopName?: string;
@@ -21,6 +24,7 @@ interface SendAgentHeartbeatOptions {
   installId: string;
   activeDisplayIndex?: number;
   macAddresses?: string[];
+  systemInfo?: DeviceSystemInfo;
   controlDiagnostics?: AgentControlDiagnostics;
   streamDiagnostics?: AgentStreamDiagnostics;
   protocolVersion?: number;
@@ -43,6 +47,8 @@ interface PostAgentSessionApprovalOptions {
 }
 
 export async function sendAgentHeartbeat({
+  presenceMode,
+  heartbeatRequestId,
   apiBaseUrl,
   deviceId,
   desktopName,
@@ -51,6 +57,7 @@ export async function sendAgentHeartbeat({
   installId,
   activeDisplayIndex,
   macAddresses,
+  systemInfo,
   controlDiagnostics,
   streamDiagnostics,
   protocolVersion,
@@ -60,12 +67,15 @@ export async function sendAgentHeartbeat({
   if (isAgentFirebaseEnabled(process.env)) {
     return withAgentOperationContext("firebase heartbeat", () =>
       sendAgentHeartbeatWithFirebase({
+        presenceMode,
+        heartbeatRequestId,
         deviceId,
         desktopName,
         displays,
         installId,
         activeDisplayIndex,
         macAddresses,
+        systemInfo,
         controlDiagnostics,
         streamDiagnostics,
         protocolVersion,
@@ -79,6 +89,8 @@ export async function sendAgentHeartbeat({
   try {
     response = await fetchImpl(`${apiBaseUrl}/api/agent/heartbeat`, {
       body: JSON.stringify({
+        presenceMode,
+        heartbeatRequestId,
         deviceId,
         desktopName,
         installId,
@@ -86,6 +98,7 @@ export async function sendAgentHeartbeat({
         displays,
         activeDisplayIndex,
         macAddresses,
+        systemInfo,
         controlDiagnostics,
         streamDiagnostics,
         protocolVersion,

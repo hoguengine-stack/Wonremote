@@ -14,6 +14,12 @@ $Products = @(
     Source = Join-Path $AndroidDir "viewer\build\outputs\apk\release\viewer-release.apk"
     Apk = Join-Path $RepoRoot "aether-link-app\release-apk\WonRemote-Viewer.apk"
     Zip = Join-Path $RepoRoot "aether-link-app\public\download\viewer.zip"
+  },
+  @{
+    Name = "Control Add-On"
+    Source = Join-Path $AndroidDir "controladdon\build\outputs\apk\release\controladdon-release.apk"
+    Apk = Join-Path $RepoRoot "aether-link-app\release-apk\WonRemote-Control-Addon.apk"
+    Zip = Join-Path $RepoRoot "aether-link-app\public\download\control-addon.zip"
   }
 )
 
@@ -34,8 +40,8 @@ if (-not $env:GRADLE_USER_HOME) {
 
 Push-Location $AndroidDir
 try {
-  & .\gradlew.bat :agent:assembleRelease :viewer:assembleRelease --build-cache --parallel
-  if ($LASTEXITCODE -ne 0) { throw "Android Agent/Viewer release build failed." }
+  & .\gradlew.bat :agent:assembleRelease :viewer:assembleRelease :controladdon:assembleRelease --build-cache --parallel
+  if ($LASTEXITCODE -ne 0) { throw "Android Agent/Viewer/Control Add-On release build failed." }
 }
 finally {
   Pop-Location

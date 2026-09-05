@@ -2,6 +2,8 @@
 
 Every production defect, installer failure, update failure, crash, or repeated user-visible malfunction must receive an entry before its fix is declared complete. Entries are append-only. A future change may add evidence or close a verification gap, but must not erase the original failure record.
 
+This also covers development-process escapes: missed requirements, incomplete platform parity, unverified integration boundaries, avoidable build/release failures, and false completion claims. Prevention applies from requirement analysis through post-release verification under `AGENTS.md`; it is not limited to production bug fixes.
+
 ## Required Entry Format
 
 ```text
@@ -625,3 +627,186 @@ Every production defect, installer failure, update failure, crash, or repeated u
 - Regression proof: Pending focused desktop packaging test and replacement CI run.
 - Release proof: Initial GitHub Actions run `33607882492` failed at `Apply and verify Authenticode signatures` and skipped publication; replacement run pending.
 - Remaining blocker: Retry the release workflow and verify exactly two installers plus the signed update manifest.
+
+## INC-20260902-010: Pre-open WebRTC control suppressed reliable remote commands
+
+- Detected: 2026-09-02.
+- Severity: P1.
+- Affected: Viewer remote input and system tools while the WebRTC control channel is connecting or unavailable.
+- Status: source-verified-not-released.
+- User-visible symptom: An online Agent could receive start-stream but show no screen, and system tools, keyboard, or mouse commands stopped reaching it.
+- Minimal trigger: Open a remote session whose WebRTC control channel never reaches `open`, then invoke Task Manager, Services, or another reliable action.
+- Root cause and contributors: `sendControl()` returned success after only adding an action to its pre-open local queue, so the Viewer marked the action local-only and suppressed the Firestore command fallback even when the channel later closed.
+- Fix commit(s): pending.
+- Permanent guard: The Viewer may suppress reliable fallback only when the transport reports that the ordered control channel is actually open and the send succeeds; lossy pointer movement remains non-backlogged.
+- Regression proof: Focused transport tests prove readiness is false before open and after close/watchdog, and the connected-session source test requires the readiness gate before `sendControl()`.
+- Release proof: not released.
+- Remaining blocker: Package only when explicitly requested, then physically verify system tools and input on a TURN-required remote network.
+
+## INC-20260902-011: Accumulated ICE candidates blocked repeated WebRTC connections
+
+- Detected: 2026-09-02.
+- Severity: P1.
+- Affected: Viewer and Agent Firestore WebRTC candidate subscriptions after repeated reconnects in one session.
+- Status: source-verified-not-released.
+- User-visible symptom: The Agent remained online and accepted start-stream commands, but the remote screen never appeared and the realtime channel closed.
+- Minimal trigger: Reconnect enough times for a session candidate subcollection to exceed the Firestore authorization read budget, then subscribe to the entire unbounded collection.
+- Root cause and contributors: Both peers subscribed to every historical ICE candidate document and the Agent also performed an unbounded refresh; candidate documents intentionally persist across negotiations and accumulated until the live query was denied.
+- Fix commit(s): pending.
+- Permanent guard: Both peers read only the 20 newest candidate documents ordered by server creation time, while retaining negotiation-ID filtering before applying candidates.
+- Regression proof: Focused Viewer and Agent signaling tests require the descending candidate query and its 20-document bound; live REST probing reproduced allowed 20-document reads and denied oversized reads on the affected session.
+- Release proof: not released.
+- Remaining blocker: Package only when explicitly requested, then reconnect the affected remote PC repeatedly and confirm screen plus command delivery.
+
+## INC-20260902-012: Release packaging time varied unpredictably between builds
+
+- Detected: 2026-09-02.
+- Severity: P2.
+- Affected: x86 Viewer and Agent installer packaging on the release workstation.
+- Status: fixed-not-released.
+- User-visible symptom: Equivalent release builds alternated between a few minutes and tens of minutes because the Viewer Rust shell was rebuilt even when no Rust or Tauri input changed.
+- Minimal trigger: Run `npm run release:exes` after a web-only or Agent-resource-only change.
+- Root cause and contributors: `package-release-exes.js` always invoked `tauri build`, which forces the full Tauri build pipeline before NSIS packaging.
+- Fix commit(s): pending.
+- Permanent guard: Persist a content hash of the Viewer Rust/Tauri build inputs beside the x86 binary. Reuse that binary only when the hash matches; missing, stale, or explicitly forced builds take the full path.
+- Regression proof: `npm test -- --run scripts/package-release-exes.test.js` verifies matching and changed input-stamp behavior.
+- Release proof: not released.
+- Remaining blocker: The first build after this change needs one full build to create its trusted stamp; later web/resource-only builds use the fast path.
+
+## INC-20260903-001: Modifier shortcuts were routed through text input or Viewer-only handlers
+
+- Detected: 2026-09-03.
+- Severity: P1.
+- Affected: Viewer-to-Agent keyboard control, especially Shift+Enter, Shift punctuation, Ctrl+Shift+Esc, and Ctrl+Shift+V.
+- Status: source-verified-not-released.
+- User-visible symptom: Shift+Enter did not create a line break and other Shift-based shortcuts could be delayed, omitted, or interpreted as ordinary text.
+- Minimal trigger: Hold Shift and press Enter or a punctuation key, or press Ctrl+Shift+Esc/Ctrl+Shift+V in an active remote session.
+- Root cause and contributors: Shift-printable events were classified as local Unicode text, Viewer-specific Ctrl handlers ignored extra modifiers, character tokens lost the physical OEM key, and the native injector lacked those OEM/system VK mappings.
+- Fix commit(s): pending.
+- Permanent guard: Route modifier combinations through ordered physical key transitions, reserve Viewer-specific handling for exact plain Ctrl shortcuts, normalize modified punctuation from `KeyboardEvent.code`, and keep Viewer and native VK token tables covered together.
+- Regression proof: Focused Viewer shortcut and key-normalization tests pass 27/27 with Shift+Enter, Ctrl+Shift+Esc, Ctrl+Shift+V, Alt+Tab, and punctuation cases. Native VK assertions are present; local Rust execution is blocked before tests by missing NASM for `turbojpeg-sys`.
+- Release proof: not released.
+- Remaining blocker: Build only when explicitly requested, then physically verify the shortcut matrix on a remote Windows PC; Ctrl+Alt+Delete remains a Windows secure-attention boundary and is not provided by `SendInput`.
+
+## INC-20260903-002: Android Agent shipped without an end-to-end screen delivery contract
+
+- Detected: 2026-09-03.
+- Severity: P1.
+- Affected: Android Agent WebRTC screen delivery, TURN-required networks, capture rotation/resizing, and first-frame startup.
+- Status: source-verified-not-released.
+- User-visible symptom: The Android Agent could register and start screen sharing while the Viewer received no remote image.
+- Minimal trigger: Connect a Viewer to an Android Agent on a network requiring TURN, or open the data channels before a decodable keyframe is available.
+- Root cause and contributors: Android support was treated as complete from packaging, registration, and permission checks without proving the full Viewer-to-Agent media path. The Android peer used only a public STUN server, had no post-open first-keyframe handshake, and did not rebuild capture resources after display changes.
+- Fix commit(s): pending.
+- Permanent guard: `CHANGE_CONTRACT.json` must contain one independently verified outcome for every user-requested result, including the outermost visible result and full vertical path. It cannot become verified when any outcome lacks a changed boundary test, fresh evidence, or an explicit physical gap. `AGENTS.md` forbids completion when a test could pass while the visible feature remains broken. The development gate validates the active worktree as well as every future commit, and CI runs it on every push, pull request, and release. Android screen delivery additionally requires dynamic TURN, post-open keyframe, capture-resize, and Windows compatibility guards.
+- Regression proof: `npx vitest run src/desktopPackaging.test.ts -t "keeps Android screen delivery" src/firebase/viewerWebRtcTransport.test.ts -t "opens the transport" src/agent/agentCommandExecution.test.ts -t "buffers the first keyframe"`; Android `:agent:testDebugUnitTest :agent:compileDebugJavaWithJavac :controladdon:compileDebugJavaWithJavac` passed before registration of this incident.
+- Release proof: not released.
+- Remaining blocker: Build only when explicitly requested, then physically verify Android screen rendering on direct and TURN-required networks, rotation, reconnect, and session restart.
+
+## INC-20260903-003: Android download contract was corrected only after publication work
+
+- Detected: 2026-09-03.
+- Severity: P2.
+- Affected: Firebase Hosting Android Agent download route and packaged artifact format.
+- Status: released-verified.
+- User-visible symptom: The Android Agent download path exposed an APK-oriented flow when the approved distribution contract required a ZIP attachment.
+- Minimal trigger: Open `/download/agent.apk` after publishing the Android Agent distribution.
+- Root cause and contributors: The initial Android distribution was implemented before the required public artifact format and browser download behavior were fixed as an acceptance contract.
+- Fix commit(s): `018aeecd`.
+- Permanent guard: Android downloads are created by the single release script as ZIP files, Firebase routes the compatibility APK URL to the ZIP, and the desktop packaging contract checks the route, MIME/disposition configuration, generated path, and absence of a public raw APK.
+- Regression proof: `npx vitest run src/desktopPackaging.test.ts -t "builds only native x86 payloads behind two stable downloads"` covers the committed ZIP route; current Android packaging changes retain and extend the same contract for Agent, Viewer, and control add-on archives.
+- Release proof: Firebase Hosting deployment on 2026-09-03 returned HTTP 302 from `/download/agent.apk`, `/download/viewer.apk`, and `/download/control-addon.apk` to their ZIP files; all downloaded ZIP SHA-256 values matched the local signed artifacts.
+- Remaining blocker: none.
+
+## INC-20260903-004: Android Agent had no explicit full-service exit path
+
+- Detected: 2026-09-03.
+- Severity: P1.
+- Affected: Android Agent foreground service, persistent notification, screen sharing, and unattended heartbeat.
+- Status: released-physical-verification-required.
+- User-visible symptom: Opening the Agent once left the ongoing `앱이 실행 중` notification indefinitely, with no way to stop the entire Agent from the app or notification.
+- Minimal trigger: Register or reopen the Android Agent, close its Activity, and inspect the persistent foreground-service notification.
+- Root cause and contributors: The Agent intentionally used a sticky foreground service for unattended access but exposed only `화면 공유 중지`; no action stopped the complete service. Late heartbeat callbacks could also update the notification after shutdown began.
+- Fix commit(s): pending.
+- Permanent guard: The app and notification share one explicit Agent-stop action. It marks shutdown before cleanup, cancels pending handler work, prevents late notification updates, closes WebRTC/capture through service destruction, marks the device offline, removes the foreground notification, and returns `START_NOT_STICKY` for the explicit stop command. The Android lifecycle contract test requires both entry points and the cleanup guards.
+- Regression proof: `npx vitest run src/desktopPackaging.test.ts -t "Android full-display sharing|Firebase deployment"` passed 2 focused contracts; the Android release build compiled the Agent change and all Agent/Viewer/Control Add-On APKs passed v2 signature verification. The predeploy gate and Firebase production build passed.
+- Release proof: Firebase Hosting deployment completed on 2026-09-03. Agent ZIP SHA-256 `8a3d1c47af6b20b04cda70cc4a4a5d061be80e58db21ad813c73eca5d30b58c3` matched the bytes downloaded from the live Agent route.
+- Remaining blocker: Install the deployed Agent and verify both exit controls remove the process and notification until the user opens the app again.
+
+## INC-20260904-001: Idle Viewer history polling exhausted shared Firestore read capacity
+
+- Detected: 2026-09-04.
+- Severity: P1.
+- Affected: Shared Firestore project, Android Agent registration, and idle desktop/PWA Viewer history.
+- Status: source-verified-not-released; production-quota-blocked.
+- User-visible symptom: Reinstalled Android Agent reports RESOURCE_EXHAUSTED: Quota exceeded during registration.
+- Minimal trigger: Register while the project's free Firestore read quota is exhausted. Leaving a Viewer open independently repeats history and full-device queries every three seconds, even without new sessions.
+- Root cause and contributors: Production billing is disabled and the default database is freeTier. A read-only REST probe returned HTTP 429 RESOURCE_EXHAUSTED on 2026-09-04. Cloud Monitoring for the quota period starting 2026-09-03T07:00Z reported about 431,000 document reads and 13,500 writes (operational metrics, not an exact billing invoice). Viewer history polling is a confirmed unbounded read contributor, not proof of attribution of every measured read. Android surfaced the raw error and retried failed heartbeats every ten seconds. Request budgets and quota recovery were absent from feature acceptance.
+- Fix commit(s): pending.
+- Permanent guard: Firebase history uses one owner-scoped session subscription and existing device metadata, not repeated complete queries. Local mode retains its local-only polling; manual refresh reconnects a failed Firebase listener. Android identifies wrapped Firestore quota failures, explains registration is blocked without claiming success, and defers heartbeat/command reconnect attempts for five minutes. AGENTS.md now requires idle daily-request budgets and quota-recovery evidence for metered services.
+- Regression proof: New history tests failed before implementation and passed after; 32 focused Viewer/API/security tests and TypeScript checks passed. Android quota tests passed 2/2 with real Firebase exceptions, test-only SparseArray/TextUtils JVM fixtures, and Agent Java compilation. Source wiring checks supplement runtime policy/subscription tests; they do not prove Android registration or Viewer behavior on a real device after quota recovery.
+- Release proof: Not built or deployed this turn; previous downloads remain unchanged.
+- Remaining blocker: External quota reset or user-authorized billing change, future requested release, and actual Android registration/recovery verification. Old installed Viewers must be closed or updated to stop their polling. Aggregate quota metrics do not prove all other fleet traffic fits a free plan.
+- Development prevention follow-up: AGENTS.md now requires a necessity review before timers/effects/listeners/retries or writes, one request owner, nonoverlap, cleanup, bounded retries, and offline 24h request/document budgets. Every future commit must include Request-Review; every active change contract must classify request impact with a reason. Request-affecting contracts require declared fleet budgets, idle/rerender/concurrency/failure/cleanup evidence, and a changed boundary test. The gate rejects missing evidence and declared totals over limits, including on clean CI checkouts. Declared assumptions still require review; this does not certify unaudited existing paths.
+- Development prevention proof: 2026-09-04 focused gate and history tests passed 16/16 after a RED/GREEN guard check. The history check covers 24h idle, quota failure without an automatic resubscribe loop, explicit retry, and 24h after unsubscribe. No production load test, build, deployment, or billing change was performed.
+- Incomplete-budget follow-up (2026-09-04, not fixed): The initial daily estimate omitted security-rule reads and active-session traffic. `App.tsx` still polls chat, clipboard, files and all file receipts every 1.5s during a connected session, including inactive session panels. Four empty queries alone imply 9,600 document reads/hour plus up to 9,600 session-ownership rule reads/hour. Receipt documents are reread every tick, so retained receipts increase this cost further. Android device-dependent command/session/signal/candidate listeners can also trigger rule reevaluation on every heartbeat. Viewer WebRTC retries cap their delay at 15s but have no lifetime attempt limit. These paths are not covered by the history-only fix.
+- Corrected planning example (not a measured bill or guaranteed upper bound): One Android Agent and one central Viewer online for 24h, one hour of normal WebRTC remote use, one initial negotiation plus three reconnects, six ICE candidates per side per negotiation, at most 200 history rows, no chat/clipboard changes or cloud-file receipts, diagnostic Firestore video fallback disabled. Without assuming security-rule cache discounts, base reads are 13,160/day, active-session polling adds 19,200/hour, and Android session-listener rule reevaluation allowance adds 900/hour. Reserving a separate 1,800 reads for signaling/reconnect/startup gives about 35,000 reads/day; 4,320 heartbeat writes plus negotiation/control allowances gives about 4,400 writes/day. The 1,800-read reserve is a planning allowance, not measured request evidence. Actual candidate counts, reconnects, file receipts, cache behavior, extra devices/Viewers and failures change the total. Screen/input and WebRTC file bytes are not Firestore document operations, but still consume network/TURN capacity. Full traffic validation and elimination of the remaining polling are outstanding.
+- Manual-list follow-up (2026-09-04): User explicitly does not need live online status. Viewer now reads devices only on login and explicit refresh, removing the collection listener, local two-second polling and local five-second status aging. Cached offline/protocol values no longer block ordinary, secure or split requests before the backend checks the current target. Firebase list/target checks require server reads, not cache fallback; local API now rejects incompatible protocols too. Agent heartbeat and session/history traffic are unchanged. One Viewer with ten devices, one login, ten refreshes and ten direct opens has a scoped allowance of 130 reads/20 writes, not total daily fleet usage. Chromium UI and SDK-boundary tests verify explicit counts, 24h idle, rerender, concurrent clicks, quota/manual recovery and late responses after a new login. Focused tests: 56 passed; TypeScript passed. No build/deployment performed.
+
+- Auxiliary-polling follow-up (2026-09-05): Removed connected Viewer's 1.5s chat/clipboard/file/all-receipt reads and the previously omitted Windows Agent's three 1.5s queue reads. Both Firebase paths use one change subscription per necessary queue with serialized acknowledgement; local peers use a held HTTP change request. Receipt listeners exist only for actual transfer IDs and stop at completion, failure or bounded timeout. Disabled Viewer clipboard autosync has no receive subscription. Local history now fetches only on mount/manual refresh. Required heartbeat, update checks, approval/RTC negotiation and legacy local capture/command transport remain; no claim of zero total traffic.
+- Permanent auxiliary guard: Browser regression failed with four idle reads, then passed with zero recurring auxiliary reads after 24h. StrictMode exposed duplicate initial subscriptions and is now handled by deferred ownership. Shared SDK/local tests cover empty queues, slow handlers, duplicate events, quota errors without timer retries, terminal receipts and late/session-close cleanup. Essential heartbeat calls cannot overlap; background quota/auth/permission failures wait five minutes rather than looping. The existing 15-second command-retry source assertion was updated alongside runtime retry-policy tests.
+- Auxiliary verification: 106 focused tests passed across session queues, Chromium Viewer lifecycle, real local HTTP chat/clipboard/file/receipt delivery, history, Viewer API, Agent command gate and file receiver; TypeScript passed. No build, deployment, production load test or billing change. Auxiliary request allowance includes initial empty queries, three reconnects and device-dependent security-rule reevaluations; it is explicitly scoped, not a whole-fleet daily total. Physical Windows/Android and live billing remain unverified; old installed clients retain the old behavior until updated.
+
+- Refresh-only policy follow-up (2026-09-05): User explicitly removed initial list/history reads, automatic Viewer reconnect (including reboot recovery), and periodic Windows/Android heartbeats. Each list refresh requests one nonce-matched status response per manual-capable Agent, with a five-second listener deadline and abort/error cleanup. Expired commands are discarded; timeout only changes the returned UI snapshot, not persistent device status. Registration/startup/shutdown records, essential command reception and software updates remain event-driven or under their existing independent policies.
+- Presence compatibility guard: Manual Agents advertise `presenceMode=manual`; local eligibility, Firestore rules and Functions do not require a periodically refreshed timestamp for that capability. Legacy freshness, ownership, stored offline and protocol checks remain. Matching rules/Functions must deploy before new Agent packages; never disable periodic heartbeats without updating every freshness-dependent connection path. Real emulator checks permit an authorized manual Agent with a years-old heartbeat while rejecting an unauthorized Viewer and a stale legacy Agent.
+- Refresh-only proof: 129 focused tests across 11 files passed, including real Chromium login/24h-idle/manual-refresh/manual-reconnect, SDK subscription counts, real local HTTP presence, and AST-executed Windows watch/command paths. StrictMode initially exposed duplicate WebRTC startup; deferred ownership reduced one Connect from two starts to one. A raw-fetch replacement initially broke existing API error/argument contracts; reusing the existing request helper restored both tests. Android Java compilation and five unit tests passed; App/Functions TypeScript passed. Security emulator passed seven outcomes. No installer/APK build, deployment, production load test or billing change. Physical devices and aggregate billing remain unverified.
+- Budget correction: Previous daily examples are historical, not current estimates. Current zero-idle regression budget covers only a mounted, already-authenticated Viewer with no refresh/connect actions. Actual manual refresh, Agent startup/listener recovery, rules, sessions and updates remain nonzero traffic. A scoped test count must never be presented as whole-fleet daily usage.
+
+## INC-20260905-001: Read-only server tests packaged shared update fixtures on import
+
+- Detected: 2026-09-05.
+- Severity: P2 development reliability.
+- Status: source-verified-not-released.
+- Minimal trigger: Import the local API server in parallel presence/eligibility tests; module initialization generated ZIP fixtures through PowerShell in a shared temporary directory.
+- Cause: Test mode initialized update artifacts eagerly, even for routes unrelated to updates. Parallel workers collided with EEXIST/ENOTEMPTY and did unnecessary packaging work.
+- Permanent guard: Prepare fixtures only when an update-test route explicitly needs them; isolate default Vitest fixture paths by process/worker. Presence-boundary tests mock child-process execution to fail if a read/status refresh attempts packaging. Production and explicitly configured artifact paths retain their behavior.
+- Proof: The 129-test focused run passed after removing the import side effect; local HTTP presence test asserts no packaging child process was invoked.
+- Verification-tool follow-up: Cached Firestore emulator 1.21 requires Java21, not the installed Java17. Official JRE21 archive was hash-verified and unpacked only into workspace tooling. Emulator uses English locale to avoid its missing localized rules-error bundle. The rules verifier has a 30-second deadline to prevent SDK retries hanging verification, and stale-time seeding refuses to run outside an explicit emulator. Test processes were stopped after verification.
+- Release proof: Not built or deployed. No user files removed or system Java settings changed.
+
+## INC-20260905-002: Unchanged Agent update checks repeatedly rewrote device telemetry
+
+- Detected: 2026-09-05.
+- Severity: P1 quota efficiency.
+- Status: source-verified-not-released.
+- User-visible impact: Even after list/history polling and periodic heartbeats were removed, an idle Windows Agent still wrote `checking` and `healthy` update telemetry on every successful 15-minute check. Each device write could also trigger dependent security-rule reads for the live command listener.
+- Root cause: Update progress persistence treated timestamps and transient checking as meaningful cloud state. The Agent watch scheduler also woke the throttled update function every minute instead of owning the requested interval directly.
+- Fix: Default automatic checks are startup plus one hour. The scheduler itself uses that interval. `checking` stays process-local, and telemetry comparison excludes its timestamp; only an actual healthy/failure/progress/target transition writes Firestore. The Agent UI uses the existing signed native checker and installer through one explicit Update check button.
+- Permanent guard: Execute the actual watch block for 24h and assert 24 scheduled calls with zero heartbeat calls. Execute the real telemetry setter and require transient plus unchanged success to produce no report while failure produces exactly one. Packaging contract requires the Agent native check command and existing Agent installer handoff.
+- Regression proof: Agent policy/presence tests passed 9/9 and focused native-update packaging contract passed 1/1 after intended RED failures. TypeScript passed. No production requests were generated.
+- Remaining risk: Installer build/deployment and physical button/hourly/updater verification were not requested. The startup presence write, command listener startup/rule reads, signed HTTP manifest checks, state changes, failures and actual remote actions remain nonzero traffic. Rust formatting remains globally red from pre-existing unrelated formatting differences; no mass formatting churn was applied.
+- Release proof: Not built or deployed.
+
+## INC-20260904-002: Adjacent Ctrl-paste source contract fails during device-list validation
+
+- Detected: 2026-09-04.
+- Severity: P2 verification gap.
+- Affected: `aether-link-app/src/remoteSessionLayout.test.ts`, Ctrl-paste source-pattern assertion.
+- Status: open; outside manual device-list change.
+- Minimal trigger: Run `npx vitest run src/remoteSessionLayout.test.ts`; 20 pass and `keeps Ctrl shortcuts on the raw key down and key up path` fails at line 73 because its exact `event.ctrlKey && event.key.toLowerCase() === "v"` substring is absent.
+- Cause evidence: The assertion depends on a particular handler implementation shape. This turn did not edit the keyboard handler. A failed source match alone does not establish a broken physical shortcut; runtime behavior still needs targeted investigation.
+- Permanent guard: Pending a bounded follow-up reproducing paste at the input boundary; do not delete/weaken the assertion merely to make the wider suite green.
+- Regression proof: Failure retained and reported, not counted among the 56 passing focused device-list tests.
+- Release proof: No build/deployment in this turn.
+- Remaining blocker: Determine whether the current handler or its source-based test is wrong, then add runtime keyboard evidence before fixing either.
+
+## INC-20260905-003: Release contract drift blocked the v0.1.78 publication gate
+
+- Detected: 2026-09-05.
+- Severity: P1 release reliability.
+- Status: source-verified-not-released.
+- User-visible impact: PC and Android builds completed, but the CI-equivalent release contract would fail before publication.
+- Root cause: Two source assertions still named removed polling paths after the event-driven/manual-refresh change, the release workflow had lost its explicit `main` branch filter, both CI gates incorrectly required the post-deployment `verified` contract state from a predeployment release commit, and the gate treated unrelated untracked workspace files as deployable changes after commit.
+- Permanent guard: Run the complete PC/Android packaging contract before every release commit. Anchor lifecycle assertions between current function boundaries, require stream exit to preserve the session-data subscription, reject automatic no-ID Agent ticks, require release builds to originate from gated `main` commits, route release commits through the predeploy contract stage in both CI jobs, and validate only tracked or staged worktree files before falling back to the committed release diff.
+- Regression proof: `npx vitest run src/desktopPackaging.test.ts src/mobileViewerPackaging.test.ts` passed 65/65 after failing 3/65 before the correction. `npx vitest run scripts/verify-recurrence-coverage.test.js` passed 13/13 and proves untracked workspace files cannot replace the committed release boundary set. The signed release manifest and installer update E2E also passed.
+- Release proof: Not deployed; the failure was caught before commit, push, GitHub Release, or Firebase deployment.

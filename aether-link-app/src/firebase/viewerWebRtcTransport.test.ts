@@ -3,6 +3,7 @@ import { parseWebRtcControlAction } from "../domain/webrtcControl";
 import { WEBRTC_FILE_CHUNK_BYTES, parseWebRtcFileChunk, serializeWebRtcFileAck } from "../domain/webrtcFileTransfer";
 
 const firestoreMocks = vi.hoisted(() => ({
+  limit: vi.fn((count: number) => ({ kind: "limit", count })),
   onSnapshot: vi.fn((
     _target: { path?: string },
     _next?: (snapshot: {
@@ -11,6 +12,8 @@ const firestoreMocks = vi.hoisted(() => ({
     }) => void,
     _error?: (error: Error) => void,
   ) => () => undefined),
+  orderBy: vi.fn((field: string, direction: string) => ({ kind: "orderBy", field, direction })),
+  query: vi.fn((target: { path?: string }, ...constraints: unknown[]) => ({ ...target, constraints })),
   safeAddDoc: vi.fn(async () => ({ id: "candidate-1" })),
   safeSetDoc: vi.fn(async () => undefined),
 }));
@@ -20,10 +23,10 @@ vi.mock("firebase/firestore", () => ({
   doc: vi.fn((_db: unknown, ...segments: string[]) => ({ kind: "doc", path: segments.join("/") })),
   getDoc: vi.fn(),
   getDocs: vi.fn(),
-  limit: vi.fn(),
+  limit: firestoreMocks.limit,
   onSnapshot: firestoreMocks.onSnapshot,
-  orderBy: vi.fn(),
-  query: vi.fn(),
+  orderBy: firestoreMocks.orderBy,
+  query: firestoreMocks.query,
   serverTimestamp: vi.fn(() => "server-time"),
   where: vi.fn(),
   writeBatch: vi.fn(),
@@ -109,11 +112,15 @@ describe("Viewer WebRTC transport", () => {
     expect(tileChannel?.options).toMatchObject({ ordered: false });
     expect(controlChannel?.options).toMatchObject({ ordered: true });
     expect(fileChannel?.options).toMatchObject({ ordered: true });
+    expect(firestoreMocks.orderBy).toHaveBeenCalledWith("createdAt", "desc");
+    expect(firestoreMocks.limit).toHaveBeenCalledWith(20);
+    expect(transport.isControlReady()).toBe(false);
     expect(transport.sendControl("key-down Ctrl")).toBe(true);
     expect(controlChannel!.send).not.toHaveBeenCalled();
 
     controlChannel!.readyState = "open";
     controlChannel!.onopen?.();
+    expect(transport.isControlReady()).toBe(true);
     expect(controlChannel!.send).toHaveBeenCalledOnce();
     expect(parseWebRtcControlAction(controlChannel!.send.mock.calls[0][0])).toBe("key-down Ctrl");
     expect(transport.sendControl("key-up Ctrl")).toBe(true);
@@ -173,11 +180,13 @@ describe("Viewer WebRTC transport", () => {
 
     tileChannel!.readyState = "open";
     tileChannel!.onopen?.();
+    expect(parseWebRtcControlAction(controlChannel!.send.mock.calls[2][0])).toBe("request-keyframe");
     tileChannel!.onclose?.();
     expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining("data-channel-closed") }));
 
     transport.close();
     expect(FakePeerConnection.latest.close).toHaveBeenCalledOnce();
+    expect(transport.isControlReady()).toBe(false);
     expect(transport.sendControl("key-up Ctrl")).toBe(false);
   });
 
@@ -232,6 +241,7 @@ describe("Viewer WebRTC transport", () => {
     expect(onError).toHaveBeenCalledWith(expect.objectContaining({
       message: expect.stringContaining("without open tile and control channels"),
     }));
+    expect(transport.isControlReady()).toBe(false);
     expect(transport.sendControl("key-down A")).toBe(false);
   });
 

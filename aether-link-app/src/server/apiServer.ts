@@ -1,7 +1,9 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
+import { EventEmitter } from "node:events";
+import { collectDevicePresence } from "../domain/devicePresenceRefresh";
 import { execFileSync, spawn } from "node:child_process";
 import { writeFileSync, mkdirSync, readFileSync, existsSync, cpSync, rmSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
 import {
@@ -25,7 +27,6 @@ import type {
   ClipboardData,
   TransferredFile,
   FileTransferReceipt,
-  ConnectionHistoryEntry,
   DeviceMetadataUpdateInput,
 } from "../domain/types";
 import { createMemoryDeviceStore } from "./deviceStore";
@@ -33,6 +34,7 @@ import type { DeviceStore } from "./deviceStore";
 import { createMemoryHistoryStore } from "./historyStore";
 import type { HistoryStore } from "./historyStore";
 import { WONREMOTE_APP_VERSION } from "../domain/appVersion";
+import { evaluateRemoteProtocolCompatibility, remoteProtocolErrorMessage } from "../domain/remoteProtocol";
 import { REMOTE_FILE_MAX_BYTES, remoteFileLimitLabel } from "../domain/fileTransferPolicy";
 import {
   parseProductionUpdateManifest,
@@ -138,6 +140,7 @@ function resolveUpdateArtifactDir(): string {
         "WonRemote",
         "update-artifacts",
         createHash("sha256").update(process.cwd()).digest("hex").slice(0, 12),
+        ...(process.env.VITEST_POOL_ID ? [`worker-${process.pid}-${process.env.VITEST_POOL_ID}`] : []),
       );
   mkdirSync(artifactDir, { recursive: true });
   return artifactDir;
@@ -186,10 +189,6 @@ async function loadProductionUpdateMetadata(): Promise<ProductionUpdateMetadata 
   }
 }
 
-if (process.env.NODE_ENV === "test") {
-  prepareUpdateFiles();
-}
-
 const DEFAULT_UPDATE_MANIFEST_URL =
   "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/wonremote-update-manifest.json";
 
@@ -209,6 +208,8 @@ interface ApiState {
   sessionClipboards: Map<string, ClipboardData[]>;
   sessionFiles: Map<string, TransferredFile[]>;
   sessionFileReceipts: Map<string, FileTransferReceipt[]>;
+  sessionEvents: EventEmitter;
+  sessionRevisions: Map<string, number>;
   secureChallenges: Map<string, SecureSessionChallenge>;
 }
 
@@ -250,6 +251,8 @@ export function createApiServer(options: CreateApiServerOptions | ManagedDevice[
     sessionClipboards: new Map(),
     sessionFiles: new Map(),
     sessionFileReceipts: new Map(),
+    sessionEvents: new EventEmitter(),
+    sessionRevisions: new Map(),
     secureChallenges: new Map(),
   };
 
@@ -301,9 +304,19 @@ async function routeRequest(
   await ensureDevicesLoaded(state);
 
   if (request.method === "GET" && url.pathname === "/api/devices") {
-    writeJson(response, 200, {
-      devices: resolveDeviceStatuses(state.devices, nowIso(state), state.offlineAfterMs),
-    });
+    let devices = resolveDeviceStatuses(state.devices, nowIso(state), state.offlineAfterMs);
+    if (url.searchParams.get("refresh") === "1") {
+      const abort = new AbortController();
+      const onClose = () => abort.abort();
+      response.once("close", onClose);
+      try {
+        devices = await collectDevicePresence(devices, randomUUID(), (next) => {
+          state.sessionEvents.on("presence", next);
+          return () => { state.sessionEvents.off("presence", next); };
+        }, async (device, action) => enqueueAgentCommand(state, device.id, action), abort.signal);
+      } finally { response.off("close", onClose); }
+    }
+    writeJson(response, 200, { devices });
     return;
   }
 
@@ -356,6 +369,7 @@ async function routeRequest(
         }
         state.sessions.delete(sessionId);
         state.inputLogs.delete(sessionId);
+        notifySessionData(state, sessionId);
         state.sessionTiles.delete(sessionId);
         state.sessionChats.delete(sessionId);
         state.sessionClipboards.delete(sessionId);
@@ -392,6 +406,7 @@ async function routeRequest(
       const result = applyAgentHeartbeat(state.devices, input, nowIso(state));
       state.devices = result.devices;
       await state.deviceStore.writeDevices(state.devices);
+      state.sessionEvents.emit("presence", result.device);
       writeJson(response, 200, {
         device: result.device,
       });
@@ -442,6 +457,38 @@ async function routeRequest(
     return;
   }
 
+  if (request.method === "GET" && /^\/api\/sessions\/[^/]+\/events$/.test(url.pathname)) {
+    const sessionId = decodeURIComponent(url.pathname.split("/")[3]);
+    const target = url.searchParams.get("target");
+    if (target !== "viewer" && target !== "agent") {
+      writeJson(response, 400, { error: "Invalid event recipient." });
+      return;
+    }
+    const after = Number(url.searchParams.get("after") ?? -1);
+    const receiptIds = new Set(url.searchParams.getAll("receipt"));
+    const queues = url.searchParams.get("queues") !== "false";
+    const clipboard = queues && url.searchParams.get("clipboard") !== "false";
+    const send = () => {
+      if (!requireConnectedSession(state, response, sessionId)) return;
+      const revision = state.sessionRevisions.get(sessionId) ?? 0;
+      if (revision <= after) return;
+      state.sessionEvents.off(sessionId, send);
+      const messages = queues ? (state.sessionChats.get(sessionId) ?? []).filter((item) => item.sender !== target) : [];
+      const clipboards = clipboard ? (state.sessionClipboards.get(sessionId) ?? []).filter((item) => item.sender !== target) : [];
+      const files = queues && target === "agent" ? state.sessionFiles.get(sessionId) ?? [] : [];
+      if (queues) state.sessionChats.set(sessionId, (state.sessionChats.get(sessionId) ?? []).filter((item) => item.sender === target));
+      if (clipboard) state.sessionClipboards.set(sessionId, (state.sessionClipboards.get(sessionId) ?? []).filter((item) => item.sender === target));
+      if (queues && target === "agent") state.sessionFiles.set(sessionId, []);
+      const receipts = target === "viewer" ? (state.sessionFileReceipts.get(sessionId) ?? []).filter((item) => receiptIds.has(item.transferId)) : [];
+      writeJson(response, 200, { revision, messages, clipboards, files, receipts });
+    };
+    response.setTimeout(0);
+    state.sessionEvents.on(sessionId, send);
+    response.once("close", () => state.sessionEvents.off(sessionId, send));
+    send();
+    return;
+  }
+
   if (request.method === "POST" && url.pathname === "/api/sessions") {
     const body = await readJson<{ deviceId?: string }>(request);
     const deviceId = String(body.deviceId ?? "").trim();
@@ -453,8 +500,9 @@ async function routeRequest(
       return;
     }
 
-    if (device.status !== "online") {
-      writeJson(response, 409, { error: "온라인 상태의 Agent만 접속할 수 있습니다." });
+    const protocol = evaluateRemoteProtocolCompatibility(device.protocolVersion);
+    if (device.status !== "online" || !protocol.compatible) {
+      writeJson(response, 409, { error: remoteProtocolErrorMessage(protocol) || "온라인 상태의 Agent만 접속할 수 있습니다." });
       return;
     }
 
@@ -477,8 +525,9 @@ async function routeRequest(
       return;
     }
 
-    if (device.status !== "online") {
-      writeJson(response, 409, { error: "Only online agents can accept secure connections." });
+    const protocol = evaluateRemoteProtocolCompatibility(device.protocolVersion);
+    if (device.status !== "online" || !protocol.compatible) {
+      writeJson(response, 409, { error: remoteProtocolErrorMessage(protocol) || "Only online agents can accept secure connections." });
       return;
     }
 
@@ -530,8 +579,9 @@ async function routeRequest(
       return;
     }
 
-    if (device.status !== "online") {
-      writeJson(response, 409, { error: "Only online agents can accept secure connections." });
+    const protocol = evaluateRemoteProtocolCompatibility(device.protocolVersion);
+    if (device.status !== "online" || !protocol.compatible) {
+      writeJson(response, 409, { error: remoteProtocolErrorMessage(protocol) || "Only online agents can accept secure connections." });
       return;
     }
 
@@ -560,8 +610,9 @@ async function routeRequest(
       return;
     }
 
-    if (device.status !== "online") {
-      writeJson(response, 409, { error: "온라인 상태의 Agent만 접속할 수 있습니다." });
+    const protocol = evaluateRemoteProtocolCompatibility(device.protocolVersion);
+    if (device.status !== "online" || !protocol.compatible) {
+      writeJson(response, 409, { error: remoteProtocolErrorMessage(protocol) || "온라인 상태의 Agent만 접속할 수 있습니다." });
       return;
     }
 
@@ -618,6 +669,7 @@ async function routeRequest(
       }
       state.sessions.delete(sessionId);
       purgePendingSessionCommands(state, session.deviceId, sessionId);
+      notifySessionData(state, sessionId);
       enqueueAgentCommand(state, session.deviceId, `stop-stream ${sessionId}`, sessionId);
 
       // Connection history update
@@ -650,6 +702,7 @@ async function routeRequest(
     const body = await readJson<{ mode?: "none" | "good" | "bad_checksum" | "bad_binary" }>(request);
     if (body.mode) {
       testUpdateMode = body.mode;
+      if (testUpdateMode !== "none" && !goodChecksum) prepareUpdateFiles();
       console.log(`[API Server] Test update mode updated to: ${testUpdateMode}`);
     }
     writeJson(response, 200, { ok: true, currentMode: testUpdateMode });
@@ -702,6 +755,7 @@ async function routeRequest(
       return;
     }
     const isBad = url.searchParams.get("type") === "bad";
+    if (!goodChecksum) prepareUpdateFiles();
     const filePath = isBad ? badUpdatePath : goodUpdatePath;
     const filename = path.basename(filePath);
     
@@ -792,6 +846,7 @@ async function routeRequest(
         }
       } else {
         state.sessions.delete(sessionId);
+        notifySessionData(state, sessionId);
         if (device) {
           await state.historyStore.addHistoryEntry({
             id: `hist-${sessionId}-${Date.now()}`,
@@ -835,6 +890,7 @@ async function routeRequest(
         createdAt: nowIso(state),
       };
       state.sessionChats.set(sessionId, [...chats, newMsg]);
+      notifySessionData(state, sessionId);
 
       state.inputLogs.set(sessionId, [
         `${new Date().toLocaleTimeString()} [채팅] ${sender === "viewer" ? "뷰어" : "에이전트"}: ${message.slice(0, 15)}`,
@@ -874,6 +930,7 @@ async function routeRequest(
 
       const clipboards = state.sessionClipboards.get(sessionId) ?? [];
       state.sessionClipboards.set(sessionId, [...clipboards, { text, sender }]);
+      notifySessionData(state, sessionId);
       writeJson(response, 200, { ok: true });
       return;
     }
@@ -945,6 +1002,7 @@ async function routeRequest(
         fileSha256: typeof body.fileSha256 === "string" ? body.fileSha256 : undefined,
       };
       state.sessionFiles.set(sessionId, [...files, newFile]);
+      notifySessionData(state, sessionId);
       writeJson(response, 200, { ok: true, file: { id: newFile.id, filename: newFile.filename } });
       return;
     }
@@ -994,6 +1052,7 @@ async function routeRequest(
         ...receipts.filter((existing) => existing.transferId !== receipt.transferId),
         receipt,
       ]);
+      notifySessionData(state, sessionId);
       writeJson(response, 200, { ok: true, receipt });
       return;
     }
@@ -1088,6 +1147,11 @@ async function openConnectedSession(
   });
 
   return { session, inputLog };
+}
+
+function notifySessionData(state: ApiState, sessionId: string) {
+  state.sessionRevisions.set(sessionId, (state.sessionRevisions.get(sessionId) ?? 0) + 1);
+  state.sessionEvents.emit(sessionId);
 }
 
 function enqueueAgentCommand(state: ApiState, deviceId: string, action: string, sessionId?: string): void {

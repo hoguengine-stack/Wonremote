@@ -11,9 +11,12 @@ import {
 } from "firebase/auth";
 import {
   collection,
+  deleteField,
   doc,
   getDoc,
+  getDocFromServer,
   getDocs,
+  getDocsFromServer,
   limit,
   onSnapshot,
   orderBy,
@@ -25,6 +28,8 @@ import {
 } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { deleteObject, ref, uploadBytesResumable } from "firebase/storage";
+import { subscribeFirebaseSessionData } from "./sessionData";
+import type { SessionData, SessionDataOptions } from "../domain/sessionData";
 import type {
   AgentFirstRunInput,
   AgentFirstRunResult,
@@ -39,7 +44,15 @@ import type {
   TransferredFile,
 } from "../domain/types";
 import { normalizeWakeMac, selectViewerWakeRelay } from "../domain/wakeRelay";
+import {
+  DEVICE_CONTACT_NAME_MAX_LENGTH,
+  DEVICE_INSTALL_LOCATION_MAX_LENGTH,
+  DEVICE_NOTES_MAX_LENGTH,
+  sanitizeDeviceOperationalMetadataText,
+  sanitizeDeviceTags,
+} from "../domain/agentRegistry";
 import { prepareViewerDeviceList, resolveViewerOfflineAfterMs } from "../domain/viewerDeviceList";
+import { collectDevicePresence } from "../domain/devicePresenceRefresh";
 import { DEFAULT_STORE_NAME, normalizeStoreNameForDisplay } from "../domain/deviceDefaults";
 import { createFirebaseSessionId, mapFirebaseSessionHistory } from "../domain/firebaseSession";
 import {
@@ -68,6 +81,7 @@ import {
 import {
   formatWebRtcConnectionFailure,
   isTerminalWebRtcConnectionState,
+  MAX_RECENT_WEBRTC_CANDIDATES,
   resolveWebRtcConnectTimeoutMs,
 } from "../domain/webrtcStability";
 import { resolveFirebaseConfig } from "./firebaseConfig";
@@ -148,6 +162,7 @@ export interface ViewerAccount {
 
 export interface ViewerWebRtcTransport {
   close: () => void;
+  isControlReady: () => boolean;
   sendControl: (action: string) => boolean;
   sendFile: (input: {
     file: Blob;
@@ -334,34 +349,60 @@ export function subscribeFirebaseDevices(
   );
 }
 
-export async function fetchFirebaseDevices(env: ViewerFirebaseEnv = import.meta.env): Promise<ManagedDevice[]> {
+export async function fetchFirebaseDevices(env: ViewerFirebaseEnv = import.meta.env, refreshPresence = false, signal?: AbortSignal): Promise<ManagedDevice[]> {
   const services = getViewerFirebaseServices(env);
   requireCurrentUserId(services.auth.currentUser?.uid);
-  const snapshot = await getDocs(collection(services.db, "devices"));
-  return prepareViewerDeviceList(
+  const snapshot = await getDocsFromServer(collection(services.db, "devices"));
+  const devices = prepareViewerDeviceList(
     snapshot.docs
       .filter((deviceDoc) => !isDeletedDeviceDocument(deviceDoc.data()))
       .map((deviceDoc) => mapFirestoreDevice(deviceDoc.id, deviceDoc.data())),
     new Date().toISOString(),
     resolveViewerOfflineAfterMs(env),
   );
+  if (!refreshPresence || signal?.aborted) return devices;
+  return collectDevicePresence(devices, crypto.randomUUID(), (next, fail) => onSnapshot(
+    collection(services.db, "devices"),
+    (updates) => updates.docChanges().forEach((change) => {
+      if (change.type !== "removed") next(mapFirestoreDevice(change.doc.id, change.doc.data()));
+    }), fail,
+  ), (device, action) => enqueueFirebaseDeviceCommandDirect(device.id, action, env), signal);
 }
 
 export async function fetchFirebaseConnectionHistory(
   env: ViewerFirebaseEnv = import.meta.env,
+  devices?: ManagedDevice[],
 ): Promise<ConnectionHistoryEntry[]> {
   const services = getViewerFirebaseServices(env);
   const userId = requireCurrentUserId(services.auth.currentUser?.uid);
-  const [sessionsSnapshot, devices] = await Promise.all([
-    getDocs(query(collection(services.db, "sessions"), where("ownerUid", "==", userId), limit(200))),
-    fetchFirebaseDevices(env),
+  const [sessionsSnapshot, knownDevices] = await Promise.all([
+    getDocsFromServer(query(collection(services.db, "sessions"), where("ownerUid", "==", userId), limit(200))),
+    devices ?? fetchFirebaseDevices(env),
   ]);
   return mapFirebaseSessionHistory(
     sessionsSnapshot.docs.map((sessionDoc) => ({
       id: sessionDoc.id,
       data: sessionDoc.data(),
     })),
-    devices,
+    knownDevices,
+  );
+}
+
+export function subscribeFirebaseConnectionHistory(
+  onHistory: (history: ConnectionHistoryEntry[]) => void,
+  onError: (error: Error) => void,
+  getDevices: () => ManagedDevice[],
+  env: ViewerFirebaseEnv = import.meta.env,
+): Unsubscribe {
+  const services = getViewerFirebaseServices(env);
+  const userId = requireCurrentUserId(services.auth.currentUser?.uid);
+  return onSnapshot(
+    query(collection(services.db, "sessions"), where("ownerUid", "==", userId), limit(200)),
+    (snapshot) => onHistory(mapFirebaseSessionHistory(
+      snapshot.docs.map((sessionDoc) => ({ id: sessionDoc.id, data: sessionDoc.data() })),
+      getDevices(),
+    )),
+    onError,
   );
 }
 
@@ -391,6 +432,24 @@ export async function updateFirebaseDeviceMetadata(
   }
   if (typeof input.desktopName === "string" && input.desktopName.trim()) {
     update.desktopName = input.desktopName.trim();
+  }
+  if (typeof input.contactName === "string") {
+    update.contactName = sanitizeDeviceOperationalMetadataText(
+      input.contactName,
+      DEVICE_CONTACT_NAME_MAX_LENGTH,
+    ) ?? deleteField();
+  }
+  if (typeof input.installLocation === "string") {
+    update.installLocation = sanitizeDeviceOperationalMetadataText(
+      input.installLocation,
+      DEVICE_INSTALL_LOCATION_MAX_LENGTH,
+    ) ?? deleteField();
+  }
+  if (input.tags !== undefined) {
+    update.tags = sanitizeDeviceTags(input.tags) ?? deleteField();
+  }
+  if (typeof input.notes === "string") {
+    update.notes = sanitizeDeviceOperationalMetadataText(input.notes, DEVICE_NOTES_MAX_LENGTH) ?? deleteField();
   }
 
   await safeUpdateDoc(deviceRef, update);
@@ -482,6 +541,7 @@ export async function registerFirstRunAgentWithFirebase(
     nowIso: new Date().toISOString(),
     ownerUid: credential.user.uid,
     protocolVersion: input.protocolVersion,
+    platform: input.platform,
     version: input.version,
   });
   const deviceRef = doc(services.db, "devices", device.id);
@@ -602,6 +662,13 @@ export async function fetchFirebaseChatMessages(
     sender: data.sender === "agent" ? "agent" : "viewer",
     createdAt: coerceCreatedAt(data.createdAt),
   }), env);
+}
+
+export function subscribeViewerSessionData(
+  sessionId: string, onData: (data: SessionData) => void | Promise<void>, onError: (error: Error) => void,
+  options: SessionDataOptions = {}, env: ViewerFirebaseEnv = import.meta.env,
+): Unsubscribe {
+  return subscribeFirebaseSessionData(getViewerFirebaseServices(env).db, sessionId, "viewer", onData, onError, options);
 }
 
 export async function sendFirebaseClipboardText(
@@ -813,6 +880,11 @@ export async function startFirebaseViewerWebRtcTransport(
   const signalRef = doc(services.db, "sessions", sessionId, "webrtc", "signal");
   const viewerCandidates = collection(services.db, "sessions", sessionId, "viewerCandidates");
   const agentCandidates = collection(services.db, "sessions", sessionId, "agentCandidates");
+  const recentAgentCandidates = query(
+    agentCandidates,
+    orderBy("createdAt", "desc"),
+    limit(MAX_RECENT_WEBRTC_CANDIDATES),
+  );
   const appliedCandidateIds = new Set<string>();
   const applyingCandidateIds = new Set<string>();
   const automaticallyRetriedCandidateIds = new Set<string>();
@@ -822,6 +894,7 @@ export async function startFirebaseViewerWebRtcTransport(
   let answerApplyInFlight = false;
   let channelOpened = false;
   let controlChannelOpened = false;
+  let initialKeyframeRequested = false;
   let fileChannelOpened = false;
   let closedByCaller = false;
   let resourcesClosed = false;
@@ -961,10 +1034,12 @@ export async function startFirebaseViewerWebRtcTransport(
   const controlChannel = peer.createDataChannel(WEBRTC_CONTROL_CHANNEL_LABEL, { ordered: true });
   const fileChannel = peer.createDataChannel(WEBRTC_FILE_CHANNEL_LABEL, { ordered: true });
   const markConnectionReady = () => {
-    if (!channelOpened || !controlChannelOpened) {
+    if (!channelOpened || !controlChannelOpened || initialKeyframeRequested) {
       return;
     }
+    initialKeyframeRequested = true;
     clearConnectWatchdog();
+    controlChannel.send(serializeWebRtcControlAction("request-keyframe"));
     handlers.onState?.("webrtc-open");
   };
   controlChannel.onopen = () => {
@@ -1122,7 +1197,7 @@ export async function startFirebaseViewerWebRtcTransport(
   );
 
   unsubscribeAgentCandidates = onSnapshot(
-    agentCandidates,
+    recentAgentCandidates,
     (snapshot) => {
       snapshot.docs.forEach((candidateDoc) => {
         if (
@@ -1271,6 +1346,11 @@ export async function startFirebaseViewerWebRtcTransport(
       closedByCaller = true;
       closeResources();
     },
+    isControlReady: () =>
+      !resourcesClosed &&
+      !closedByCaller &&
+      controlChannelOpened &&
+      controlChannel.readyState === "open",
     sendControl: (action) => {
       if (resourcesClosed || closedByCaller) {
         return false;
@@ -1420,7 +1500,7 @@ async function requireFirebaseOnlineCompatibleDeviceDirect(
   env: ViewerFirebaseEnv,
 ): Promise<ManagedDevice> {
   const services = getViewerFirebaseServices(env);
-  const deviceSnapshot = await getDoc(doc(services.db, "devices", deviceId));
+  const deviceSnapshot = await getDocFromServer(doc(services.db, "devices", deviceId));
   if (!deviceSnapshot.exists()) {
     throw new Error("Firebase device not found.");
   }

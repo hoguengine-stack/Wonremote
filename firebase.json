@@ -49,6 +49,23 @@
             "value": "public, max-age=300"
           }
         ]
+      },
+      {
+        "source": "/download/control-addon.zip",
+        "headers": [
+          {
+            "key": "Content-Type",
+            "value": "application/zip"
+          },
+          {
+            "key": "Content-Disposition",
+            "value": "attachment; filename=WonRemote-Control-Addon.zip"
+          },
+          {
+            "key": "Cache-Control",
+            "value": "public, max-age=300"
+          }
+        ]
       }
     ],
     "redirects": [
@@ -60,6 +77,11 @@
       {
         "source": "/download/viewer.apk",
         "destination": "/download/viewer.zip",
+        "type": 302
+      },
+      {
+        "source": "/download/control-addon.apk",
+        "destination": "/download/control-addon.zip",
         "type": 302
       },
       {

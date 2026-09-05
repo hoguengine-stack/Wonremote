@@ -701,6 +701,30 @@ mod tests {
         assert_eq!(virtual_key_from_token("Win").unwrap().0, 0x5B);
         assert_eq!(virtual_key_from_token("Hangul").unwrap().0, 0x15);
         assert_eq!(virtual_key_from_token("F12").unwrap().0, 0x7B);
+        for (token, expected) in [
+            ("Oem1", 0xBA),
+            ("OemPlus", 0xBB),
+            ("OemComma", 0xBC),
+            ("OemMinus", 0xBD),
+            ("OemPeriod", 0xBE),
+            ("Oem2", 0xBF),
+            ("Oem3", 0xC0),
+            ("Oem4", 0xDB),
+            ("Oem5", 0xDC),
+            ("Oem6", 0xDD),
+            ("Oem7", 0xDE),
+            ("Oem102", 0xE2),
+            ("ContextMenu", 0x5D),
+            ("PrintScreen", 0x2C),
+            ("Pause", 0x13),
+            ("ScrollLock", 0x91),
+        ] {
+            assert_eq!(
+                virtual_key_from_token(token).unwrap().0,
+                expected,
+                "{token}"
+            );
+        }
         assert!(virtual_key_from_token("UnknownKeyName").is_err());
     }
 
@@ -1684,6 +1708,7 @@ fn virtual_key_from_token(token: &str) -> std::result::Result<VIRTUAL_KEY, Strin
         "alt" => 0x12,
         "backspace" => 0x08,
         "capslock" => 0x14,
+        "contextmenu" => 0x5D,
         "ctrl" | "control" => 0x11,
         "delete" | "del" => 0x2E,
         "down" => 0x28,
@@ -1696,9 +1721,24 @@ fn virtual_key_from_token(token: &str) -> std::result::Result<VIRTUAL_KEY, Strin
         "insert" | "ins" => 0x2D,
         "left" => 0x25,
         "numlock" => 0x90,
+        "oem1" => 0xBA,
+        "oemplus" => 0xBB,
+        "oemcomma" => 0xBC,
+        "oemminus" => 0xBD,
+        "oemperiod" => 0xBE,
+        "oem2" => 0xBF,
+        "oem3" => 0xC0,
+        "oem4" => 0xDB,
+        "oem5" => 0xDC,
+        "oem6" => 0xDD,
+        "oem7" => 0xDE,
+        "oem102" => 0xE2,
         "pagedown" => 0x22,
         "pageup" => 0x21,
+        "pause" => 0x13,
+        "printscreen" => 0x2C,
         "right" => 0x27,
+        "scrolllock" => 0x91,
         "shift" => 0x10,
         "space" => 0x20,
         "tab" => 0x09,
@@ -1837,10 +1877,8 @@ fn should_toggle_foreground_ime(vk: VIRTUAL_KEY, key_up: bool) -> bool {
 }
 
 fn press_virtual_key(vk: VIRTUAL_KEY) -> std::result::Result<(), String> {
-    if should_toggle_foreground_ime(vk, false) {
-        if toggle_foreground_ime().is_ok() {
-            return Ok(());
-        }
+    if should_toggle_foreground_ime(vk, false) && toggle_foreground_ime().is_ok() {
+        return Ok(());
     }
 
     let inputs = [keyboard_input(vk, false), keyboard_input(vk, true)];

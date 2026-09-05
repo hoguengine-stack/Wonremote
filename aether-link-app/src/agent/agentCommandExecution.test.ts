@@ -284,8 +284,9 @@ describe("Agent command execution", () => {
     expect(source).toContain('if (!USE_FIREBASE || !process.argv.includes("--watch"))');
     expect(source).toContain("subscribeAgentCommandsWithFirebase(");
     expect(source).toContain("Firebase command listener active.");
-    expect(source).toContain("schedule(15_000)");
-    expect(source).toContain("WONREMOTE_AGENT_HEARTBEAT_MS ?? 20_000");
+    expect(source).toContain("schedule(firebaseRequestRetryDelayMs(error))");
+    expect(source).not.toContain("HEARTBEAT_INTERVAL_MS");
+    expect(source).toContain('command.action.startsWith("refresh-status ")');
   });
 
   it("routes interactive input through the persistent input server", () => {
@@ -376,6 +377,8 @@ describe("Agent command execution", () => {
     expect(block).toContain('if (state === "negotiating")');
     expect(block).toContain("initialFrameSynchronized = false");
     expect(block).toContain('streamProcess.stdin.write("request-keyframe\\n")');
+    expect(block).toContain('if (action === "request-keyframe")');
+    expect(block).toContain('streamProcess?.stdin.write("request-keyframe\\n")');
     expect(block).toContain("if (!flushPendingInitialKeyframe(expectedSessionGeneration))");
     expect(block).not.toMatch(
       /flushPendingInitialKeyframe\(expectedSessionGeneration\);\s*streamProcess\.stdin\.write\("request-keyframe\\n"\)/,

@@ -41,6 +41,7 @@ const KEY_ALIASES: Record<string, string> = {
   Backspace: "Backspace",
   CapsLock: "CapsLock",
   Control: "Ctrl",
+  ContextMenu: "ContextMenu",
   Delete: "Delete",
   End: "End",
   Enter: "Enter",
@@ -49,10 +50,30 @@ const KEY_ALIASES: Record<string, string> = {
   Insert: "Insert",
   Meta: "Win",
   NumLock: "NumLock",
+  OS: "Win",
   PageDown: "PageDown",
   PageUp: "PageUp",
+  Pause: "Pause",
+  PrintScreen: "PrintScreen",
+  ScrollLock: "ScrollLock",
   Shift: "Shift",
   Tab: "Tab",
+};
+
+const PHYSICAL_CODE_ALIASES: Record<string, string> = {
+  Backquote: "Oem3",
+  Backslash: "Oem5",
+  BracketLeft: "Oem4",
+  BracketRight: "Oem6",
+  Comma: "OemComma",
+  Equal: "OemPlus",
+  IntlBackslash: "Oem102",
+  Minus: "OemMinus",
+  NumpadEnter: "Enter",
+  Period: "OemPeriod",
+  Quote: "Oem7",
+  Semicolon: "Oem1",
+  Slash: "Oem2",
 };
 
 export function mapCanvasPointToAbsolute(clientX: number, clientY: number, rect: CanvasRect) {
@@ -117,6 +138,15 @@ export function normalizeRemoteKey(key: string, code = "", legacyKeyCode = 0): s
   }
   if (code === "Lang2" || key === "HanjaMode") {
     return "Hanja";
+  }
+  if (/^Key[A-Z]$/.test(code)) {
+    return code.slice(3);
+  }
+  if (/^Digit\d$/.test(code)) {
+    return code.slice(5);
+  }
+  if (PHYSICAL_CODE_ALIASES[code]) {
+    return PHYSICAL_CODE_ALIASES[code];
   }
   if (KEY_ALIASES[key]) {
     return KEY_ALIASES[key];

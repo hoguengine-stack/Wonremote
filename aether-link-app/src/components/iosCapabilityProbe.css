@@ -1,0 +1,365 @@
+.ios-probe {
+  background: #f4f7f8;
+  color: #17212b;
+  min-height: 100vh;
+  padding: 0 0 max(28px, env(safe-area-inset-bottom));
+}
+
+.ios-probe-header {
+  align-items: center;
+  background: #10202a;
+  color: #fff;
+  display: flex;
+  justify-content: space-between;
+  min-height: 64px;
+  padding: max(12px, env(safe-area-inset-top)) 16px 12px;
+}
+
+.ios-probe-brand {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ios-probe-brand > div {
+  display: grid;
+  min-width: 0;
+}
+
+.ios-probe-brand strong {
+  font-size: 15px;
+  letter-spacing: 0;
+}
+
+.ios-probe-brand span:not(.ios-probe-logo) {
+  color: #a9bac3;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ios-probe-logo {
+  align-items: center;
+  background: #20a58f;
+  border-radius: 7px;
+  display: inline-flex;
+  height: 36px;
+  justify-content: center;
+  width: 36px;
+}
+
+.ios-probe-icon-button {
+  align-items: center;
+  background: #1b313d;
+  border: 1px solid #34505d;
+  border-radius: 6px;
+  color: #fff;
+  display: inline-flex;
+  height: 38px;
+  justify-content: center;
+  padding: 0;
+  width: 38px;
+}
+
+.ios-probe-summary {
+  background: #fff;
+  border-bottom: 1px solid #d8e0e4;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
+.ios-probe-summary span {
+  align-items: center;
+  border-right: 1px solid #e4e9ec;
+  display: flex;
+  font-size: 11px;
+  gap: 5px;
+  justify-content: center;
+  min-height: 42px;
+  white-space: nowrap;
+}
+
+.ios-probe-summary span:last-child {
+  border-right: 0;
+}
+
+.ios-probe-summary .pass { color: #087764; }
+.ios-probe-summary .limited { color: #986400; }
+.ios-probe-summary .fail { color: #b52a2a; }
+.ios-probe-summary .pending { color: #596975; }
+
+.ios-probe-section {
+  background: #fff;
+  border-bottom: 1px solid #dbe2e6;
+  margin-top: 10px;
+  padding: 16px;
+}
+
+.ios-probe-last-section {
+  border-bottom: 0;
+}
+
+.ios-probe-section-title {
+  align-items: center;
+  color: #176d62;
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.ios-probe-section-title h1,
+.ios-probe-section-title h2 {
+  color: #17212b;
+  font-size: 16px;
+  letter-spacing: 0;
+  margin: 0;
+}
+
+.ios-probe-checks {
+  border: 1px solid #dce4e8;
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.ios-probe-check {
+  align-items: center;
+  border-bottom: 1px solid #e6ebee;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 44px 1fr;
+  min-height: 55px;
+  padding: 9px 10px;
+}
+
+.ios-probe-check:last-child {
+  border-bottom: 0;
+}
+
+.ios-probe-check > div {
+  display: grid;
+  min-width: 0;
+}
+
+.ios-probe-check strong {
+  font-size: 13px;
+}
+
+.ios-probe-check > div span {
+  color: #687984;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.ios-probe-status {
+  border-radius: 4px;
+  display: inline-flex;
+  font-size: 10px;
+  font-weight: 800;
+  justify-content: center;
+  padding: 4px 5px;
+}
+
+.ios-probe-status.pass { background: #dff4ed; color: #087764; }
+.ios-probe-status.limited { background: #fff0cb; color: #805400; }
+.ios-probe-status.fail { background: #fde5e5; color: #a62121; }
+.ios-probe-status.pending { background: #e9eef1; color: #52636e; }
+
+.ios-probe input,
+.ios-probe select,
+.ios-probe textarea {
+  background: #fff;
+  border: 1px solid #cbd7dd;
+  border-radius: 6px;
+  color: #17212b;
+  min-height: 42px;
+  padding: 9px 11px;
+  width: 100%;
+}
+
+.ios-probe textarea {
+  min-height: 86px;
+  resize: vertical;
+}
+
+.ios-probe button {
+  align-items: center;
+  background: #edf3f5;
+  border: 1px solid #c9d5da;
+  border-radius: 6px;
+  color: #1b2a33;
+  display: inline-flex;
+  font-weight: 700;
+  gap: 6px;
+  justify-content: center;
+  min-height: 42px;
+  padding: 8px 12px;
+  white-space: nowrap;
+}
+
+.ios-probe-login {
+  display: grid;
+  gap: 8px;
+}
+
+.ios-probe-login button,
+.ios-probe-connect-row button:first-of-type {
+  background: #176d62;
+  border-color: #176d62;
+  color: #fff;
+}
+
+.ios-probe-connect-row {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.ios-probe-connection-state {
+  background: #eef5f4;
+  border-left: 3px solid #20a58f;
+  display: grid;
+  margin-top: 10px;
+  padding: 9px 11px;
+}
+
+.ios-probe-connection-state strong {
+  font-size: 12px;
+}
+
+.ios-probe-connection-state span,
+.ios-probe-muted {
+  color: #667985;
+  font-size: 11px;
+}
+
+.ios-probe-error {
+  background: #fff0f0;
+  border: 1px solid #f3c8c8;
+  border-radius: 6px;
+  color: #9f2525;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  padding: 9px;
+}
+
+.ios-probe-remote {
+  align-items: center;
+  aspect-ratio: 16 / 10;
+  background: #0d171d;
+  display: flex;
+  justify-content: center;
+  margin-top: 10px;
+  overflow: hidden;
+  position: relative;
+  width: 100%;
+}
+
+.ios-probe-remote canvas {
+  height: auto;
+  max-height: 100%;
+  max-width: 100%;
+  touch-action: none;
+  width: auto;
+}
+
+.ios-probe-remote > span {
+  color: #9cb0ba;
+  font-size: 12px;
+  position: absolute;
+}
+
+.ios-probe-toggle {
+  align-items: center;
+  display: flex;
+  font-size: 12px;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.ios-probe-toggle input {
+  min-height: 18px;
+  width: 18px;
+}
+
+.ios-probe-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  overflow-x: auto;
+}
+
+.ios-probe-actions button {
+  flex: 1 0 auto;
+}
+
+.ios-probe-event-log {
+  background: #15232c;
+  border-radius: 6px;
+  color: #b9d8d1;
+  display: block;
+  font-family: Consolas, monospace;
+  font-size: 10px;
+  margin-top: 8px;
+  min-height: 58px;
+  overflow-wrap: anywhere;
+  padding: 9px;
+  white-space: pre-wrap;
+}
+
+.ios-probe-file-picker {
+  align-items: center;
+  border: 1px dashed #9fb4bd;
+  border-radius: 6px;
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  min-height: 48px;
+  padding: 10px;
+}
+
+.ios-probe-file-picker span {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ios-probe-file-picker input {
+  display: none;
+}
+
+.ios-probe-progress {
+  background: #dce5e8;
+  height: 6px;
+  margin-top: 10px;
+  overflow: hidden;
+}
+
+.ios-probe-progress span {
+  background: #20a58f;
+  display: block;
+  height: 100%;
+  transition: width 120ms linear;
+}
+
+@media (min-width: 760px) {
+  .ios-probe {
+    margin: 0 auto;
+    max-width: 760px;
+  }
+}
+
+@media (max-width: 520px) {
+  .ios-probe-connect-row {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .ios-probe-connect-row select {
+    grid-column: 1 / -1;
+  }
+}

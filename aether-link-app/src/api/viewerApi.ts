@@ -1,8 +1,6 @@
 import type {
-  AgentConnectionInput,
   AgentFirstRunInput,
   AgentFirstRunResult,
-  AgentRegistrationResult,
   ManagedDevice,
   RemoteSession,
   ChatMessage,
@@ -21,6 +19,7 @@ import {
   closeFirebaseSession,
   deleteFirebaseDevice,
   fetchFirebaseChatMessages,
+  subscribeViewerSessionData,
   fetchFirebaseDevices,
   fetchFirebaseClipboardText,
   fetchFirebaseFileTransferReceipts,
@@ -46,6 +45,25 @@ import {
 } from "../firebase/viewerFirebase";
 
 const API_BASE_URL = import.meta.env.VITE_WONREMOTE_API_URL ?? "http://127.0.0.1:8787";
+import { subscribeLocalSessionData } from "./sessionData";
+import type { SessionData, SessionDataOptions } from "../domain/sessionData";
+
+export function subscribeSessionData(
+  sessionId: string, onData: (data: SessionData) => void | Promise<void>, onError: (error: Error) => void,
+  options: SessionDataOptions = {},
+): () => void {
+  let active = true;
+  let unsubscribe = () => {};
+  queueMicrotask(() => {
+    if (!active) return;
+    try {
+      unsubscribe = isViewerFirebaseEnabled()
+        ? subscribeViewerSessionData(sessionId, onData, onError, options)
+        : subscribeLocalSessionData(API_BASE_URL, sessionId, "viewer", onData, onError, options);
+    } catch (error) { onError(error instanceof Error ? error : new Error(String(error))); }
+  });
+  return () => { active = false; unsubscribe(); };
+}
 const LOCAL_API_CONNECTION_ERROR =
   "WonRemote 연결에 실패했습니다. Firebase 설정 또는 내장 API 실행 상태를 확인해 주세요.";
 const sessionOperationTails = new Map<string, Promise<void>>();
@@ -84,12 +102,12 @@ export async function logoutAdmin(): Promise<void> {
   }
 }
 
-export async function fetchDevices(): Promise<ManagedDevice[]> {
+export async function fetchDevices(refreshPresence = false, signal?: AbortSignal): Promise<ManagedDevice[]> {
   if (isViewerFirebaseEnabled()) {
-    return fetchFirebaseDevices();
+    return fetchFirebaseDevices(undefined, refreshPresence, signal);
   }
 
-  const body = await request<{ devices: ManagedDevice[] }>("/api/devices");
+  const body = await request<{ devices: ManagedDevice[] }>(`/api/devices${refreshPresence ? "?refresh=1" : ""}`, { signal });
   return body.devices;
 }
 
@@ -126,15 +144,6 @@ export async function deleteRemoteDevice(deviceId: string): Promise<void> {
 
   await request(`/api/devices/${encodeURIComponent(deviceId)}`, {
     method: "DELETE",
-  });
-}
-
-export async function connectAgent(input: AgentConnectionInput): Promise<
-  AgentRegistrationResult & { inputLog: string[] }
-> {
-  return request("/api/agent/connect", {
-    method: "POST",
-    body: input,
   });
 }
 
@@ -218,16 +227,6 @@ export async function connectSecureSession(input: {
   });
 }
 
-export async function connectByCode(connectionCode: string): Promise<{
-  session: RemoteSession;
-  inputLog: string[];
-}> {
-  return request("/api/sessions/connect-code", {
-    method: "POST",
-    body: { connectionCode },
-  });
-}
-
 export async function recordInput(sessionId: string, action: string): Promise<string[]> {
   return runSessionOperation(sessionId, async () => {
     if (isViewerFirebaseEnabled()) {
@@ -255,13 +254,6 @@ export async function closeSession(sessionId: string): Promise<void> {
     await request(`/api/sessions/${encodeURIComponent(sessionId)}/close`, {
       method: "POST",
     });
-  });
-}
-
-export async function approveSession(sessionId: string, approved: boolean): Promise<RemoteSession> {
-  return request(`/api/sessions/${encodeURIComponent(sessionId)}/approve`, {
-    method: "POST",
-    body: { approved },
   });
 }
 
@@ -398,9 +390,9 @@ export async function fetchTiles(sessionId: string): Promise<{ tiles: any[]; wid
   return response.json();
 }
 
-export async function fetchConnectionHistory(): Promise<ConnectionHistoryEntry[]> {
+export async function fetchConnectionHistory(devices?: ManagedDevice[]): Promise<ConnectionHistoryEntry[]> {
   if (isViewerFirebaseEnabled()) {
-    return fetchFirebaseConnectionHistory();
+    return fetchFirebaseConnectionHistory(undefined, devices);
   }
 
   const body = await request<{ history: ConnectionHistoryEntry[] }>("/api/connection-history");
@@ -417,13 +409,14 @@ export async function fetchSessionStatus(sessionId: string): Promise<"pending" |
 }
 
 
-async function request<T>(path: string, options: { method?: string; body?: unknown } = {}): Promise<T> {
+async function request<T>(path: string, options: { method?: string; body?: unknown; signal?: AbortSignal } = {}): Promise<T> {
   let response: Response;
   try {
     response = await fetch(`${API_BASE_URL}${path}`, {
       method: options.method ?? "GET",
       headers: options.body ? { "content-type": "application/json" } : undefined,
       body: options.body ? JSON.stringify(options.body) : undefined,
+      ...(options.signal ? { signal: options.signal } : {}),
     });
   } catch {
     throw new Error(LOCAL_API_CONNECTION_ERROR);

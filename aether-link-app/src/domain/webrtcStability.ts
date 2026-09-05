@@ -4,6 +4,7 @@ export const DEFAULT_WEBRTC_CONNECT_TIMEOUT_MS = 12_000;
 export const MIN_WEBRTC_CONNECT_TIMEOUT_MS = 2_000;
 export const MAX_WEBRTC_CONNECT_TIMEOUT_MS = 120_000;
 export const MAX_WEBRTC_RECONNECT_DELAY_MS = 15_000;
+export const MAX_RECENT_WEBRTC_CANDIDATES = 20;
 
 export function resolveWebRtcConnectTimeoutMs(env: RtcEnv): number {
   const raw = firstEnv(env, "WONREMOTE_RTC_CONNECT_TIMEOUT_MS", "VITE_WONREMOTE_RTC_CONNECT_TIMEOUT_MS");

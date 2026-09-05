@@ -8,6 +8,7 @@ import {
   resolveAgentUpdateFailureRetryMs,
   shouldRetryFailedAgentUpdate,
   shouldAttemptAgentUpdateCheck,
+  updateTelemetryStateKey,
 } from "./agentUpdatePollPolicy";
 
 afterEach(() => {
@@ -15,8 +16,8 @@ afterEach(() => {
 });
 
 describe("Agent update polling policy", () => {
-  it("uses a 15 minute default and clamps configuration to at least 60 seconds", () => {
-    expect(resolveAgentUpdateCheckIntervalMs({})).toBe(DEFAULT_AGENT_UPDATE_CHECK_INTERVAL_MS);
+  it("uses a one hour default and clamps configuration to at least 60 seconds", () => {
+    expect(resolveAgentUpdateCheckIntervalMs({})).toBe(60 * 60_000);
     expect(resolveAgentUpdateCheckIntervalMs({ WONREMOTE_AGENT_UPDATE_CHECK_MS: "10000" })).toBe(
       MIN_AGENT_UPDATE_CHECK_INTERVAL_MS,
     );
@@ -59,7 +60,7 @@ describe("Agent update polling policy", () => {
     expect(shouldAttemptAgentUpdateCheck(Date.now(), lastAttemptAtMs, DEFAULT_AGENT_UPDATE_CHECK_INTERVAL_MS)).toBe(true);
   });
 
-  it("retries an update failure after one minute instead of waiting fifteen minutes", () => {
+  it("retries an update failure after one minute instead of waiting one hour", () => {
     expect(resolveAgentUpdateFailureRetryMs(DEFAULT_AGENT_UPDATE_CHECK_INTERVAL_MS)).toBe(
       AGENT_UPDATE_FAILURE_RETRY_MS,
     );
@@ -72,5 +73,11 @@ describe("Agent update polling policy", () => {
       .toBe(false);
     expect(shouldRetryFailedAgentUpdate({ failedAt, nowMs: Date.parse(failedAt) + 60_000, retryAfterMs: 60_000 }))
       .toBe(true);
+  });
+
+  it("ignores timestamps when deciding whether update telemetry changed", () => {
+    const state = { currentVersion: "0.1.78", progress: 100, state: "healthy" as const, updatedAt: "2026-01-01T00:00:00Z" };
+    expect(updateTelemetryStateKey({ ...state, updatedAt: "2026-01-02T00:00:00Z" })).toBe(updateTelemetryStateKey(state));
+    expect(updateTelemetryStateKey({ ...state, state: "failed", error: "offline" })).not.toBe(updateTelemetryStateKey(state));
   });
 });

@@ -18,13 +18,6 @@ export function upsertSessionTab(
   return withoutDevice;
 }
 
-export function selectSessionTab(
-  sessions: readonly RemoteSession[],
-  sessionId: string,
-): string | null {
-  return sessions.some((session) => session.id === sessionId) ? sessionId : null;
-}
-
 export function closeSessionTab(
   sessions: readonly RemoteSession[],
   closedSessionId: string,

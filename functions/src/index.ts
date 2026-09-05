@@ -44,6 +44,7 @@ export const getRtcConfiguration = onCall({ secrets: [TURN_SHARED_SECRET] }, asy
 });
 
 type DeviceDocument = {
+  presenceMode?: "manual";
   businessNumber?: string;
   lastSeenAt?: unknown;
   lastSeenAtServer?: unknown;
@@ -342,9 +343,9 @@ async function readOwnedOnlineDevice(deviceId: string, uid: string): Promise<Dev
   const heartbeatAgeMs = heartbeatAtMs === null ? null : Date.now() - heartbeatAtMs;
   if (
     device.status !== "online" ||
-    heartbeatAgeMs === null ||
+    (device.presenceMode !== "manual" && (heartbeatAgeMs === null ||
     heartbeatAgeMs < -DEVICE_HEARTBEAT_FUTURE_TOLERANCE_MS ||
-    heartbeatAgeMs > DEVICE_HEARTBEAT_MAX_AGE_MS
+    heartbeatAgeMs > DEVICE_HEARTBEAT_MAX_AGE_MS))
   ) {
     throw new HttpsError("failed-precondition", "Only online agents can accept connections.");
   }

@@ -44,7 +44,10 @@ if ($FirebaseCommand) {
 if (-not $SkipAppBuild) {
   Push-Location $AppDir
   try {
+    npm run change:verify:predeploy
+    if ($LASTEXITCODE -ne 0) { throw "Development predeploy gate failed." }
     npm run build
+    if ($LASTEXITCODE -ne 0) { throw "WonRemote app build failed." }
   }
   finally {
     Pop-Location
@@ -55,6 +58,7 @@ if (-not $SparkOnly) {
   Push-Location $FunctionsDir
   try {
     npm run build
+    if ($LASTEXITCODE -ne 0) { throw "Firebase Functions build failed." }
   }
   finally {
     Pop-Location

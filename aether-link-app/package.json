@@ -24,6 +24,8 @@
     "firebase:rules:test": "npx firebase-tools emulators:exec --only firestore --project wonremote-a7fd3 \"node scripts/verify-firestore-rules.mjs\"",
     "release:exes": "node scripts/package-release-exes.js && node scripts/verify-x86-installer-payloads.js",
     "release:verify-payloads": "node scripts/verify-x86-installer-payloads.js",
+    "change:verify": "node scripts/verify-recurrence-coverage.js",
+    "change:verify:predeploy": "node scripts/verify-recurrence-coverage.js --stage predeploy",
     "recurrence:verify": "node scripts/verify-recurrence-coverage.js",
     "build": "node scripts/build-app.js",
     "test": "vitest run",

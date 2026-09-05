@@ -1,6 +1,15 @@
 import type { DeviceDisplayInfo, DeviceStatus, DeviceUpdateRing, DeviceUpdateState, ManagedDevice } from "../domain/types";
 import { DEFAULT_STORE_NAME, normalizeStoreNameForDisplay } from "../domain/deviceDefaults";
 import { DEFAULT_DEVICE_TYPE, isGeneratedAgentDeviceName } from "../domain/deviceType";
+import { sanitizeDeviceSystemInfo } from "../domain/deviceSystemInfo";
+import { normalizeDevicePlatform, type DevicePlatform } from "../domain/devicePlatform";
+import {
+  DEVICE_CONTACT_NAME_MAX_LENGTH,
+  DEVICE_INSTALL_LOCATION_MAX_LENGTH,
+  DEVICE_NOTES_MAX_LENGTH,
+  sanitizeDeviceOperationalMetadataText,
+  sanitizeDeviceTags,
+} from "../domain/agentRegistry";
 import {
   buildAgentDeviceNumber,
   buildDesktopName,
@@ -9,6 +18,8 @@ import {
 } from "./firebaseIdentity";
 
 export interface FirestoreDeviceDocument {
+  presenceMode?: "manual";
+  heartbeatRequestId?: string;
   businessNumber: string;
   connectionCode?: string;
   desktopName: string;
@@ -24,6 +35,7 @@ export interface FirestoreDeviceDocument {
   activeDisplayIndex?: number;
   displays?: unknown;
   macAddresses?: unknown;
+  systemInfo?: unknown;
   controlDiagnostics?: unknown;
   streamDiagnostics?: unknown;
   updateState?: unknown;
@@ -34,6 +46,11 @@ export interface FirestoreDeviceDocument {
   updateUpdatedAt?: unknown;
   updateRing?: unknown;
   updatePaused?: unknown;
+  contactName?: unknown;
+  installLocation?: unknown;
+  tags?: unknown;
+  notes?: unknown;
+  platform?: unknown;
 }
 
 interface BuildFirestoreDeviceInput {
@@ -44,6 +61,7 @@ interface BuildFirestoreDeviceInput {
   ownerUid: string;
   version?: string;
   protocolVersion?: number;
+  platform?: DevicePlatform;
 }
 
 export function buildFirestoreDevice(input: BuildFirestoreDeviceInput): ManagedDevice & { ownerUid: string } {
@@ -61,6 +79,7 @@ export function buildFirestoreDevice(input: BuildFirestoreDeviceInput): ManagedD
     lastSeenAt: input.nowIso,
     storeNameSource: "default",
     ownerUid: input.ownerUid,
+    platform: normalizeDevicePlatform(input.platform),
   };
   if (typeof input.version === "string" && input.version.trim()) {
     device.version = input.version.trim();
@@ -108,6 +127,22 @@ export function mergeFirstRunDeviceDocument(
   if (typeof existing.updatePaused === "boolean") {
     merged.updatePaused = existing.updatePaused;
   }
+  assignIfDefined(
+    merged,
+    "contactName",
+    sanitizeDeviceOperationalMetadataText(existing.contactName, DEVICE_CONTACT_NAME_MAX_LENGTH),
+  );
+  assignIfDefined(
+    merged,
+    "installLocation",
+    sanitizeDeviceOperationalMetadataText(existing.installLocation, DEVICE_INSTALL_LOCATION_MAX_LENGTH),
+  );
+  assignIfDefined(merged, "tags", sanitizeDeviceTags(existing.tags));
+  assignIfDefined(
+    merged,
+    "notes",
+    sanitizeDeviceOperationalMetadataText(existing.notes, DEVICE_NOTES_MAX_LENGTH),
+  );
 
   return merged;
 }
@@ -122,9 +157,12 @@ export function mapFirestoreDevice(id: string, data: Partial<FirestoreDeviceDocu
     desktopName: String(data.desktopName ?? ""),
     status: data.status === "offline" ? "offline" : "online",
     lastSeenAt: coerceTimestamp(data.lastSeenAt),
+    platform: normalizeDevicePlatform(data.platform),
   };
   assignIfDefined(device, "storeNameSource", sanitizeOptionalString(data.storeNameSource));
   assignIfDefined(device, "connectionCode", sanitizeOptionalString(data.connectionCode));
+  assignIfDefined(device, "presenceMode", data.presenceMode === "manual" ? "manual" : undefined);
+  assignIfDefined(device, "heartbeatRequestId", sanitizeOptionalString(data.heartbeatRequestId));
   assignIfDefined(device, "version", sanitizeOptionalString(data.version));
   assignIfDefined(
     device,
@@ -140,6 +178,7 @@ export function mapFirestoreDevice(id: string, data: Partial<FirestoreDeviceDocu
   );
   assignIfDefined(device, "displays", sanitizeDisplays(data.displays));
   assignIfDefined(device, "macAddresses", sanitizeMacAddresses(data.macAddresses));
+  assignIfDefined(device, "systemInfo", sanitizeDeviceSystemInfo(data.systemInfo));
   assignIfDefined(device, "controlDiagnostics", sanitizeControlDiagnostics(data.controlDiagnostics));
   assignIfDefined(device, "streamDiagnostics", sanitizeStreamDiagnostics(data.streamDiagnostics));
   assignIfDefined(device, "updateState", sanitizeUpdateState(data.updateState));
@@ -150,6 +189,22 @@ export function mapFirestoreDevice(id: string, data: Partial<FirestoreDeviceDocu
   assignIfDefined(device, "updateUpdatedAt", coerceOptionalTimestamp(data.updateUpdatedAt));
   assignIfDefined(device, "updateRing", sanitizeUpdateRing(data.updateRing));
   assignIfDefined(device, "updatePaused", typeof data.updatePaused === "boolean" ? data.updatePaused : undefined);
+  assignIfDefined(
+    device,
+    "contactName",
+    sanitizeDeviceOperationalMetadataText(data.contactName, DEVICE_CONTACT_NAME_MAX_LENGTH),
+  );
+  assignIfDefined(
+    device,
+    "installLocation",
+    sanitizeDeviceOperationalMetadataText(data.installLocation, DEVICE_INSTALL_LOCATION_MAX_LENGTH),
+  );
+  assignIfDefined(device, "tags", sanitizeDeviceTags(data.tags));
+  assignIfDefined(
+    device,
+    "notes",
+    sanitizeDeviceOperationalMetadataText(data.notes, DEVICE_NOTES_MAX_LENGTH),
+  );
   return device;
 }
 

@@ -15,7 +15,6 @@ import {
   bindAgentControlMessages,
   bindAgentFileMessages,
   createAgentPeerConnection,
-  isDataChannelBackpressured,
   normalizeWeriftConfig,
   prewarmAgentPeerConnectionRuntime,
   resolveAgentLocalDescription,
@@ -290,11 +289,6 @@ describe("Agent data-channel backpressure", () => {
     expect(resolveWebRtcMaxBufferedAmount({})).toBe(DEFAULT_WEBRTC_MAX_BUFFERED_AMOUNT);
     expect(resolveWebRtcMaxBufferedAmount({ WONREMOTE_WEBRTC_MAX_BUFFERED_BYTES: "1" })).toBe(64 * 1024);
     expect(resolveWebRtcMaxBufferedAmount({ WONREMOTE_WEBRTC_MAX_BUFFERED_BYTES: "999999999" })).toBe(16 * 1024 * 1024);
-  });
-
-  it("drops a new frame before it would cross the buffered amount limit", () => {
-    expect(isDataChannelBackpressured({ bufferedAmount: 900 }, 200, 1_000)).toBe(true);
-    expect(isDataChannelBackpressured({ bufferedAmount: 700 }, 200, 1_000)).toBe(false);
   });
 
   it("splits a large frame into bounded messages with one monotonic sequence", () => {

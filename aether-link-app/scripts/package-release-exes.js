@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -9,6 +10,15 @@ const outputDir = path.join(appRoot, "release-exe");
 const packageJson = JSON.parse(fs.readFileSync(path.join(appRoot, "package.json"), "utf8"));
 const requiredResourceDirs = ["server", "agent", "runtime", "bin", "node_modules"];
 const x86WebRtcRuntimeMarker = "wonremote-webrtc-runtime:werift";
+const viewerBuildStampName = ".wonremote-viewer-rust-inputs.json";
+const viewerRustInputExcludedDirectories = new Set(["target"]);
+const rustCompileEnvironmentKeys = new Set([
+  "RUSTFLAGS",
+  "CARGO_ENCODED_RUSTFLAGS",
+  "CARGO_PROFILE_RELEASE_CODEGEN_UNITS",
+  "CARGO_PROFILE_RELEASE_LTO",
+  "CARGO_PROFILE_RELEASE_OPT_LEVEL",
+]);
 
 export function assertReleaseVersionConsistency() {
   const cargoToml = fs.readFileSync(path.join(appRoot, "src-tauri", "Cargo.toml"), "utf8");
@@ -62,6 +72,78 @@ function releaseTargetFor(target) {
     : path.join(releaseRoot, "release");
 }
 
+function appendFingerprintInput(hash, root, relativePath) {
+  const absolutePath = path.join(root, relativePath);
+  if (!fs.existsSync(absolutePath)) {
+    return;
+  }
+  const stat = fs.statSync(absolutePath);
+  if (stat.isDirectory()) {
+    for (const name of fs.readdirSync(absolutePath).sort()) {
+      if (relativePath === "." && viewerRustInputExcludedDirectories.has(name)) {
+        continue;
+      }
+      appendFingerprintInput(hash, root, path.join(relativePath, name));
+    }
+    return;
+  }
+  hash.update(relativePath.replaceAll("\\", "/"));
+  hash.update("\0");
+  hash.update(fs.readFileSync(absolutePath));
+  hash.update("\0");
+}
+
+function currentRustToolchainIdentity() {
+  return execFileSync("rustc", ["-Vv"], {
+    cwd: appRoot,
+    encoding: "utf8",
+    windowsHide: true,
+  });
+}
+
+function appendRustCompileEnvironment(hash, env) {
+  const relevantValues = Object.entries(env)
+    .filter(([key]) => key.startsWith("VITE_WONREMOTE_") || rustCompileEnvironmentKeys.has(key))
+    .sort(([left], [right]) => left.localeCompare(right));
+  for (const [key, value] of relevantValues) {
+    hash.update(`${key}=${value ?? ""}\0`);
+  }
+}
+
+export function viewerRustInputFingerprint(projectRoot = appRoot, options = {}) {
+  const tauriRoot = path.join(projectRoot, "src-tauri");
+  const hash = crypto.createHash("sha256");
+  hash.update("wonremote-viewer-rust-inputs-v1\0");
+  appendFingerprintInput(hash, tauriRoot, ".");
+  appendFingerprintInput(hash, projectRoot, ".env");
+  hash.update(options.rustcIdentity ?? currentRustToolchainIdentity());
+  appendRustCompileEnvironment(hash, options.env ?? process.env);
+  return hash.digest("hex");
+}
+
+function viewerBuildStampPath(target) {
+  return path.join(releaseTargetFor(target), viewerBuildStampName);
+}
+
+function viewerBinaryPath(target) {
+  return path.join(releaseTargetFor(target), "wonremote-viewer.exe");
+}
+
+export function canReuseViewerBinary(target, fingerprint, stampPath = viewerBuildStampPath(target), binaryPath = viewerBinaryPath(target)) {
+  if (process.env.WONREMOTE_FORCE_FULL_BUILD === "1" || !fs.existsSync(binaryPath)) {
+    return false;
+  }
+  try {
+    return JSON.parse(fs.readFileSync(stampPath, "utf8")).fingerprint === fingerprint;
+  } catch {
+    return false;
+  }
+}
+
+function writeViewerBuildStamp(target, fingerprint) {
+  fs.writeFileSync(viewerBuildStampPath(target), `${JSON.stringify({ fingerprint }, null, 2)}\n`);
+}
+
 function buildEnvFor(target, extra = {}) {
   return {
     ...process.env,
@@ -95,12 +177,36 @@ function cleanTauriResourceOutput(target) {
   }
 }
 
-function buildViewerInstaller(target) {
-  console.log(`Building ${target.key} Viewer NSIS installer...`);
-  cleanTauriResourceOutput(target);
-  runShell(buildTauriCommand(target, target.viewerConfig), buildEnvFor(target, {
+export function buildViewerInstaller(target, dependencies = {}) {
+  const fingerprint = dependencies.fingerprint ?? viewerRustInputFingerprint();
+  const canReuse = dependencies.canReuse ?? canReuseViewerBinary;
+  const buildResources = dependencies.buildResources ?? (() => runShell("npm run build", buildEnvFor(target, {
     WONREMOTE_BUILD_STAGE: "full",
-  }));
+  })));
+  const cleanResources = dependencies.cleanResources ?? (() => cleanTauriResourceOutput(target));
+  const bundleViewer = dependencies.bundleViewer ?? (() => runShell(
+    buildTauriBundleCommand(target, target.viewerConfig),
+    buildEnvFor(target),
+  ));
+  const buildViewer = dependencies.buildViewer ?? (() => runShell(
+    buildTauriCommand(target, target.viewerConfig),
+    buildEnvFor(target, { WONREMOTE_BUILD_STAGE: "full" }),
+  ));
+  const writeStamp = dependencies.writeStamp ?? (() => writeViewerBuildStamp(target, fingerprint));
+
+  console.log(`Building ${target.key} Viewer NSIS installer...`);
+  if (canReuse(target, fingerprint)) {
+    console.log(`Reusing ${target.key} Viewer Rust binary; rebuilding web and Agent resources only.`);
+    buildResources();
+    cleanResources();
+    bundleViewer();
+    return;
+  }
+
+  console.log(`Rebuilding ${target.key} Viewer Rust binary because its verified input stamp is missing or stale.`);
+  cleanResources();
+  buildViewer();
+  writeStamp();
 }
 
 function buildAgentDefaultInstaller(target) {
@@ -108,8 +214,10 @@ function buildAgentDefaultInstaller(target) {
   runShell(buildTauriBundleCommand(target, target.agentConfig), buildEnvFor(target));
 }
 
-function verifyTargetAgentRuntime(target, sourceRoot) {
-  const agentBundlePath = path.join(sourceRoot, "agent", "index.mjs");
+export function verifyAgentRuntimeBundle(
+  target,
+  agentBundlePath = path.join(appRoot, "dist-agent", "index.mjs"),
+) {
   ensureExists(agentBundlePath, `${target.key} Agent bundle`);
   const source = fs.readFileSync(agentBundlePath, "utf8");
   if (target.key === "x86" && !source.includes(x86WebRtcRuntimeMarker)) {
@@ -133,7 +241,7 @@ function packageTarget(target) {
 
   buildAgentDefaultInstaller(target);
   ensureExists(expectedAgentInstallerPath, `${target.key} Agent-default WonRemote Agent NSIS installer`);
-  verifyTargetAgentRuntime(target, targetRelease);
+  verifyAgentRuntimeBundle(target);
   return {
     agentInstallerPath: expectedAgentInstallerPath,
     viewerInstallerPath: expectedInstallerPath,

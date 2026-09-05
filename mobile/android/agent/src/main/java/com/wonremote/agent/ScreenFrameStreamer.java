@@ -11,6 +11,7 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.util.Base64;
 import android.util.DisplayMetrics;
+import android.util.Log;
 import android.view.WindowManager;
 
 import org.json.JSONArray;
@@ -27,6 +28,7 @@ import java.util.List;
 import java.util.function.Consumer;
 
 final class ScreenFrameStreamer {
+    private static final String TAG = "WonRemoteAgent";
     private static final int TILE_SIZE = 128;
     private static final int MAX_CAPTURE_DIMENSION = 1280;
     private static final int MAX_MESSAGE_BYTES = 52 * 1024;
@@ -48,9 +50,12 @@ final class ScreenFrameStreamer {
     private long[] tileHashes;
     private DataChannel channel;
     private boolean needsKeyframe = true;
+    private int densityDpi;
     private long lastFrameAt;
     private long lastKeyframeAt;
+    private long lastCaptureErrorAt;
     private int sequence;
+    private boolean firstFrameSent;
 
     ScreenFrameStreamer(Context context, Consumer<Boolean> readinessListener) {
         this.context = context.getApplicationContext();
@@ -72,31 +77,71 @@ final class ScreenFrameStreamer {
                     }
                 });
             }
+
+            @Override
+            public void onCapturedContentResize(int width, int height) {
+                captureHandler.post(() -> {
+                    if (projection == acceptedProjection) {
+                        configureCapture(width, height);
+                    }
+                });
+            }
         }, captureHandler);
 
         DisplayMetrics metrics = new DisplayMetrics();
         WindowManager windowManager = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
         windowManager.getDefaultDisplay().getRealMetrics(metrics);
-        int sourceWidth = Math.max(1, metrics.widthPixels);
-        int sourceHeight = Math.max(1, metrics.heightPixels);
+        densityDpi = metrics.densityDpi;
+        configureCapture(metrics.widthPixels, metrics.heightPixels);
+        readinessListener.accept(isReady());
+    }
+
+    private void configureCapture(int sourceWidth, int sourceHeight) {
+        if (projection == null || sourceWidth <= 0 || sourceHeight <= 0) {
+            return;
+        }
         double scale = Math.min(1.0, MAX_CAPTURE_DIMENSION / (double) Math.max(sourceWidth, sourceHeight));
         int width = Math.max(32, (int) Math.round(sourceWidth * scale));
         int height = Math.max(32, (int) Math.round(sourceHeight * scale));
+        if (imageReader != null && imageReader.getWidth() == width && imageReader.getHeight() == height) {
+            return;
+        }
 
-        imageReader = ImageReader.newInstance(width, height, android.graphics.PixelFormat.RGBA_8888, 2);
-        imageReader.setOnImageAvailableListener(this::onImageAvailable, captureHandler);
-        virtualDisplay = projection.createVirtualDisplay(
-            "WonRemote Android",
+        ImageReader previousReader = imageReader;
+        ImageReader nextReader = ImageReader.newInstance(
             width,
             height,
-            metrics.densityDpi,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            imageReader.getSurface(),
-            null,
-            captureHandler
+            android.graphics.PixelFormat.RGBA_8888,
+            2
         );
+        nextReader.setOnImageAvailableListener(this::onImageAvailable, captureHandler);
+        imageReader = nextReader;
+        if (virtualDisplay == null) {
+            virtualDisplay = projection.createVirtualDisplay(
+                "WonRemote Android",
+                width,
+                height,
+                densityDpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                nextReader.getSurface(),
+                null,
+                captureHandler
+            );
+        } else {
+            virtualDisplay.setSurface(null);
+            virtualDisplay.resize(width, height, densityDpi);
+            virtualDisplay.setSurface(nextReader.getSurface());
+        }
+        if (previousReader != null) {
+            previousReader.close();
+        }
+        recycleBitmap();
+        pixels = null;
+        tileHashes = null;
         needsKeyframe = true;
-        readinessListener.accept(isReady());
+        lastFrameAt = 0;
+        firstFrameSent = false;
+        Log.i(TAG, "Screen capture configured at " + width + "x" + height + ".");
     }
 
     boolean isReady() {
@@ -106,6 +151,13 @@ final class ScreenFrameStreamer {
     void setChannel(DataChannel dataChannel) {
         synchronized (channelLock) {
             channel = dataChannel;
+            needsKeyframe = true;
+            firstFrameSent = false;
+        }
+    }
+
+    void requestKeyframe() {
+        synchronized (channelLock) {
             needsKeyframe = true;
         }
     }
@@ -132,8 +184,13 @@ final class ScreenFrameStreamer {
                 lastFrameAt = now;
                 sendImage(image, target, now);
             }
-        } catch (RuntimeException ignored) {
+        } catch (RuntimeException error) {
             needsKeyframe = true;
+            long now = android.os.SystemClock.elapsedRealtime();
+            if (now - lastCaptureErrorAt >= 5_000) {
+                lastCaptureErrorAt = now;
+                Log.e(TAG, "Android screen capture frame failed.", error);
+            }
         }
     }
 
@@ -198,6 +255,10 @@ final class ScreenFrameStreamer {
         needsKeyframe = false;
         if (keyframe) {
             lastKeyframeAt = now;
+        }
+        if (!firstFrameSent) {
+            firstFrameSent = true;
+            Log.i(TAG, "First Android screen frame sent over WebRTC.");
         }
     }
 
@@ -299,6 +360,7 @@ final class ScreenFrameStreamer {
         pixels = null;
         tileHashes = null;
         needsKeyframe = true;
+        firstFrameSent = false;
         if (wasReady) {
             readinessListener.accept(false);
         }

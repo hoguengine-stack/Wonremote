@@ -3,14 +3,38 @@ name: Publish WonRemote release
 on:
   push:
     branches: ["main"]
+  pull_request:
+    branches: ["main"]
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
+  change-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Verify development and recurrence coverage
+        env:
+          HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" && "$HEAD_COMMIT_MESSAGE" == "Prepare WonRemote v"* ]]; then
+            node aether-link-app/scripts/verify-recurrence-coverage.js --stage predeploy
+          else
+            node aether-link-app/scripts/verify-recurrence-coverage.js
+          fi
+
   build-release:
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'Prepare WonRemote v')
+    needs: change-guard
+    if: github.event_name == 'workflow_dispatch' || (github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'Prepare WonRemote v'))
     runs-on: windows-2022
     permissions:
       contents: read
@@ -99,8 +123,8 @@ jobs:
             throw "Release builds must run from main, got $env:GITHUB_REF_TYPE/$env:GITHUB_REF_NAME."
           }
 
-      - name: Verify incident recurrence coverage
-        run: npm run recurrence:verify
+      - name: Verify development and recurrence coverage
+        run: npm run change:verify:predeploy
 
       - name: Verify release contract tests
         run: npm test -- src/desktopPackaging.test.ts src/agent/productionUpdateCheck.test.ts src/agent/productionInstallerUpdate.test.ts src/agent/agentUpdateOnce.test.ts src/agent/productionUpdateMetadata.test.ts src/domain/updateManifest.test.ts src/domain/updateManifestScript.test.ts

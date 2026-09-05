@@ -1,4 +1,4 @@
-import type { DeviceUpdateRing, DeviceUpdateState, ManagedDevice } from "./types";
+import type { DeviceUpdateRing, ManagedDevice } from "./types";
 
 export interface UpdateFleetRollout {
   targetVersion: string;
@@ -22,27 +22,11 @@ export interface UpdateEligibilityDecision {
   bucket: number;
 }
 
-export interface UpdateFleetHealthSummary {
-  total: number;
-  healthy: number;
-  inProgress: number;
-  failed: number;
-  rollback: number;
-  pending: number;
-}
-
 const RING_ORDER: Record<DeviceUpdateRing, number> = {
   canary: 0,
   pilot: 1,
   general: 2,
 };
-
-const IN_PROGRESS_STATES: readonly DeviceUpdateState[] = [
-  "checking",
-  "downloading",
-  "installing",
-  "restarting",
-];
 
 export function hashDeviceIdToPercentageBucket(deviceId: string): number {
   let hash = 2_166_136_261;
@@ -82,34 +66,6 @@ export function decideUpdateEligibility(
     return { eligible: false, reason: "outside-percentage", bucket };
   }
   return { eligible: true, reason: "eligible", bucket };
-}
-
-export function summarizeUpdateFleetHealth(
-  devices: ReadonlyArray<Pick<ManagedDevice, "id" | "updateState">>,
-): UpdateFleetHealthSummary {
-  const summary: UpdateFleetHealthSummary = {
-    total: devices.length,
-    healthy: 0,
-    inProgress: 0,
-    failed: 0,
-    rollback: 0,
-    pending: 0,
-  };
-
-  for (const device of devices) {
-    if (device.updateState === "healthy") {
-      summary.healthy += 1;
-    } else if (device.updateState === "failed") {
-      summary.failed += 1;
-    } else if (device.updateState === "rollback") {
-      summary.rollback += 1;
-    } else if (device.updateState && IN_PROGRESS_STATES.includes(device.updateState)) {
-      summary.inProgress += 1;
-    } else {
-      summary.pending += 1;
-    }
-  }
-  return summary;
 }
 
 function normalizePercentage(value: number | undefined): number {

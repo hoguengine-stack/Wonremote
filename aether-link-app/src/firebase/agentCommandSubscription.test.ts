@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { getDoc, onSnapshot, writeBatch } from "firebase/firestore";
+import { getDoc } from "firebase/firestore";
 import { subscribeAgentCommandsWithFirebase } from "./agentFirebase";
 import { sendAgentHeartbeatWithFirebase } from "./agentFirebase";
 

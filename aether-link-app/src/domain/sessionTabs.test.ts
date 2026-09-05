@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RemoteSession } from "./types";
-import { closeSessionTab, selectSessionTab, upsertSessionTab } from "./sessionTabs";
+import { closeSessionTab, upsertSessionTab } from "./sessionTabs";
 
 function session(id: string, deviceId: string): RemoteSession {
   return { id, deviceId, state: "connected", startedAt: "2026-09-02T00:00:00.000Z" };
@@ -14,8 +14,6 @@ describe("session tabs", () => {
     const tabs = upsertSessionTab(upsertSessionTab([first], second), replacement);
 
     expect(tabs).toEqual([replacement, second]);
-    expect(selectSessionTab(tabs, "session-2")).toBe("session-2");
-    expect(selectSessionTab(tabs, "missing")).toBeNull();
   });
 
   it("selects the next tab after closing the active session", () => {

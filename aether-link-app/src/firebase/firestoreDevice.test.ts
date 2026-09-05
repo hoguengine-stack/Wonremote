@@ -7,6 +7,7 @@ describe("firestore device mapping", () => {
       businessNumber: "1234567890",
       installId: "agent-localenv-425d1cbe",
       ownerUid: "uid-1",
+      platform: "windows",
       version: "0.1.2",
       nowIso: "2026-06-12T09:00:00.000Z",
     });
@@ -18,6 +19,7 @@ describe("firestore device mapping", () => {
       deviceNumber: "AGENT-LOCALENV-425D1CB",
       deviceName: "메인포스",
       ownerUid: "uid-1",
+      platform: "windows",
       status: "online",
       storeNameSource: "default",
       version: "0.1.2",
@@ -34,8 +36,14 @@ describe("firestore device mapping", () => {
       desktopName: "DESKTOP-67890-AGENT-01",
       status: "online",
       lastSeenAt: "2026-06-12T09:00:00.000Z",
+      platform: "android",
       connectionCode: "123 456",
       version: "0.1.2",
+      systemInfo: {
+        cpuModel: "Intel(R) Processor N95",
+        memoryBytes: 4 * 1024 ** 3,
+        osVersion: "Win10",
+      },
       activeDisplayIndex: 1,
       displays: [
         { index: 0, name: "DISPLAY1", x: 0, y: 0, width: 1024, height: 768, primary: true },
@@ -65,8 +73,14 @@ describe("firestore device mapping", () => {
       desktopName: "DESKTOP-67890-AGENT-01",
       status: "online",
       lastSeenAt: "2026-06-12T09:00:00.000Z",
+      platform: "android",
       connectionCode: "123 456",
       version: "0.1.2",
+      systemInfo: {
+        cpuModel: "Intel(R) Processor N95",
+        memoryBytes: 4 * 1024 ** 3,
+        osVersion: "Win10",
+      },
       activeDisplayIndex: 1,
       displays: [
         { index: 0, name: "DISPLAY1", x: 0, y: 0, width: 1024, height: 768, primary: true },
@@ -168,6 +182,53 @@ describe("firestore device mapping", () => {
       status: "online",
       lastSeenAt: "2026-06-16T06:00:00.000Z",
       version: "0.1.21",
+    });
+  });
+
+  it("maps sanitized operational metadata and preserves it during first-run merge", () => {
+    const mapped = mapFirestoreDevice("device-ops", {
+      businessNumber: "123-45-67890",
+      storeName: "Won Chicken Gangnam",
+      deviceNumber: "AGENT-OPS",
+      deviceName: "Main POS",
+      desktopName: "FRONT-PC",
+      status: "online",
+      lastSeenAt: "2026-06-12T09:00:00.000Z",
+      contactName: `  ${"C".repeat(120)}  `,
+      installLocation: `  ${"L".repeat(300)}  `,
+      tags: [" kiosk ", "KIOSK", "", ...Array.from({ length: 25 }, (_, index) => `tag-${index}`)],
+      notes: `  ${"N".repeat(2_100)}  `,
+    });
+    expect(mapped.contactName).toHaveLength(100);
+    expect(mapped.installLocation).toHaveLength(255);
+    expect(mapped.tags).toHaveLength(20);
+    expect(mapped.tags?.slice(0, 2)).toEqual(["kiosk", "tag-0"]);
+    expect(mapped.notes).toHaveLength(2_000);
+
+    const nextDevice = buildFirestoreDevice({
+      businessNumber: "1234567890",
+      installId: "agent-ops",
+      ownerUid: "uid-1",
+      nowIso: "2026-06-16T06:00:00.000Z",
+    });
+    const merged = mergeFirstRunDeviceDocument(nextDevice, {
+      businessNumber: "123-45-67890",
+      storeName: "Won Chicken Gangnam",
+      deviceNumber: "AGENT-OPS",
+      deviceName: "Main POS",
+      desktopName: "FRONT-PC",
+      status: "online",
+      lastSeenAt: "2026-06-12T09:00:00.000Z",
+      contactName: "Kim",
+      installLocation: "Front counter",
+      tags: ["pos", "priority"],
+      notes: "Printer issue history",
+    });
+    expect(merged).toMatchObject({
+      contactName: "Kim",
+      installLocation: "Front counter",
+      tags: ["pos", "priority"],
+      notes: "Printer issue history",
     });
   });
 

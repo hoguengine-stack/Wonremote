@@ -1,4 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <title>WonRemote Agent A</title>
   <rect width="512" height="512" fill="#1c7a70"/>
-  <path fill="#000000" d="M45 92h78l52 251 46-201h70l46 201 52-251h78l-78 328h-91l-42-172-42 172h-91L45 92z"/>
+  <path fill="#000000" d="M74 420 205 92h102l131 328h-88l-25-70H187l-25 70H74zm138-141h88l-44-124-44 124z"/>
 </svg>

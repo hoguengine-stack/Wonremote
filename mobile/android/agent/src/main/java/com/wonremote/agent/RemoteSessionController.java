@@ -1,5 +1,7 @@
 package com.wonremote.agent;
 
+import android.util.Log;
+
 import com.google.firebase.firestore.DocumentReference;
 import com.google.firebase.firestore.DocumentSnapshot;
 import com.google.firebase.firestore.FieldValue;
@@ -7,6 +9,7 @@ import com.google.firebase.firestore.FirebaseFirestore;
 import com.google.firebase.firestore.ListenerRegistration;
 import com.google.firebase.firestore.Query;
 import com.google.firebase.firestore.SetOptions;
+import com.google.firebase.functions.FirebaseFunctions;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -22,25 +25,36 @@ import org.webrtc.SessionDescription;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.time.format.DateTimeParseException;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
 
 final class RemoteSessionController {
+    private static final String TAG = "WonRemoteAgent";
     private static final String TILE_CHANNEL = "wonremote-tiles";
     private static final String CONTROL_CHANNEL = "wonremote-control";
     private static final String FILE_CHANNEL = "wonremote-files";
+    private static final long RTC_CONFIG_RETRY_MS = 60_000;
+    private static final long RTC_CONFIG_REFRESH_MARGIN_MS = 5 * 60_000;
+    private static final long RTC_CONFIG_WAIT_MS = 1_200;
 
     private final FirebaseFirestore firestore = FirebaseFirestore.getInstance();
+    private final FirebaseFunctions functions = FirebaseFunctions.getInstance();
     private final PeerConnectionFactory factory;
     private final ScreenFrameStreamer streamer;
     private final Consumer<String> controlHandler;
+    private final Runnable releaseInput;
     private final Runnable sessionClosed;
     private final android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable rtcConfigTimeout = this::beginPendingNegotiation;
     private final Map<String, IceCandidate> pendingCandidates = new LinkedHashMap<>();
     private final Set<String> appliedCandidateIds = new HashSet<>();
 
@@ -52,16 +66,24 @@ final class RemoteSessionController {
     private DataChannel controlChannel;
     private String sessionId;
     private String negotiationId;
+    private String pendingOfferSdp;
+    private List<PeerConnection.IceServer> iceServers = defaultIceServers();
+    private PeerConnection.IceTransportsType iceTransportPolicy = PeerConnection.IceTransportsType.ALL;
     private boolean remoteDescriptionReady;
+    private boolean rtcConfigLoading;
+    private boolean closed;
+    private long nextRtcConfigRefreshAt;
 
     RemoteSessionController(
         android.content.Context context,
         ScreenFrameStreamer streamer,
         Consumer<String> controlHandler,
+        Runnable releaseInput,
         Runnable sessionClosed
     ) {
         this.streamer = streamer;
         this.controlHandler = controlHandler;
+        this.releaseInput = releaseInput;
         this.sessionClosed = sessionClosed;
         PeerConnectionFactory.initialize(
             PeerConnectionFactory.InitializationOptions.builder(context.getApplicationContext())
@@ -78,6 +100,7 @@ final class RemoteSessionController {
             return;
         }
         closeSession();
+        refreshRtcConfiguration();
         sessionId = nextSessionId;
         DocumentReference session = firestore.collection("sessions").document(nextSessionId);
         sessionListener = session.addSnapshotListener((snapshot, error) -> {
@@ -95,8 +118,32 @@ final class RemoteSessionController {
     }
 
     void close() {
+        closed = true;
         closeSession();
         factory.dispose();
+    }
+
+    void refreshRtcConfiguration() {
+        long now = System.currentTimeMillis();
+        if (closed || rtcConfigLoading || now < nextRtcConfigRefreshAt) {
+            return;
+        }
+        rtcConfigLoading = true;
+        functions.getHttpsCallable("getRtcConfiguration").call().addOnCompleteListener(task ->
+            handler.post(() -> {
+                rtcConfigLoading = false;
+                if (closed) {
+                    return;
+                }
+                if (task.isSuccessful() && applyRtcConfiguration(task.getResult().getData())) {
+                    Log.i(TAG, "Dynamic TURN configuration loaded for Android Agent.");
+                } else {
+                    nextRtcConfigRefreshAt = System.currentTimeMillis() + RTC_CONFIG_RETRY_MS;
+                    Log.w(TAG, "Dynamic TURN unavailable; using STUN until the next refresh.", task.getException());
+                }
+                beginPendingNegotiation();
+            })
+        );
     }
 
     void stopSession() {
@@ -126,27 +173,44 @@ final class RemoteSessionController {
     private void negotiate(String nextNegotiationId, String offerSdp) {
         closePeer();
         negotiationId = nextNegotiationId;
+        pendingOfferSdp = offerSdp;
         remoteDescriptionReady = false;
         appliedCandidateIds.clear();
         pendingCandidates.clear();
 
-        PeerConnection.IceServer stun = PeerConnection.IceServer.builder("stun:stun.l.google.com:19302")
-            .createIceServer();
-        PeerConnection.RTCConfiguration configuration = new PeerConnection.RTCConfiguration(
-            Collections.singletonList(stun)
-        );
-        configuration.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN;
-        configuration.continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY;
-        peer = factory.createPeerConnection(configuration, new PeerObserver(nextNegotiationId));
-        if (peer == null) {
+        if (rtcConfigLoading) {
+            handler.postDelayed(rtcConfigTimeout, RTC_CONFIG_WAIT_MS);
+        } else {
+            beginPendingNegotiation();
+        }
+    }
+
+    private void beginPendingNegotiation() {
+        String expectedNegotiationId = negotiationId;
+        String offerSdp = pendingOfferSdp;
+        if (peer != null || expectedNegotiationId == null || offerSdp == null) {
             return;
         }
-        listenForViewerCandidates(nextNegotiationId);
+        handler.removeCallbacks(rtcConfigTimeout);
+        pendingOfferSdp = null;
+
+        PeerConnection.RTCConfiguration configuration = new PeerConnection.RTCConfiguration(
+            new ArrayList<>(iceServers)
+        );
+        configuration.iceTransportsType = iceTransportPolicy;
+        configuration.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN;
+        configuration.continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY;
+        peer = factory.createPeerConnection(configuration, new PeerObserver(expectedNegotiationId));
+        if (peer == null) {
+            Log.e(TAG, "WebRTC PeerConnection creation failed.");
+            return;
+        }
+        listenForViewerCandidates(expectedNegotiationId);
         peer.setRemoteDescription(new SimpleSdpObserver() {
             @Override
             public void onSetSuccess() {
                 handler.post(() -> {
-                    if (!nextNegotiationId.equals(negotiationId) || peer == null) {
+                    if (!expectedNegotiationId.equals(negotiationId) || peer == null) {
                         return;
                     }
                     remoteDescriptionReady = true;
@@ -154,7 +218,7 @@ final class RemoteSessionController {
                     peer.createAnswer(new SimpleSdpObserver() {
                         @Override
                         public void onCreateSuccess(SessionDescription answer) {
-                            setLocalAnswer(nextNegotiationId, answer);
+                            setLocalAnswer(expectedNegotiationId, answer);
                         }
                     }, new MediaConstraints());
                 });
@@ -294,7 +358,7 @@ final class RemoteSessionController {
                 @Override
                 public void onStateChange() {
                     if (channel.state() == DataChannel.State.CLOSED) {
-                        WonRemoteAccessibilityService.releasePointer();
+                        releaseInput.run();
                     }
                 }
 
@@ -331,6 +395,82 @@ final class RemoteSessionController {
         }
     }
 
+    private boolean applyRtcConfiguration(Object value) {
+        if (!(value instanceof Map)) {
+            return false;
+        }
+        Map<?, ?> configuration = (Map<?, ?>) value;
+        Object rawServers = configuration.get("iceServers");
+        if (!(rawServers instanceof List)) {
+            return false;
+        }
+
+        List<PeerConnection.IceServer> parsedServers = new ArrayList<>();
+        boolean hasTurn = false;
+        for (Object rawServer : (List<?>) rawServers) {
+            if (!(rawServer instanceof Map)) {
+                continue;
+            }
+            Map<?, ?> server = (Map<?, ?>) rawServer;
+            List<String> urls = stringList(server.get("urls"));
+            String username = string(server.get("username"));
+            String credential = string(server.get("credential"));
+            for (String url : urls) {
+                PeerConnection.IceServer.Builder builder = PeerConnection.IceServer.builder(url);
+                if (!username.isEmpty()) {
+                    builder.setUsername(username);
+                }
+                if (!credential.isEmpty()) {
+                    builder.setPassword(credential);
+                }
+                parsedServers.add(builder.createIceServer());
+                hasTurn |= url.regionMatches(true, 0, "turn:", 0, 5)
+                    || url.regionMatches(true, 0, "turns:", 0, 6);
+            }
+        }
+        if (parsedServers.isEmpty() || !hasTurn) {
+            return false;
+        }
+
+        iceServers = parsedServers;
+        iceTransportPolicy = "relay".equals(configuration.get("iceTransportPolicy"))
+            ? PeerConnection.IceTransportsType.RELAY
+            : PeerConnection.IceTransportsType.ALL;
+        long now = System.currentTimeMillis();
+        long expiresAt = now + 30 * 60_000;
+        try {
+            expiresAt = Instant.parse(string(configuration.get("expiresAt"))).toEpochMilli();
+        } catch (DateTimeParseException ignored) {
+            // Refresh the otherwise valid configuration early when the server omits expiry metadata.
+        }
+        nextRtcConfigRefreshAt = Math.max(now + RTC_CONFIG_RETRY_MS, expiresAt - RTC_CONFIG_REFRESH_MARGIN_MS);
+        return true;
+    }
+
+    private static List<String> stringList(Object value) {
+        if (value instanceof String) {
+            String item = string(value);
+            return item.isEmpty() ? Collections.emptyList() : Collections.singletonList(item);
+        }
+        if (!(value instanceof List)) {
+            return Collections.emptyList();
+        }
+        List<String> values = new ArrayList<>();
+        for (Object item : (List<?>) value) {
+            String text = string(item);
+            if (!text.isEmpty()) {
+                values.add(text);
+            }
+        }
+        return values;
+    }
+
+    private static List<PeerConnection.IceServer> defaultIceServers() {
+        return Collections.singletonList(
+            PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer()
+        );
+    }
+
     private DocumentReference signalReference() {
         return firestore.collection("sessions").document(sessionId).collection("webrtc").document("signal");
     }
@@ -354,7 +494,7 @@ final class RemoteSessionController {
             candidateListener = null;
         }
         streamer.setChannel(null);
-        WonRemoteAccessibilityService.releasePointer();
+        releaseInput.run();
         if (tileChannel != null) {
             tileChannel.unregisterObserver();
             tileChannel = null;
@@ -369,7 +509,9 @@ final class RemoteSessionController {
             peer = null;
         }
         negotiationId = null;
+        pendingOfferSdp = null;
         remoteDescriptionReady = false;
+        handler.removeCallbacks(rtcConfigTimeout);
         handler.removeCallbacks(candidateRetry);
         pendingCandidates.clear();
         appliedCandidateIds.clear();

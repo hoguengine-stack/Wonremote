@@ -181,6 +181,67 @@ describe("agent registry domain", () => {
     });
   });
 
+  it("sanitizes operational metadata and removes fields when blank values are saved", () => {
+    const registered = registerAgentFirstRun([], {
+      businessNumber: "1234567890",
+      password: "1234",
+      installId: "agent-ops-meta",
+    });
+    const updated = updateDeviceMetadata(registered.devices, {
+      deviceId: registered.device.id,
+      contactName: `  ${"C".repeat(120)}  `,
+      installLocation: `  ${"L".repeat(300)}  `,
+      tags: [" kiosk ", "KIOSK", "", ...Array.from({ length: 25 }, (_, index) => `tag-${index}`)],
+      notes: `  ${"N".repeat(2_100)}  `,
+    });
+
+    expect(updated.device.contactName).toHaveLength(100);
+    expect(updated.device.installLocation).toHaveLength(255);
+    expect(updated.device.tags).toHaveLength(20);
+    expect(updated.device.tags?.slice(0, 2)).toEqual(["kiosk", "tag-0"]);
+    expect(updated.device.notes).toHaveLength(2_000);
+
+    const cleared = updateDeviceMetadata(updated.devices, {
+      deviceId: registered.device.id,
+      contactName: "   ",
+      installLocation: "\t",
+      tags: [" ", ""],
+      notes: "\n",
+    });
+    expect(cleared.device).not.toHaveProperty("contactName");
+    expect(cleared.device).not.toHaveProperty("installLocation");
+    expect(cleared.device).not.toHaveProperty("tags");
+    expect(cleared.device).not.toHaveProperty("notes");
+  });
+
+  it("preserves operational metadata when the same Agent registers again", () => {
+    const registered = registerAgentFirstRun([], {
+      businessNumber: "1234567890",
+      password: "1234",
+      installId: "agent-ops-preserve",
+    });
+    const edited = updateDeviceMetadata(registered.devices, {
+      deviceId: registered.device.id,
+      contactName: "Kim",
+      installLocation: "Front counter",
+      tags: ["pos", "priority"],
+      notes: "Printer issue history",
+    });
+
+    const repeated = registerAgentFirstRun(edited.devices, {
+      businessNumber: "1234567890",
+      password: "1234",
+      installId: "agent-ops-preserve",
+    });
+
+    expect(repeated.device).toMatchObject({
+      contactName: "Kim",
+      installLocation: "Front counter",
+      tags: ["pos", "priority"],
+      notes: "Printer issue history",
+    });
+  });
+
   describe("agent first-run registration", () => {
     it("registers a new agent with proper auto-derived details", () => {
       const result = registerAgentFirstRun([], {
@@ -264,6 +325,30 @@ describe("agent registry domain", () => {
     });
 
     expect(heartbeat.device.desktopName).toBe("DESKTOP-CADI3TD");
+  });
+
+  it("stores sanitized system information from agent heartbeat", () => {
+    const registered = registerAgentFirstRun([], {
+      businessNumber: "1234567890",
+      password: "1234",
+      installId: "agent-system-info",
+    });
+
+    const heartbeat = applyAgentHeartbeat(registered.devices, {
+      deviceId: registered.device.id,
+      installId: "agent-system-info",
+      systemInfo: {
+        cpuModel: " Intel(R) Processor N95 ",
+        memoryBytes: 4 * 1024 ** 3,
+        osVersion: " Win10 ",
+      },
+    });
+
+    expect(heartbeat.device.systemInfo).toEqual({
+      cpuModel: "Intel(R) Processor N95",
+      memoryBytes: 4 * 1024 ** 3,
+      osVersion: "Win10",
+    });
   });
 
   it("updates the advertised remote protocol and preserves it on malformed heartbeats", () => {

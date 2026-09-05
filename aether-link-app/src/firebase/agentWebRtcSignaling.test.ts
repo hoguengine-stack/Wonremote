@@ -30,9 +30,13 @@ const mocks = vi.hoisted(() => {
   ) => () => void;
   return {
     getDoc: vi.fn<() => Promise<SignalSnapshot>>(async () => ({ data: () => offerSignal })),
+    getDocs: vi.fn(async () => ({ docs: [], empty: true })),
+    limit: vi.fn((count: number) => ({ kind: "limit", count })),
     offerSignal,
     onSnapshot: vi.fn<SnapshotListener>(() => () => undefined),
+    orderBy: vi.fn((field: string, direction: string) => ({ kind: "orderBy", field, direction })),
     peer,
+    query: vi.fn((target: { path?: string }, ...constraints: unknown[]) => ({ ...target, constraints })),
     safeAddDoc: vi.fn(async () => ({ id: "candidate" })),
     safeSetDoc: vi.fn(async () => undefined),
     unsubscribe: vi.fn(),
@@ -43,11 +47,11 @@ vi.mock("firebase/firestore", () => ({
   collection: vi.fn((_db: unknown, ...segments: string[]) => ({ path: segments.join("/") })),
   doc: vi.fn((_db: unknown, ...segments: string[]) => ({ path: segments.join("/") })),
   getDoc: mocks.getDoc,
-  getDocs: vi.fn(async () => ({ docs: [], empty: true })),
-  limit: vi.fn(),
+  getDocs: mocks.getDocs,
+  limit: mocks.limit,
   onSnapshot: mocks.onSnapshot,
-  orderBy: vi.fn(),
-  query: vi.fn(),
+  orderBy: mocks.orderBy,
+  query: mocks.query,
   runTransaction: vi.fn(),
   serverTimestamp: vi.fn(() => "server-time"),
   where: vi.fn(),
@@ -153,6 +157,11 @@ describe("Agent WebRTC Firebase signaling", () => {
     );
 
     expect(onState).toHaveBeenCalledWith("negotiating");
+    expect(mocks.orderBy).toHaveBeenCalledWith("createdAt", "desc");
+    expect(mocks.limit).toHaveBeenCalledWith(20);
+    expect(mocks.getDocs).toHaveBeenCalledWith(expect.objectContaining({
+      path: "sessions/session-1/viewerCandidates",
+    }));
     expect(mocks.safeSetDoc).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({

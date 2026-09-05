@@ -45,12 +45,22 @@ describe("agent client", () => {
       deviceId: "123-45-67890:AGENT-ABC123",
       fetchImpl,
       installId: "agent-abc123",
+      systemInfo: {
+        cpuModel: "Intel(R) Processor N95",
+        memoryBytes: 4 * 1024 ** 3,
+        osVersion: "Win10",
+      },
     });
 
     expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:8787/api/agent/heartbeat", {
       body: JSON.stringify({
         deviceId: "123-45-67890:AGENT-ABC123",
         installId: "agent-abc123",
+        systemInfo: {
+          cpuModel: "Intel(R) Processor N95",
+          memoryBytes: 4 * 1024 ** 3,
+          osVersion: "Win10",
+        },
       }),
       headers: { "content-type": "application/json" },
       method: "POST",

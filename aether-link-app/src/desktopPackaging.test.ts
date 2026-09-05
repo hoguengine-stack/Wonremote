@@ -475,14 +475,16 @@ describe("desktop packaging scaffold", () => {
     expect(buildBackendScript).toContain('outfile: "dist-agent/index.mjs"');
   });
 
-  it("keeps session data polling alive when the stream process exits", () => {
+  it("keeps session data subscription alive when the stream process exits", () => {
     const agentEntry = readFileSync(path.join(projectRoot, "src", "agent", "index.ts"), "utf8");
     const streamCloseStart = agentEntry.indexOf('.on("close"');
-    const startSessionPollingStart = agentEntry.indexOf("function startSessionPolling");
-    const streamCloseBlock = agentEntry.slice(streamCloseStart, startSessionPollingStart);
+    const streamCloseEnd = agentEntry.indexOf("function ensureSessionWebRtcTransport", streamCloseStart);
+    const streamCloseBlock = agentEntry.slice(streamCloseStart, streamCloseEnd);
 
     expect(streamCloseStart).toBeGreaterThan(-1);
+    expect(streamCloseEnd).toBeGreaterThan(streamCloseStart);
     expect(streamCloseBlock).not.toContain("stopSessionPolling()");
+    expect(streamCloseBlock).not.toContain("sessionDataUnsubscribe");
   });
 
   it("keeps packaged Agent child processes hidden on Windows", () => {
@@ -509,8 +511,9 @@ describe("desktop packaging scaffold", () => {
     expect(agentEntry).toContain("recoverMissingAgentRegistration");
     expect(agentEntry).toContain("recoverConfigAfterMissingDevice");
     expect(agentEntry).toContain("activeConfig = recoveredConfig");
-    expect(agentEntry).toContain("await sendHeartbeat(activeConfig)");
-    expect(agentEntry).toContain("void runAgentTick(activeConfig)");
+    expect(agentEntry).toContain("activeConfig = await sendHeartbeatWithRecovery(activeConfig)");
+    expect(agentEntry).toContain("await sendHeartbeat(activeConfig, heartbeatRequestId)");
+    expect(agentEntry).not.toContain("void runAgentTick(activeConfig)");
   });
 
   it("authenticates the Agent with Firebase again when a saved config is reused", () => {
@@ -588,13 +591,16 @@ describe("desktop packaging scaffold", () => {
     expect(redirects["/download/agent-x86"]).toContain("WonRemote-Agent-Setup.exe");
     expect(redirects["/download/agent.apk"]).toBe("/download/agent.zip");
     expect(redirects["/download/viewer.apk"]).toBe("/download/viewer.zip");
+    expect(redirects["/download/control-addon.apk"]).toBe("/download/control-addon.zip");
     expect(buildAndroidScript).toContain("Compress-Archive");
     expect(buildAndroidScript).toContain("public\\download\\agent.zip");
     expect(buildAndroidScript).toContain("public\\download\\viewer.zip");
-    expect(buildAndroidScript).toContain(":agent:assembleRelease :viewer:assembleRelease");
+    expect(buildAndroidScript).toContain("public\\download\\control-addon.zip");
+    expect(buildAndroidScript).toContain(":agent:assembleRelease :viewer:assembleRelease :controladdon:assembleRelease");
     expect(existsSync(path.join(projectRoot, "public", "download", "agent.apk"))).toBe(false);
     expect(existsSync(path.join(projectRoot, "public", "download", "viewer.apk"))).toBe(false);
-    expect(firebaseConfig.hosting.redirects).toHaveLength(6);
+    expect(existsSync(path.join(projectRoot, "public", "download", "control-addon.apk"))).toBe(false);
+    expect(firebaseConfig.hosting.redirects).toHaveLength(7);
     for (const obsoletePath of [
       "/download/viewer-agent",
       "/download/portable",
@@ -615,6 +621,110 @@ describe("desktop packaging scaffold", () => {
     expect(activity).toContain("Settings.ACTION_APPLICATION_DETAILS_SETTINGS");
     expect(service).toContain("ACTION_STOP_PROJECTION");
     expect(service).toContain('"화면 공유 중지"');
+    expect(activity).toContain('button("앱 종료", DANGER)');
+    expect(activity).toContain("AgentService.stop(this)");
+    expect(activity).toContain("finishAndRemoveTask()");
+    expect(service).toContain("ACTION_STOP_AGENT");
+    expect(service).toContain("return START_NOT_STICKY");
+    expect(service).toContain("handler.removeCallbacksAndMessages(null)");
+    expect(service).toContain("stopForeground(STOP_FOREGROUND_REMOVE)");
+    expect(service).toContain('"앱 종료", exit');
+  });
+
+  it("blocks Firebase deployment until the development predeploy gate passes", () => {
+    const deployScript = readFileSync(path.join(projectRoot, "scripts", "deploy-firebase.ps1"), "utf8");
+    expect(deployScript).toContain("npm run change:verify:predeploy");
+    expect(deployScript).toContain('throw "Development predeploy gate failed."');
+    expect(deployScript.indexOf("npm run change:verify:predeploy")).toBeLessThan(
+      deployScript.indexOf("npm run build"),
+    );
+  });
+
+  it("keeps Android screen delivery on TURN with a post-open keyframe handshake", () => {
+    const androidRoot = path.join(projectRoot, "..", "mobile", "android", "agent");
+    const agentBuild = readFileSync(path.join(androidRoot, "build.gradle.kts"), "utf8");
+    const sourceRoot = path.join(androidRoot, "src", "main", "java", "com", "wonremote", "agent");
+    const remoteSession = readFileSync(path.join(sourceRoot, "RemoteSessionController.java"), "utf8");
+    const agentService = readFileSync(path.join(sourceRoot, "AgentService.java"), "utf8");
+    const streamer = readFileSync(path.join(sourceRoot, "ScreenFrameStreamer.java"), "utf8");
+    const viewerTransport = readFileSync(path.join(projectRoot, "src", "firebase", "viewerFirebase.ts"), "utf8");
+    const windowsAgent = readFileSync(path.join(projectRoot, "src", "agent", "index.ts"), "utf8");
+
+    expect(agentBuild).toContain('implementation("com.google.firebase:firebase-functions")');
+    expect(remoteSession).toContain('getHttpsCallable("getRtcConfiguration")');
+    expect(remoteSession).toContain("PeerConnection.IceTransportsType.RELAY");
+    expect(remoteSession).toContain("RTC_CONFIG_WAIT_MS");
+    expect(agentService).toContain('"request-keyframe".equals(action)');
+    expect(streamer).toContain("void requestKeyframe()");
+    expect(viewerTransport).toContain('controlChannel.send(serializeWebRtcControlAction("request-keyframe"))');
+    expect(windowsAgent).toContain('if (action === "request-keyframe")');
+  });
+
+  it("packages a signature-protected Android control add-on with a legacy fallback", () => {
+    const androidRoot = path.join(projectRoot, "..", "mobile", "android");
+    const settings = readFileSync(path.join(androidRoot, "settings.gradle.kts"), "utf8");
+    const agentBuild = readFileSync(path.join(androidRoot, "agent", "build.gradle.kts"), "utf8");
+    const addonBuild = readFileSync(path.join(androidRoot, "controladdon", "build.gradle.kts"), "utf8");
+    const addonManifest = readFileSync(path.join(androidRoot, "controladdon", "src", "main", "AndroidManifest.xml"), "utf8");
+    const coreManifest = readFileSync(path.join(androidRoot, "controlcore", "src", "main", "AndroidManifest.xml"), "utf8");
+    const client = readFileSync(
+      path.join(androidRoot, "agent", "src", "main", "java", "com", "wonremote", "agent", "ControlAddonClient.java"),
+      "utf8",
+    );
+
+    expect(settings).toContain('include(":controladdon")');
+    expect(settings).toContain('include(":controlcore")');
+    expect(agentBuild).toContain('implementation(project(":controlcore"))');
+    expect(addonBuild).toContain('implementation(project(":controlcore"))');
+    expect(addonBuild).toContain('rootProject.file("keystore.properties")');
+    expect(coreManifest).toContain('android:protectionLevel="signature"');
+    expect(addonManifest).toContain('android:permission="com.wonremote.permission.CONTROL_ADDON"');
+    expect(client).toContain("checkSignatures");
+    expect(client).toContain("context.sendBroadcast(intent, PERMISSION)");
+    expect(client).toContain("WonRemoteAccessibilityService.releasePointer()");
+  });
+
+  it("auto-starts only the registered Android Agent and enabled Control Add-On", () => {
+    const androidRoot = path.join(projectRoot, "..", "mobile", "android");
+    const agentManifest = readFileSync(path.join(androidRoot, "agent", "src", "main", "AndroidManifest.xml"), "utf8");
+    const agentBootReceiver = readFileSync(
+      path.join(androidRoot, "agent", "src", "main", "java", "com", "wonremote", "agent", "BootReceiver.java"),
+      "utf8",
+    );
+    const addonCoreManifest = readFileSync(
+      path.join(androidRoot, "controlcore", "src", "main", "AndroidManifest.xml"),
+      "utf8",
+    );
+    const viewerManifest = readFileSync(path.join(androidRoot, "viewer", "src", "main", "AndroidManifest.xml"), "utf8");
+
+    expect(agentManifest).toContain("android.permission.RECEIVE_BOOT_COMPLETED");
+    expect(agentManifest).toContain("android.intent.action.BOOT_COMPLETED");
+    expect(agentManifest).toContain("android.intent.action.MY_PACKAGE_REPLACED");
+    expect(agentBootReceiver).toContain("AgentService.start(context)");
+    expect(agentBootReceiver).not.toContain("setProjection");
+    expect(addonCoreManifest).toContain('android:directBootAware="true"');
+    expect(viewerManifest).not.toContain("android.permission.RECEIVE_BOOT_COMPLETED");
+    expect(viewerManifest).not.toContain("BootReceiver");
+  });
+
+  it("requests Android screen-share consent only after an explicit Viewer request", () => {
+    const androidRoot = path.join(projectRoot, "..", "mobile", "android", "agent", "src", "main");
+    const manifest = readFileSync(path.join(androidRoot, "AndroidManifest.xml"), "utf8");
+    const sourceRoot = path.join(androidRoot, "java", "com", "wonremote", "agent");
+    const activity = readFileSync(path.join(sourceRoot, "MainActivity.java"), "utf8");
+    const service = readFileSync(path.join(sourceRoot, "AgentService.java"), "utf8");
+
+    expect(manifest).toContain('android:launchMode="singleTop"');
+    expect(activity).toContain("ACTION_REQUEST_SCREEN_SHARE");
+    expect(activity).toContain("onNewIntent");
+    expect(activity).toContain("handleLaunchIntent");
+    expect(service).toContain("NotificationManager.IMPORTANCE_HIGH");
+    expect(service).toContain("showProjectionRequest");
+    expect(service).toContain("APPROVAL_TIMEOUT_MS");
+    expect(service).toContain("shouldPromptForProjection");
+    expect(service).toContain("setDeleteIntent");
+    expect(service).toContain('endProjection("온라인", false)');
+    expect(service).not.toContain("setFullScreenIntent");
   });
 
   it("can create a signed production update manifest for a GitHub release installer", () => {
@@ -692,6 +802,7 @@ describe("desktop packaging scaffold", () => {
       "/download/agent",
       "/download/agent-x86",
       "/download/agent.apk",
+      "/download/control-addon.apk",
       "/download/viewer",
       "/download/viewer-x86",
       "/download/viewer.apk",
@@ -754,6 +865,9 @@ describe("desktop packaging scaffold", () => {
     expect(releaseWorkflow).toContain('branches: ["main"]');
     expect(releaseWorkflow).not.toContain('tags: ["v*"]');
     expect(releaseWorkflow).toContain("startsWith(github.event.head_commit.message, 'Prepare WonRemote v')");
+    expect(releaseWorkflow).toContain("HEAD_COMMIT_MESSAGE:");
+    expect(releaseWorkflow).toContain("verify-recurrence-coverage.js --stage predeploy");
+    expect(releaseWorkflow).toContain("npm run change:verify:predeploy");
     expect(releaseWorkflow).toContain('$env:GITHUB_REF_TYPE -ne "branch" -or $env:GITHUB_REF_NAME -ne "main"');
     expect(releaseWorkflow).toContain("src/agent/productionInstallerUpdate.test.ts");
     expect(releaseWorkflow).toContain("src/agent/agentUpdateOnce.test.ts");
@@ -831,7 +945,9 @@ describe("desktop packaging scaffold", () => {
     expect(tauriLib).toContain('.env("WONREMOTE_TAURI_UPDATE_BROKER", "1")');
     expect(tauriLib).toContain("launch_brokered_update_handoff");
     expect(tauriLib).toContain("fn check_installer_update");
+    expect(tauriLib).toContain("fn check_agent_installer_update");
     expect(tauriLib).toContain("check_installer_update,");
+    expect(tauriLib).toContain("check_agent_installer_update,");
     const manualCheck = appTsx.slice(
       appTsx.indexOf("const handleManualViewerUpdate"),
       appTsx.indexOf("const handleConfirmViewerUpdate"),
@@ -841,6 +957,8 @@ describe("desktop packaging scaffold", () => {
       manualCheck.indexOf(": await fetchViewerUpdateMetadata"),
     );
     expect(nativeBranch).toContain('invoke<{ available: boolean; latestVersion: string }>("check_installer_update")');
+    expect(appTsx).toContain('invoke<{ available: boolean; latestVersion: string }>("check_agent_installer_update")');
+    expect(appTsx).toContain('invoke("start_installer_update", { restartMode: "agent" })');
     expect(nativeBranch).not.toContain("fetchViewerUpdateMetadata");
     expect(nativeBranch).not.toContain("github.com");
     expect(appTsx).toContain("const checkNativeViewerUpdate");
