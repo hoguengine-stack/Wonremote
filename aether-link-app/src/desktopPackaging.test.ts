@@ -303,6 +303,7 @@ describe("desktop packaging scaffold", () => {
     expect(deployScript).toContain("Skipping Firebase Storage rules deploy");
     expect(deployScript).toContain("firebase");
     expect(deployScript).toContain("firebase-tools");
+    expect(deployScript).toContain('if ($LASTEXITCODE -ne 0) { throw "Firebase deployment failed with exit code $LASTEXITCODE." }');
     expect(deployScript).toContain("Get-Command npx");
   });
 

@@ -82,6 +82,7 @@ Push-Location $RepoRoot
 try {
   $FirebaseArgs = $FirebasePrefixArgs + $DeployArgs
   & $FirebaseExecutable @FirebaseArgs
+  if ($LASTEXITCODE -ne 0) { throw "Firebase deployment failed with exit code $LASTEXITCODE." }
 }
 finally {
   Pop-Location

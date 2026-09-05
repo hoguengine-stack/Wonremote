@@ -814,3 +814,18 @@ This also covers development-process escapes: missed requirements, incomplete pl
 - Regression proof: `npx vitest run src/desktopPackaging.test.ts src/mobileViewerPackaging.test.ts` passed 65/65 after failing 3/65 before the correction. `npx vitest run scripts/verify-recurrence-coverage.test.js` passed 14/14 and proves untracked files cannot replace committed boundaries, proof-only updates can complete the deployment contract, and real code changes remain scoped to current files. The signed release manifest and installer update E2E also passed.
 - Release proof: Commit `2e08a1d` passed the predeploy gate from a clean tracked worktree, GitHub Actions run `33933165835` completed successfully, Release `v0.1.78` contains exactly the two PC installers and signed update manifest, all four PC aliases resolve to those assets, and the three Firebase Android routes match the locally verified ZIP bytes.
 - Remaining blocker: Physical Windows installation/update and Android screen-consent/control checks remain separate device verification; the published PC installers are not Authenticode-signed.
+
+## INC-20260905-004: Firebase deployment wrapper hid firebase-tools failure
+
+- Detected: 2026-09-05.
+- Severity: P1 deployment reliability.
+- Affected: `aether-link-app/scripts/deploy-firebase.ps1` when firebase-tools rejects any deployment target.
+- Status: source-verified-not-released.
+- User-visible symptom: The deployment output printed a Firebase error while the wrapper process returned exit code 0, allowing automation to mistake a failed deployment for success.
+- Minimal trigger: Run the full deployment against `wonremote-a7fd3` while Firebase Storage is not initialized; firebase-tools exits nonzero but the PowerShell wrapper previously completed normally.
+- Root cause and contributors: PowerShell does not throw when an external executable returns nonzero. The wrapper invoked firebase-tools inside `try/finally` but never checked `$LASTEXITCODE`, and the successful `Pop-Location` became the script's final operation.
+- Fix commit(s): pending local fix.
+- Permanent guard: Check `$LASTEXITCODE` immediately after firebase-tools returns, throw with the original code, and keep a packaging contract assertion on that exact process boundary.
+- Regression proof: `npx vitest run src/desktopPackaging.test.ts -t "deploys Firebase functions, rules, and hosting only behind an explicit gate"` passed 1 focused test with 63 unrelated tests skipped. A real `-SparkOnly` call reproduced the Storage setup failure and the corrected wrapper returned exit code 1.
+- Release proof: not released.
+- Remaining blocker: Firebase Storage still requires console initialization, and Functions deployment requires the Blaze plan; neither external project change is made by this source fix.

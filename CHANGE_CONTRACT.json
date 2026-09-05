@@ -1,6 +1,6 @@
 {
   "status": "verified",
-  "intent": "Check Agent updates on startup, hourly, and explicit user request while eliminating unchanged update telemetry writes and their dependent security-rule reads; also resume only the registered Android Agent and user-enabled Control Add-On automatically after device boot while keeping the Android Viewer manual.",
+  "intent": "Check Agent updates on startup, hourly, and explicit user request while eliminating unchanged update telemetry writes and their dependent security-rule reads; resume only the registered Android Agent and user-enabled Control Add-On automatically after device boot while keeping the Android Viewer manual; and make every Firebase CLI deployment failure return a failing process status.",
   "requestReview": {
     "impact": "changed",
     "reason": "Windows Agent update checks now run at startup and on the one-hour scheduler itself instead of waking every minute. The signed manifest is HTTP-hosted; an unchanged successful result no longer writes transient checking/healthy telemetry to the device document, preventing those writes from repeatedly reevaluating the command listener's device-dependent rule. Android boot hardening adds no recurring request. Request-time screen approval adds one bounded local notification timer per explicit Viewer connection command and no polling or additional cloud request.",
@@ -19,7 +19,7 @@
   "risk": "high",
   "releaseImpact": "build-and-deploy",
   "rollback": "Keep unrelated edits and prior auxiliary-queue quota fixes. Roll back manual-presence Agent behavior and connection freshness policy together if necessary; never restore strict heartbeat aging while deployed Agents have no heartbeat timer. Deploy matching Firestore rules and Functions before releasing manual-presence Agents. Restoring recurring list/heartbeat traffic would reintroduce quota waste and needs explicit review. For the Android auto-start addition, remove only the Control Add-On direct-boot declaration and its focused tests.",
-  "incident": "INC-20260904-001",
+  "incident": "INC-20260905-004",
   "outcomes": [
     {
       "id": "agent-hourly-and-manual-update-check",
@@ -136,6 +136,15 @@
       "proofLevel": "deployment-required",
       "verification": "2026-09-05 deployed: the Firebase wonremote-a7fd3 Hosting release completed successfully and its root returns HTTP 200. The live agent.apk, viewer.apk and control-addon.apk routes each delivered the newly built ZIP byte-for-byte (Agent 9fd7a2ef5b9351bda6a5af7ba301befaf44f17a3b05bf802db8d47be6a5d4e83; Viewer 38c9da770d6d9ec2151cae365d2afd5ff3e05a4719e30f5b2f6abb9aa0c5cb57; Control Add-On d27d53e7f4e6e4b3b7d4e08a28746652431aa34e2b59b48421f908e6b071836a). Before deployment all three contained APKs reported versionName 0.1.78, passed APK Signature Scheme v2 verification and matched the signing certificate of their live predecessor. The 65-test PC/Android packaging contract passed.",
       "physicalGap": "Installation, request-time screen consent and remote control require physical Android verification after publication."
+    },
+    {
+      "id": "firebase-deploy-failure-exit",
+      "acceptance": "The Firebase deployment wrapper returns a nonzero process status whenever firebase-tools fails, so Storage initialization, billing, permission or network failures cannot be reported as successful deployment.",
+      "boundaries": ["deploy-firebase.ps1", "firebase-tools process", "release command exit status"],
+      "contractTests": ["aether-link-app/src/desktopPackaging.test.ts"],
+      "proofLevel": "automated-runtime",
+      "verification": "2026-09-05: the focused desktop packaging contract passed 1 test with 63 unrelated tests skipped. A real Spark deployment attempt against the uninitialized Storage target made firebase-tools exit 1, and the corrected PowerShell wrapper also returned exit 1 with the original failure code instead of completing successfully.",
+      "physicalGap": "none"
     }
   ]
 }
