@@ -107,6 +107,9 @@ final class RemoteSessionController {
             if (!isCurrentSession(nextSessionId, sessionId)) {
                 return;
             }
+            if (error != null) {
+                Log.e(TAG, "WebRTC session listener failed: " + error.getCode());
+            }
             if (error == null && snapshot != null && "closed".equals(snapshot.getString("state"))) {
                 closeSession();
                 sessionClosed.run();
@@ -114,6 +117,9 @@ final class RemoteSessionController {
         });
         signalListener = session.collection("webrtc").document("signal")
             .addSnapshotListener((snapshot, error) -> {
+                if (isCurrentSession(nextSessionId, sessionId) && error != null) {
+                    Log.e(TAG, "WebRTC offer listener failed: " + error.getCode());
+                }
                 if (isCurrentSession(nextSessionId, sessionId)
                     && error == null && snapshot != null && snapshot.exists()) {
                     acceptOffer(snapshot);
@@ -180,6 +186,7 @@ final class RemoteSessionController {
 
     private void negotiate(String nextNegotiationId, String offerSdp) {
         closePeer();
+        Log.i(TAG, "WebRTC offer received; starting negotiation.");
         negotiationId = nextNegotiationId;
         pendingOfferSdp = offerSdp;
         remoteDescriptionReady = false;
@@ -214,7 +221,7 @@ final class RemoteSessionController {
             return;
         }
         listenForViewerCandidates(expectedNegotiationId);
-        peer.setRemoteDescription(new SimpleSdpObserver() {
+        peer.setRemoteDescription(new SimpleSdpObserver("remote offer") {
             @Override
             public void onSetSuccess() {
                 handler.post(() -> {
@@ -222,8 +229,9 @@ final class RemoteSessionController {
                         return;
                     }
                     remoteDescriptionReady = true;
+                    Log.i(TAG, "WebRTC remote offer applied.");
                     flushPendingCandidates();
-                    peer.createAnswer(new SimpleSdpObserver() {
+                    peer.createAnswer(new SimpleSdpObserver("create answer") {
                         @Override
                         public void onCreateSuccess(SessionDescription answer) {
                             setLocalAnswer(expectedNegotiationId, answer);
@@ -239,7 +247,7 @@ final class RemoteSessionController {
         if (current == null || !expectedNegotiationId.equals(negotiationId)) {
             return;
         }
-        current.setLocalDescription(new SimpleSdpObserver() {
+        current.setLocalDescription(new SimpleSdpObserver("local answer") {
             @Override
             public void onSetSuccess() {
                 handler.post(() -> {
@@ -255,7 +263,9 @@ final class RemoteSessionController {
                     signal.put("negotiationId", expectedNegotiationId);
                     signal.put("state", "agent-answer");
                     signal.put("updatedAt", FieldValue.serverTimestamp());
-                    signalReference().set(signal, SetOptions.merge());
+                    signalReference().set(signal, SetOptions.merge())
+                        .addOnSuccessListener(unused -> Log.i(TAG, "WebRTC answer published."))
+                        .addOnFailureListener(error -> Log.e(TAG, "WebRTC answer publication failed.", error));
                 });
             }
         }, answer);
@@ -267,6 +277,9 @@ final class RemoteSessionController {
             .orderBy("createdAt", Query.Direction.DESCENDING)
             .limit(64)
             .addSnapshotListener((snapshot, error) -> {
+                if (expectedNegotiationId.equals(negotiationId) && error != null) {
+                    Log.e(TAG, "WebRTC candidate listener failed: " + error.getCode());
+                }
                 if (error != null || snapshot == null || !expectedNegotiationId.equals(negotiationId)) {
                     return;
                 }
@@ -305,6 +318,7 @@ final class RemoteSessionController {
         pendingCandidates.entrySet().removeIf(entry -> {
             if (peer != null && peer.addIceCandidate(entry.getValue())) {
                 appliedCandidateIds.add(entry.getKey());
+                Log.i(TAG, "WebRTC viewer candidate applied.");
                 return true;
             }
             return false;
@@ -330,10 +344,13 @@ final class RemoteSessionController {
         document.put("candidate", candidateData);
         document.put("createdAt", FieldValue.serverTimestamp());
         document.put("negotiationId", expectedNegotiationId);
-        firestore.collection("sessions").document(activeSessionId).collection("agentCandidates").add(document);
+        firestore.collection("sessions").document(activeSessionId).collection("agentCandidates").add(document)
+            .addOnSuccessListener(unused -> Log.i(TAG, "WebRTC agent candidate published."))
+            .addOnFailureListener(error -> Log.e(TAG, "WebRTC agent candidate publication failed.", error));
     }
 
     private void routeDataChannel(DataChannel channel) {
+        Log.i(TAG, "WebRTC data channel received: " + channel.state());
         if (TILE_CHANNEL.equals(channel.label())) {
             tileChannel = channel;
             channel.registerObserver(new DataChannel.Observer() {
@@ -342,6 +359,7 @@ final class RemoteSessionController {
 
                 @Override
                 public void onStateChange() {
+                    Log.i(TAG, "WebRTC screen channel: " + channel.state());
                     if (channel.state() == DataChannel.State.OPEN) {
                         streamer.setChannel(channel);
                     } else if (channel == tileChannel) {
@@ -365,6 +383,7 @@ final class RemoteSessionController {
 
                 @Override
                 public void onStateChange() {
+                    Log.i(TAG, "WebRTC control channel: " + channel.state());
                     if (channel.state() == DataChannel.State.CLOSED) {
                         releaseInput.run();
                     }
@@ -541,16 +560,22 @@ final class RemoteSessionController {
         }
 
         @Override
-        public void onSignalingChange(PeerConnection.SignalingState state) {}
+        public void onSignalingChange(PeerConnection.SignalingState state) {
+            Log.i(TAG, "WebRTC signaling: " + state);
+        }
 
         @Override
-        public void onIceConnectionChange(PeerConnection.IceConnectionState state) {}
+        public void onIceConnectionChange(PeerConnection.IceConnectionState state) {
+            Log.i(TAG, "WebRTC ICE connection: " + state);
+        }
 
         @Override
         public void onIceConnectionReceivingChange(boolean receiving) {}
 
         @Override
-        public void onIceGatheringChange(PeerConnection.IceGatheringState state) {}
+        public void onIceGatheringChange(PeerConnection.IceGatheringState state) {
+            Log.i(TAG, "WebRTC ICE gathering: " + state);
+        }
 
         @Override
         public void onIceCandidate(IceCandidate candidate) {
@@ -582,7 +607,19 @@ final class RemoteSessionController {
         public void onAddTrack(RtpReceiver receiver, MediaStream[] streams) {}
     }
 
-    private static class SimpleSdpObserver implements SdpObserver {
+    static class SimpleSdpObserver implements SdpObserver {
+        private final String operation;
+        private final Consumer<String> reportFailure;
+
+        SimpleSdpObserver(String operation) {
+            this(operation, message -> Log.e(TAG, message));
+        }
+
+        SimpleSdpObserver(String operation, Consumer<String> reportFailure) {
+            this.operation = operation;
+            this.reportFailure = reportFailure;
+        }
+
         @Override
         public void onCreateSuccess(SessionDescription description) {}
 
@@ -590,10 +627,14 @@ final class RemoteSessionController {
         public void onSetSuccess() {}
 
         @Override
-        public void onCreateFailure(String error) {}
+        public void onCreateFailure(String error) {
+            reportFailure.accept("WebRTC " + operation + " failed (create).");
+        }
 
         @Override
-        public void onSetFailure(String error) {}
+        public void onSetFailure(String error) {
+            reportFailure.accept("WebRTC " + operation + " failed (apply).");
+        }
     }
 
     private static final class EmptyDataChannelObserver implements DataChannel.Observer {

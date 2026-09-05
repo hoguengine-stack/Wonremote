@@ -918,6 +918,23 @@ This also covers development-process escapes: missed requirements, incomplete pl
 - Release proof: `npm run firebase:deploy` completed with Firestore rules and Hosting; the public Android ZIP routes returned their expected redirect or 200 responses.
 - Remaining blocker: Firebase Storage-backed 500MB transfer remains unavailable until Storage is initialized and deployment is explicitly run with `-IncludeStorage`.
 
+## INC-20260906-005: Android first-frame failure had no negotiation diagnostics
+
+- Detected: 2026-09-06.
+- Severity: P1 remote screen unavailable.
+- Status: investigating; first-frame delivery not verified.
+- Affected: Android Agent arm64/armv7, PC Viewer signaling and relay dependency.
+- Evidence: WonRemote-Android-Log-20260906-055742.zip records capture initialization at 05:57:50.998, but no first-frame delivery. getRtcConfiguration returns NOT_FOUND at 05:57:49.524. This proves a failed relay configuration lookup, not the sole cause of disconnect.
+- User-visible symptom: PC Viewer remains connecting and disconnects after Android sharing approval without displaying the screen.
+- Minimal trigger: Connect from PC Viewer to the reported Android 16 Agent, then approve screen sharing.
+- Root cause and contributors: The screen-failure root cause is not yet established. SDP failures and ICE state callbacks were empty; signaling write/listener failures were ignored. Prior checks could pass with no actual PC Viewer frame.
+- Fix commit(s): Uncommitted diagnostic changes; screen fix remains incomplete.
+- Permanent guard: Record existing negotiation, candidate, channel and signaling outcomes locally without SDP, ICE addresses, credentials or added cloud writes. Exercise SDP failure callbacks in a focused runtime test. Require physical first-frame and reconnect proof before declaring the incident resolved.
+- Regression proof: `gradlew :agent:testDebugUnitTest --tests com.wonremote.agent.RemoteSessionDiagnosticsTest --tests com.wonremote.agent.AgentProjectionRequestTest --build-cache --console=plain` passed 6/6 in 5s, including SDP failure stage reporting without private SDP and no false errors on success. This is diagnostic proof, not first-frame proof.
+- Release proof: v0.1.85 build and deployment are in progress; no completed release proof yet.
+- External blocker: No alternate TURN configuration was found in application env or process/user/machine RTC variables. Provisioning and verifying an authenticated relay is separate from adding diagnostic logs; no billing or infrastructure changes authorized or performed.
+- Remaining blocker: Approved first frame on the reported Android 16 device, same and separate networks, disconnect and repeat connection. Obtain ICE and SDP diagnostic evidence before attributing the disconnect exclusively to TURN.
+
 ## INC-20260906-004: Optimized Android Agent lost WebRTC JNI entry points
 
 - Detected: 2026-09-06.

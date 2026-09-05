@@ -1,14 +1,14 @@
 {
-  "status": "verified",
-  "intent": "Android Agent WebRTC initialization does not terminate when a PC Viewer starts a remote connection.",
+  "status": "ready-to-deploy",
+  "intent": "Diagnose and restore Android first-frame delivery after PC Viewer connection and screen-share approval; do not equate capture initialization with a working remote connection.",
   "changeType": "fix",
   "risk": "high",
   "releaseImpact": "build-and-deploy",
-  "rollback": "Revert the JNI keep rule and release verifier change, then redeploy the prior signed Android Agent APK.",
-  "incident": "INC-20260906-004",
+  "rollback": "Revert only the RemoteSessionController diagnostic changes and its new diagnostic test; retain the previously released JNI keep rules.",
+  "incident": "INC-20260906-005",
   "requestReview": {
     "impact": "none",
-    "reason": "The R8 keep rule and offline release-mapping verifier alter neither application requests nor diagnostic collector behavior.",
+    "reason": "This change only records existing WebRTC and Firestore completion callbacks in local logcat. It adds no requests, listeners, timers, uploads, or retries. Existing TURN provisioning remains an unresolved external dependency.",
     "assumptions": "No request lifecycle changes are included.",
     "dailyBudget": {
       "clients": 0,
@@ -25,10 +25,19 @@
       "cleanup": "No request resource changes."
     },
     "contractTests": [
-      "aether-link-app/src/androidNativeRelease.test.ts"
+      "mobile/android/agent/src/test/java/com/wonremote/agent/RemoteSessionDiagnosticsTest.java"
     ]
   },
   "outcomes": [
+    {
+      "id": "android-approved-first-frame",
+      "acceptance": "After approval, PC Viewer displays the Android screen on initial and repeated connections, including separate networks requiring relay.",
+      "boundaries": ["PC Viewer offer", "Firestore signaling and candidates", "Android SDP application", "STUN/TURN and ICE", "data channels", "MediaProjection", "first frame in PC Viewer"],
+      "contractTests": ["mobile/android/agent/src/test/java/com/wonremote/agent/RemoteSessionDiagnosticsTest.java"],
+      "proofLevel": "physical-required",
+      "verification": "2026-09-06: gradlew :agent:testDebugUnitTest --tests com.wonremote.agent.RemoteSessionDiagnosticsTest --tests com.wonremote.agent.AgentProjectionRequestTest --build-cache --console=plain passed 6 tests in 5s. SDP failure diagnostics now distinguish remote offer, answer creation and local answer without exposing SDP. Physical log 20260906-055742 shows capture initialization without first-frame evidence and getRtcConfiguration NOT_FOUND. First-frame acceptance remains incomplete; v0.1.85 build and deployment are required to collect physical evidence.",
+      "physicalGap": "A reachable authenticated TURN service and affected Android/PC devices are required to verify separate-network first frame, disconnect and repeat connection. Do not release this as a completed screen fix."
+    },
     {
       "id": "android-background-connect",
       "acceptance": "PC Viewer Connect while Android Agent is in background does not terminate the Agent; consent and approved first-frame delivery remain available.",
@@ -45,6 +54,7 @@
       "contractTests": [
         "aether-link-app/src/androidNativeRelease.test.ts",
         "mobile/android/agent/src/test/java/com/wonremote/agent/ControlAddonClientTest.java",
+        "mobile/android/agent/src/test/java/com/wonremote/agent/RemoteSessionDiagnosticsTest.java",
         "aether-link-app/src/desktopPackaging.test.ts"
       ],
       "proofLevel": "physical-required",
