@@ -1,60 +1,34 @@
 {
   "status": "ready-to-deploy",
-  "intent": "Publish WonRemote v0.1.79 with one authenticated startup device refresh and a compact Android Viewer that keeps multiple device sessions connected while moving between the device list and session tabs.",
+  "intent": "Ensure every existing Android Viewer shell revalidates the hosted Viewer UI when the app launches.",
   "requestReview": {
     "impact": "changed",
-    "reason": "Authentication now owns one bounded startup device/status refresh. Android multi-session navigation keeps only sessions opened by explicit Connect actions alive and adds no polling, automatic reconnect, history request, or transport implementation.",
-    "assumptions": "Scoped example, not fleet billing: one Viewer authenticates once and explicitly opens two different Agents once in a day. The budget covers the startup device/status refresh plus two session creations, start commands, signaling documents, Viewer ICE candidates, listener delivery, and dependent rule reads. Idle time, rerenders, tab switching, and returning to the list add zero requests. WebRTC media and TURN bytes are separate; production counts still require live measurement.",
-    "dailyBudget": { "clients": 1, "readsPerClient": 100, "writesPerClient": 40, "maxReads": 100, "maxWrites": 40 },
+    "reason": "The `/viewer` navigation response changes from a one-hour freshness lifetime to mandatory launch-time revalidation. No timer, Firestore operation, listener, retry, or persistence write is added.",
+    "assumptions": "One Android Viewer shell makes one Firebase Hosting navigation request each time it launches. This request may return the document or a conditional response; it creates zero Firestore document reads and zero writes. Session, device-list, reconnect, WebRTC, and TURN traffic are unchanged.",
+    "dailyBudget": { "clients": 1, "readsPerClient": 0, "writesPerClient": 0, "maxReads": 0, "maxWrites": 0 },
     "checks": {
-      "idle": "Real Chromium fake time proves one startup list request, zero history reads, zero subscriptions, and no additional request over 24 hours.",
-      "rerender": "Repeated auth callbacks and session switching reuse the existing request/session owners without another list read, session open, or transport start.",
-      "concurrency": "Existing pending/open per-device guards coalesce duplicate Connect actions; the tested two-session path uses two distinct explicitly selected devices.",
-      "failure": "Quota/list failure and WebRTC failure retain manual retry and cannot start an automatic retry loop.",
-      "cleanup": "Logout rejects stale list results; closing one session releases its inputs and transport without closing the other session."
+      "idle": "The Hosting header contains no timer or client loop; after the launch navigation it generates zero idle Firestore reads and writes over 24 hours.",
+      "rerender": "A server response header cannot add a React render request; rerenders retain the existing Viewer request owners.",
+      "concurrency": "Each app launch performs its own bounded navigation revalidation without shared mutable request state.",
+      "failure": "The existing Android WebView error screen remains the network-failure boundary; the cache policy adds no retry loop.",
+      "cleanup": "No timer, listener, or callback is created, so app shutdown has no new lifecycle owner to clean up."
     },
-    "contractTests": ["aether-link-app/src/viewerDeviceRefresh.test.ts"]
+    "contractTests": ["aether-link-app/src/mobileViewerPackaging.test.ts"]
   },
-  "changeType": "feature",
-  "risk": "high",
-  "releaseImpact": "build-and-deploy",
-  "rollback": "Repoint stable downloads to v0.1.78 and revert the v0.1.79 release commit; retain registered device data and do not restore polling or automatic reconnect.",
+  "changeType": "fix",
+  "risk": "medium",
+  "releaseImpact": "deploy",
+  "rollback": "Revert the `/viewer` Hosting header commit and redeploy Firebase Hosting; Android APK binaries and registered data remain unchanged.",
+  "incident": "INC-20260905-006",
   "outcomes": [
     {
-      "id": "authenticated-startup-device-refresh",
-      "acceptance": "After restored Firebase authentication or successful local login, the shared Viewer loads registered devices exactly once without a manual click. Repeated callbacks, rerenders, and 24-hour idle add no request; history and reconnect stay manual.",
-      "boundaries": ["Viewer authentication callback", "local login", "React StrictMode request ownership", "device list UI", "logout and reauthentication"],
-      "contractTests": ["aether-link-app/src/viewerDeviceRefresh.test.ts"],
-      "proofLevel": "automated-runtime",
-      "verification": "2026-09-05: `npx vitest run src/viewerDeviceRefresh.test.ts` passed 9/9 in real Chromium, including one startup request, repeated auth callbacks, 24-hour idle, manual history/reconnect, logout cancellation, and reauthentication.",
-      "physicalGap": "Installed desktop and Android launch behavior and live Firebase billing remain physical checks after deployment."
-    },
-    {
-      "id": "android-viewer-multi-session-ui",
-      "acceptance": "On the Android Viewer route in portrait and landscape, the device list and remote canvas have no horizontal page overflow, primary controls remain reachable, and tools open above the bottom command bar. Returning to the list keeps the current session, another device can connect, named tabs switch sessions, and closing one leaves the other active; only the selected session accepts input.",
-      "boundaries": ["shared Viewer session state", "Android /viewer route", "mobile dashboard", "remote command bar", "WebRTC panel mounting", "input release and per-tab close"],
-      "contractTests": ["aether-link-app/src/viewerDeviceRefresh.test.ts"],
-      "proofLevel": "automated-runtime",
-      "verification": "2026-09-05: The focused real-Chromium case failed before the fix because the command bar remained 749px above the bottom of a 390x844 viewport, then passed 1/1. The full file passed 9/9; the active-session pointer, wheel, keyboard, and clipboard guard passed its focused existing check 1/1.",
-      "physicalGap": "Physical Android WebView keyboard, touch, rotation, concurrent Agents, and WebRTC/TURN resource use require device verification."
-    },
-    {
-      "id": "release-pc-x86-v0.1.79",
-      "acceptance": "GitHub Release v0.1.79 contains exactly the stable x86 Viewer installer, stable x86 Agent installer and signed update manifest, and the four stable Windows aliases resolve to those assets.",
-      "boundaries": ["cached x86 Viewer build", "Agent-default NSIS bundle", "x86 payload verification", "signed update manifest", "GitHub Release", "stable Firebase aliases"],
-      "contractTests": ["aether-link-app/src/desktopPackaging.test.ts"],
+      "id": "android-viewer-launch-revalidation",
+      "acceptance": "Launching an already installed Android Viewer revalidates `/viewer` with Firebase Hosting and receives the currently deployed shared UI instead of treating the prior document as fresh for one hour.",
+      "boundaries": ["existing Android Viewer APK", "WebView LOAD_DEFAULT navigation", "Firebase Hosting `/viewer` rewrite", "Cache-Control response", "current hashed Viewer assets"],
+      "contractTests": ["aether-link-app/src/mobileViewerPackaging.test.ts"],
       "proofLevel": "deployment-required",
       "verification": "Pending",
-      "physicalGap": "Installer launch and automatic update require physical Windows verification after publication."
-    },
-    {
-      "id": "release-android-v0.1.79",
-      "acceptance": "Firebase Hosting serves signed v0.1.79 Android Agent, Viewer and Control Add-On ZIP downloads through the three stable Android routes, while existing Android Viewer shells load the deployed shared Viewer UI on launch.",
-      "boundaries": ["Gradle release build", "Android release keystore", "APK v2 signature verification", "ZIP packaging", "shared Viewer web build", "Firebase Hosting", "live route and byte verification"],
-      "contractTests": ["aether-link-app/src/desktopPackaging.test.ts", "aether-link-app/src/viewerDeviceRefresh.test.ts"],
-      "proofLevel": "deployment-required",
-      "verification": "Pending",
-      "physicalGap": "Physical Android launch, WebView cache behavior, APK installation, screen consent, and remote control remain device checks. Native APK replacement is not silent without Android installation approval or managed-device privileges."
+      "physicalGap": "A physical relaunch of an already installed Android Viewer remains required after live header verification. Native APK replacement still requires Android installation approval or managed-device privileges."
     }
   ]
 }

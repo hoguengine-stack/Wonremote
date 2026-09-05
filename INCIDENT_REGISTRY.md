@@ -842,3 +842,18 @@ This also covers development-process escapes: missed requirements, incomplete pl
 - Regression proof: The focused real-Chromium case failed before the source change because `PC-0` never appeared within three seconds. After the fix, `npx vitest run src/viewerDeviceRefresh.test.ts` passed 8/8, covering restored Firebase auth, local login, repeated auth callbacks, StrictMode, 24h idle, manual history/reconnect, slow-click coalescing, quota failure, logout cancellation, and reauthentication.
 - Release proof: Not built or deployed; user did not request a build.
 - Remaining blocker: Installed desktop/mobile packages and live Firebase document/rule billing require a later requested build/deployment and physical verification.
+
+## INC-20260905-006: Existing Android Viewer shells could retain an old hosted UI
+
+- Detected: 2026-09-05.
+- Severity: P1 update reliability.
+- Affected: Existing Android Viewer APKs loading the shared `/viewer` route.
+- Status: source-verified-not-released.
+- User-visible symptom: Relaunching an already installed Viewer could keep the previous hosted UI for up to one hour after deployment.
+- Minimal trigger: Deploy a new shared Viewer UI, then relaunch an already installed Android Viewer within the previous one-hour cache lifetime.
+- Root cause and contributors: The Android shell correctly used the shared web Viewer, but Firebase Hosting served its navigation document with `Cache-Control: max-age=3600`; release checks verified asset bytes without checking the launch document's live cache policy.
+- Fix commit(s): pending.
+- Permanent guard: `/viewer` must use `no-cache, no-store, must-revalidate`. The mobile packaging contract pins that header, and every Android web-UI deployment must verify the live response header and a release-specific UI marker before completion.
+- Regression proof: `npx vitest run src/mobileViewerPackaging.test.ts` passed 1/1 and requires the exact `/viewer` no-cache policy. Post-deployment live-header verification remains pending.
+- Release proof: Not yet redeployed with the corrected header.
+- Remaining blocker: Redeploy Hosting, verify the live header, then physically relaunch an installed Android Viewer on a device.
