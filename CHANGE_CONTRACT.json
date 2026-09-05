@@ -1,6 +1,6 @@
 {
   "status": "verified",
-  "intent": "Android Agent background crash logs can be captured from another Windows PC with an existing C:\\Android SDK installation and visible launch errors.",
+  "intent": "Android Agent crash logs can be captured from another Windows PC without truncating a discovered ADB path.",
   "changeType": "fix",
   "risk": "high",
   "releaseImpact": "none",
@@ -53,7 +53,7 @@
     },
     {
       "id": "android-crash-log-capture",
-      "acceptance": "On another Windows PC, an operator can launch a visible collector that finds existing ADB including C:\\Android\\sdk\\platform-tools, acquires Platform-Tools when absent, clears Android logs, reproduces two Viewer connection attempts, and receives a ZIP containing logcat, device properties and Agent package state.",
+      "acceptance": "On another Windows PC, an operator can launch a visible collector that returns the complete existing ADB path including C:\\Android\\sdk\\platform-tools, clears Android logs, reproduces two Viewer connection attempts, and receives a ZIP containing logcat, device properties and Agent package state.",
       "boundaries": [
         "Windows PowerShell",
         "ADB discovery",
@@ -69,7 +69,7 @@
         "aether-link-app/src/androidCrashLogCollector.test.ts"
       ],
       "proofLevel": "physical-required",
-      "verification": "2026-09-06: npx vitest run src/androidCrashLogCollector.test.ts passed 3 tests for the visible launcher, official Platform-Tools fallback and C:\\Android SDK ADB path. PowerShell collector self-test passed.",
+      "verification": "2026-09-06: PowerShell collector self-test creates one fake adb.exe and verifies Get-FirstExistingPath returns its full path rather than the first character. npx vitest run src/androidCrashLogCollector.test.ts passed 3 tests.",
       "physicalGap": "Requires the affected Android device connected to a separate Windows PC with USB debugging authorized; run the capture through both connection attempts and provide the generated ZIP."
     }
   ]

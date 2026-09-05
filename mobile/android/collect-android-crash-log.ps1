@@ -4,6 +4,12 @@ $ErrorActionPreference = "Stop"
 $AgentPackage = "com.wonremote.agent"
 $PlatformToolsUrl = "https://dl.google.com/android/repository/platform-tools-latest-windows.zip"
 
+function Get-FirstExistingPath([string[]]$candidates) {
+  $paths = @($candidates | Where-Object { Test-Path $_ })
+  if ($paths.Count) { return [string]$paths[0] }
+  return $null
+}
+
 function Get-AdbPath {
   $candidates = @(
     (Join-Path $PSScriptRoot "adb.exe"),
@@ -11,8 +17,8 @@ function Get-AdbPath {
   )
   if ($env:ANDROID_HOME) { $candidates += Join-Path $env:ANDROID_HOME "platform-tools\adb.exe" }
   if ($env:LOCALAPPDATA) { $candidates += Join-Path $env:LOCALAPPDATA "Android\Sdk\platform-tools\adb.exe" }
-  $paths = $candidates | Where-Object { Test-Path $_ }
-  if ($paths) { return $paths[0] }
+  $path = Get-FirstExistingPath $candidates
+  if ($path) { return $path }
   $command = Get-Command adb.exe -ErrorAction SilentlyContinue
   if ($command) { return $command.Source }
 
@@ -38,6 +44,10 @@ function New-CaptureDirectory {
 if ($SelfTest) {
   $path = New-CaptureDirectory
   if (-not (Test-Path $path)) { throw "Capture folder creation failed." }
+  $adb = Join-Path $path "adb.exe"
+  New-Item -ItemType File -Path $adb | Out-Null
+  if ((Get-FirstExistingPath @($adb)) -ne $adb) { throw "ADB path was truncated." }
+  Remove-Item -LiteralPath $adb -Force
   Remove-Item -LiteralPath $path -Force
   Write-Output "Self-test passed."
   exit 0

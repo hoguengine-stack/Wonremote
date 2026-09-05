@@ -28,5 +28,6 @@ describe("Android crash log collector", () => {
     expect(source).toContain("https://dl.google.com/android/repository/platform-tools-latest-windows.zip");
     expect(source).toContain("Expand-Archive");
     expect(source).toContain("C:\\Android\\sdk\\platform-tools\\adb.exe");
+    expect(source).toContain("Get-FirstExistingPath");
   });
 });
