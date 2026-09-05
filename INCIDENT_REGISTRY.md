@@ -918,6 +918,21 @@ This also covers development-process escapes: missed requirements, incomplete pl
 - Release proof: `npm run firebase:deploy` completed with Firestore rules and Hosting; the public Android ZIP routes returned their expected redirect or 200 responses.
 - Remaining blocker: Firebase Storage-backed 500MB transfer remains unavailable until Storage is initialized and deployment is explicitly run with `-IncludeStorage`.
 
+## INC-20260906-004: Optimized Android Agent lost WebRTC JNI entry points
+
+- Detected: 2026-09-06.
+- Severity: P1 connection-triggered application termination.
+- Affected: Android Agent arm64/armv7 release and shared Add-On command validation.
+- Status: active; reported device crash attribution requires logcat.
+- User-visible symptom: PC Viewer connection request terminates the background Android Agent with the system app-bug/cache-clear dialog.
+- Minimal trigger: Connect from PC Viewer to the optimized release Agent while it is waiting in the background; remoteController initializes WebRTC native code.
+- Root cause and contributors: Agent release enabled R8 without WebRTC JNI keep rules. Existing release mapping removes ContextUtils and renames IceServer and native callback targets. Debug Java tests do not load the optimized native boundary. String.isBlank calls also exceed the minimum Android API without core library desugaring.
+- Fix commit(s): pending.
+- Permanent guard: Preserve the WebRTC JNI package and reject missing or renamed JNI release mappings before APK copying or publication; use API26-compatible command validation.
+- Regression proof: 3 native artifact-verifier tests passed; existing release mapping rejected for renamed WebRTC class. Focused ControlAddonClient unit test and Add-On Java compilation passed. Corrected optimized APK mapping remains pending requested build.
+- Release proof: Not built or deployed in this turn; installed applications remain unchanged.
+- Remaining blocker: Signed optimized APK on the affected physical device: background request, permission denial/approval, first frame, reconnect, and logcat. Build not requested in this turn.
+
 ## INC-20260905-008: Android remote request failed to preserve or request screen sharing
 
 - Detected: 2026-09-05.

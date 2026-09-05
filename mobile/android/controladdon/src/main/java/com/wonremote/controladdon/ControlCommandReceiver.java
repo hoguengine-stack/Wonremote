@@ -18,7 +18,7 @@ public final class ControlCommandReceiver extends BroadcastReceiver {
         String command = intent.getStringExtra(EXTRA_COMMAND);
         if (WonRemoteAccessibilityService.COMMAND_REQUEST_SCREEN_SHARE_CONSENT.equals(command)) {
             WonRemoteAccessibilityService.requestScreenShareConsent();
-        } else if (command != null && !command.isBlank() && command.length() <= 16 * 1024) {
+        } else if (command != null && !command.trim().isEmpty() && command.length() <= 16 * 1024) {
             WonRemoteAccessibilityService.execute(command);
         }
     }

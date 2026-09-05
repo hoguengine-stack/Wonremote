@@ -1,119 +1,36 @@
 {
-  "status": "verified",
-  "intent": "Android Agent, Viewer and Control Add-On check for APK updates on launch and offer verified in-place installation.",
+  "status": "ready-to-deploy",
+  "intent": "Android Agent survives a Viewer connection request while waiting in background.",
   "changeType": "fix",
   "risk": "high",
   "releaseImpact": "build-and-deploy",
-  "rollback": "Revert updater implementation; retain existing installed packages and registration data. Publish a higher version if already released.",
-  "incident": "INC-20260906-003",
+  "rollback": "Revert this change before release; after publication ship a higher fixed version without deleting registration data.",
+  "incident": "INC-20260906-004",
   "requestReview": {
-    "impact": "changed",
-    "reason": "Adds bounded HTTPS Hosting manifest checks and user-approved ZIP downloads; no Firestore access.",
-    "assumptions": "One device, three apps each launched once and manually checked once per day, with one approved download each. Each check reads one static manifest and each download reads one ZIP; zero database documents, rule reads, writes or reconnect polling. More explicit launches/checks scale linearly.",
-    "dailyBudget": {
-      "clients": 3,
-      "readsPerClient": 3,
-      "writesPerClient": 0,
-      "maxReads": 9,
-      "maxWrites": 0
-    },
-    "checks": {
-      "idle": "UpdateClientTest.threeProductsDetect79To80AndDownloadVerifiedBytes: 86,400 idle/resume check attempts per app retain one startup manifest request; zero Firestore documents/writes.",
-      "rerender": "Repeated non-manual checks reuse the same client's startup result, including permission return. Activity destruction closes the client; a new Activity instance counts as a new explicit launch in this budget.",
-      "concurrency": "slowConcurrentChecksUseOneRequestAndClosedClientCannotRestart: blocked transport plus concurrent startup/manual calls opens one stream.",
-      "failure": "quotaOrNetworkFailureNeverRetriesWithoutUserAction: HTTP 429 plus 86,400 attempts causes one request, followed by exactly one request on explicit retry.",
-      "cleanup": "slowConcurrentChecksUseOneRequestAndClosedClientCannotRestart: close cancels in-flight response and prevents later reads; Activity onDestroy closes updater and shuts down worker. Physical lifecycle proof pending."
-    },
-    "contractTests": [
-      "mobile/android/updatecore/src/test/java/com/wonremote/update/UpdateClientTest.java",
-      "aether-link-app/src/desktopPackaging.test.ts"
-    ]
+    "impact": "none",
+    "reason": "Preserves WebRTC JNI names during R8 shrinking and uses API26-compatible string validation. Adds local release-artifact checks only; no network timers, listeners, retries or database changes."
   },
   "outcomes": [
     {
-      "id": "agent-apk-update",
-      "acceptance": "Launching Android agent checks its own installed APK version once, offers a newer release, verifies its download and opens Android's installation confirmation; a manual check reports current/error state.",
+      "id": "android-background-connect",
+      "acceptance": "PC Viewer Connect while Android Agent is in background does not terminate the Agent; consent and approved first-frame delivery remain available.",
       "boundaries": [
-        "Activity lifecycle",
-        "HTTPS Hosting manifest",
-        "versionCode and package selection",
-        "ZIP download and SHA256",
-        "installed signing identity",
-        "unknown-source permission",
-        "Android package installer",
-        "relaunch retains app data"
+        "Viewer command",
+        "Firestore command listener",
+        "AgentService.handleCommand",
+        "WebRTC factory native JNI initialization",
+        "R8 release optimization",
+        "accessibility addon dispatch",
+        "Android consent",
+        "first remote frame"
       ],
       "contractTests": [
-        "mobile/android/updatecore/src/test/java/com/wonremote/update/UpdateClientTest.java",
-        "aether-link-app/src/androidUpdateRelease.test.ts",
-        "aether-link-app/src/desktopPackaging.test.ts"
+        "aether-link-app/src/androidNativeRelease.test.ts",
+        "mobile/android/agent/src/test/java/com/wonremote/agent/ControlAddonClientTest.java"
       ],
       "proofLevel": "physical-required",
-      "verification": "2026-09-06: :updatecore:testDebugUnitTest passed 6 tests, including all three package IDs detecting 1079 -> 1080 and extracting verified ZIP bytes, no idle/retry polling, concurrent checks, closure, and corrupt/untrusted payload rejection. Agent/Viewer/Control Add-On Java compilation passed. npx vitest run src/androidUpdateRelease.test.ts passed 8 tests, including stale metadata blocking and all three Activity integrations. Native installation UI, signer validation and permission return remain physical-required. Release evidence: 2026-09-06 GitHub Actions run 33984013681 published v0.1.82 x86 Viewer/Agent installers and signed manifest; Firebase Hosting returned Android v0.1.82 Agent, Viewer and Control Add-On ZIP 200 responses, and android-update.json reports versionCode 1082.",
-      "physicalGap": "No connected Android test device yet; 0.1.79/0.1.80 contain no APK updater and require one manual update to bootstrap. Actual signed upgrade, permissions and data retention need device proof."
-    },
-    {
-      "id": "viewer-apk-update",
-      "acceptance": "Launching Android viewer checks its own installed APK version once, offers a newer release, verifies its download and opens Android's installation confirmation; a manual check reports current/error state.",
-      "boundaries": [
-        "Activity lifecycle",
-        "HTTPS Hosting manifest",
-        "versionCode and package selection",
-        "ZIP download and SHA256",
-        "installed signing identity",
-        "unknown-source permission",
-        "Android package installer",
-        "relaunch retains app data"
-      ],
-      "contractTests": [
-        "mobile/android/updatecore/src/test/java/com/wonremote/update/UpdateClientTest.java",
-        "aether-link-app/src/androidUpdateRelease.test.ts",
-        "aether-link-app/src/desktopPackaging.test.ts"
-      ],
-      "proofLevel": "physical-required",
-      "verification": "2026-09-06: :updatecore:testDebugUnitTest passed 6 tests, including all three package IDs detecting 1079 -> 1080 and extracting verified ZIP bytes, no idle/retry polling, concurrent checks, closure, and corrupt/untrusted payload rejection. Agent/Viewer/Control Add-On Java compilation passed. npx vitest run src/androidUpdateRelease.test.ts passed 8 tests, including stale metadata blocking and all three Activity integrations. Native installation UI, signer validation and permission return remain physical-required. Release evidence: 2026-09-06 GitHub Actions run 33984013681 published v0.1.82 x86 Viewer/Agent installers and signed manifest; Firebase Hosting returned Android v0.1.82 Agent, Viewer and Control Add-On ZIP 200 responses, and android-update.json reports versionCode 1082.",
-      "physicalGap": "No connected Android test device yet; 0.1.79/0.1.80 contain no APK updater and require one manual update to bootstrap. Actual signed upgrade, permissions and data retention need device proof."
-    },
-    {
-      "id": "controladdon-apk-update",
-      "acceptance": "Launching Android controladdon checks its own installed APK version once, offers a newer release, verifies its download and opens Android's installation confirmation; a manual check reports current/error state.",
-      "boundaries": [
-        "Activity lifecycle",
-        "HTTPS Hosting manifest",
-        "versionCode and package selection",
-        "ZIP download and SHA256",
-        "installed signing identity",
-        "unknown-source permission",
-        "Android package installer",
-        "relaunch retains app data"
-      ],
-      "contractTests": [
-        "mobile/android/updatecore/src/test/java/com/wonremote/update/UpdateClientTest.java",
-        "aether-link-app/src/androidUpdateRelease.test.ts",
-        "aether-link-app/src/desktopPackaging.test.ts"
-      ],
-      "proofLevel": "physical-required",
-      "verification": "2026-09-06: :updatecore:testDebugUnitTest passed 6 tests, including all three package IDs detecting 1079 -> 1080 and extracting verified ZIP bytes, no idle/retry polling, concurrent checks, closure, and corrupt/untrusted payload rejection. Agent/Viewer/Control Add-On Java compilation passed. npx vitest run src/androidUpdateRelease.test.ts passed 8 tests, including stale metadata blocking and all three Activity integrations. Native installation UI, signer validation and permission return remain physical-required. Release evidence: 2026-09-06 GitHub Actions run 33984013681 published v0.1.82 x86 Viewer/Agent installers and signed manifest; Firebase Hosting returned Android v0.1.82 Agent, Viewer and Control Add-On ZIP 200 responses, and android-update.json reports versionCode 1082.",
-      "physicalGap": "No connected Android test device yet; 0.1.79/0.1.80 contain no APK updater and require one manual update to bootstrap. Actual signed upgrade, permissions and data retention need device proof."
-    },
-    {
-      "id": "android-release-update-discovery",
-      "acceptance": "An Android build publishes versioned ZIPs with metadata from all three actual APKs; Hosting deployment refuses missing or stale update metadata.",
-      "boundaries": [
-        "built APK badging",
-        "version/package check",
-        "ZIP and APK SHA256",
-        "versioned Hosting ZIP paths",
-        "android-update.json",
-        "deployment verification"
-      ],
-      "contractTests": [
-        "aether-link-app/src/androidUpdateRelease.test.ts",
-        "aether-link-app/src/desktopPackaging.test.ts"
-      ],
-      "proofLevel": "automated-runtime",
-      "verification": "2026-09-06: 8 focused Vitest tests passed for three-product generated metadata, stale/wrong package rejection, payload tampering, missing discovery, immutable version reuse and native launch integration. Physical APK upgrade and live Hosting publication remain pending the next requested release. Release evidence: 2026-09-06 GitHub Actions run 33984013681 published v0.1.82 x86 Viewer/Agent installers and signed manifest; Firebase Hosting returned Android v0.1.82 Agent, Viewer and Control Add-On ZIP 200 responses, and android-update.json reports versionCode 1082.",
-      "physicalGap": "No release APKs built or deployed in this change; installed 0.1.79/0.1.80 apps require manual bootstrap."
+      "verification": "2026-09-06: npx vitest run src/androidNativeRelease.test.ts passed 3 tests for preserved names, removed/renamed classes and renamed callbacks. Native verifier rejects existing release mapping (WebRTC JNI class changed). :agent:testDebugUnitTest --tests com.wonremote.agent.ControlAddonClientTest and :controladdon:compileDebugJavaWithJavac passed in 5s. Corrected optimized APK mapping and actual native initialization remain pending an explicitly requested build and physical device.",
+      "physicalGap": "Reproduce reported crash with logcat on affected device, then verify signed optimized APK background request, permission refusal, approval, first frame, disconnect and repeated connection on arm64/armv7. No build requested."
     }
   ]
 }

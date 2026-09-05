@@ -47,6 +47,9 @@ finally {
   Pop-Location
 }
 
+& node (Join-Path $AndroidDir "verify-native-release.mjs") (Join-Path $AndroidDir "agent\build\outputs\mapping\release\mapping.txt")
+if ($LASTEXITCODE -ne 0) { throw "Android WebRTC JNI verification failed; do not publish these artifacts." }
+
 $ApkSigner = Get-ChildItem (Join-Path $env:ANDROID_HOME "build-tools\*\apksigner.bat") |
   Sort-Object FullName -Descending |
   Select-Object -First 1 -ExpandProperty FullName

@@ -34,7 +34,7 @@ final class ControlAddonClient {
     }
 
     static boolean execute(Context context, String command) {
-        if (command == null || command.isBlank() || command.length() > 16 * 1024 || !isReady(context)) {
+        if (command == null || command.trim().isEmpty() || command.length() > 16 * 1024 || !isReady(context)) {
             return false;
         }
         try {
@@ -58,7 +58,7 @@ final class ControlAddonClient {
     }
 
     static boolean containsEnabledService(String enabledServices) {
-        if (enabledServices == null || enabledServices.isBlank()) {
+        if (enabledServices == null || enabledServices.trim().isEmpty()) {
             return false;
         }
         String expected = PACKAGE + "/" + SERVICE;

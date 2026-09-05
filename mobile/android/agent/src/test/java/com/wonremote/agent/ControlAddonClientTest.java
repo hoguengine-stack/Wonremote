@@ -12,6 +12,8 @@ public final class ControlAddonClientTest {
     @Test
     public void detectsOnlyTheControlAddonAccessibilityService() {
         assertFalse(ControlAddonClient.containsEnabledService(null));
+        assertFalse(ControlAddonClient.containsEnabledService(" \t\n"));
+        assertFalse(ControlAddonClient.execute(null, " \t\n"));
         assertFalse(ControlAddonClient.containsEnabledService("com.example/.OtherService"));
         assertTrue(ControlAddonClient.containsEnabledService("com.example/.OtherService:" + ADDON_SERVICE));
     }
