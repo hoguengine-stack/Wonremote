@@ -24,7 +24,7 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
-public final class MainActivity extends Activity {
+public final class MainActivity extends com.wonremote.update.UpdateActivity {
     static final String ACTION_REQUEST_SCREEN_SHARE = "com.wonremote.agent.REQUEST_SCREEN_SHARE";
     private static volatile boolean visible;
 
@@ -181,6 +181,7 @@ public final class MainActivity extends Activity {
         secure.setPadding(dp(10), dp(6), dp(10), dp(6));
         secure.setBackground(rounded(Color.rgb(227, 244, 240), 20, 0, 0));
         header.addView(secure, wrapWrap());
+        header.addView(updateButton(), new LinearLayout.LayoutParams(dp(44), dp(44)));
         return header;
     }
 

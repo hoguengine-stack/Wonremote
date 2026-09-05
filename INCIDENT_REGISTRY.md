@@ -873,6 +873,21 @@ This also covers development-process escapes: missed requirements, incomplete pl
 - Release proof: GitHub Actions run `33949370940` completed successfully on commit `73e4243`, proving the corrected selector parses and preserves the completed-contract path.
 - Remaining blocker: The next real deploy-only push will provide the first live execution of the predeploy branch; its contract selection is covered by the focused workflow test.
 
+## INC-20260906-003: Android APK publication was mistaken for installed-app updates
+
+- Detected: 2026-09-06.
+- Severity: P1 update delivery omission.
+- Affected: Android Agent, Viewer and Control Add-On 0.1.79 and 0.1.80.
+- Status: source-verified-physical-pending.
+- User-visible symptom: All three apps stay on 0.1.79 after 0.1.80 publication and show no update prompt on launch.
+- Minimal trigger: Launch any installed 0.1.79 APK after publishing the newer ZIP.
+- Root cause and contributors: None of the three native apps implemented APK version checking, download or installer invocation. Release verification checked static ZIP availability and confused Viewer web content updates with APK upgrades.
+- Fix commit(s): pending.
+- Permanent guard: Share one APK updater across all three activities; generate version/package/hash metadata from built APKs and validate release bundles. Verify old installed APK to new signed APK installation, not merely HTTP availability. Versions without the updater explicitly require one manual bootstrap.
+- Regression proof: :updatecore:testDebugUnitTest passed 6 request/download tests; npx vitest run src/androidUpdateRelease.test.ts passed 8 release metadata/integration tests, including real ZIP extraction matching the APK and stale-archive rejection. All three apps compiled. Actual Android install/permissions/data-retention proof is pending; adb devices listed no device.
+- Release proof: Not built or deployed for this change.
+- Remaining blocker: Physical signed upgrade on Android, user installation consent and preservation of registration/accessibility settings.
+
 ## INC-20260906-002: Normal Firebase deploy required unavailable Functions infrastructure
 
 - Detected: 2026-09-06.

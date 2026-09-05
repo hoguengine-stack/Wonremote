@@ -27,7 +27,7 @@ import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 
-public final class MainActivity extends Activity {
+public final class MainActivity extends com.wonremote.update.UpdateActivity {
     private static final String VIEWER_HOST = "wonremote-a7fd3.web.app";
     private static final String VIEWER_URL = "https://" + VIEWER_HOST + "/viewer";
     private static final int FILE_CHOOSER_REQUEST = 1001;
@@ -59,6 +59,7 @@ public final class MainActivity extends Activity {
         errorView = buildErrorView();
         errorView.setVisibility(View.GONE);
         root.addView(errorView, matchMatch());
+        root.addView(updateButton(), new FrameLayout.LayoutParams(dp(40), dp(40), Gravity.END | Gravity.BOTTOM));
         setContentView(root);
 
         if (savedInstanceState == null) {

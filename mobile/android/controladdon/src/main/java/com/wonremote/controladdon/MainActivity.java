@@ -18,7 +18,7 @@ import android.widget.TextView;
 
 import com.wonremote.agent.WonRemoteAccessibilityService;
 
-public final class MainActivity extends Activity {
+public final class MainActivity extends com.wonremote.update.UpdateActivity {
     private static final int ACCENT = Color.rgb(22, 125, 113);
     private static final int DARK = Color.rgb(18, 33, 43);
     private static final int MUTED = Color.rgb(96, 115, 127);
@@ -62,6 +62,7 @@ public final class MainActivity extends Activity {
         TextView title = text("WonRemote Control Add-On", 20, true, DARK);
         card.addView(title, matchWrap());
         card.addView(text("v" + BuildConfig.VERSION_NAME, 13, false, MUTED), matchWrap());
+        card.addView(updateButton(), new LinearLayout.LayoutParams(dp(44), dp(44)));
 
         status = text("입력 제어 확인 중", 16, true, DARK);
         LinearLayout.LayoutParams statusParams = matchWrap();

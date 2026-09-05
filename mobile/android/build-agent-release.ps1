@@ -68,3 +68,8 @@ foreach ($Product in $Products) {
   Write-Output "Firebase ZIP ready: $($Product.Zip)"
   Write-Output "ZIP SHA-256: $ZipHash"
 }
+
+$Aapt = Join-Path (Split-Path -Parent $ApkSigner) "aapt.exe"
+if (-not (Test-Path $Aapt)) { throw "Android SDK aapt is required to verify APK package/version metadata." }
+& node (Join-Path $AndroidDir "create-update-manifest.mjs") $Aapt
+if ($LASTEXITCODE -ne 0) { throw "Android update metadata generation failed; do not deploy these artifacts." }

@@ -21,6 +21,8 @@ aether-link-app/release-apk/
 aether-link-app/public/download/agent.zip
 aether-link-app/public/download/control-addon.zip
 aether-link-app/public/download/viewer.zip
+aether-link-app/public/download/android-update.json
+aether-link-app/public/download/android/
 aether-link-app/src-tauri/gen/schemas/
 aether-link-poc/target/
 functions/lib/

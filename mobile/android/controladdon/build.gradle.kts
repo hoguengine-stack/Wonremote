@@ -57,5 +57,6 @@ android {
 }
 
 dependencies {
+    implementation(project(":updatecore"))
     implementation(project(":controlcore"))
 }

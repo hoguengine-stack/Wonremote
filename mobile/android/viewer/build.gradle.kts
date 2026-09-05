@@ -1,8 +1,11 @@
 import java.util.Properties
 
+
 plugins {
     id("com.android.application")
 }
+
+dependencies { implementation(project(":updatecore")) }
 
 val releaseSigningFile = rootProject.file("keystore.properties")
 val releaseSigning = Properties().apply {

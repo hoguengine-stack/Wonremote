@@ -1,42 +1,114 @@
 {
-  "status": "verified",
-  "intent": "Make Android remote requests surface screen-share consent when possible, preserve approved MediaProjection through session cleanup, and deploy Hosting without unavailable Firebase Storage or Functions services.",
-  "requestReview": {
-    "impact": "none",
-    "reason": "The fix changes only Android local activity, projection, and session lifecycle handling. It adds no Firebase request, timer, listener, retry, polling, or persistence write."
-  },
+  "status": "ready-to-deploy",
+  "intent": "Android Agent, Viewer and Control Add-On check for APK updates on launch and offer verified in-place installation.",
   "changeType": "fix",
   "risk": "high",
   "releaseImpact": "build-and-deploy",
-  "rollback": "Revert the Android Agent consent and session-lifecycle commit or the Firebase deploy target change; registered devices and server data remain unchanged.",
-  "incident": "INC-20260906-002",
+  "rollback": "Revert updater implementation; retain existing installed packages and registration data. Publish a higher version if already released.",
+  "incident": "INC-20260906-003",
+  "requestReview": {
+    "impact": "changed",
+    "reason": "Adds bounded HTTPS Hosting manifest checks and user-approved ZIP downloads; no Firestore access.",
+    "assumptions": "One device, three apps each launched once and manually checked once per day, with one approved download each. Each check reads one static manifest and each download reads one ZIP; zero database documents, rule reads, writes or reconnect polling. More explicit launches/checks scale linearly.",
+    "dailyBudget": {
+      "clients": 3,
+      "readsPerClient": 3,
+      "writesPerClient": 0,
+      "maxReads": 9,
+      "maxWrites": 0
+    },
+    "checks": {
+      "idle": "UpdateClientTest.threeProductsDetect79To80AndDownloadVerifiedBytes: 86,400 idle/resume check attempts per app retain one startup manifest request; zero Firestore documents/writes.",
+      "rerender": "Repeated non-manual checks reuse the same client's startup result, including permission return. Activity destruction closes the client; a new Activity instance counts as a new explicit launch in this budget.",
+      "concurrency": "slowConcurrentChecksUseOneRequestAndClosedClientCannotRestart: blocked transport plus concurrent startup/manual calls opens one stream.",
+      "failure": "quotaOrNetworkFailureNeverRetriesWithoutUserAction: HTTP 429 plus 86,400 attempts causes one request, followed by exactly one request on explicit retry.",
+      "cleanup": "slowConcurrentChecksUseOneRequestAndClosedClientCannotRestart: close cancels in-flight response and prevents later reads; Activity onDestroy closes updater and shuts down worker. Physical lifecycle proof pending."
+    },
+    "contractTests": [
+      "mobile/android/updatecore/src/test/java/com/wonremote/update/UpdateClientTest.java"
+    ]
+  },
   "outcomes": [
     {
-      "id": "android-viewer-request-consent",
-      "acceptance": "When a Viewer requests an Android Agent without active screen sharing, the Agent immediately opens Android's consent flow while its activity or enabled accessibility control service can launch UI; otherwise it posts one high-priority approval notification without using restricted full-screen-intent privileges.",
-      "boundaries": ["Viewer Connect", "Firestore start-stream command", "Android Agent service", "Agent or Control Add-On accessibility service", "visible Agent activity or background notification", "MediaProjection system consent"],
-      "contractTests": ["mobile/android/agent/src/test/java/com/wonremote/agent/AgentProjectionRequestTest.java", "aether-link-app/src/desktopPackaging.test.ts"],
-      "proofLevel": "automated-runtime",
-      "verification": "2026-09-05: `npx vitest run src/desktopPackaging.test.ts -t \"requests Android screen-share consent only after an explicit Viewer request\"` passed 1/1. `gradlew :agent:testDebugUnitTest --tests com.wonremote.agent.AgentProjectionRequestTest :controladdon:compileDebugJavaWithJavac --build-cache` passed all 4 focused lifecycle tests and compiled Agent, Control Add-On, and shared accessibility code.",
-      "physicalGap": "Android background launch through the enabled Agent or Control Add-On accessibility service, system consent, and notification fallback still require a physical device check."
+      "id": "agent-apk-update",
+      "acceptance": "Launching Android agent checks its own installed APK version once, offers a newer release, verifies its download and opens Android's installation confirmation; a manual check reports current/error state.",
+      "boundaries": [
+        "Activity lifecycle",
+        "HTTPS Hosting manifest",
+        "versionCode and package selection",
+        "ZIP download and SHA256",
+        "installed signing identity",
+        "unknown-source permission",
+        "Android package installer",
+        "relaunch retains app data"
+      ],
+      "contractTests": [
+        "mobile/android/updatecore/src/test/java/com/wonremote/update/UpdateClientTest.java",
+        "aether-link-app/src/androidUpdateRelease.test.ts"
+      ],
+      "proofLevel": "physical-required",
+      "verification": "2026-09-06: :updatecore:testDebugUnitTest passed 6 tests, including all three package IDs detecting 1079 -> 1080 and extracting verified ZIP bytes, no idle/retry polling, concurrent checks, closure, and corrupt/untrusted payload rejection. Agent/Viewer/Control Add-On Java compilation passed. npx vitest run src/androidUpdateRelease.test.ts passed 8 tests, including stale metadata blocking and all three Activity integrations. Native installation UI, signer validation and permission return remain physical-required.",
+      "physicalGap": "No connected Android test device yet; 0.1.79/0.1.80 contain no APK updater and require one manual update to bootstrap. Actual signed upgrade, permissions and data retention need device proof."
     },
     {
-      "id": "android-projection-survives-session-cleanup",
-      "acceptance": "A stale stop command, a late callback from an older session, or closure of the active remote session cannot turn off the Android screen-sharing indicator; only the explicit local screen-share stop or Agent exit ends MediaProjection.",
-      "boundaries": ["ordered Agent command delivery", "session ID validation", "RemoteSessionController callback generation", "remote session cleanup", "ScreenFrameStreamer MediaProjection ownership"],
-      "contractTests": ["mobile/android/agent/src/test/java/com/wonremote/agent/AgentProjectionRequestTest.java", "aether-link-app/src/desktopPackaging.test.ts"],
-      "proofLevel": "automated-runtime",
-      "verification": "2026-09-05: The focused Android JUnit class passed 4/4, covering current-session stop matching, stale callback rejection, and consent fallback. The packaging contract passed 1/1 and pins projection-preserving cancel, stop-command, and session-close paths.",
-      "physicalGap": "The Android red screen-sharing indicator and first remote frame require physical verification."
+      "id": "viewer-apk-update",
+      "acceptance": "Launching Android viewer checks its own installed APK version once, offers a newer release, verifies its download and opens Android's installation confirmation; a manual check reports current/error state.",
+      "boundaries": [
+        "Activity lifecycle",
+        "HTTPS Hosting manifest",
+        "versionCode and package selection",
+        "ZIP download and SHA256",
+        "installed signing identity",
+        "unknown-source permission",
+        "Android package installer",
+        "relaunch retains app data"
+      ],
+      "contractTests": [
+        "mobile/android/updatecore/src/test/java/com/wonremote/update/UpdateClientTest.java",
+        "aether-link-app/src/androidUpdateRelease.test.ts"
+      ],
+      "proofLevel": "physical-required",
+      "verification": "2026-09-06: :updatecore:testDebugUnitTest passed 6 tests, including all three package IDs detecting 1079 -> 1080 and extracting verified ZIP bytes, no idle/retry polling, concurrent checks, closure, and corrupt/untrusted payload rejection. Agent/Viewer/Control Add-On Java compilation passed. npx vitest run src/androidUpdateRelease.test.ts passed 8 tests, including stale metadata blocking and all three Activity integrations. Native installation UI, signer validation and permission return remain physical-required.",
+      "physicalGap": "No connected Android test device yet; 0.1.79/0.1.80 contain no APK updater and require one manual update to bootstrap. Actual signed upgrade, permissions and data retention need device proof."
     },
     {
-      "id": "firebase-hosting-deploy-without-storage",
-      "acceptance": "The normal deployment command publishes Viewer and Android ZIP Hosting content without failing when Firebase Storage or Functions deployment services are unavailable; Storage and Functions deploy only when explicitly requested after their platform prerequisites are set up.",
-      "boundaries": ["npm firebase:deploy", "deploy-firebase.ps1 target selection", "Firebase CLI", "Firebase Hosting static download routes", "Firebase Functions billing/API prerequisites"],
-      "contractTests": ["aether-link-app/src/desktopPackaging.test.ts"],
-      "proofLevel": "deployment-required",
-      "verification": "2026-09-06: `npm run firebase:deploy` completed for Firestore rules and Hosting. HTTPS checks confirmed `agent.apk`, `viewer.apk`, and `control-addon.apk` redirect to their ZIP files, and `agent.zip` returned 200 with the v0.1.80 Agent ZIP content length.",
-      "physicalGap": "Hosting delivery is verified; Firebase Storage-backed 500MB transfer remains intentionally unavailable until Storage is initialized and deployed with -IncludeStorage."
+      "id": "controladdon-apk-update",
+      "acceptance": "Launching Android controladdon checks its own installed APK version once, offers a newer release, verifies its download and opens Android's installation confirmation; a manual check reports current/error state.",
+      "boundaries": [
+        "Activity lifecycle",
+        "HTTPS Hosting manifest",
+        "versionCode and package selection",
+        "ZIP download and SHA256",
+        "installed signing identity",
+        "unknown-source permission",
+        "Android package installer",
+        "relaunch retains app data"
+      ],
+      "contractTests": [
+        "mobile/android/updatecore/src/test/java/com/wonremote/update/UpdateClientTest.java",
+        "aether-link-app/src/androidUpdateRelease.test.ts"
+      ],
+      "proofLevel": "physical-required",
+      "verification": "2026-09-06: :updatecore:testDebugUnitTest passed 6 tests, including all three package IDs detecting 1079 -> 1080 and extracting verified ZIP bytes, no idle/retry polling, concurrent checks, closure, and corrupt/untrusted payload rejection. Agent/Viewer/Control Add-On Java compilation passed. npx vitest run src/androidUpdateRelease.test.ts passed 8 tests, including stale metadata blocking and all three Activity integrations. Native installation UI, signer validation and permission return remain physical-required.",
+      "physicalGap": "No connected Android test device yet; 0.1.79/0.1.80 contain no APK updater and require one manual update to bootstrap. Actual signed upgrade, permissions and data retention need device proof."
+    },
+    {
+      "id": "android-release-update-discovery",
+      "acceptance": "An Android build publishes versioned ZIPs with metadata from all three actual APKs; Hosting deployment refuses missing or stale update metadata.",
+      "boundaries": [
+        "built APK badging",
+        "version/package check",
+        "ZIP and APK SHA256",
+        "versioned Hosting ZIP paths",
+        "android-update.json",
+        "deployment verification"
+      ],
+      "contractTests": [
+        "aether-link-app/src/androidUpdateRelease.test.ts"
+      ],
+      "proofLevel": "automated-runtime",
+      "verification": "2026-09-06: 8 focused Vitest tests passed for three-product generated metadata, stale/wrong package rejection, payload tampering, missing discovery, immutable version reuse and native launch integration. Physical APK upgrade and live Hosting publication remain pending the next requested release.",
+      "physicalGap": "No release APKs built or deployed in this change; installed 0.1.79/0.1.80 apps require manual bootstrap."
     }
   ]
 }

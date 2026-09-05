@@ -19,6 +19,11 @@ $AppDir = Resolve-Path (Join-Path $ScriptDir "..")
 $RepoRoot = Resolve-Path (Join-Path $AppDir "..")
 $FunctionsDir = Join-Path $RepoRoot "functions"
 
+& node (Join-Path $RepoRoot "mobile/android/create-update-manifest.mjs") --verify
+if ($LASTEXITCODE -ne 0) {
+  throw "Android update metadata is missing or stale. Rebuild the three Android apps before deploying their downloads."
+}
+
 if (-not (Test-Path (Join-Path $RepoRoot "firebase.json"))) {
   throw "firebase.json was not found at repository root."
 }
