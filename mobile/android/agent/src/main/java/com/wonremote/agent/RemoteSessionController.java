@@ -104,6 +104,9 @@ final class RemoteSessionController {
         sessionId = nextSessionId;
         DocumentReference session = firestore.collection("sessions").document(nextSessionId);
         sessionListener = session.addSnapshotListener((snapshot, error) -> {
+            if (!isCurrentSession(nextSessionId, sessionId)) {
+                return;
+            }
             if (error == null && snapshot != null && "closed".equals(snapshot.getString("state"))) {
                 closeSession();
                 sessionClosed.run();
@@ -111,10 +114,15 @@ final class RemoteSessionController {
         });
         signalListener = session.collection("webrtc").document("signal")
             .addSnapshotListener((snapshot, error) -> {
-                if (error == null && snapshot != null && snapshot.exists()) {
+                if (isCurrentSession(nextSessionId, sessionId)
+                    && error == null && snapshot != null && snapshot.exists()) {
                     acceptOffer(snapshot);
                 }
             });
+    }
+
+    static boolean isCurrentSession(String expectedSessionId, String activeSessionId) {
+        return expectedSessionId != null && expectedSessionId.equals(activeSessionId);
     }
 
     void close() {

@@ -2,6 +2,9 @@ package com.wonremote.agent;
 
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.GestureDescription;
+import android.content.ActivityNotFoundException;
+import android.content.ComponentName;
+import android.content.Intent;
 import android.graphics.Path;
 import android.graphics.PointF;
 import android.os.Bundle;
@@ -14,6 +17,11 @@ import java.util.ArrayList;
 import java.util.List;
 
 public final class WonRemoteAccessibilityService extends AccessibilityService {
+    public static final String COMMAND_REQUEST_SCREEN_SHARE_CONSENT = "request-screen-share-consent";
+
+    private static final String AGENT_PACKAGE = "com.wonremote.agent";
+    private static final String AGENT_ACTIVITY = AGENT_PACKAGE + ".MainActivity";
+    private static final String ACTION_REQUEST_SCREEN_SHARE = AGENT_PACKAGE + ".REQUEST_SCREEN_SHARE";
     private static volatile WonRemoteAccessibilityService active;
 
     private final List<PointF> dragPoints = new ArrayList<>();
@@ -35,6 +43,23 @@ public final class WonRemoteAccessibilityService extends AccessibilityService {
             service.pressedButton = null;
             service.dragPoints.clear();
             service.controlPressed = false;
+        }
+    }
+
+    public static boolean requestScreenShareConsent() {
+        WonRemoteAccessibilityService service = active;
+        if (service == null) {
+            return false;
+        }
+        try {
+            service.startActivity(
+                new Intent(ACTION_REQUEST_SCREEN_SHARE)
+                    .setComponent(new ComponentName(AGENT_PACKAGE, AGENT_ACTIVITY))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            );
+            return true;
+        } catch (ActivityNotFoundException | SecurityException error) {
+            return false;
         }
     }
 

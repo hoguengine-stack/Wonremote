@@ -872,3 +872,18 @@ This also covers development-process escapes: missed requirements, incomplete pl
 - Regression proof: `npx vitest run src/desktopPackaging.test.ts -t "builds releases from gated main commits so release caches remain reusable"` passed 1/1 and pins the contract-based stage selector separately from the version-release build condition.
 - Release proof: GitHub Actions run `33949370940` completed successfully on commit `73e4243`, proving the corrected selector parses and preserves the completed-contract path.
 - Remaining blocker: The next real deploy-only push will provide the first live execution of the predeploy branch; its contract selection is covered by the focused workflow test.
+
+## INC-20260905-008: Android remote request failed to preserve or request screen sharing
+
+- Detected: 2026-09-05.
+- Severity: P1 remote-access failure.
+- Affected: Android Agent Viewer-request consent, prepared MediaProjection, and remote-session replacement or cleanup.
+- Status: source-verified-not-released.
+- User-visible symptom: Viewer Connect did not surface the Android screen-share consent flow; after manual sharing began, Connect turned off Android's red screen-sharing indicator and no remote screen appeared.
+- Minimal trigger: Start Android screen sharing manually, then connect from Viewer while a stale stop command or a late closed-session callback can still be delivered.
+- Root cause and contributors: Viewer requests created only a notification even when the Agent activity was visible. Android handled every `stop-stream` without validating its session ID, treated remote-session closure as projection closure, and allowed removed listeners to act on a replacement session.
+- Fix commit(s): pending.
+- Permanent guard: Separate remote-session teardown from explicit MediaProjection teardown, require stop commands and asynchronous callbacks to match the current session, launch consent through a visible Agent or an enabled accessibility control service, and retain the policy-compliant high-priority notification fallback.
+- Regression proof: `gradlew :agent:testDebugUnitTest --tests com.wonremote.agent.AgentProjectionRequestTest :controladdon:compileDebugJavaWithJavac --build-cache` passed 4/4 focused tests and compiled all changed Android modules; `npx vitest run src/desktopPackaging.test.ts -t "requests Android screen-share consent only after an explicit Viewer request"` passed 1/1.
+- Release proof: Pending. The first release build exposed Firebase Auth 24.x Kotlin 2.3 metadata as incompatible with the project's Android Gradle lint compiler. Firebase BOM is pinned to 33.16.0 for the Kotlin 2.0-compatible Auth 23.2.1 line before retrying the release build.
+- Remaining blocker: Build only when explicitly requested, then physically verify background consent launch, notification fallback, red-indicator persistence, and first-frame delivery on Android.

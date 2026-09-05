@@ -84,6 +84,12 @@ public final class AgentService extends Service {
             && !sessionId.equals(pendingId);
     }
 
+    static boolean shouldStopRemoteSession(String action, String activeSessionId) {
+        String prefix = "stop-stream ";
+        return action != null && action.startsWith(prefix) && activeSessionId != null
+            && activeSessionId.equals(action.substring(prefix.length()).trim());
+    }
+
     @Override
     public void onCreate() {
         super.onCreate();
@@ -216,14 +222,17 @@ public final class AgentService extends Service {
         notifications.createNotificationChannel(requestChannel);
     }
 
-    private PendingIntent projectionApprovalIntent() {
-        Intent intent = new Intent(this, MainActivity.class)
+    private Intent projectionApprovalActivityIntent() {
+        return new Intent(this, MainActivity.class)
             .setAction(MainActivity.ACTION_REQUEST_SCREEN_SHARE)
-            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+    }
+
+    private PendingIntent projectionApprovalIntent() {
         return PendingIntent.getActivity(
             this,
             3,
-            intent,
+            projectionApprovalActivityIntent(),
             PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
     }
@@ -246,7 +255,6 @@ public final class AgentService extends Service {
             .setContentText("승인하려면 눌러 전체 화면 공유를 시작하세요.")
             .setContentIntent(approve)
             .setDeleteIntent(cancel)
-            .setAutoCancel(true)
             .setCategory(Notification.CATEGORY_EVENT)
             .setPriority(Notification.PRIORITY_HIGH)
             .setVisibility(Notification.VISIBILITY_PUBLIC)
@@ -257,6 +265,11 @@ public final class AgentService extends Service {
         getSystemService(NotificationManager.class).notify(REQUEST_NOTIFICATION_ID, notification);
         handler.removeCallbacks(projectionRequestTimeout);
         handler.postDelayed(projectionRequestTimeout, APPROVAL_TIMEOUT_MS);
+        if (MainActivity.isVisible()) {
+            startActivity(projectionApprovalActivityIntent());
+        } else if (!WonRemoteAccessibilityService.requestScreenShareConsent()) {
+            ControlAddonClient.requestScreenShareConsent(this);
+        }
     }
 
     private Notification notification(String status) {
@@ -343,17 +356,29 @@ public final class AgentService extends Service {
     }
 
     private void stopProjection() {
-        endProjection("온라인", true);
+        endProjection("온라인");
     }
 
     private void cancelProjectionRequest(String status) {
-        endProjection(status, true);
+        if (streamer.isReady()) {
+            clearProjectionRequest();
+            updateNotification("온라인 · 화면 공유 준비됨");
+            return;
+        }
+        endProjection(status);
     }
 
-    private void endProjection(String status, boolean stopSession) {
+    private void finishRemoteSession() {
         pendingSessionId = null;
         clearProjectionRequest();
-        if (stopSession && remoteSession != null) {
+        releaseSessionWakeLock();
+        updateNotification(streamer.isReady() ? "온라인 · 화면 공유 준비됨" : "온라인");
+    }
+
+    private void endProjection(String status) {
+        pendingSessionId = null;
+        clearProjectionRequest();
+        if (remoteSession != null) {
             remoteSession.stopSession();
         }
         streamer.stopProjection();
@@ -400,7 +425,12 @@ public final class AgentService extends Service {
             return;
         }
         if (action.startsWith("stop-stream")) {
-            stopProjection();
+            if (shouldStopRemoteSession(action, pendingSessionId)) {
+                if (remoteSession != null) {
+                    remoteSession.stopSession();
+                }
+                finishRemoteSession();
+            }
             return;
         }
         if ("request-keyframe".equals(action)) {
@@ -421,7 +451,7 @@ public final class AgentService extends Service {
                 streamer,
                 this::handleCommand,
                 () -> ControlAddonClient.releasePointer(this),
-                () -> endProjection("온라인", false)
+                this::finishRemoteSession
             );
         }
         return remoteSession;

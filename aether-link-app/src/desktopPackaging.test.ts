@@ -9,7 +9,7 @@ describe("desktop packaging scaffold", () => {
   it("uses Tauri with the existing Vite build output", () => {
     const configPath = path.join(projectRoot, "src-tauri", "tauri.conf.json");
     expect(existsSync(configPath)).toBe(true);
-    expect(packageJson.version).toBe("0.1.79");
+    expect(packageJson.version).toBe("0.1.80");
 
     const config = JSON.parse(readFileSync(configPath, "utf8"));
     expect(config.build).toMatchObject({
@@ -710,11 +710,26 @@ describe("desktop packaging scaffold", () => {
   });
 
   it("requests Android screen-share consent only after an explicit Viewer request", () => {
-    const androidRoot = path.join(projectRoot, "..", "mobile", "android", "agent", "src", "main");
-    const manifest = readFileSync(path.join(androidRoot, "AndroidManifest.xml"), "utf8");
-    const sourceRoot = path.join(androidRoot, "java", "com", "wonremote", "agent");
+    const androidRoot = path.join(projectRoot, "..", "mobile", "android");
+    const agentRoot = path.join(androidRoot, "agent", "src", "main");
+    const manifest = readFileSync(path.join(agentRoot, "AndroidManifest.xml"), "utf8");
+    const sourceRoot = path.join(agentRoot, "java", "com", "wonremote", "agent");
     const activity = readFileSync(path.join(sourceRoot, "MainActivity.java"), "utf8");
     const service = readFileSync(path.join(sourceRoot, "AgentService.java"), "utf8");
+    const addonClient = readFileSync(path.join(sourceRoot, "ControlAddonClient.java"), "utf8");
+    const remoteSession = readFileSync(path.join(sourceRoot, "RemoteSessionController.java"), "utf8");
+    const accessibilityService = readFileSync(
+      path.join(androidRoot, "controlcore", "src", "main", "java", "com", "wonremote", "agent", "WonRemoteAccessibilityService.java"),
+      "utf8",
+    );
+    const addonReceiver = readFileSync(
+      path.join(androidRoot, "controladdon", "src", "main", "java", "com", "wonremote", "controladdon", "ControlCommandReceiver.java"),
+      "utf8",
+    );
+    const stopCommandBranch = service.split('if (action.startsWith("stop-stream")) {')[1]
+      ?.split('if ("request-keyframe".equals(action))')[0] ?? "";
+    const cancelRequestBranch = service.split("private void cancelProjectionRequest")[1]
+      ?.split("private void finishRemoteSession")[0] ?? "";
 
     expect(manifest).toContain('android:launchMode="singleTop"');
     expect(activity).toContain("ACTION_REQUEST_SCREEN_SHARE");
@@ -724,8 +739,23 @@ describe("desktop packaging scaffold", () => {
     expect(service).toContain("showProjectionRequest");
     expect(service).toContain("APPROVAL_TIMEOUT_MS");
     expect(service).toContain("shouldPromptForProjection");
+    expect(service).toContain("shouldStopRemoteSession");
     expect(service).toContain("setDeleteIntent");
-    expect(service).toContain('endProjection("온라인", false)');
+    expect(service).not.toContain(".setAutoCancel(true)");
+    expect(service).toContain("MainActivity.isVisible()");
+    expect(service).toContain("startActivity(projectionApprovalActivityIntent())");
+    expect(service).toContain("WonRemoteAccessibilityService.requestScreenShareConsent()");
+    expect(service).toContain("ControlAddonClient.requestScreenShareConsent(this)");
+    expect(addonClient).toContain("COMMAND_REQUEST_SCREEN_SHARE_CONSENT");
+    expect(addonReceiver).toContain("WonRemoteAccessibilityService.requestScreenShareConsent()");
+    expect(accessibilityService).toContain("new ComponentName(AGENT_PACKAGE, AGENT_ACTIVITY)");
+    expect(service).toContain("this::finishRemoteSession");
+    expect(service).not.toContain('endProjection("온라인", false)');
+    expect(cancelRequestBranch).toContain("if (streamer.isReady())");
+    expect(stopCommandBranch).toContain("shouldStopRemoteSession");
+    expect(stopCommandBranch).toContain("finishRemoteSession()");
+    expect(stopCommandBranch).not.toContain("stopProjection()");
+    expect(remoteSession).toContain("isCurrentSession(nextSessionId, sessionId)");
     expect(service).not.toContain("setFullScreenIntent");
   });
 

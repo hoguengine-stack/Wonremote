@@ -26,6 +26,7 @@ import android.widget.TextView;
 
 public final class MainActivity extends Activity {
     static final String ACTION_REQUEST_SCREEN_SHARE = "com.wonremote.agent.REQUEST_SCREEN_SHARE";
+    private static volatile boolean visible;
 
     private static final int ACCENT = Color.rgb(22, 125, 113);
     private static final int DARK = Color.rgb(18, 33, 43);
@@ -62,6 +63,22 @@ public final class MainActivity extends Activity {
             AgentService.start(this);
         }
         handleLaunchIntent(getIntent());
+    }
+
+    static boolean isVisible() {
+        return visible;
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        visible = true;
+    }
+
+    @Override
+    protected void onStop() {
+        visible = false;
+        super.onStop();
     }
 
     private View buildContent() {

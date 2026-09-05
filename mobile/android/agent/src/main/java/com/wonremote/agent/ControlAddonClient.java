@@ -53,6 +53,10 @@ final class ControlAddonClient {
         WonRemoteAccessibilityService.releasePointer();
     }
 
+    static boolean requestScreenShareConsent(Context context) {
+        return execute(context, WonRemoteAccessibilityService.COMMAND_REQUEST_SCREEN_SHARE_CONSENT);
+    }
+
     static boolean containsEnabledService(String enabledServices) {
         if (enabledServices == null || enabledServices.isBlank()) {
             return false;
