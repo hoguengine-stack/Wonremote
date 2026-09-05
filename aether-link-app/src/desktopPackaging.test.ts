@@ -9,7 +9,7 @@ describe("desktop packaging scaffold", () => {
   it("uses Tauri with the existing Vite build output", () => {
     const configPath = path.join(projectRoot, "src-tauri", "tauri.conf.json");
     expect(existsSync(configPath)).toBe(true);
-    expect(packageJson.version).toBe("0.1.81");
+    expect(packageJson.version).toBe("0.1.82");
 
     const config = JSON.parse(readFileSync(configPath, "utf8"));
     expect(config.build).toMatchObject({
@@ -255,8 +255,9 @@ describe("desktop packaging scaffold", () => {
       "desktop:dev": "tauri dev",
       "desktop:build": "tauri build",
       "firebase:deploy": "powershell -ExecutionPolicy Bypass -File scripts/deploy-firebase.ps1",
+      "firebase:deploy:with-functions": "powershell -ExecutionPolicy Bypass -File scripts/deploy-firebase.ps1 -IncludeFunctions",
       "firebase:deploy:spark": "powershell -ExecutionPolicy Bypass -File scripts/deploy-firebase.ps1 -SparkOnly",
-      "firebase:deploy:spark:no-storage": "powershell -ExecutionPolicy Bypass -File scripts/deploy-firebase.ps1 -SparkOnly -SkipStorage",
+      "firebase:deploy:spark:no-storage": "powershell -ExecutionPolicy Bypass -File scripts/deploy-firebase.ps1 -SparkOnly",
       "firebase:verify": "node scripts/verify-firebase-deploy-readiness.js",
       "release:exes": "node scripts/package-release-exes.js && node scripts/verify-x86-installer-payloads.js",
       "release:manifest": "node scripts/create-update-manifest.js",
@@ -311,6 +312,7 @@ describe("desktop packaging scaffold", () => {
     expect(deployScript).toContain("firebase-tools");
     expect(deployScript).toContain('if ($LASTEXITCODE -ne 0) { throw "Firebase deployment failed with exit code $LASTEXITCODE." }');
     expect(deployScript).toContain("Get-Command npx");
+    expect(deployScript).toContain("create-update-manifest.mjs");
   });
 
   it("does not render the local API URL field in Firebase Agent mode", () => {

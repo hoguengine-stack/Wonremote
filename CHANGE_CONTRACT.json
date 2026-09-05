@@ -25,7 +25,8 @@
       "cleanup": "slowConcurrentChecksUseOneRequestAndClosedClientCannotRestart: close cancels in-flight response and prevents later reads; Activity onDestroy closes updater and shuts down worker. Physical lifecycle proof pending."
     },
     "contractTests": [
-      "mobile/android/updatecore/src/test/java/com/wonremote/update/UpdateClientTest.java"
+      "mobile/android/updatecore/src/test/java/com/wonremote/update/UpdateClientTest.java",
+      "aether-link-app/src/desktopPackaging.test.ts"
     ]
   },
   "outcomes": [
@@ -44,7 +45,8 @@
       ],
       "contractTests": [
         "mobile/android/updatecore/src/test/java/com/wonremote/update/UpdateClientTest.java",
-        "aether-link-app/src/androidUpdateRelease.test.ts"
+        "aether-link-app/src/androidUpdateRelease.test.ts",
+        "aether-link-app/src/desktopPackaging.test.ts"
       ],
       "proofLevel": "physical-required",
       "verification": "2026-09-06: :updatecore:testDebugUnitTest passed 6 tests, including all three package IDs detecting 1079 -> 1080 and extracting verified ZIP bytes, no idle/retry polling, concurrent checks, closure, and corrupt/untrusted payload rejection. Agent/Viewer/Control Add-On Java compilation passed. npx vitest run src/androidUpdateRelease.test.ts passed 8 tests, including stale metadata blocking and all three Activity integrations. Native installation UI, signer validation and permission return remain physical-required.",
@@ -65,7 +67,8 @@
       ],
       "contractTests": [
         "mobile/android/updatecore/src/test/java/com/wonremote/update/UpdateClientTest.java",
-        "aether-link-app/src/androidUpdateRelease.test.ts"
+        "aether-link-app/src/androidUpdateRelease.test.ts",
+        "aether-link-app/src/desktopPackaging.test.ts"
       ],
       "proofLevel": "physical-required",
       "verification": "2026-09-06: :updatecore:testDebugUnitTest passed 6 tests, including all three package IDs detecting 1079 -> 1080 and extracting verified ZIP bytes, no idle/retry polling, concurrent checks, closure, and corrupt/untrusted payload rejection. Agent/Viewer/Control Add-On Java compilation passed. npx vitest run src/androidUpdateRelease.test.ts passed 8 tests, including stale metadata blocking and all three Activity integrations. Native installation UI, signer validation and permission return remain physical-required.",
@@ -86,7 +89,8 @@
       ],
       "contractTests": [
         "mobile/android/updatecore/src/test/java/com/wonremote/update/UpdateClientTest.java",
-        "aether-link-app/src/androidUpdateRelease.test.ts"
+        "aether-link-app/src/androidUpdateRelease.test.ts",
+        "aether-link-app/src/desktopPackaging.test.ts"
       ],
       "proofLevel": "physical-required",
       "verification": "2026-09-06: :updatecore:testDebugUnitTest passed 6 tests, including all three package IDs detecting 1079 -> 1080 and extracting verified ZIP bytes, no idle/retry polling, concurrent checks, closure, and corrupt/untrusted payload rejection. Agent/Viewer/Control Add-On Java compilation passed. npx vitest run src/androidUpdateRelease.test.ts passed 8 tests, including stale metadata blocking and all three Activity integrations. Native installation UI, signer validation and permission return remain physical-required.",
@@ -104,7 +108,8 @@
         "deployment verification"
       ],
       "contractTests": [
-        "aether-link-app/src/androidUpdateRelease.test.ts"
+        "aether-link-app/src/androidUpdateRelease.test.ts",
+        "aether-link-app/src/desktopPackaging.test.ts"
       ],
       "proofLevel": "automated-runtime",
       "verification": "2026-09-06: 8 focused Vitest tests passed for three-product generated metadata, stale/wrong package rejection, payload tampering, missing discovery, immutable version reuse and native launch integration. Physical APK upgrade and live Hosting publication remain pending the next requested release.",

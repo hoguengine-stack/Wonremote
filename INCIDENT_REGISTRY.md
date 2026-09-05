@@ -885,7 +885,7 @@ This also covers development-process escapes: missed requirements, incomplete pl
 - Fix commit(s): pending.
 - Permanent guard: Share one APK updater across all three activities; generate version/package/hash metadata from built APKs and validate release bundles. Verify old installed APK to new signed APK installation, not merely HTTP availability. Versions without the updater explicitly require one manual bootstrap.
 - Regression proof: :updatecore:testDebugUnitTest passed 6 request/download tests; npx vitest run src/androidUpdateRelease.test.ts passed 8 release metadata/integration tests, including real ZIP extraction matching the APK and stale-archive rejection. All three apps compiled. Actual Android install/permissions/data-retention proof is pending; adb devices listed no device.
-- Release proof: Not built or deployed for this change.
+- Release proof: Android Hosting published v0.1.81 discovery metadata and ZIPs. GitHub Actions run 33983706061 failed before PC installer publication because the desktop packaging test retained the old `firebase:deploy:spark:no-storage` command expectation. That test now pins the current script interface before the next versioned release.
 - Remaining blocker: Physical signed upgrade on Android, user installation consent and preservation of registration/accessibility settings.
 
 ## INC-20260906-002: Normal Firebase deploy required unavailable Functions infrastructure
