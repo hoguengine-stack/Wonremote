@@ -1,14 +1,32 @@
 {
   "status": "verified",
-  "intent": "Android Agent background connection crash can be captured from another Windows PC without a console closing on startup.",
+  "intent": "Android Agent background connection crash can be captured from another Windows PC even when ADB is not preinstalled.",
   "changeType": "fix",
   "risk": "high",
   "releaseImpact": "none",
   "rollback": "Remove the local diagnostic script; no installed application, device setting or service data is changed.",
   "incident": "INC-20260906-004",
   "requestReview": {
-    "impact": "none",
-    "reason": "The diagnostic script invokes local ADB only after the operator connects an authorized USB device. It adds no app network requests, timers, listeners, retries or database operations."
+    "impact": "changed",
+    "reason": "The manually launched local collector downloads one official Android Platform-Tools ZIP only when adb.exe is absent; it does not access Firebase or add background app traffic.",
+    "assumptions": "One operator on one Windows PC launches the collector once. If ADB is absent, that launch reads one Google-hosted ZIP and writes zero remote records; later runs reuse the extracted adb.exe. There are no timers, listeners, automatic retries or app service requests.",
+    "dailyBudget": {
+      "clients": 1,
+      "readsPerClient": 1,
+      "writesPerClient": 0,
+      "maxReads": 1,
+      "maxWrites": 0
+    },
+    "checks": {
+      "idle": "The collector has no scheduled task, timer, listener or background process; no launch means zero requests.",
+      "rerender": "The collector has no UI lifecycle or remount path; each explicit launch is counted as one client launch.",
+      "concurrency": "The script performs one synchronous Invoke-WebRequest per launch and shares no running service; concurrent manual launches may each download once and are outside the one-operator budget.",
+      "failure": "Invoke-WebRequest errors terminate because ErrorActionPreference is Stop; no retry loop is present.",
+      "cleanup": "The downloaded ZIP is removed after successful extraction, while extracted adb.exe is retained for future runs."
+    },
+    "contractTests": [
+      "aether-link-app/src/androidCrashLogCollector.test.ts"
+    ]
   },
   "outcomes": [
     {
@@ -35,7 +53,7 @@
     },
     {
       "id": "android-crash-log-capture",
-      "acceptance": "On another Windows PC, an operator can open a visible launcher, clear Android logs, reproduce the first and second Viewer connection attempts, and receive a ZIP containing timestamped logcat, device properties and Agent package state.",
+      "acceptance": "On another Windows PC, an operator can launch a visible collector that acquires Android Platform-Tools when absent, clear Android logs, reproduce the first and second Viewer connection attempts, and receive a ZIP containing timestamped logcat, device properties and Agent package state.",
       "boundaries": [
         "Windows PowerShell",
         "ADB discovery",
@@ -51,7 +69,7 @@
         "aether-link-app/src/androidCrashLogCollector.test.ts"
       ],
       "proofLevel": "physical-required",
-      "verification": "2026-09-06: npx vitest run src/androidCrashLogCollector.test.ts passed 2 tests. The launcher retains the PowerShell window with -NoExit and calls the collector; the collector self-test creates and removes its own timestamped folder without a device.",
+      "verification": "2026-09-06: npx vitest run src/androidCrashLogCollector.test.ts passed 3 tests, including the official Platform-Tools download path. PowerShell collector self-test passed. Physical capture remains required.",
       "physicalGap": "Requires the affected Android device connected to a separate Windows PC with USB debugging authorized; run the capture through both connection attempts and provide the generated ZIP."
     }
   ]

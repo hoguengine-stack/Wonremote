@@ -2,6 +2,7 @@ param([switch]$SelfTest)
 
 $ErrorActionPreference = "Stop"
 $AgentPackage = "com.wonremote.agent"
+$PlatformToolsUrl = "https://dl.google.com/android/repository/platform-tools-latest-windows.zip"
 
 function Get-AdbPath {
   $candidates = @((Join-Path $PSScriptRoot "adb.exe"))
@@ -11,7 +12,17 @@ function Get-AdbPath {
   if ($paths) { return $paths[0] }
   $command = Get-Command adb.exe -ErrorAction SilentlyContinue
   if ($command) { return $command.Source }
-  throw "ADB를 찾지 못했습니다. Android SDK Platform-Tools를 설치하거나 adb.exe를 이 파일 옆에 두세요."
+
+  $archive = Join-Path $PSScriptRoot "platform-tools.zip"
+  $directory = Join-Path $PSScriptRoot "platform-tools"
+  Write-Host "ADB was not found. Downloading Android Platform-Tools..."
+  [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+  Invoke-WebRequest -Uri $PlatformToolsUrl -OutFile $archive
+  Expand-Archive -LiteralPath $archive -DestinationPath $PSScriptRoot -Force
+  Remove-Item -LiteralPath $archive -Force
+  $downloaded = Join-Path $directory "adb.exe"
+  if (Test-Path $downloaded) { return $downloaded }
+  throw "Android Platform-Tools download did not contain adb.exe."
 }
 
 function New-CaptureDirectory {
@@ -23,7 +34,7 @@ function New-CaptureDirectory {
 
 if ($SelfTest) {
   $path = New-CaptureDirectory
-  if (-not (Test-Path $path)) { throw "캡처 폴더 생성 실패" }
+  if (-not (Test-Path $path)) { throw "Capture folder creation failed." }
   Remove-Item -LiteralPath $path -Force
   Write-Output "Self-test passed."
   exit 0
@@ -32,12 +43,12 @@ if ($SelfTest) {
 $adb = Get-AdbPath
 $device = (& $adb devices | Select-String "\tdevice$" | Select-Object -First 1).ToString().Split("`t")[0]
 if ([string]::IsNullOrWhiteSpace($device)) {
-  throw "USB 디버깅을 허용한 Android 기기를 연결한 뒤 다시 실행하세요."
+  throw "Connect an Android device and allow USB debugging, then run this again."
 }
 
 $output = New-CaptureDirectory
 & $adb -s $device logcat -c
-Write-Host "로그를 비웠습니다. PC Viewer에서 첫 접속과 두 번째 접속을 재현한 뒤 Enter를 누르세요."
+Write-Host "Logs cleared. Reproduce the first and second PC Viewer connections, then press Enter."
 [void](Read-Host)
 
 & $adb -s $device get-state | Out-File (Join-Path $output "adb-state.txt") -Encoding utf8
@@ -49,4 +60,4 @@ Write-Host "로그를 비웠습니다. PC Viewer에서 첫 접속과 두 번째 
 
 $zip = "$output.zip"
 Compress-Archive -Path (Join-Path $output "*") -DestinationPath $zip -Force
-Write-Host "완료: $zip"
+Write-Host "Complete: $zip"
