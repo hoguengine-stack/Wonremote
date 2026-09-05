@@ -878,14 +878,14 @@ This also covers development-process escapes: missed requirements, incomplete pl
 - Detected: 2026-09-06.
 - Severity: P1 update delivery omission.
 - Affected: Android Agent, Viewer and Control Add-On 0.1.79 and 0.1.80.
-- Status: source-verified-physical-pending.
+- Status: released-physical-pending.
 - User-visible symptom: All three apps stay on 0.1.79 after 0.1.80 publication and show no update prompt on launch.
 - Minimal trigger: Launch any installed 0.1.79 APK after publishing the newer ZIP.
 - Root cause and contributors: None of the three native apps implemented APK version checking, download or installer invocation. Release verification checked static ZIP availability and confused Viewer web content updates with APK upgrades.
-- Fix commit(s): pending.
+- Fix commit(s): `1a673ca`, `8795256`.
 - Permanent guard: Share one APK updater across all three activities; generate version/package/hash metadata from built APKs and validate release bundles. Verify old installed APK to new signed APK installation, not merely HTTP availability. Versions without the updater explicitly require one manual bootstrap.
 - Regression proof: :updatecore:testDebugUnitTest passed 6 request/download tests; npx vitest run src/androidUpdateRelease.test.ts passed 8 release metadata/integration tests, including real ZIP extraction matching the APK and stale-archive rejection. All three apps compiled. Actual Android install/permissions/data-retention proof is pending; adb devices listed no device.
-- Release proof: Android Hosting published v0.1.81 discovery metadata and ZIPs. GitHub Actions run 33983706061 failed before PC installer publication because the desktop packaging test retained the old `firebase:deploy:spark:no-storage` command expectation. That test now pins the current script interface before the next versioned release.
+- Release proof: GitHub Actions run 33984013681 published v0.1.82 with two signed x86 installers and manifest. Firebase Hosting returned 200 for all three v0.1.82 Android ZIPs, and android-update.json reports versionCode 1082 with the published hashes.
 - Remaining blocker: Physical signed upgrade on Android, user installation consent and preservation of registration/accessibility settings.
 
 ## INC-20260906-002: Normal Firebase deploy required unavailable Functions infrastructure

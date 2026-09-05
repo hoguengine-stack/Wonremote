@@ -1,5 +1,5 @@
 {
-  "status": "ready-to-deploy",
+  "status": "verified",
   "intent": "Android Agent, Viewer and Control Add-On check for APK updates on launch and offer verified in-place installation.",
   "changeType": "fix",
   "risk": "high",
@@ -49,7 +49,7 @@
         "aether-link-app/src/desktopPackaging.test.ts"
       ],
       "proofLevel": "physical-required",
-      "verification": "2026-09-06: :updatecore:testDebugUnitTest passed 6 tests, including all three package IDs detecting 1079 -> 1080 and extracting verified ZIP bytes, no idle/retry polling, concurrent checks, closure, and corrupt/untrusted payload rejection. Agent/Viewer/Control Add-On Java compilation passed. npx vitest run src/androidUpdateRelease.test.ts passed 8 tests, including stale metadata blocking and all three Activity integrations. Native installation UI, signer validation and permission return remain physical-required.",
+      "verification": "2026-09-06: :updatecore:testDebugUnitTest passed 6 tests, including all three package IDs detecting 1079 -> 1080 and extracting verified ZIP bytes, no idle/retry polling, concurrent checks, closure, and corrupt/untrusted payload rejection. Agent/Viewer/Control Add-On Java compilation passed. npx vitest run src/androidUpdateRelease.test.ts passed 8 tests, including stale metadata blocking and all three Activity integrations. Native installation UI, signer validation and permission return remain physical-required. Release evidence: 2026-09-06 GitHub Actions run 33984013681 published v0.1.82 x86 Viewer/Agent installers and signed manifest; Firebase Hosting returned Android v0.1.82 Agent, Viewer and Control Add-On ZIP 200 responses, and android-update.json reports versionCode 1082.",
       "physicalGap": "No connected Android test device yet; 0.1.79/0.1.80 contain no APK updater and require one manual update to bootstrap. Actual signed upgrade, permissions and data retention need device proof."
     },
     {
@@ -71,7 +71,7 @@
         "aether-link-app/src/desktopPackaging.test.ts"
       ],
       "proofLevel": "physical-required",
-      "verification": "2026-09-06: :updatecore:testDebugUnitTest passed 6 tests, including all three package IDs detecting 1079 -> 1080 and extracting verified ZIP bytes, no idle/retry polling, concurrent checks, closure, and corrupt/untrusted payload rejection. Agent/Viewer/Control Add-On Java compilation passed. npx vitest run src/androidUpdateRelease.test.ts passed 8 tests, including stale metadata blocking and all three Activity integrations. Native installation UI, signer validation and permission return remain physical-required.",
+      "verification": "2026-09-06: :updatecore:testDebugUnitTest passed 6 tests, including all three package IDs detecting 1079 -> 1080 and extracting verified ZIP bytes, no idle/retry polling, concurrent checks, closure, and corrupt/untrusted payload rejection. Agent/Viewer/Control Add-On Java compilation passed. npx vitest run src/androidUpdateRelease.test.ts passed 8 tests, including stale metadata blocking and all three Activity integrations. Native installation UI, signer validation and permission return remain physical-required. Release evidence: 2026-09-06 GitHub Actions run 33984013681 published v0.1.82 x86 Viewer/Agent installers and signed manifest; Firebase Hosting returned Android v0.1.82 Agent, Viewer and Control Add-On ZIP 200 responses, and android-update.json reports versionCode 1082.",
       "physicalGap": "No connected Android test device yet; 0.1.79/0.1.80 contain no APK updater and require one manual update to bootstrap. Actual signed upgrade, permissions and data retention need device proof."
     },
     {
@@ -93,7 +93,7 @@
         "aether-link-app/src/desktopPackaging.test.ts"
       ],
       "proofLevel": "physical-required",
-      "verification": "2026-09-06: :updatecore:testDebugUnitTest passed 6 tests, including all three package IDs detecting 1079 -> 1080 and extracting verified ZIP bytes, no idle/retry polling, concurrent checks, closure, and corrupt/untrusted payload rejection. Agent/Viewer/Control Add-On Java compilation passed. npx vitest run src/androidUpdateRelease.test.ts passed 8 tests, including stale metadata blocking and all three Activity integrations. Native installation UI, signer validation and permission return remain physical-required.",
+      "verification": "2026-09-06: :updatecore:testDebugUnitTest passed 6 tests, including all three package IDs detecting 1079 -> 1080 and extracting verified ZIP bytes, no idle/retry polling, concurrent checks, closure, and corrupt/untrusted payload rejection. Agent/Viewer/Control Add-On Java compilation passed. npx vitest run src/androidUpdateRelease.test.ts passed 8 tests, including stale metadata blocking and all three Activity integrations. Native installation UI, signer validation and permission return remain physical-required. Release evidence: 2026-09-06 GitHub Actions run 33984013681 published v0.1.82 x86 Viewer/Agent installers and signed manifest; Firebase Hosting returned Android v0.1.82 Agent, Viewer and Control Add-On ZIP 200 responses, and android-update.json reports versionCode 1082.",
       "physicalGap": "No connected Android test device yet; 0.1.79/0.1.80 contain no APK updater and require one manual update to bootstrap. Actual signed upgrade, permissions and data retention need device proof."
     },
     {
@@ -112,7 +112,7 @@
         "aether-link-app/src/desktopPackaging.test.ts"
       ],
       "proofLevel": "automated-runtime",
-      "verification": "2026-09-06: 8 focused Vitest tests passed for three-product generated metadata, stale/wrong package rejection, payload tampering, missing discovery, immutable version reuse and native launch integration. Physical APK upgrade and live Hosting publication remain pending the next requested release.",
+      "verification": "2026-09-06: 8 focused Vitest tests passed for three-product generated metadata, stale/wrong package rejection, payload tampering, missing discovery, immutable version reuse and native launch integration. Physical APK upgrade and live Hosting publication remain pending the next requested release. Release evidence: 2026-09-06 GitHub Actions run 33984013681 published v0.1.82 x86 Viewer/Agent installers and signed manifest; Firebase Hosting returned Android v0.1.82 Agent, Viewer and Control Add-On ZIP 200 responses, and android-update.json reports versionCode 1082.",
       "physicalGap": "No release APKs built or deployed in this change; installed 0.1.79/0.1.80 apps require manual bootstrap."
     }
   ]
