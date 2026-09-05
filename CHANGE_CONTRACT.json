@@ -1,5 +1,5 @@
 {
-  "status": "ready-to-deploy",
+  "status": "verified",
   "intent": "Android Agent survives a Viewer connection request while waiting in background.",
   "changeType": "fix",
   "risk": "high",
@@ -29,8 +29,8 @@
         "mobile/android/agent/src/test/java/com/wonremote/agent/ControlAddonClientTest.java"
       ],
       "proofLevel": "physical-required",
-      "verification": "2026-09-06: npx vitest run src/androidNativeRelease.test.ts passed 3 tests for preserved names, removed/renamed classes and renamed callbacks. Native verifier rejects existing release mapping (WebRTC JNI class changed). :agent:testDebugUnitTest --tests com.wonremote.agent.ControlAddonClientTest and :controladdon:compileDebugJavaWithJavac passed in 5s. Corrected optimized APK mapping and actual native initialization remain pending an explicitly requested build and physical device.",
-      "physicalGap": "Reproduce reported crash with logcat on affected device, then verify signed optimized APK background request, permission refusal, approval, first frame, disconnect and repeated connection on arm64/armv7. No build requested."
+      "verification": "2026-09-06: focused Android native release, discovery and packaging tests passed 12 tests; focused Agent/Add-On test and compilation passed. Signed Android 0.1.83 Agent, Viewer and Control Add-On release build passed with WebRTC JNI mapping verification, signature verification and generated update metadata. Firebase Hosting publishes android-update.json versionCode 1083. GitHub Actions run 33985944437 passed and published v0.1.83 x86 Viewer/Agent installers plus signed update manifest. Download aliases redirect to the current release assets.",
+      "physicalGap": "Reproduce reported crash with logcat on affected device, then verify signed optimized APK background request, permission refusal, approval, first frame, disconnect and repeated connection on arm64/armv7."
     }
   ]
 }
