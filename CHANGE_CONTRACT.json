@@ -1,5 +1,5 @@
 {
-  "status": "ready-to-deploy",
+  "status": "verified",
   "intent": "Make Android remote requests surface screen-share consent when possible, preserve approved MediaProjection through session cleanup, and deploy Hosting without unavailable Firebase Storage or Functions services.",
   "requestReview": {
     "impact": "none",
@@ -35,8 +35,8 @@
       "boundaries": ["npm firebase:deploy", "deploy-firebase.ps1 target selection", "Firebase CLI", "Firebase Hosting static download routes", "Firebase Functions billing/API prerequisites"],
       "contractTests": ["aether-link-app/src/desktopPackaging.test.ts"],
       "proofLevel": "deployment-required",
-      "verification": "pending",
-      "physicalGap": "Live Firebase Hosting download route verification is pending deployment."
+      "verification": "2026-09-06: `npm run firebase:deploy` completed for Firestore rules and Hosting. HTTPS checks confirmed `agent.apk`, `viewer.apk`, and `control-addon.apk` redirect to their ZIP files, and `agent.zip` returned 200 with the v0.1.80 Agent ZIP content length.",
+      "physicalGap": "Hosting delivery is verified; Firebase Storage-backed 500MB transfer remains intentionally unavailable until Storage is initialized and deployed with -IncludeStorage."
     }
   ]
 }

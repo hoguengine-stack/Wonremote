@@ -878,42 +878,42 @@ This also covers development-process escapes: missed requirements, incomplete pl
 - Detected: 2026-09-06.
 - Severity: P1 release-blocking.
 - Affected: Normal `npm run firebase:deploy` path after Hosting/Firestore preparation.
-- Status: source-verified-not-released.
+- Status: released-verified.
 - User-visible symptom: A requested static release could not reach Hosting because the command attempted a Functions deploy requiring Cloud Build and Artifact Registry on a Spark project.
 - Minimal trigger: Run the normal deploy command on a Spark project where the release contains no Functions changes.
 - Root cause and contributors: The script treated Functions as a default deployment target even though Functions need Blaze billing and are unrelated to static Viewer/Android download publication.
-- Fix commit(s): pending.
+- Fix commit(s): `358ad42`.
 - Permanent guard: Default to Firestore rules and Hosting only; Functions deployment requires explicit `-IncludeFunctions` after Cloud Build and Artifact Registry are available. The packaging test pins both target selections.
-- Regression proof: Pending focused packaging test and live Hosting deployment.
-- Release proof: Pending.
-- Remaining blocker: Execute the corrected deploy path and confirm public Hosting routes.
+- Regression proof: `npx vitest run src/desktopPackaging.test.ts -t "deploy"` passed 2/2.
+- Release proof: `npm run firebase:deploy` completed with Firestore rules and Hosting; Android ZIP routes returned their expected redirects and `agent.zip` returned 200.
+- Remaining blocker: Firebase Functions require Blaze/Cloud Build and remain intentionally excluded until explicitly enabled with `-IncludeFunctions`.
 
 ## INC-20260906-001: Normal Firebase deploy required an uninitialized Storage service
 
 - Detected: 2026-09-06.
 - Severity: P1 release-blocking.
 - Affected: Normal `npm run firebase:deploy` path and Hosting deployment of Android ZIP downloads.
-- Status: source-verified-not-released.
+- Status: released-verified.
 - User-visible symptom: A requested release built successfully but Firebase deployment stopped before Hosting updated because the project has not initialized Firebase Storage.
 - Minimal trigger: Run the normal deploy command in a project with `storage.rules` configured but no initialized Firebase Storage bucket.
 - Root cause and contributors: The deploy script included `storage` by default even though static APK ZIP delivery uses Hosting and the Storage-backed 500MB transfer feature is not provisioned.
-- Fix commit(s): pending.
-- Permanent guard: Default to `functions,firestore:rules,hosting`; Storage rules deploy requires an explicit `-IncludeStorage` after the Storage service is initialized. The packaging test pins both target selections.
-- Regression proof: Pending focused packaging test and live Hosting deployment.
-- Release proof: Pending.
-- Remaining blocker: Execute the corrected deploy path and confirm the public download routes.
+- Fix commit(s): `d873f62`.
+- Permanent guard: Default to `firestore:rules,hosting`; Storage rules deploy requires an explicit `-IncludeStorage` after the Storage service is initialized. The packaging test pins both target selections.
+- Regression proof: `npx vitest run src/desktopPackaging.test.ts -t "deploy"` passed 2/2.
+- Release proof: `npm run firebase:deploy` completed with Firestore rules and Hosting; the public Android ZIP routes returned their expected redirect or 200 responses.
+- Remaining blocker: Firebase Storage-backed 500MB transfer remains unavailable until Storage is initialized and deployment is explicitly run with `-IncludeStorage`.
 
 ## INC-20260905-008: Android remote request failed to preserve or request screen sharing
 
 - Detected: 2026-09-05.
 - Severity: P1 remote-access failure.
 - Affected: Android Agent Viewer-request consent, prepared MediaProjection, and remote-session replacement or cleanup.
-- Status: source-verified-not-released.
+- Status: released-physical-pending.
 - User-visible symptom: Viewer Connect did not surface the Android screen-share consent flow; after manual sharing began, Connect turned off Android's red screen-sharing indicator and no remote screen appeared.
 - Minimal trigger: Start Android screen sharing manually, then connect from Viewer while a stale stop command or a late closed-session callback can still be delivered.
 - Root cause and contributors: Viewer requests created only a notification even when the Agent activity was visible. Android handled every `stop-stream` without validating its session ID, treated remote-session closure as projection closure, and allowed removed listeners to act on a replacement session.
-- Fix commit(s): pending.
+- Fix commit(s): `0172aac`.
 - Permanent guard: Separate remote-session teardown from explicit MediaProjection teardown, require stop commands and asynchronous callbacks to match the current session, launch consent through a visible Agent or an enabled accessibility control service, and retain the policy-compliant high-priority notification fallback.
 - Regression proof: `gradlew :agent:testDebugUnitTest --tests com.wonremote.agent.AgentProjectionRequestTest :controladdon:compileDebugJavaWithJavac --build-cache` passed 4/4 focused tests and compiled all changed Android modules; `npx vitest run src/desktopPackaging.test.ts -t "requests Android screen-share consent only after an explicit Viewer request"` passed 1/1.
-- Release proof: Pending. The first release build exposed Firebase Auth 24.x Kotlin 2.3 metadata as incompatible with the project's Android Gradle lint compiler. Firebase BOM is pinned to 33.16.0 for the Kotlin 2.0-compatible Auth 23.2.1 line before retrying the release build.
-- Remaining blocker: Build only when explicitly requested, then physically verify background consent launch, notification fallback, red-indicator persistence, and first-frame delivery on Android.
+- Release proof: GitHub Actions run `33981740879` completed successfully for `v0.1.80` and published the two signed x86 installers plus update manifest. The Android signed Agent, Viewer, and Control Add-On ZIPs were rebuilt locally and published through Firebase Hosting. Firebase BOM 33.16.0 resolved the Android lint compatibility failure.
+- Remaining blocker: Physically verify background consent launch, notification fallback, red-indicator persistence, and first-frame delivery on Android.
