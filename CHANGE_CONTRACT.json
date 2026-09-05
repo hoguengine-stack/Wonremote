@@ -1,5 +1,5 @@
 {
-  "status": "ready-to-deploy",
+  "status": "verified",
   "intent": "Diagnose and restore Android first-frame delivery after PC Viewer connection and screen-share approval; do not equate capture initialization with a working remote connection.",
   "changeType": "fix",
   "risk": "high",
@@ -35,7 +35,7 @@
       "boundaries": ["PC Viewer offer", "Firestore signaling and candidates", "Android SDP application", "STUN/TURN and ICE", "data channels", "MediaProjection", "first frame in PC Viewer"],
       "contractTests": ["mobile/android/agent/src/test/java/com/wonremote/agent/RemoteSessionDiagnosticsTest.java"],
       "proofLevel": "physical-required",
-      "verification": "2026-09-06: gradlew :agent:testDebugUnitTest --tests com.wonremote.agent.RemoteSessionDiagnosticsTest --tests com.wonremote.agent.AgentProjectionRequestTest --build-cache --console=plain passed 6 tests in 5s. SDP failure diagnostics now distinguish remote offer, answer creation and local answer without exposing SDP. Physical log 20260906-055742 shows capture initialization without first-frame evidence and getRtcConfiguration NOT_FOUND. First-frame acceptance remains incomplete; v0.1.85 build and deployment are required to collect physical evidence.",
+      "verification": "2026-09-06: gradlew :agent:testDebugUnitTest --tests com.wonremote.agent.RemoteSessionDiagnosticsTest --tests com.wonremote.agent.AgentProjectionRequestTest --build-cache --console=plain passed 6 tests in 5s. Android v0.1.85 Agent, Viewer and Control Add-On release build passed JNI mapping and APK signature checks. GitHub Release v0.1.85 contains both x86 installers plus signed update manifest. Firebase Hosting returns 0.1.85 for all three Android apps and HTTP 200 for agent.zip, viewer.zip and control-addon.zip. SDP failure diagnostics distinguish remote offer, answer creation and local answer without exposing SDP. Physical log 20260906-055742 shows capture initialization without first-frame evidence and getRtcConfiguration NOT_FOUND. First-frame acceptance remains incomplete.",
       "physicalGap": "A reachable authenticated TURN service and affected Android/PC devices are required to verify separate-network first frame, disconnect and repeat connection. Do not release this as a completed screen fix."
     },
     {

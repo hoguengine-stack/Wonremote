@@ -931,7 +931,7 @@ This also covers development-process escapes: missed requirements, incomplete pl
 - Fix commit(s): Uncommitted diagnostic changes; screen fix remains incomplete.
 - Permanent guard: Record existing negotiation, candidate, channel and signaling outcomes locally without SDP, ICE addresses, credentials or added cloud writes. Exercise SDP failure callbacks in a focused runtime test. Require physical first-frame and reconnect proof before declaring the incident resolved.
 - Regression proof: `gradlew :agent:testDebugUnitTest --tests com.wonremote.agent.RemoteSessionDiagnosticsTest --tests com.wonremote.agent.AgentProjectionRequestTest --build-cache --console=plain` passed 6/6 in 5s, including SDP failure stage reporting without private SDP and no false errors on success. This is diagnostic proof, not first-frame proof.
-- Release proof: v0.1.85 build and deployment are in progress; no completed release proof yet.
+- Release proof: v0.1.85 Android Agent, Viewer and Control Add-On builds passed JNI/signature/manifest verification; Firebase Hosting returns 0.1.85 for every Android product and HTTP 200 for every Android ZIP. GitHub Release v0.1.85 contains the two verified x86 installers and signed update manifest.
 - External blocker: No alternate TURN configuration was found in application env or process/user/machine RTC variables. Provisioning and verifying an authenticated relay is separate from adding diagnostic logs; no billing or infrastructure changes authorized or performed.
 - Remaining blocker: Approved first frame on the reported Android 16 device, same and separate networks, disconnect and repeat connection. Obtain ICE and SDP diagnostic evidence before attributing the disconnect exclusively to TURN.
 
