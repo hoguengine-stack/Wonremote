@@ -1,5 +1,5 @@
 {
-  "status": "verified",
+  "status": "ready-to-deploy",
   "intent": "Android Agent WebRTC initialization does not terminate when a PC Viewer starts a remote connection.",
   "changeType": "fix",
   "risk": "high",
@@ -44,10 +44,11 @@
       ],
       "contractTests": [
         "aether-link-app/src/androidNativeRelease.test.ts",
-        "mobile/android/agent/src/test/java/com/wonremote/agent/ControlAddonClientTest.java"
+        "mobile/android/agent/src/test/java/com/wonremote/agent/ControlAddonClientTest.java",
+        "aether-link-app/src/desktopPackaging.test.ts"
       ],
       "proofLevel": "physical-required",
-      "verification": "2026-09-06: physical Android 16 arm64 v0.1.83 log proves libjingle_peerconnection_so aborts because R8 removed org.jni_zero.JniInit. npx vitest run src/androidNativeRelease.test.ts passed 5 tests, including the JniInit keep rule and missing-mapping rejection. The existing v0.1.83 mapping now correctly fails verify-native-release.mjs for JniInit, proving it cannot pass a future Android release gate.",
+      "verification": "2026-09-06: physical Android 16 arm64 v0.1.83 log proves libjingle_peerconnection_so aborts because R8 removed org.jni_zero.JniInit. npx vitest run src/androidNativeRelease.test.ts passed 5 tests, including the JniInit keep rule and missing-mapping rejection. The existing v0.1.83 mapping correctly fails verify-native-release.mjs for JniInit. Android 0.1.84 build and live Hosting verification are pending deployment.",
       "physicalGap": "Build and install a newly signed Android Agent on the reported Android 16 arm64 device, then verify background Viewer request, approval, first frame, disconnect and repeat connection."
     }
   ]
