@@ -1380,143 +1380,378 @@ input:focus {
   }
 }
 
-/* Installable mobile Viewer. Keep the desktop console unchanged. */
-@media (max-width: 680px) {
-  .mobile-viewer:not(.remote-focus-mode) {
-    display: block;
-    min-height: 100dvh;
-  }
+.viewer-open-sessions {
+  align-items: center;
+  background: #e8f3f1;
+  border: 1px solid #c5ddd8;
+  border-radius: 6px;
+  display: flex;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px 10px;
+}
 
-  .mobile-viewer:not(.remote-focus-mode) .sidebar {
-    display: grid;
-    gap: 6px 8px;
-    grid-template-areas:
-      "brand all logout"
-      "groups groups groups";
-    grid-template-columns: 36px minmax(0, 1fr) 36px;
-    min-height: 0;
-    padding: 8px;
-    position: sticky;
-    top: 0;
-    z-index: 40;
-  }
+.viewer-open-sessions > span,
+.viewer-open-sessions > div,
+.viewer-open-sessions button {
+  align-items: center;
+  display: flex;
+}
 
-  .mobile-viewer:not(.remote-focus-mode) .brand-row {
-    grid-area: brand;
-    margin: 0;
-    min-height: 36px;
-    padding: 0;
-  }
+.viewer-open-sessions > span {
+  color: #176d62;
+  flex: 0 0 auto;
+  font-size: 12px;
+  gap: 6px;
+}
 
-  .mobile-viewer:not(.remote-focus-mode) .brand-row > div:last-child,
-  .mobile-viewer:not(.remote-focus-mode) .logout-button span {
-    display: none;
-  }
+.viewer-open-sessions > div {
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+}
 
-  .mobile-viewer:not(.remote-focus-mode) .brand-mark {
-    height: 36px;
-    width: 36px;
-  }
+.viewer-open-sessions button {
+  background: #ffffff;
+  border: 1px solid #b7d2cc;
+  border-radius: 5px;
+  color: #24423e;
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 800;
+  gap: 6px;
+  height: 30px;
+  max-width: 200px;
+  padding: 0 9px;
+}
 
-  .mobile-viewer:not(.remote-focus-mode) > .sidebar > .group-button {
-    grid-area: all;
-    min-height: 36px;
-    width: 100%;
-  }
+.viewer-open-sessions button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
-  .mobile-viewer:not(.remote-focus-mode) .sidebar-section {
-    grid-area: groups;
-    min-width: 0;
-    overflow-x: auto;
-  }
+.viewer-open-sessions button i {
+  background: #1da382;
+  border-radius: 50%;
+  height: 7px;
+  width: 7px;
+}
 
-  .mobile-viewer:not(.remote-focus-mode) .group-list {
-    display: flex;
-    gap: 5px;
-  }
+/* The /viewer route stays touch-first in portrait and landscape. */
+.mobile-viewer {
+  max-width: 100vw;
+  overflow-x: hidden;
+}
 
-  .mobile-viewer:not(.remote-focus-mode) .group-list .group-button {
-    flex: 0 0 auto;
-    max-width: 180px;
-  }
+.mobile-viewer:not(.remote-focus-mode) {
+  display: block;
+  min-height: 100dvh;
+}
 
-  .mobile-viewer:not(.remote-focus-mode) .logout-button {
-    grid-area: logout;
-    height: 36px;
-    margin: 0;
-    min-height: 36px;
-    padding: 0;
-    width: 36px;
-  }
+.mobile-viewer:not(.remote-focus-mode) .sidebar {
+  display: grid;
+  gap: 6px 8px;
+  grid-template-areas:
+    "brand all logout"
+    "groups groups groups";
+  grid-template-columns: 36px minmax(0, 1fr) 36px;
+  min-height: 0;
+  padding: 8px;
+  position: sticky;
+  top: 0;
+  z-index: 40;
+}
 
-  .mobile-viewer .viewer-command-header {
-    gap: 8px;
-    padding: 10px;
-  }
+.mobile-viewer:not(.remote-focus-mode) .brand-row {
+  grid-area: brand;
+  margin: 0;
+  min-height: 36px;
+  padding: 0;
+}
 
-  .mobile-viewer .viewer-command-header .eyebrow,
-  .mobile-viewer .viewer-command-header .workspace-title > p {
-    display: none;
-  }
+.mobile-viewer:not(.remote-focus-mode) .brand-row > div:last-child,
+.mobile-viewer:not(.remote-focus-mode) .logout-button span,
+.mobile-viewer:not(.remote-focus-mode) .sidebar-section-heading {
+  display: none;
+}
 
-  .mobile-viewer .workspace-heading-line {
+.mobile-viewer:not(.remote-focus-mode) .brand-mark {
+  height: 36px;
+  width: 36px;
+}
+
+.mobile-viewer:not(.remote-focus-mode) > .sidebar > .group-button {
+  grid-area: all;
+  min-height: 36px;
+  width: 100%;
+}
+
+.mobile-viewer:not(.remote-focus-mode) .sidebar-section {
+  grid-area: groups;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.mobile-viewer:not(.remote-focus-mode) .group-list {
+  display: flex;
+  gap: 5px;
+}
+
+.mobile-viewer:not(.remote-focus-mode) .group-list .group-button {
+  flex: 0 0 auto;
+  max-width: 180px;
+}
+
+.mobile-viewer:not(.remote-focus-mode) .logout-button {
+  grid-area: logout;
+  height: 36px;
+  margin: 0;
+  min-height: 36px;
+  padding: 0;
+  width: 36px;
+}
+
+.mobile-viewer:not(.remote-focus-mode) .viewer-command-header {
+  align-items: stretch;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  padding: 10px;
+}
+
+.mobile-viewer:not(.remote-focus-mode) .viewer-command-header .eyebrow,
+.mobile-viewer:not(.remote-focus-mode) .viewer-command-header .workspace-title > p {
+  display: none;
+}
+
+.mobile-viewer:not(.remote-focus-mode) .workspace-heading-line {
+  align-items: center;
+  flex-direction: row;
+}
+
+.mobile-viewer:not(.remote-focus-mode) .topbar-tools {
+  flex-wrap: nowrap;
+  width: 100%;
+}
+
+.mobile-viewer:not(.remote-focus-mode) .viewer-command-header .search-box {
+  min-width: 0;
+  width: 100%;
+}
+
+.mobile-viewer:not(.remote-focus-mode) .viewer-command-header .account-manager-button span,
+.mobile-viewer:not(.remote-focus-mode) .viewer-command-header .rollout-button span {
+  display: none;
+}
+
+.mobile-viewer:not(.remote-focus-mode) .viewer-command-header .account-manager-button,
+.mobile-viewer:not(.remote-focus-mode) .viewer-command-header .rollout-button {
+  padding: 0;
+  width: 36px;
+}
+
+.mobile-viewer:not(.remote-focus-mode) .content-grid-dashboard {
+  padding: 8px;
+}
+
+.mobile-viewer:not(.remote-focus-mode) .device-workspace {
+  gap: 8px;
+}
+
+.mobile-viewer:not(.remote-focus-mode) .fleet-summary {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.mobile-viewer:not(.remote-focus-mode) .summary-item {
+  min-height: 54px;
+  padding: 7px;
+}
+
+.mobile-viewer:not(.remote-focus-mode) .summary-item strong {
+  font-size: 17px;
+}
+
+.mobile-viewer:not(.remote-focus-mode) .summary-item + .summary-item {
+  border-left: 1px solid #e1e7ec;
+  border-top: 0;
+}
+
+.mobile-viewer:not(.remote-focus-mode) .device-filter-bar {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.mobile-viewer:not(.remote-focus-mode) .device-filter-segments,
+.mobile-viewer:not(.remote-focus-mode) .favorite-filter-button {
+  flex: 0 0 auto;
+}
+
+.mobile-viewer:not(.remote-focus-mode) .device-table {
+  background: transparent;
+  border: 0;
+  display: grid;
+  gap: 8px;
+  overflow: visible;
+}
+
+.mobile-viewer:not(.remote-focus-mode) .table-row:not(.table-head) {
+  background: #ffffff;
+  border: 1px solid #dce4ea;
+  border-radius: 6px;
+  display: grid;
+  gap: 5px 8px;
+  grid-template-areas:
+    "status store actions"
+    "identity identity actions"
+    "software system actions";
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  min-height: 0;
+  min-width: 0;
+  padding: 10px;
+}
+
+.mobile-viewer:not(.remote-focus-mode) .table-head {
+  display: none;
+}
+
+.mobile-viewer:not(.remote-focus-mode) .device-status-cell { grid-area: status; }
+.mobile-viewer:not(.remote-focus-mode) .store-cell { grid-area: store; }
+.mobile-viewer:not(.remote-focus-mode) .device-identity-cell { grid-area: identity; }
+.mobile-viewer:not(.remote-focus-mode) .software-cell { grid-area: software; }
+.mobile-viewer:not(.remote-focus-mode) .device-system-cell { grid-area: system; }
+.mobile-viewer:not(.remote-focus-mode) .device-actions {
+  display: grid;
+  gap: 4px;
+  grid-area: actions;
+  grid-template-columns: repeat(2, 34px);
+}
+
+.mobile-viewer:not(.remote-focus-mode) .device-actions button {
+  height: 34px;
+  padding: 0;
+  width: 34px;
+}
+
+.mobile-viewer:not(.remote-focus-mode) .status-pill {
+  white-space: nowrap;
+}
+
+.mobile-viewer.remote-focus-mode,
+.mobile-viewer.remote-focus-mode .workspace,
+.mobile-viewer.remote-focus-mode .content-grid,
+.mobile-viewer.remote-focus-mode .session-panel {
+  height: 100dvh;
+  max-height: 100dvh;
+  width: 100%;
+}
+
+.mobile-viewer.remote-focus-mode .session-panel {
+  padding: 0;
+}
+
+.mobile-viewer.remote-focus-mode .remote-session-tabs {
+  min-height: 40px;
+  order: -1;
+  padding: 5px 8px;
+}
+
+.mobile-viewer.remote-focus-mode .remote-work-area {
+  order: 0;
+}
+
+.mobile-viewer.remote-focus-mode .session-actions-top {
+  border-bottom: 0;
+  border-top: 1px solid #2b3947;
+  box-shadow: 0 -5px 18px rgba(0, 0, 0, 0.28);
+  display: grid;
+  gap: 6px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  min-height: 50px;
+  order: 1;
+  overflow: visible;
+  padding: 6px max(8px, env(safe-area-inset-right)) max(6px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+}
+
+.mobile-viewer.remote-focus-mode .session-command-identity {
+  gap: 6px;
+  min-width: 0;
+}
+
+.mobile-viewer.remote-focus-mode .session-command-identity .session-device-context {
+  max-width: 104px;
+}
+
+.mobile-viewer.remote-focus-mode .session-device-context small,
+.mobile-viewer.remote-focus-mode .session-back-button span,
+.mobile-viewer.remote-focus-mode .session-fullscreen-button span,
+.mobile-viewer.remote-focus-mode .session-end-button span,
+.mobile-viewer.remote-focus-mode .session-tool-menu > summary span,
+.mobile-viewer.remote-focus-mode .session-tool-menu > summary svg:last-child {
+  display: none;
+}
+
+.mobile-viewer.remote-focus-mode .session-back-button,
+.mobile-viewer.remote-focus-mode .session-fullscreen-button,
+.mobile-viewer.remote-focus-mode .session-end-button,
+.mobile-viewer.remote-focus-mode .session-tool-menu > summary {
+  height: 36px;
+  padding: 0;
+  width: 38px;
+}
+
+.mobile-viewer.remote-focus-mode .session-display-controls {
+  grid-column: 2;
+  grid-row: 1;
+  justify-content: flex-start;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.mobile-viewer.remote-focus-mode .session-display-controls::-webkit-scrollbar,
+.mobile-viewer.remote-focus-mode .remote-session-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.mobile-viewer.remote-focus-mode .stream-mode-control button,
+.mobile-viewer.remote-focus-mode .display-scale-control button {
+  min-width: 44px;
+  padding: 0 7px;
+}
+
+.mobile-viewer.remote-focus-mode .zoom-control span {
+  min-width: 44px;
+}
+
+.mobile-viewer.remote-focus-mode .session-monitor-select {
+  max-width: 150px;
+  min-width: 118px;
+}
+
+.mobile-viewer.remote-focus-mode .session-command-actions {
+  grid-column: 3;
+  grid-row: 1;
+}
+
+.mobile-viewer.remote-focus-mode .session-tool-menu-content {
+  bottom: calc(100% + 8px);
+  grid-template-columns: 1fr;
+  max-height: min(68dvh, 520px);
+  right: 0;
+  top: auto;
+  width: min(380px, calc(100vw - 16px));
+}
+
+@media (orientation: landscape) {
+  .mobile-viewer:not(.remote-focus-mode) .viewer-command-header {
     align-items: center;
     flex-direction: row;
   }
 
-  .mobile-viewer .viewer-command-header .account-manager-button span,
-  .mobile-viewer .viewer-command-header .rollout-button span {
-    display: none;
-  }
-
-  .mobile-viewer .viewer-command-header .account-manager-button,
-  .mobile-viewer .viewer-command-header .rollout-button {
-    padding: 0;
-    width: 36px;
-  }
-
-  .mobile-viewer .content-grid-dashboard {
-    padding: 8px;
-  }
-
-  .mobile-viewer .device-workspace .fleet-summary {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .mobile-viewer .device-workspace .summary-item {
-    min-height: 54px;
-    padding: 7px;
-  }
-
-  .mobile-viewer .device-workspace .summary-item + .summary-item {
-    border-left: 1px solid #e1e7ec;
-    border-top: 0;
-  }
-
-  .mobile-viewer .device-workspace .summary-item strong {
-    font-size: 17px;
-  }
-
-  .mobile-viewer .device-filter-bar {
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    padding-bottom: 2px;
-  }
-
-  .mobile-viewer .device-filter-segments,
-  .mobile-viewer .favorite-filter-button {
-    flex: 0 0 auto;
-  }
-
-  .mobile-viewer .table-row {
-    grid-template-columns: 86px minmax(0, 1fr) 62px;
-  }
-
-  .mobile-viewer.remote-focus-mode,
-  .mobile-viewer.remote-focus-mode .workspace,
-  .mobile-viewer.remote-focus-mode .content-grid,
-  .mobile-viewer.remote-focus-mode .session-panel {
-    height: 100dvh;
+  .mobile-viewer:not(.remote-focus-mode) .topbar-tools {
+    flex: 1 1 auto;
   }
 }
 

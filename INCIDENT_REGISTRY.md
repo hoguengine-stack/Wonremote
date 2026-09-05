@@ -829,3 +829,16 @@ This also covers development-process escapes: missed requirements, incomplete pl
 - Regression proof: `npx vitest run src/desktopPackaging.test.ts -t "deploys Firebase functions, rules, and hosting only behind an explicit gate"` passed 1 focused test with 63 unrelated tests skipped. A real `-SparkOnly` call reproduced the Storage setup failure and the corrected wrapper returned exit code 1.
 - Release proof: not released.
 - Remaining blocker: Firebase Storage still requires console initialization, and Functions deployment requires the Blaze plan; neither external project change is made by this source fix.
+
+## INC-20260905-005: Authenticated Viewer started with an empty device list
+
+- Detected: 2026-09-05.
+- Severity: P1 usability.
+- Affected: Desktop Viewer and shared mobile Viewer UI after startup or login.
+- Status: source-verified-not-released.
+- User-visible symptom: A valid authenticated Viewer displays zero registered devices until the user manually presses device refresh.
+- Root cause: The prior quota reduction removed the authenticated-session device load together with idle polling, and its Chromium contract explicitly treated zero startup reads as correct. This confused one required first-use read with prohibited recurring reads.
+- Permanent guard: Each authenticated Viewer session owns exactly one bounded startup device/status refresh. StrictMode, rerenders, idle time, and repeated auth callbacks cannot duplicate it; history and failed-session reconnect remain manual. Logout cancels stale work and permits one new refresh for the next authenticated session.
+- Regression proof: The focused real-Chromium case failed before the source change because `PC-0` never appeared within three seconds. After the fix, `npx vitest run src/viewerDeviceRefresh.test.ts` passed 8/8, covering restored Firebase auth, local login, repeated auth callbacks, StrictMode, 24h idle, manual history/reconnect, slow-click coalescing, quota failure, logout cancellation, and reauthentication.
+- Release proof: Not built or deployed; user did not request a build.
+- Remaining blocker: Installed desktop/mobile packages and live Firebase document/rule billing require a later requested build/deployment and physical verification.

@@ -379,6 +379,7 @@ function ViewerApp() {
         setIsAuthenticated(hasSession);
         if (!hasSession) { setDeviceListRefreshKey(0); setIsRefreshingDevices(false); setDevices([]); }
         if (hasSession) {
+          setDeviceListRefreshKey((current) => current || 1);
           setLoginError("");
           setApiError("");
         }
@@ -718,7 +719,7 @@ function ViewerApp() {
 
     try {
       await loginAdmin(username, password);
-      if (!isViewerFirebaseEnabled()) setDevices([]);
+      if (!isViewerFirebaseEnabled()) { setDevices([]); setDeviceListRefreshKey((current) => current || 1); }
       setLoginError("");
       setApiError("");
       sessionShutdownInProgressRef.current = false;
@@ -914,6 +915,12 @@ function ViewerApp() {
       setSplitSessionIds(null);
     }
     setActiveSessionId(targetSessionId);
+  }
+
+  function handleShowDeviceList() {
+    setSplitSessionIds(null);
+    setActiveSessionId(null);
+    setApiError("");
   }
 
   function updateSplitRatio(clientX: number, divider: HTMLDivElement) {
@@ -1247,6 +1254,22 @@ function ViewerApp() {
           } as React.CSSProperties : undefined}
         >
           <section className="control-panel device-workspace" data-testid="device-workspace">
+            {!session && sessions.length > 0 && (
+              <nav className="viewer-open-sessions" aria-label="열린 세션 바로가기">
+                <span><Monitor size={16} /><strong>열린 세션 {sessions.length}</strong></span>
+                <div>
+                  {sessions.map((openSession) => {
+                    const openDevice = devices.find((device) => device.id === openSession.deviceId);
+                    return (
+                      <button key={openSession.id} type="button" onClick={() => handleSelectSession(openSession.id)}>
+                        <i aria-hidden="true" />
+                        <span>{openDevice?.desktopName ?? openSession.deviceId}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </nav>
+            )}
             <section className="fleet-summary" aria-label="장비 상태 요약">
               <div className="summary-item online">
                 <Wifi size={18} />
@@ -1309,7 +1332,7 @@ function ViewerApp() {
             </section>
             <DeviceTable
               devices={filteredDevices}
-              activeDeviceId={session?.deviceId ?? ""}
+              activeDeviceIds={sessions.map((openSession) => openSession.deviceId)}
               onConnect={handleConnectDevice}
               onEdit={(device) => setEditTarget({ mode: "device", devices: [device] })}
               onSecureConnect={handleSecureConnectRequest}
@@ -1344,6 +1367,7 @@ function ViewerApp() {
                 onCloseSession={(barrier) => handleCloseSession(openSession.id, barrier)}
                 onCloseSessionTab={(sessionId) => handleCloseSession(sessionId)}
                 onSelectSession={handleSelectSession}
+                onShowDeviceList={handleShowDeviceList}
               />
             );
           })}
@@ -2328,7 +2352,7 @@ function getOrCreateAgentInstallId(): string {
 }
 
 function DeviceTable({
-  activeDeviceId,
+  activeDeviceIds,
   devices,
   favoriteDeviceIds,
   onConnect,
@@ -2342,7 +2366,7 @@ function DeviceTable({
   isRefreshing,
   selectedDeviceIds,
 }: {
-  activeDeviceId: string;
+  activeDeviceIds: string[];
   devices: ManagedDevice[];
   favoriteDeviceIds: string[];
   onConnect: (device: ManagedDevice) => void | Promise<void>;
@@ -2472,7 +2496,7 @@ function DeviceTable({
               <span className="device-system-cell" title={systemSummary}>{systemSummary}</span>
               <span className="device-actions">
                 <button
-                  className={activeDeviceId === device.id ? "connect-button connect-icon active" : "connect-button connect-icon"}
+                  className={activeDeviceIds.includes(device.id) ? "connect-button connect-icon active" : "connect-button connect-icon"}
                   type="button"
                   title="접속"
                   aria-label="접속"
@@ -2634,6 +2658,7 @@ function RemoteSessionPanel({
   onInputEvent: sendInputEvent,
   onCloseSession,
   onSelectSession,
+  onShowDeviceList,
 }: {
   activeSessionId: string | null;
   device: ManagedDevice | null;
@@ -2649,6 +2674,7 @@ function RemoteSessionPanel({
   onInputEvent: (action: string, options?: { localOnly?: boolean }) => void | Promise<void>;
   onCloseSession: (inputReleaseBarrier?: Promise<unknown>) => void;
   onSelectSession: (sessionId: string) => void;
+  onShowDeviceList: () => void;
 }) {
   const preferenceDeviceId = device?.id ?? session?.deviceId ?? "";
   const storedViewPreferences = React.useRef(
@@ -2810,6 +2836,12 @@ function RemoteSessionPanel({
     } else if (document.fullscreenElement) {
       void document.exitFullscreen().catch(() => {});
     }
+  }
+
+  function showDeviceList() {
+    void releaseAllInputs();
+    void applySessionFullscreen(false);
+    onShowDeviceList();
   }
 
   const sendClipboardImage = React.useCallback(async (image: Blob, knownSha256?: string) => {
@@ -4520,6 +4552,16 @@ function RemoteSessionPanel({
 
       <div className="session-actions session-actions-top remote-command-bar" data-testid="remote-command-bar">
         <div className="session-command-identity">
+          <button
+            className="session-back-button"
+            type="button"
+            aria-label="장비 목록"
+            title="현재 세션을 유지하고 장비 목록 열기"
+            onClick={showDeviceList}
+          >
+            <LayoutDashboard size={17} />
+            <span>장비 목록</span>
+          </button>
           <div className="session-device-context" data-testid="remote-connection-status" role="status" aria-live="polite">
             <span className="session-live-dot" aria-hidden="true" />
             <div>

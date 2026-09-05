@@ -30,12 +30,12 @@ beforeAll(async () => {
 }, 30_000);
 afterAll(async () => { await browser?.close(); });
 
-async function openViewer(options: { slow?: boolean; fail?: boolean; local?: boolean; connected?: boolean; autoRefresh?: boolean } = {}) {
-  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+async function openViewer(options: { slow?: boolean; fail?: boolean; local?: boolean; connected?: boolean; mobile?: boolean } = {}) {
+  const page = await browser.newPage({ viewport: options.mobile ? { width: 390, height: 844 } : { width: 1440, height: 900 } });
   page.setDefaultTimeout(3_000);
   await page.route("**/*", async (route) => {
     const url = route.request().url();
-    if (url === "http://viewer.test/") return route.fulfill({ contentType: "text/html", body: '<div id="root"></div>' });
+    if (url === `http://viewer.test/${options.mobile ? "viewer" : ""}`) return route.fulfill({ contentType: "text/html", body: '<div id="root"></div>' });
     if (options.local && url.endsWith("/api/admin/login") && route.request().method() === "POST") return route.fulfill({ json: {}, headers: { "access-control-allow-origin": "*" } });
     if (options.local && new URL(url).pathname === "/api/devices") {
       const devices = await page.evaluate(() => (window as any).testApi.fetchFirebaseDevices());
@@ -46,13 +46,13 @@ async function openViewer(options: { slow?: boolean; fail?: boolean; local?: boo
     }
     return route.abort();
   });
-  await page.goto("http://viewer.test/");
+  await page.goto(`http://viewer.test/${options.mobile ? "viewer" : ""}`);
   await page.addStyleTag({ content: readFileSync("src/styles.css", "utf8") });
   await page.clock.install();
   await page.evaluate((opts) => {
     const w = window as any;
     const state = w.testState = {
-      reads: 0, subscriptions: 0, connections: [] as string[], slow: Boolean(opts.slow), fail: Boolean(opts.fail),
+      reads: 0, subscriptions: 0, connections: [] as string[], closedSessions: [] as string[], slow: Boolean(opts.slow), fail: Boolean(opts.fail),
       auxiliaryReads: 0, auxiliarySubscriptions: [] as any[], auxiliaryStops: 0,
       historyReads: 0, historySubscriptions: 0, rtcStarts: 0,
       devices: Array.from({ length: 10 }, (_, i) => ({
@@ -81,7 +81,7 @@ async function openViewer(options: { slow?: boolean; fail?: boolean; local?: boo
       },
       openFirebaseSession: async (id: string) => {
         state.connections.push(id);
-        if (opts.connected) return { session: { id: "remote-session", deviceId: id, state: "connected", startedAt: new Date().toISOString() }, inputLog: [] };
+        if (opts.connected) return { session: { id: `remote-session-${id}`, deviceId: id, state: "connected", startedAt: new Date().toISOString() }, inputLog: [] };
         throw new Error("Current target is offline.");
       },
       startFirebaseViewerWebRtcTransport: async (_id: string, callbacks: any) => {
@@ -97,6 +97,7 @@ async function openViewer(options: { slow?: boolean; fail?: boolean; local?: boo
       fetchFirebaseFiles: async () => { state.auxiliaryReads++; return []; },
       fetchFirebaseFileTransferReceipts: async () => { state.auxiliaryReads++; return []; },
       requestFirebaseSecureSession: async (id: string) => { state.connections.push(`secure:${id}`); throw new Error("Current target is offline."); },
+      closeFirebaseSession: async (id: string) => { state.closedSessions.push(id); },
       logoutViewerWithFirebase: async () => { w.authChanged(false); },
     }, { get(target, key) { return (target as any)[key] ?? (async () => null); } });
   }, options);
@@ -106,7 +107,6 @@ async function openViewer(options: { slow?: boolean; fail?: boolean; local?: boo
     await page.locator('input[name="password"]').fill("test");
     await page.locator('button[type="submit"]').first().click();
   }
-  if (options.autoRefresh !== false) await page.getByRole("button", { name: "장비 목록 새로고침", exact: true }).click();
   return page;
 }
 
@@ -117,21 +117,22 @@ const counts = (page: Page) => page.evaluate(() => {
 const refresh = (page: Page) => page.getByRole("button", { name: "장비 목록 새로고침", exact: true });
 
 describe("manual Viewer device list in a real browser", () => {
-  it("requires an explicit refresh before first list/history reads, with no idle subscriptions", async () => {
-    const page = await openViewer({ autoRefresh: false });
+  it("loads devices once after authentication while history and later refreshes stay manual", async () => {
+    const page = await openViewer();
     try {
-      await refresh(page).waitFor();
+      await page.getByText("PC-0", { exact: true }).waitFor();
+      await page.evaluate(() => { (window as any).authChanged(true); (window as any).authChanged(true); });
       await page.clock.fastForward(86_400_000);
-      expect(await counts(page)).toEqual({ reads: 0, subscriptions: 0 });
+      expect(await counts(page)).toEqual({ reads: 1, subscriptions: 0 });
       expect(await page.evaluate(() => [(window as any).testState.historyReads, (window as any).testState.historySubscriptions])).toEqual([0, 0]);
       await page.getByRole("button", { name: "연결 이력 새로고침", exact: true }).click();
       await page.waitForFunction(() => (window as any).testState.historyReads === 1);
       await page.clock.fastForward(86_400_000);
-      expect(await counts(page)).toEqual({ reads: 0, subscriptions: 0 });
+      expect(await counts(page)).toEqual({ reads: 1, subscriptions: 0 });
       expect(await page.evaluate(() => (window as any).testState.historyReads)).toBe(1);
       await refresh(page).click();
-      await page.getByText("PC-0", { exact: true }).waitFor();
-      expect(await counts(page)).toEqual({ reads: 1, subscriptions: 0 });
+      await page.waitForFunction(() => (window as any).testState.reads === 2);
+      expect(await counts(page)).toEqual({ reads: 2, subscriptions: 0 });
     } finally { await page.close(); }
   });
 
@@ -195,7 +196,6 @@ describe("manual Viewer device list in a real browser", () => {
         const w = window as any; w.testState.slow = false;
         w.testState.devices[0].desktopName = "New-PC"; w.authChanged(true);
       });
-      await refresh(page).click();
       await page.getByText("New-PC", { exact: true }).waitFor();
       await page.evaluate(() => (window as any).finishRead());
       await page.clock.fastForward(86_400_000);
@@ -243,6 +243,69 @@ describe("manual Viewer device list in a real browser", () => {
       expect(await counts(page)).toEqual({ reads: 1, subscriptions: 0 });
       await refresh(page).click();
       await page.waitForFunction(() => (window as any).testState.reads === 2);
+    } finally { await page.close(); }
+  });
+
+  it("keeps two Android Viewer sessions alive with reachable portrait and landscape controls", async () => {
+    const page = await openViewer({ connected: true, mobile: true });
+    const assertMobileLayout = async () => {
+      const layout = await page.evaluate(() => {
+        const bar = document.querySelector('[data-testid="remote-command-bar"]')!.getBoundingClientRect();
+        const work = document.querySelector('[data-testid="remote-canvas-viewport"]')!.getBoundingClientRect();
+        return {
+          barBottom: Math.round(bar.bottom),
+          pageWidth: document.documentElement.scrollWidth,
+          viewportHeight: window.innerHeight,
+          viewportWidth: window.innerWidth,
+          workHeight: Math.round(work.height),
+        };
+      });
+      expect(layout.pageWidth).toBe(layout.viewportWidth);
+      expect(Math.abs(layout.viewportHeight - layout.barBottom)).toBeLessThanOrEqual(2);
+      expect(layout.workHeight).toBeGreaterThan(layout.viewportHeight * 0.45);
+    };
+
+    try {
+      await page.getByText("PC-0", { exact: true }).waitFor();
+      expect(await page.evaluate(() => ({
+        noHorizontalOverflow: document.documentElement.scrollWidth === window.innerWidth,
+        statusStaysOnOneLine: getComputedStyle(document.querySelector(".status-pill")!).whiteSpace === "nowrap",
+      }))).toEqual({ noHorizontalOverflow: true, statusStaysOnOneLine: true });
+      await page.locator(".table-row").filter({ has: page.getByText("PC-0", { exact: true }) })
+        .getByRole("button", { name: "접속", exact: true }).click();
+      await page.getByTestId("remote-session-workspace").waitFor();
+      await assertMobileLayout();
+
+      const tools = page.getByTestId("secondary-tools");
+      await tools.locator("summary").click();
+      const popup = await tools.locator(".session-tool-menu-content").boundingBox();
+      const bar = await page.getByTestId("remote-command-bar").boundingBox();
+      expect(popup).not.toBeNull(); expect(bar).not.toBeNull();
+      expect(popup!.y + popup!.height).toBeLessThanOrEqual(bar!.y + 1);
+      await tools.locator("summary").click();
+
+      await page.getByRole("button", { name: "장비 목록", exact: true }).click();
+      await page.getByText("열린 세션 1", { exact: true }).waitFor();
+      expect(await page.evaluate(() => (window as any).testState.closedSessions)).toEqual([]);
+      await page.locator(".table-row").filter({ has: page.getByText("PC-1", { exact: true }) })
+        .getByRole("button", { name: "접속", exact: true }).click();
+
+      const tabs = page.getByRole("navigation", { name: "열린 원격 세션", exact: true });
+      await tabs.getByRole("button", { name: "PC-0", exact: true }).click();
+      const activeConnection = page.locator('.session-panel:not(.session-panel-inactive) [data-testid="remote-connection-status"]');
+      expect(await activeConnection.innerText()).toContain("PC-0");
+      expect(await page.evaluate(() => ({
+        connections: (window as any).testState.connections,
+        reads: (window as any).testState.reads,
+        rtcStarts: (window as any).testState.rtcStarts,
+      }))).toEqual({ connections: ["device-0", "device-1"], reads: 1, rtcStarts: 2 });
+
+      await page.setViewportSize({ width: 844, height: 390 });
+      await assertMobileLayout();
+      await tabs.getByRole("button", { name: "PC-1 세션 닫기", exact: true }).click();
+      await page.waitForFunction(() => (window as any).testState.closedSessions.length === 1);
+      expect(await page.evaluate(() => (window as any).testState.closedSessions)).toEqual(["remote-session-device-1"]);
+      expect(await activeConnection.innerText()).toContain("PC-0");
     } finally { await page.close(); }
   });
 });

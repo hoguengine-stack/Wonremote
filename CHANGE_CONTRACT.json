@@ -1,150 +1,60 @@
 {
-  "status": "verified",
-  "intent": "Check Agent updates on startup, hourly, and explicit user request while eliminating unchanged update telemetry writes and their dependent security-rule reads; resume only the registered Android Agent and user-enabled Control Add-On automatically after device boot while keeping the Android Viewer manual; and make every Firebase CLI deployment failure return a failing process status.",
+  "status": "ready-to-deploy",
+  "intent": "Publish WonRemote v0.1.79 with one authenticated startup device refresh and a compact Android Viewer that keeps multiple device sessions connected while moving between the device list and session tabs.",
   "requestReview": {
     "impact": "changed",
-    "reason": "Windows Agent update checks now run at startup and on the one-hour scheduler itself instead of waking every minute. The signed manifest is HTTP-hosted; an unchanged successful result no longer writes transient checking/healthy telemetry to the device document, preventing those writes from repeatedly reevaluating the command listener's device-dependent rule. Android boot hardening adds no recurring request. Request-time screen approval adds one bounded local notification timer per explicit Viewer connection command and no polling or additional cloud request.",
-    "assumptions": "Scoped Firestore delta, NOT total fleet billing: one registered Windows Agent runs for 24h on the current release with successful signed-manifest responses, no manual update click, update transition, failure, process restart, command, remote session or listener reconnect. It performs one startup plus 24 hourly HTTP manifest checks. Those 25 unchanged checks produce zero Firestore update-telemetry reads and writes. Initial registration/authentication, one startup presence write, the command listener's initial query and rule dependencies, software manifest HTTP traffic, manual presence refreshes, actual updates/failures, Viewer traffic and SDK reconnects remain separate nonzero traffic. A changed update state is intentionally written once; no production billing measurement is claimed.",
-    "dailyBudget": { "clients": 1, "readsPerClient": 0, "writesPerClient": 0, "maxReads": 0, "maxWrites": 0 },
+    "reason": "Authentication now owns one bounded startup device/status refresh. Android multi-session navigation keeps only sessions opened by explicit Connect actions alive and adds no polling, automatic reconnect, history request, or transport implementation.",
+    "assumptions": "Scoped example, not fleet billing: one Viewer authenticates once and explicitly opens two different Agents once in a day. The budget covers the startup device/status refresh plus two session creations, start commands, signaling documents, Viewer ICE candidates, listener delivery, and dependent rule reads. Idle time, rerenders, tab switching, and returning to the list add zero requests. WebRTC media and TURN bytes are separate; production counts still require live measurement.",
+    "dailyBudget": { "clients": 1, "readsPerClient": 100, "writesPerClient": 40, "maxReads": 100, "maxWrites": 40 },
     "checks": {
-      "idle": "Actual Agent watch-block execution with fake time performs exactly 24 update calls and zero heartbeats over 24h. Poll policy separately proves the first check is immediately eligible. Transient checking plus unchanged healthy telemetry produces no report call.",
-      "rerender": "Agent active UI has one button handler and no React effect for update polling; the child Agent process alone owns the automatic scheduler. Opening or rerendering the UI therefore does not add a periodic check.",
-      "concurrency": "The existing Agent isUpdating gate prevents overlapping automatic checks. The UI disables repeated clicks while the native checker is running, and the existing updater owns its handoff lifecycle.",
-      "failure": "A real failed state still produces exactly one telemetry report and the UI surfaces native check/install errors. Hourly automatic attempts and explicit manual checks remain available; unchanged recovery state is deduplicated after it is reported.",
-      "cleanup": "The automatic interval belongs to the Agent child process and ends with it. The one-shot native checker waits for its hidden child and returns one parsed result. No new listener, service, retry timer or persistent UI subscription was added."
+      "idle": "Real Chromium fake time proves one startup list request, zero history reads, zero subscriptions, and no additional request over 24 hours.",
+      "rerender": "Repeated auth callbacks and session switching reuse the existing request/session owners without another list read, session open, or transport start.",
+      "concurrency": "Existing pending/open per-device guards coalesce duplicate Connect actions; the tested two-session path uses two distinct explicitly selected devices.",
+      "failure": "Quota/list failure and WebRTC failure retain manual retry and cannot start an automatic retry loop.",
+      "cleanup": "Logout rejects stale list results; closing one session releases its inputs and transport without closing the other session."
     },
-    "contractTests": ["aether-link-app/src/agent/agentUpdatePollPolicy.test.ts", "aether-link-app/src/agent/agentPresence.test.ts", "aether-link-app/src/desktopPackaging.test.ts"]
+    "contractTests": ["aether-link-app/src/viewerDeviceRefresh.test.ts"]
   },
-  "changeType": "fix",
+  "changeType": "feature",
   "risk": "high",
   "releaseImpact": "build-and-deploy",
-  "rollback": "Keep unrelated edits and prior auxiliary-queue quota fixes. Roll back manual-presence Agent behavior and connection freshness policy together if necessary; never restore strict heartbeat aging while deployed Agents have no heartbeat timer. Deploy matching Firestore rules and Functions before releasing manual-presence Agents. Restoring recurring list/heartbeat traffic would reintroduce quota waste and needs explicit review. For the Android auto-start addition, remove only the Control Add-On direct-boot declaration and its focused tests.",
-  "incident": "INC-20260905-004",
+  "rollback": "Repoint stable downloads to v0.1.78 and revert the v0.1.79 release commit; retain registered device data and do not restore polling or automatic reconnect.",
   "outcomes": [
     {
-      "id": "agent-hourly-and-manual-update-check",
-      "acceptance": "The registered desktop Agent checks for signed updates once at startup, then once per hour, and exposes an Update check button that reports current/error state or confirms an available update before using the existing installer updater. An unchanged successful check produces no Firestore telemetry write; update transitions and failures remain visible.",
-      "boundaries": ["Agent active UI", "Tauri packaged updater command", "Windows Agent scheduler", "signed release metadata", "Firestore update telemetry and dependent command listener rules"],
-      "contractTests": ["aether-link-app/src/agent/agentUpdatePollPolicy.test.ts", "aether-link-app/src/agent/agentPresence.test.ts", "aether-link-app/src/desktopPackaging.test.ts"],
-      "proofLevel": "automated-runtime",
-      "verification": "2026-09-05: npx vitest run src/agent/agentUpdatePollPolicy.test.ts src/agent/agentPresence.test.ts passed 9 tests after RED failures for the old 15-minute default, one-minute scheduler and absent telemetry deduplication. The actual watch block makes 24 calls/24h and zero heartbeats; transient plus unchanged healthy state causes no report, while a failure reports once. Focused desktopPackaging native-update contract passed 1 test with 61 unrelated cases skipped. npx tsc --noEmit and cargo check --lib passed. Rust formatting check remains globally red on extensive pre-existing formatting differences and is not claimed as passing.",
-      "physicalGap": "No build/deployment requested. Installed Agent button, hourly wall clock, updater handoff and live Firestore billing require later release/device verification."
-    },
-    {
-      "id": "refresh-only-presence-and-lists",
-      "acceptance": "Viewer login and idle time do not load device/history data. Refresh explicitly reads them and requests a bounded status response from registered Agents. Windows and Android Agents no longer send timer-driven heartbeats; command reception and automatic software updates remain available. Old heartbeat age alone must not permanently prevent an explicit authorized remote connection.",
-      "boundaries": ["Viewer refresh and auth lifecycle", "Firestore/local requests", "Windows Agent command and update lifecycle", "Android Agent service", "presence-dependent connection eligibility and security rules"],
-      "contractTests": ["aether-link-app/src/viewerDeviceRefresh.test.ts", "aether-link-app/src/firebase/viewerConnectionHistory.test.ts", "aether-link-app/src/domain/devicePresenceRefresh.test.ts", "aether-link-app/src/agent/agentPresence.test.ts", "aether-link-app/scripts/verify-firestore-rules.mjs"],
-      "proofLevel": "automated-runtime",
-      "verification": "2026-09-05: focused Vitest run passed 129 tests across 11 files including Chromium refresh/reconnect, SDK request counts, real local HTTP presence, Agent timers/commands and legacy compatibility. App and Functions TypeScript checks passed. Android :agent:testDebugUnitTest --offline compiled Java changes and passed five tests. FIRESTORE_EMULATOR_HOST=127.0.0.1:18089 node scripts/verify-firestore-rules.mjs passed seven actual security outcomes, including stale manual presence allowed, stale legacy denied and unauthorized Viewer denied. Emulator-only fixtures and cached JRE21 avoid production quota use.",
-      "physicalGap": "No installer/APK build or deployment requested. Matching Firestore rules and Functions must deploy before manual-presence Agents. Installed Windows/Android behavior and live permissions need release/device validation. Registration/startup/shutdown and actual commands still cause event-driven writes; old Agents retain their prior heartbeat until updated."
-    },
-    {
-      "id": "manual-session-reconnect",
-      "acceptance": "Remote connections start only from Connect. Failed/disconnected sessions do not run automatic reconnect loops, including reboot recovery; the session refresh button performs one explicit reconnect attempt and cleanup prevents late work.",
-      "boundaries": ["Viewer WebRTC lifecycle", "manual reconnect button", "reboot session restoration", "transport shutdown"],
+      "id": "authenticated-startup-device-refresh",
+      "acceptance": "After restored Firebase authentication or successful local login, the shared Viewer loads registered devices exactly once without a manual click. Repeated callbacks, rerenders, and 24-hour idle add no request; history and reconnect stay manual.",
+      "boundaries": ["Viewer authentication callback", "local login", "React StrictMode request ownership", "device list UI", "logout and reauthentication"],
       "contractTests": ["aether-link-app/src/viewerDeviceRefresh.test.ts"],
       "proofLevel": "automated-runtime",
-      "verification": "2026-09-05: src/viewerDeviceRefresh.test.ts passed in the 129-test focused run. Real Chromium StrictMode starts one transport per explicit Connect, makes zero automatic restarts over 24h after failure, and starts one replacement from the session refresh icon. Reboot timers were removed along with the automatic failure scheduler; cleanup closes late transports. Signaling is mocked, so this is UI lifecycle proof, not physical remote recovery.",
-      "physicalGap": "Physical Android/Windows reconnects are not exercised by mocked signaling; user explicitly chose manual reconnect over previous automatic recovery."
+      "verification": "2026-09-05: `npx vitest run src/viewerDeviceRefresh.test.ts` passed 9/9 in real Chromium, including one startup request, repeated auth callbacks, 24-hour idle, manual history/reconnect, logout cancellation, and reauthentication.",
+      "physicalGap": "Installed desktop and Android launch behavior and live Firebase billing remain physical checks after deployment."
     },
     {
-      "id": "event-driven-session-data",
-      "acceptance": "An idle connected Viewer and Windows Agent issue no recurring chat/clipboard/file/receipt queries. New events still reach the intended receiver once, unused receipt monitoring is absent, slow handlers are serialized, and session stop prevents late delivery. Firebase and local API paths preserve these behaviors; Android heartbeat/signaling are not replaced by polling.",
-      "boundaries": ["Viewer session lifecycle", "Agent session lifecycle", "Firestore subscriptions and acknowledgement", "local API event delivery", "file transfer receipt and cleanup", "history refresh", "heartbeat serialization"],
-      "contractTests": ["aether-link-app/src/firebase/sessionData.test.ts", "aether-link-app/src/api/sessionData.test.ts", "aether-link-app/src/viewerDeviceRefresh.test.ts"],
+      "id": "android-viewer-multi-session-ui",
+      "acceptance": "On the Android Viewer route in portrait and landscape, the device list and remote canvas have no horizontal page overflow, primary controls remain reachable, and tools open above the bottom command bar. Returning to the list keeps the current session, another device can connect, named tabs switch sessions, and closing one leaves the other active; only the selected session accepts input.",
+      "boundaries": ["shared Viewer session state", "Android /viewer route", "mobile dashboard", "remote command bar", "WebRTC panel mounting", "input release and per-tab close"],
+      "contractTests": ["aether-link-app/src/viewerDeviceRefresh.test.ts"],
       "proofLevel": "automated-runtime",
-      "verification": "2026-09-05: npx vitest run src/firebase/sessionData.test.ts src/api/sessionData.test.ts src/firebase/requestRetryPolicy.test.ts src/viewerDeviceRefresh.test.ts src/firebase/viewerConnectionHistory.test.ts src/api/viewerApi.test.ts src/agent/agentCommandExecution.test.ts src/agent/fileTransferReceiver.test.ts passed 106 tests; npx tsc --noEmit passed. Real Chromium exposes session start/end request ownership; local real HTTP exercises chat, clipboard, files, selected receipts and session close. Firestore lifecycle, acknowledgement and quota behavior use SDK-boundary mocks; no production usage proof is claimed.",
-      "physicalGap": "No build/deployment requested. Installed Windows/Android behavior, physical clipboard/file delivery and metered production usage require later device verification. Heartbeat scheduling is superseded by refresh-only-presence-and-lists; event-driven presence, update checks and essential local capture/command transport remain."
+      "verification": "2026-09-05: The focused real-Chromium case failed before the fix because the command bar remained 749px above the bottom of a 390x844 viewport, then passed 1/1. The full file passed 9/9; the active-session pointer, wheel, keyboard, and clipboard guard passed its focused existing check 1/1.",
+      "physicalGap": "Physical Android WebView keyboard, touch, rotation, concurrent Agents, and WebRTC/TURN resource use require device verification."
     },
     {
-      "id": "manual-device-list",
-      "acceptance": "Desktop and mobile shared Viewer UI loads devices only on explicit refresh, not login; no idle list reads or automatic online/offline transitions. This supersedes the earlier login-plus-refresh acceptance. Cached offline entries can initiate normal, secure and split requests; backend ownership, stored offline status and protocol checks remain, with heartbeat aging retained for legacy Agents only.",
-      "boundaries": ["Viewer login and refresh button", "Firebase/local device read", "React request ownership and logout", "connection buttons and server eligibility"],
-      "contractTests": ["aether-link-app/src/viewerDeviceRefresh.test.ts", "aether-link-app/src/firebase/viewerDeviceRefresh.test.ts", "aether-link-app/src/server/deviceConnectionEligibility.test.ts"],
-      "proofLevel": "automated-runtime",
-      "verification": "2026-09-04: npx vitest run src/viewerDeviceRefresh.test.ts src/firebase/viewerDeviceRefresh.test.ts src/server/deviceConnectionEligibility.test.ts src/domain/splitSessionView.test.ts src/firebase/viewerConnectionHistory.test.ts src/firebase/firebaseSecurityPolicy.test.ts src/deviceListPresentation.test.ts src/api/viewerApi.test.ts passed 56 tests; npx tsc --noEmit passed. Five real Chromium UI cases failed before the manual refresh changes, then passed. Three local HTTP protocol-rejection cases returned 200 before the backend guard and 409 after. No real Firebase traffic was generated by these tests.",
-      "physicalGap": "Installed Windows/Android packages and live quota reduction require a later requested build/deployment; physical remote input and reboot reconnection are not exercised by UI request tests. An additionally executed remoteSessionLayout.test.ts run has one unrelated Ctrl-paste source-pattern failure in an untouched handler; recorded in INC-20260904-002, not repaired or counted as passing."
-    },
-    {
-      "id": "request-waste-development-guard",
-      "acceptance": "Completion and future commit checks reject missing request reviews; request-affecting changes must declare a bounded daily budget, lifecycle evidence, and a changed request-boundary test. History regression checks cover an idle day without polling, while post-deployment proof-only edits validate the committed release boundary instead of unrelated workspace files.",
-      "boundaries": ["change contract", "commit trailers", "local and CI recurrence gate", "offline request-count regression"],
-      "contractTests": ["aether-link-app/scripts/verify-recurrence-coverage.test.js", "aether-link-app/src/firebase/viewerConnectionHistory.test.ts"],
-      "proofLevel": "automated-runtime",
-      "verification": "2026-09-05: npx vitest run scripts/verify-recurrence-coverage.test.js passed 14 tests. Missing review and lifecycle/budget guards fail, untracked workspace files cannot replace committed release boundaries, post-deployment proof-only edits reuse the committed boundary set, and actual code edits remain restricted to their current changed files. Earlier history checks passed 24h idle and unsubscribe request-count scenarios. Tests are offline and do not prove aggregate production usage.",
-      "physicalGap": "The gate validates review completeness and stated budgets, not the truth of unmeasured fleet assumptions. Existing request paths beyond the history subscription require a separate audit."
-    },
-    {
-      "id": "android-registration-quota-recovery",
-      "acceptance": "Registration reports a server quota failure accurately without saving a false registration; Agent retries are delayed while quota is exhausted and registration succeeds after quota recovery.",
-      "boundaries": [
-        "Android registration UI", "Firebase authentication", "Firestore transaction", "local registration persistence", "heartbeat and command listener retry", "external project quota"
-      ],
-      "contractTests": [
-        "mobile/android/agent/src/test/java/com/wonremote/agent/FirebaseQuotaTest.java"
-      ],
-      "proofLevel": "physical-required",
-      "verification": "Live read-only Firestore probe returned HTTP 429 RESOURCE_EXHAUSTED; billingEnabled=false and freeTier=true. :agent:testDebugUnitTest --tests com.wonremote.agent.FirebaseQuotaTest passed 2 tests with the real Firebase exception class and test-only Android container/string fixtures; Agent debug Java compilation passed. Registration persistence remains after successful transaction completion only. This does not prove physical registration recovery.",
-      "physicalGap": "Production Firestore currently returns HTTP 429 RESOURCE_EXHAUSTED. Quota recovery and Android registration after a future requested build must be verified; no billing changes are authorized."
-    },
-    {
-      "id": "viewer-history-read-budget",
-      "acceptance": "Superseding the earlier stable-listener policy, Firebase and local Viewer history now query only on explicit history refresh, never mount or a timer. Firebase uses a server-only bounded session query and existing device metadata; there is no UI history subscription.",
-      "boundaries": [
-        "ConnectionHistorySection lifecycle", "Firebase session subscription", "existing device metadata", "unsubscribe", "local API manual refresh", "manual refresh"
-      ],
-      "contractTests": [
-        "aether-link-app/src/firebase/viewerConnectionHistory.test.ts"
-      ],
-      "proofLevel": "automated-runtime",
-      "verification": "npx vitest run src/firebase/viewerConnectionHistory.test.ts src/firebase/firebaseSecurityPolicy.test.ts src/api/viewerApi.test.ts passed 32 tests; new history regressions failed before implementation. Fake-time runtime tests cover an idle hour without repeated queries, updated session metadata, quota error, unsubscribe and explicit retry. UI routing is covered by a source contract, not a browser/device E2E. npx tsc --noEmit passed.",
-      "physicalGap": "Live usage reduction requires deployment and closing or updating old polling Viewers. No build or deployment requested this turn."
-    },
-    {
-      "id": "android-agent-addon-boot-autostart",
-      "acceptance": "After one-time Agent registration and one-time Control Add-On accessibility approval, a device reboot resumes the Agent connection service and rebinds the Add-On input service without opening either app UI; the Android Viewer never auto-starts and screen sharing still requires Android user approval.",
-      "boundaries": ["Android boot broadcast", "registered Agent storage", "Agent foreground service", "Control Add-On accessibility approval", "Android system accessibility binding", "Viewer manifest", "MediaProjection consent"],
-      "contractTests": ["mobile/android/agent/src/test/java/com/wonremote/agent/BootReceiverTest.java", "aether-link-app/src/desktopPackaging.test.ts"],
-      "proofLevel": "physical-required",
-      "verification": "2026-09-05: BootReceiverTest passed 1 focused Android unit test for registered-only BOOT_COMPLETED, QUICKBOOT_POWERON and MY_PACKAGE_REPLACED handling. The focused desktopPackaging Vitest failed RED before the Add-On declaration and then passed 1 test with 62 unrelated cases skipped, proving Agent-only boot reception, no projection auto-start and no Viewer boot receiver. :controladdon:processDebugManifest passed and its final merged manifest contains android:directBootAware=true. No APK build was requested or run.",
-      "physicalGap": "A real reboot is required to verify OEM battery policy, foreground notification delivery, persisted accessibility approval and service rebinding. MediaProjection cannot be auto-approved by this path."
-    },
-    {
-      "id": "android-request-time-screen-share-approval",
-      "acceptance": "When the background Android Agent receives an explicit Viewer start-stream request without an active projection, it raises one high-priority approval notification. Tapping it opens the Agent and Android full-display consent dialog; approval starts the pending session, while rejection, expiry or session closure removes the request and projection. No screen capture starts at boot or without user consent.",
-      "boundaries": ["Viewer start-stream command", "Agent command listener", "approval notification", "Agent Activity launch", "Android MediaProjection consent", "pending WebRTC session", "rejection and timeout cleanup"],
-      "contractTests": ["mobile/android/agent/src/test/java/com/wonremote/agent/AgentProjectionRequestTest.java", "aether-link-app/src/desktopPackaging.test.ts"],
-      "proofLevel": "physical-required",
-      "verification": "2026-09-05: AgentProjectionRequestTest and BootReceiverTest passed 2 focused Android unit tests after the request-policy test failed RED. The Android task compiled Agent Java and processed the manifest. Focused desktopPackaging Vitest passed 2 request-time approval and boot-autostart contracts after failing RED on the missing singleTop launch path. No APK build was requested or run.",
-      "physicalGap": "A physical Android device must confirm heads-up notification visibility over the table-order app, notification permission behavior, system consent UI, accepted stream startup and reject/timeout cleanup."
-    },
-    {
-      "id": "release-pc-x86-v0.1.78",
-      "acceptance": "GitHub Release v0.1.78 contains exactly the stable x86 Viewer installer, stable x86 Agent installer and signed update manifest, and the live stable download aliases resolve to those assets so installed PC clients can detect the update.",
+      "id": "release-pc-x86-v0.1.79",
+      "acceptance": "GitHub Release v0.1.79 contains exactly the stable x86 Viewer installer, stable x86 Agent installer and signed update manifest, and the four stable Windows aliases resolve to those assets.",
       "boundaries": ["cached x86 Viewer build", "Agent-default NSIS bundle", "x86 payload verification", "signed update manifest", "GitHub Release", "stable Firebase aliases"],
-      "contractTests": ["aether-link-app/src/desktopPackaging.test.ts", "aether-link-app/tests/e2e/test_installer_update_flow.ts"],
-      "proofLevel": "deployment-required",
-      "verification": "2026-09-05 deployed: commit 2e08a1d triggered GitHub Actions run 33933165835, which completed successfully and published non-draft Release 383083078 with exactly WonRemote-Viewer-Setup.exe, WonRemote-Agent-Setup.exe and wonremote-update-manifest.json. The live manifest signature and both x86/x64 compatibility entries verified against the downloaded bytes (Viewer b46825e023e54645c8de90cbea3cbc1b8257ec50fa584803eba01294a3cc3e4a; Agent fa500dd7c4a6f3e87fb2470e3602cee75e8173dbb8a6fb870994bba39776556a). Firebase viewer, agent, viewer-x86 and agent-x86 aliases each return 302 to the matching latest GitHub asset. Installer update E2E and the 65-test PC/Android packaging contract passed before publication. GitHub Authenticode credentials are not configured, so both published installers report NotSigned.",
-      "physicalGap": "Installer launch and automatic update still require physical Windows verification after publication."
-    },
-    {
-      "id": "release-android-v0.1.78",
-      "acceptance": "Firebase Hosting serves newly signed v0.1.78 Android Agent, Viewer and Control Add-On ZIP downloads, each containing its corresponding APK, through the three stable Android download routes.",
-      "boundaries": ["Gradle release build", "Android release keystore", "APK v2 signature verification", "ZIP packaging", "frontend public copy", "Firebase Hosting", "live route and byte verification"],
-      "contractTests": ["aether-link-app/src/desktopPackaging.test.ts", "aether-link-app/src/mobileViewerPackaging.test.ts"],
-      "proofLevel": "deployment-required",
-      "verification": "2026-09-05 deployed: the Firebase wonremote-a7fd3 Hosting release completed successfully and its root returns HTTP 200. The live agent.apk, viewer.apk and control-addon.apk routes each delivered the newly built ZIP byte-for-byte (Agent 9fd7a2ef5b9351bda6a5af7ba301befaf44f17a3b05bf802db8d47be6a5d4e83; Viewer 38c9da770d6d9ec2151cae365d2afd5ff3e05a4719e30f5b2f6abb9aa0c5cb57; Control Add-On d27d53e7f4e6e4b3b7d4e08a28746652431aa34e2b59b48421f908e6b071836a). Before deployment all three contained APKs reported versionName 0.1.78, passed APK Signature Scheme v2 verification and matched the signing certificate of their live predecessor. The 65-test PC/Android packaging contract passed.",
-      "physicalGap": "Installation, request-time screen consent and remote control require physical Android verification after publication."
-    },
-    {
-      "id": "firebase-deploy-failure-exit",
-      "acceptance": "The Firebase deployment wrapper returns a nonzero process status whenever firebase-tools fails, so Storage initialization, billing, permission or network failures cannot be reported as successful deployment.",
-      "boundaries": ["deploy-firebase.ps1", "firebase-tools process", "release command exit status"],
       "contractTests": ["aether-link-app/src/desktopPackaging.test.ts"],
-      "proofLevel": "automated-runtime",
-      "verification": "2026-09-05: the focused desktop packaging contract passed 1 test with 63 unrelated tests skipped. A real Spark deployment attempt against the uninitialized Storage target made firebase-tools exit 1, and the corrected PowerShell wrapper also returned exit 1 with the original failure code instead of completing successfully.",
-      "physicalGap": "none"
+      "proofLevel": "deployment-required",
+      "verification": "Pending",
+      "physicalGap": "Installer launch and automatic update require physical Windows verification after publication."
+    },
+    {
+      "id": "release-android-v0.1.79",
+      "acceptance": "Firebase Hosting serves signed v0.1.79 Android Agent, Viewer and Control Add-On ZIP downloads through the three stable Android routes, while existing Android Viewer shells load the deployed shared Viewer UI on launch.",
+      "boundaries": ["Gradle release build", "Android release keystore", "APK v2 signature verification", "ZIP packaging", "shared Viewer web build", "Firebase Hosting", "live route and byte verification"],
+      "contractTests": ["aether-link-app/src/desktopPackaging.test.ts", "aether-link-app/src/viewerDeviceRefresh.test.ts"],
+      "proofLevel": "deployment-required",
+      "verification": "Pending",
+      "physicalGap": "Physical Android launch, WebView cache behavior, APK installation, screen consent, and remote control remain device checks. Native APK replacement is not silent without Android installation approval or managed-device privileges."
     }
   ]
 }
