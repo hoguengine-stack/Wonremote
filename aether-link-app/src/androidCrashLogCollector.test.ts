@@ -30,5 +30,6 @@ describe("Android crash log collector", () => {
     expect(source).toContain("Expand-Archive");
     expect(source).toContain("C:\\Android\\sdk\\platform-tools\\adb.exe");
     expect(source).toContain("Get-FirstExistingPath");
+    expect(source).toContain("Get-AuthorizedDeviceSerial");
   });
 });

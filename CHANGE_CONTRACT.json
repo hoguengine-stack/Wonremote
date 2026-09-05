@@ -1,6 +1,6 @@
 {
   "status": "verified",
-  "intent": "Android Agent crash logs can be captured from another Windows PC using one launcher file without a missing PowerShell script.",
+  "intent": "Android Agent crash logs can be captured from another Windows PC without a null-device crash when USB debugging is unavailable.",
   "changeType": "fix",
   "risk": "high",
   "releaseImpact": "none",
@@ -53,7 +53,7 @@
     },
     {
       "id": "android-crash-log-capture",
-      "acceptance": "On another Windows PC, an operator can double-click one launcher file; it retrieves the collector only if missing, finds a complete existing ADB path, clears Android logs, reproduces two Viewer connection attempts, and receives a ZIP containing logcat, device properties and Agent package state.",
+      "acceptance": "On another Windows PC, an operator can launch the collector and receive a clear USB debugging authorization or no-device message instead of a PowerShell null-value error; once authorized, the collector captures the two Viewer connection attempts into a ZIP.",
       "boundaries": [
         "Windows PowerShell",
         "ADB discovery",
@@ -69,7 +69,7 @@
         "aether-link-app/src/androidCrashLogCollector.test.ts"
       ],
       "proofLevel": "physical-required",
-      "verification": "2026-09-06: npx vitest run src/androidCrashLogCollector.test.ts passed 3 tests for the single-file launcher, visible failure handling, Platform-Tools fallback and full ADB path. PowerShell collector self-test passed.",
+      "verification": "2026-09-06: PowerShell collector self-test verifies a full authorized device serial is accepted and an unauthorized device is rejected without a null value method call. npx vitest run src/androidCrashLogCollector.test.ts passed 3 tests.",
       "physicalGap": "Requires the affected Android device connected to a separate Windows PC with USB debugging authorized; run the capture through both connection attempts and provide the generated ZIP."
     }
   ]

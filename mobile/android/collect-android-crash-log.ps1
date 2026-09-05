@@ -10,6 +10,12 @@ function Get-FirstExistingPath([string[]]$candidates) {
   return $null
 }
 
+function Get-AuthorizedDeviceSerial([string[]]$lines) {
+  $deviceLine = @($lines | Where-Object { $_ -match "^\S+\s+device$" })[0]
+  if (-not $deviceLine) { return $null }
+  return ($deviceLine -split "\s+")[0]
+}
+
 function Get-AdbPath {
   $candidates = @(
     (Join-Path $PSScriptRoot "adb.exe"),
@@ -47,6 +53,12 @@ if ($SelfTest) {
   $adb = Join-Path $path "adb.exe"
   New-Item -ItemType File -Path $adb | Out-Null
   if ((Get-FirstExistingPath @($adb)) -ne $adb) { throw "ADB path was truncated." }
+  if ((Get-AuthorizedDeviceSerial @("List of devices attached", "test-device`tdevice")) -ne "test-device") {
+    throw "Authorized device detection failed."
+  }
+  if (Get-AuthorizedDeviceSerial @("List of devices attached", "test-device`tunauthorized")) {
+    throw "Unauthorized device was accepted."
+  }
   Remove-Item -LiteralPath $adb -Force
   Remove-Item -LiteralPath $path -Force
   Write-Output "Self-test passed."
@@ -54,9 +66,13 @@ if ($SelfTest) {
 }
 
 $adb = Get-AdbPath
-$device = (& $adb devices | Select-String "\tdevice$" | Select-Object -First 1).ToString().Split("`t")[0]
+$devices = @(& $adb devices)
+$device = Get-AuthorizedDeviceSerial $devices
 if ([string]::IsNullOrWhiteSpace($device)) {
-  throw "Connect an Android device and allow USB debugging, then run this again."
+  if (@($devices | Where-Object { $_ -match "^\S+\s+unauthorized$" }).Count) {
+    throw "Unlock the Android device and tap Allow on the USB debugging prompt, then run this again."
+  }
+  throw "No authorized Android device found. Connect the device, enable USB debugging, then run this again."
 }
 
 $output = New-CaptureDirectory

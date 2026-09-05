@@ -932,6 +932,7 @@ This also covers development-process escapes: missed requirements, incomplete pl
 - Diagnostic guard: ADB capture script clears prior logs and packages both connection attempts with Agent package state, so a device-specific native crash has a recoverable record before another code change.
 - Diagnostic availability guard: When a separate test PC has no ADB, the collector acquires the official Platform-Tools ZIP once and reuses the extracted binary; it does not retry or poll.
 - Diagnostic launcher guard: The CMD launcher retrieves its matching collector script when absent and stops with a visible error before attempting PowerShell -File.
+- Diagnostic device guard: Device parsing first checks for an authorized serial and reports unauthorized or absent USB debugging without calling methods on a missing value.
 - Regression proof: 4 native artifact-verifier tests passed; existing broken release mapping is rejected. Focused ControlAddonClient test and Add-On compilation passed. Signed Android release build verified preserved JNI mapping and all three APK signatures.
 - Release proof: Android Agent, Viewer and Control Add-On v0.1.83 ZIPs and android-update.json versionCode 1083 deployed to Hosting. GitHub Actions run `33985944437` succeeded and released signed x86 Viewer and Agent installers plus updater manifest.
 - Remaining blocker: Signed optimized APK on the affected physical device: background request, permission denial/approval, first frame, reconnect, and logcat.
