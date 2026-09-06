@@ -1,5 +1,5 @@
 {
-  "status": "ready-to-deploy",
+  "status": "verified",
   "intent": "Preserve Viewer SDP through Android offer extraction to remove the identified native negotiation blocker; first-frame restoration remains physical-required.",
   "changeType": "fix",
   "risk": "high",
@@ -35,7 +35,7 @@
       "boundaries": ["Viewer createOffer", "Firestore offer.sdp", "Android offer extraction", "native setRemoteDescription", "answer and ICE", "data channels", "Viewer first frame"],
       "contractTests": ["mobile/android/agent/src/test/java/com/wonremote/agent/RemoteSessionDiagnosticsTest.java"],
       "proofLevel": "physical-required",
-      "verification": "2026-09-06: RemoteSessionDiagnosticsTest RED reproduced trimmed SDP with 1/3 failures; after the accessor fix, gradlew :agent:testDebugUnitTest --tests com.wonremote.agent.RemoteSessionDiagnosticsTest --tests com.wonremote.agent.AgentProjectionRequestTest --build-cache --console=plain passed 7 tests in 4s. Tests prove extraction preserves CRLF/LF bytes, not native negotiation or visible first frame. Physical v0.1.85 log 20260906-173232 proves remote offer apply failure before capture. No packaging or deployment performed.",
+      "verification": "2026-09-06: RemoteSessionDiagnosticsTest RED reproduced trimmed SDP with 1/3 failures; after the accessor fix, gradlew :agent:testDebugUnitTest --tests com.wonremote.agent.RemoteSessionDiagnosticsTest --tests com.wonremote.agent.AgentProjectionRequestTest --build-cache --console=plain passed 7 tests in 4s. Android v0.1.86 Agent, Viewer and Control Add-On release build passed JNI mapping and APK signature checks. x86 Viewer and Agent installers passed payload verification. GitHub Release v0.1.86 is published with two installers and signed manifest; Firebase Hosting returns Android update metadata versionCode 1086 and HTTP 200 for all three ZIPs. Tests prove payload preservation and deployment, not native negotiation or visible first frame. Physical v0.1.85 log 20260906-173232 proves remote offer apply failure before capture.",
       "physicalGap": "No authorized ADB device is connected. Verify newly installed Agent initial connection, repeated connection, approval denial/recovery and first frame on affected PC/Android; separate-network relay remains unverified."
     },
     {

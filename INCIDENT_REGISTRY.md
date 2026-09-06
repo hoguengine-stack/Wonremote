@@ -930,7 +930,7 @@ This also covers development-process escapes: missed requirements, incomplete pl
 - Fix commit(s): `1b79c5d`.
 - Permanent guard: Preserve the protocol payload verbatim in a dedicated offer accessor; regression exercises actual offer extraction for CRLF/LF and repeated connections. Do not apply UI whitespace normalization to wire protocols.
 - Regression proof: RemoteSessionDiagnosticsTest failed 1/3 before fix at SDP byte comparison; after fix, it and AgentProjectionRequestTest passed 7 tests via gradlew :agent:testDebugUnitTest --tests com.wonremote.agent.RemoteSessionDiagnosticsTest --tests com.wonremote.agent.AgentProjectionRequestTest --build-cache --console=plain (4s). Native parser source https://webrtc.googlesource.com/src/+/4c122cc0b237bf3ed5bd1c423d3c3ca626522bc3/api/webrtc_sdp.cc GetLine corroborates the newline requirement. This is payload-boundary proof, not a device screen-success claim.
-- Release proof: Pending v0.1.86 signed Android and x86 release packaging plus Firebase and GitHub publication.
+- Release proof: v0.1.86 signed Android Agent, Viewer and Control Add-On APKs passed JNI and signature checks; their update metadata is live on Firebase Hosting with all three ZIP routes returning HTTP 200. GitHub Release v0.1.86 is published with exactly two x86 installers and signed update manifest; uploaded sizes match local artifacts.
 - Remaining blocker: No ADB device attached. Verify affected Android/PC first frame, reconnect, denial/recovery, and TURN-dependent network before calling the screen issue resolved.
 
 ## INC-20260906-005: Android first-frame failure had no negotiation diagnostics
