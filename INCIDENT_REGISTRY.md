@@ -918,6 +918,36 @@ This also covers development-process escapes: missed requirements, incomplete pl
 - Release proof: `npm run firebase:deploy` completed with Firestore rules and Hosting; the public Android ZIP routes returned their expected redirect or 200 responses.
 - Remaining blocker: Firebase Storage-backed 500MB transfer remains unavailable until Storage is initialized and deployment is explicitly run with `-IncludeStorage`.
 
+## INC-20260907-001: Android session end left screen sharing active
+
+- Detected: 2026-09-07.
+- Severity: P2 remote-session cleanup failure.
+- Affected: Android Agent sessions closed from Viewer or by the session state listener.
+- Status: fixed-in-source; physical verification pending.
+- User-visible symptom: Viewer session ends while Android's screen-sharing indicator and capture remain active.
+- Minimal trigger: End the active Viewer session after Android screen sharing is approved.
+- Root cause and contributors: finishRemoteSession only released the remote transport and wake lock because prior behavior intentionally preserved projection for reconnect. The requested behavior requires explicit MediaProjection shutdown on both session-end paths.
+- Fix commit(s): `1ff6511`.
+- Permanent guard: Route both current named stop-stream commands and session-closed callbacks through endProjection; preserve current-session matching and require fresh consent on the next connection.
+- Regression proof: AgentProjectionRequestTest covers current, stale, duplicate stop guards and new-consent state. The instrumentation shutdown-delegation source compiles with the Android test source set.
+- Release proof: Pending v0.1.87 signed Android and x86 release packaging plus Firebase and GitHub publication.
+- Remaining blocker: Verify sharing indicator disappearance, repeated reconnect approval and stale-command isolation on physical Android.
+
+## INC-20260906-007: Session-end instrumentation test lacked its test dependency
+
+- Detected: 2026-09-06.
+- Severity: P3 development verification failure.
+- Affected: Android Agent instrumentation tests only.
+- Status: corrected; device execution pending.
+- User-visible symptom: Verification of automatic screen-share shutdown could not compile.
+- Minimal trigger: Compile the new Android instrumentation test.
+- Root cause and contributors: JVM testImplementation does not supply androidTestImplementation; assumed JUnit was available to both source sets.
+- Fix commit(s): uncommitted.
+- Permanent guard: Declare the existing JUnit version for androidTest and compile the actual instrumentation source set before reporting test availability.
+- Regression proof: Initial compile failed on missing junit.framework; corrected source-set dependency and rerun recorded in CHANGE_CONTRACT.json.
+- Release proof: No build or deployment requested for this change.
+- Remaining blocker: Execute session closure test and verify sharing indicator on an Android device.
+
 ## INC-20260906-006: Android signaling trimmed the SDP line terminator
 
 - Detected: 2026-09-06.

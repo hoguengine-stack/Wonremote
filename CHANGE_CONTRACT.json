@@ -1,14 +1,14 @@
 {
-  "status": "verified",
-  "intent": "Preserve Viewer SDP through Android offer extraction to remove the identified native negotiation blocker; first-frame restoration remains physical-required.",
+  "status": "ready-to-deploy",
+  "intent": "Stop Android screen sharing automatically when the current Viewer session ends; preserve stale-session guards and request fresh consent on the next connection.",
   "changeType": "fix",
   "risk": "high",
   "releaseImpact": "build-and-deploy",
   "rollback": "Revert the readOfferSdp accessor change and release a higher Android Agent version; retain existing diagnostics and JNI keep rules.",
-  "incident": "INC-20260906-006",
+  "incident": "INC-20260907-001",
   "requestReview": {
     "impact": "none",
-    "reason": "Preserve SDP payload bytes at the existing offer read boundary. No requests, subscriptions, timers or retry policies are added; successful negotiation may resume the already-budgeted session traffic. TURN provisioning remains unresolved.",
+    "reason": "Current-session shutdown now also releases local MediaProjection, capture resources and wake lock. The same existing session listeners are removed; no network request, write, timer, or retry is introduced.",
     "assumptions": "No request lifecycle changes are included.",
     "dailyBudget": {
       "clients": 0,
@@ -30,45 +30,13 @@
   },
   "outcomes": [
     {
-      "id": "android-sdp-wire-preservation",
-      "acceptance": "PC Viewer offers reach Android WebRTC intact, so initial and repeated approved connections can negotiate and display the first screen frame.",
-      "boundaries": ["Viewer createOffer", "Firestore offer.sdp", "Android offer extraction", "native setRemoteDescription", "answer and ICE", "data channels", "Viewer first frame"],
-      "contractTests": ["mobile/android/agent/src/test/java/com/wonremote/agent/RemoteSessionDiagnosticsTest.java"],
+      "id": "android-session-end-stops-sharing",
+      "acceptance": "Ending the current Viewer session removes Android's screen-sharing indicator and stops capture; a late old-session stop cannot interrupt a new session, and the next connection requests consent again.",
+      "boundaries": ["Viewer session end", "session-closed snapshot or named stop-stream command", "current-session guard", "AgentService.endProjection", "MediaProjection.stop", "notification and wake lock cleanup", "new connection consent"],
+      "contractTests": ["mobile/android/agent/src/androidTest/java/com/wonremote/agent/SessionEndProjectionTest.java", "mobile/android/agent/src/test/java/com/wonremote/agent/AgentProjectionRequestTest.java"],
       "proofLevel": "physical-required",
-      "verification": "2026-09-06: RemoteSessionDiagnosticsTest RED reproduced trimmed SDP with 1/3 failures; after the accessor fix, gradlew :agent:testDebugUnitTest --tests com.wonremote.agent.RemoteSessionDiagnosticsTest --tests com.wonremote.agent.AgentProjectionRequestTest --build-cache --console=plain passed 7 tests in 4s. Android v0.1.86 Agent, Viewer and Control Add-On release build passed JNI mapping and APK signature checks. x86 Viewer and Agent installers passed payload verification. GitHub Release v0.1.86 is published with two installers and signed manifest; Firebase Hosting returns Android update metadata versionCode 1086 and HTTP 200 for all three ZIPs. Tests prove payload preservation and deployment, not native negotiation or visible first frame. Physical v0.1.85 log 20260906-173232 proves remote offer apply failure before capture.",
-      "physicalGap": "No authorized ADB device is connected. Verify newly installed Agent initial connection, repeated connection, approval denial/recovery and first frame on affected PC/Android; separate-network relay remains unverified."
-    },
-    {
-      "id": "android-approved-first-frame",
-      "acceptance": "After approval, PC Viewer displays the Android screen on initial and repeated connections, including separate networks requiring relay.",
-      "boundaries": ["PC Viewer offer", "Firestore signaling and candidates", "Android SDP application", "STUN/TURN and ICE", "data channels", "MediaProjection", "first frame in PC Viewer"],
-      "contractTests": ["mobile/android/agent/src/test/java/com/wonremote/agent/RemoteSessionDiagnosticsTest.java"],
-      "proofLevel": "physical-required",
-      "verification": "2026-09-06: gradlew :agent:testDebugUnitTest --tests com.wonremote.agent.RemoteSessionDiagnosticsTest --tests com.wonremote.agent.AgentProjectionRequestTest --build-cache --console=plain passed 6 tests in 5s. Android v0.1.85 Agent, Viewer and Control Add-On release build passed JNI mapping and APK signature checks. GitHub Release v0.1.85 contains both x86 installers plus signed update manifest. Firebase Hosting returns 0.1.85 for all three Android apps and HTTP 200 for agent.zip, viewer.zip and control-addon.zip. SDP failure diagnostics distinguish remote offer, answer creation and local answer without exposing SDP. Physical log 20260906-055742 shows capture initialization without first-frame evidence and getRtcConfiguration NOT_FOUND. First-frame acceptance remains incomplete.",
-      "physicalGap": "A reachable authenticated TURN service and affected Android/PC devices are required to verify separate-network first frame, disconnect and repeat connection. Do not release this as a completed screen fix."
-    },
-    {
-      "id": "android-background-connect",
-      "acceptance": "PC Viewer Connect while Android Agent is in background does not terminate the Agent; consent and approved first-frame delivery remain available.",
-      "boundaries": [
-        "Viewer command",
-        "Firestore command listener",
-        "AgentService.handleCommand",
-        "WebRTC factory native JNI initialization",
-        "R8 release optimization",
-        "accessibility addon dispatch",
-        "Android consent",
-        "first remote frame"
-      ],
-      "contractTests": [
-        "aether-link-app/src/androidNativeRelease.test.ts",
-        "mobile/android/agent/src/test/java/com/wonremote/agent/ControlAddonClientTest.java",
-        "mobile/android/agent/src/test/java/com/wonremote/agent/RemoteSessionDiagnosticsTest.java",
-        "aether-link-app/src/desktopPackaging.test.ts"
-      ],
-      "proofLevel": "physical-required",
-      "verification": "2026-09-06: physical Android 16 arm64 v0.1.83 log proves libjingle_peerconnection_so aborts because R8 removed org.jni_zero.JniInit. npx vitest run src/androidNativeRelease.test.ts passed 5 tests, including the JniInit keep rule and missing-mapping rejection. Signed Android 0.1.84 Agent, Viewer and Control Add-On builds passed JNI mapping, signature and update metadata checks. Firebase Hosting serves android-update.json versionCode 1084 and all three ZIPs. GitHub Release v0.1.84 serves the two x86 installers and signed manifest with remote byte sizes matching local artifacts.",
-      "physicalGap": "Build and install a newly signed Android Agent on the reported Android 16 arm64 device, then verify background Viewer request, approval, first frame, disconnect and repeat connection."
+      "verification": "2026-09-07: gradlew :agent:testDebugUnitTest --tests com.wonremote.agent.AgentProjectionRequestTest :agent:compileDebugAndroidTestJavaWithJavac --build-cache --console=plain passed. Five JVM tests cover current/old/duplicate stop guards and fresh consent. Instrumentation shutdown-delegation test compiled but was not executed without an Android device. Actual MediaProjection.stop and notification disappearance remain physical-required. User confirmed v0.1.86 screen connection works; this request changes the prior intentional projection-preservation behavior. No release packaging or deployment performed.",
+      "physicalGap": "Verify red sharing indicator disappears on the affected Android, then reconnect and approve again; no physical Android is attached."
     }
   ]
 }

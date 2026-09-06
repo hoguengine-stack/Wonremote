@@ -20,7 +20,7 @@ import android.os.SystemClock;
 
 import com.google.firebase.firestore.ListenerRegistration;
 
-public final class AgentService extends Service {
+public class AgentService extends Service {
     private static final String CHANNEL_ID = "wonremote-agent";
     private static final String REQUEST_CHANNEL_ID = "wonremote-screen-share-request";
     private static final String ACTION_PROJECTION = "com.wonremote.agent.PROJECTION";
@@ -368,14 +368,11 @@ public final class AgentService extends Service {
         endProjection(status);
     }
 
-    private void finishRemoteSession() {
-        pendingSessionId = null;
-        clearProjectionRequest();
-        releaseSessionWakeLock();
-        updateNotification(streamer.isReady() ? "온라인 · 화면 공유 준비됨" : "온라인");
+    void finishRemoteSession() {
+        endProjection("온라인");
     }
 
-    private void endProjection(String status) {
+    void endProjection(String status) {
         pendingSessionId = null;
         clearProjectionRequest();
         if (remoteSession != null) {
@@ -426,9 +423,6 @@ public final class AgentService extends Service {
         }
         if (action.startsWith("stop-stream")) {
             if (shouldStopRemoteSession(action, pendingSessionId)) {
-                if (remoteSession != null) {
-                    remoteSession.stopSession();
-                }
                 finishRemoteSession();
             }
             return;

@@ -74,4 +74,5 @@ dependencies {
     implementation("com.google.firebase:firebase-functions")
     implementation("io.github.webrtc-sdk:android:144.7559.14")
     testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("junit:junit:4.13.2")
 }

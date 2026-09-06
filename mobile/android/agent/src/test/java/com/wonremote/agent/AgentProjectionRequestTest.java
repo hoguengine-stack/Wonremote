@@ -7,6 +7,13 @@ import org.junit.Test;
 
 public final class AgentProjectionRequestTest {
     @Test
+    public void endedSessionRequiresConsentAgainAndIgnoresDuplicateStops() {
+        assertFalse(AgentService.shouldStopRemoteSession("stop-stream ended", null));
+        assertFalse(AgentService.shouldStopRemoteSession("stop-stream ended", "next"));
+        assertTrue(AgentService.shouldPromptForProjection(false, "next", null));
+    }
+
+    @Test
     public void promptsOnceForEachNewSessionWithoutProjection() {
         assertTrue(AgentService.shouldPromptForProjection(false, "session-1", null));
         assertTrue(AgentService.shouldPromptForProjection(false, "session-2", "session-1"));
