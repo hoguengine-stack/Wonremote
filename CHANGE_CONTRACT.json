@@ -1,14 +1,14 @@
 {
-  "status": "verified",
-  "intent": "Diagnose and restore Android first-frame delivery after PC Viewer connection and screen-share approval; do not equate capture initialization with a working remote connection.",
+  "status": "ready-to-deploy",
+  "intent": "Preserve Viewer SDP through Android offer extraction to remove the identified native negotiation blocker; first-frame restoration remains physical-required.",
   "changeType": "fix",
   "risk": "high",
   "releaseImpact": "build-and-deploy",
-  "rollback": "Revert only the RemoteSessionController diagnostic changes and its new diagnostic test; retain the previously released JNI keep rules.",
-  "incident": "INC-20260906-005",
+  "rollback": "Revert the readOfferSdp accessor change and release a higher Android Agent version; retain existing diagnostics and JNI keep rules.",
+  "incident": "INC-20260906-006",
   "requestReview": {
     "impact": "none",
-    "reason": "This change only records existing WebRTC and Firestore completion callbacks in local logcat. It adds no requests, listeners, timers, uploads, or retries. Existing TURN provisioning remains an unresolved external dependency.",
+    "reason": "Preserve SDP payload bytes at the existing offer read boundary. No requests, subscriptions, timers or retry policies are added; successful negotiation may resume the already-budgeted session traffic. TURN provisioning remains unresolved.",
     "assumptions": "No request lifecycle changes are included.",
     "dailyBudget": {
       "clients": 0,
@@ -29,6 +29,15 @@
     ]
   },
   "outcomes": [
+    {
+      "id": "android-sdp-wire-preservation",
+      "acceptance": "PC Viewer offers reach Android WebRTC intact, so initial and repeated approved connections can negotiate and display the first screen frame.",
+      "boundaries": ["Viewer createOffer", "Firestore offer.sdp", "Android offer extraction", "native setRemoteDescription", "answer and ICE", "data channels", "Viewer first frame"],
+      "contractTests": ["mobile/android/agent/src/test/java/com/wonremote/agent/RemoteSessionDiagnosticsTest.java"],
+      "proofLevel": "physical-required",
+      "verification": "2026-09-06: RemoteSessionDiagnosticsTest RED reproduced trimmed SDP with 1/3 failures; after the accessor fix, gradlew :agent:testDebugUnitTest --tests com.wonremote.agent.RemoteSessionDiagnosticsTest --tests com.wonremote.agent.AgentProjectionRequestTest --build-cache --console=plain passed 7 tests in 4s. Tests prove extraction preserves CRLF/LF bytes, not native negotiation or visible first frame. Physical v0.1.85 log 20260906-173232 proves remote offer apply failure before capture. No packaging or deployment performed.",
+      "physicalGap": "No authorized ADB device is connected. Verify newly installed Agent initial connection, repeated connection, approval denial/recovery and first frame on affected PC/Android; separate-network relay remains unverified."
+    },
     {
       "id": "android-approved-first-frame",
       "acceptance": "After approval, PC Viewer displays the Android screen on initial and repeated connections, including separate networks requiring relay.",

@@ -918,6 +918,21 @@ This also covers development-process escapes: missed requirements, incomplete pl
 - Release proof: `npm run firebase:deploy` completed with Firestore rules and Hosting; the public Android ZIP routes returned their expected redirect or 200 responses.
 - Remaining blocker: Firebase Storage-backed 500MB transfer remains unavailable until Storage is initialized and deployment is explicitly run with `-IncludeStorage`.
 
+## INC-20260906-006: Android signaling trimmed the SDP line terminator
+
+- Detected: 2026-09-06.
+- Severity: P1 remote-access failure.
+- Affected: Android Agent on all supported ABIs receiving PC or mobile Viewer offers.
+- Status: fixed-in-source; physical verification pending.
+- User-visible symptom: Android receives the Viewer request and screen-share approval, but Viewer disconnects before any remote screen appears.
+- Minimal trigger: Start an Android remote session where the final SDP line terminator reaches Agent offer extraction.
+- Root cause and contributors: The generic string accessor trims offer.sdp, removing its final CRLF. Native libwebrtc GetLine requires a newline and rejects an unterminated SDP line. Physical 0.1.85 log records remote-offer apply failure; its diagnostics omit the native reason, so further device-specific failures remain possible.
+- Fix commit(s): `1b79c5d`.
+- Permanent guard: Preserve the protocol payload verbatim in a dedicated offer accessor; regression exercises actual offer extraction for CRLF/LF and repeated connections. Do not apply UI whitespace normalization to wire protocols.
+- Regression proof: RemoteSessionDiagnosticsTest failed 1/3 before fix at SDP byte comparison; after fix, it and AgentProjectionRequestTest passed 7 tests via gradlew :agent:testDebugUnitTest --tests com.wonremote.agent.RemoteSessionDiagnosticsTest --tests com.wonremote.agent.AgentProjectionRequestTest --build-cache --console=plain (4s). Native parser source https://webrtc.googlesource.com/src/+/4c122cc0b237bf3ed5bd1c423d3c3ca626522bc3/api/webrtc_sdp.cc GetLine corroborates the newline requirement. This is payload-boundary proof, not a device screen-success claim.
+- Release proof: Pending v0.1.86 signed Android and x86 release packaging plus Firebase and GitHub publication.
+- Remaining blocker: No ADB device attached. Verify affected Android/PC first frame, reconnect, denial/recovery, and TURN-dependent network before calling the screen issue resolved.
+
 ## INC-20260906-005: Android first-frame failure had no negotiation diagnostics
 
 - Detected: 2026-09-06.

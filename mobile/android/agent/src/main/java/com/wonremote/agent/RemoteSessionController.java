@@ -171,7 +171,7 @@ final class RemoteSessionController {
         }
         Map<?, ?> offer = (Map<?, ?>) rawOffer;
         String offerType = string(offer.get("type"));
-        String offerSdp = string(offer.get("sdp"));
+        String offerSdp = readOfferSdp(offer);
         String offerNegotiationId = string(offer.get("negotiationId"));
         String rootNegotiationId = signal.getString("negotiationId");
         String nextNegotiationId = offerNegotiationId.isEmpty() ? rootNegotiationId : offerNegotiationId;
@@ -542,6 +542,12 @@ final class RemoteSessionController {
         handler.removeCallbacks(candidateRetry);
         pendingCandidates.clear();
         appliedCandidateIds.clear();
+    }
+
+    static String readOfferSdp(Map<?, ?> offer) {
+        // SDP is a wire payload: trimming removes the final line delimiter required by libwebrtc.
+        Object value = offer.get("sdp");
+        return value instanceof String ? (String) value : "";
     }
 
     private static String string(Object value) {
