@@ -930,7 +930,7 @@ This also covers development-process escapes: missed requirements, incomplete pl
 - Fix commit(s): `1ff6511`.
 - Permanent guard: Route both current named stop-stream commands and session-closed callbacks through endProjection; preserve current-session matching and require fresh consent on the next connection.
 - Regression proof: AgentProjectionRequestTest covers current, stale, duplicate stop guards and new-consent state. The instrumentation shutdown-delegation source compiles with the Android test source set.
-- Release proof: Pending v0.1.87 signed Android and x86 release packaging plus Firebase and GitHub publication.
+- Release proof: v0.1.87 Android Agent, Viewer and Control Add-On passed signed APK and JNI checks; Firebase Hosting serves versionCode 1087 and all three ZIPs return HTTP 200. GitHub Release v0.1.87 is public with exactly two x86 installers and signed update manifest; uploaded byte sizes match local artifacts.
 - Remaining blocker: Verify sharing indicator disappearance, repeated reconnect approval and stale-command isolation on physical Android.
 
 ## INC-20260906-007: Session-end instrumentation test lacked its test dependency

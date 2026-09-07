@@ -1,5 +1,5 @@
 {
-  "status": "ready-to-deploy",
+  "status": "verified",
   "intent": "Stop Android screen sharing automatically when the current Viewer session ends; preserve stale-session guards and request fresh consent on the next connection.",
   "changeType": "fix",
   "risk": "high",
@@ -35,7 +35,7 @@
       "boundaries": ["Viewer session end", "session-closed snapshot or named stop-stream command", "current-session guard", "AgentService.endProjection", "MediaProjection.stop", "notification and wake lock cleanup", "new connection consent"],
       "contractTests": ["mobile/android/agent/src/androidTest/java/com/wonremote/agent/SessionEndProjectionTest.java", "mobile/android/agent/src/test/java/com/wonremote/agent/AgentProjectionRequestTest.java"],
       "proofLevel": "physical-required",
-      "verification": "2026-09-07: gradlew :agent:testDebugUnitTest --tests com.wonremote.agent.AgentProjectionRequestTest :agent:compileDebugAndroidTestJavaWithJavac --build-cache --console=plain passed. Five JVM tests cover current/old/duplicate stop guards and fresh consent. Instrumentation shutdown-delegation test compiled but was not executed without an Android device. Actual MediaProjection.stop and notification disappearance remain physical-required. User confirmed v0.1.86 screen connection works; this request changes the prior intentional projection-preservation behavior. No release packaging or deployment performed.",
+      "verification": "2026-09-07: gradlew :agent:testDebugUnitTest --tests com.wonremote.agent.AgentProjectionRequestTest :agent:compileDebugAndroidTestJavaWithJavac --build-cache --console=plain passed. Five JVM tests cover current/old/duplicate stop guards and fresh consent. Instrumentation shutdown-delegation test compiled but was not executed without an Android device. Android v0.1.87 Agent, Viewer and Control Add-On release build passed JNI mapping and APK signature checks. x86 Viewer and Agent installers passed payload verification. GitHub Release v0.1.87 is published with two installers and signed manifest; Firebase Hosting returns Android update metadata versionCode 1087 and HTTP 200 for all three ZIPs. Actual MediaProjection.stop and notification disappearance remain physical-required.",
       "physicalGap": "Verify red sharing indicator disappears on the affected Android, then reconnect and approve again; no physical Android is attached."
     }
   ]
