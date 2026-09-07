@@ -349,7 +349,7 @@ export function subscribeFirebaseDevices(
   );
 }
 
-export async function fetchFirebaseDevices(env: ViewerFirebaseEnv = import.meta.env, refreshPresence = false, signal?: AbortSignal): Promise<ManagedDevice[]> {
+export async function fetchFirebaseDevices(env: ViewerFirebaseEnv = import.meta.env, refreshPresence = false, signal?: AbortSignal, onProgress?: (devices: ManagedDevice[]) => void): Promise<ManagedDevice[]> {
   const services = getViewerFirebaseServices(env);
   requireCurrentUserId(services.auth.currentUser?.uid);
   const snapshot = await getDocsFromServer(collection(services.db, "devices"));
@@ -366,7 +366,7 @@ export async function fetchFirebaseDevices(env: ViewerFirebaseEnv = import.meta.
     (updates) => updates.docChanges().forEach((change) => {
       if (change.type !== "removed") next(mapFirestoreDevice(change.doc.id, change.doc.data()));
     }), fail,
-  ), (device, action) => enqueueFirebaseDeviceCommandDirect(device.id, action, env), signal);
+  ), (device, action) => enqueueFirebaseDeviceCommandDirect(device.id, action, env), signal, onProgress);
 }
 
 export async function fetchFirebaseConnectionHistory(
@@ -430,8 +430,8 @@ export async function updateFirebaseDeviceMetadata(
   if (typeof input.deviceName === "string" && input.deviceName.trim()) {
     update.deviceName = input.deviceName.trim();
   }
-  if (typeof input.desktopName === "string" && input.desktopName.trim()) {
-    update.desktopName = input.desktopName.trim();
+  if (typeof input.desktopName === "string") {
+    update.desktopNameOverride = input.desktopName.trim().slice(0, 255) || deleteField();
   }
   if (typeof input.contactName === "string") {
     update.contactName = sanitizeDeviceOperationalMetadataText(
@@ -1670,6 +1670,10 @@ async function readOwnedFirebaseSession(
     deviceId: session.deviceId,
     state: String(session.state ?? ""),
   };
+}
+
+export async function requestFirebaseAgentUpdate(deviceId: string): Promise<void> {
+  await enqueueFirebaseDeviceCommandDirect(deviceId, `request-update ${Date.now()}`, import.meta.env);
 }
 
 async function enqueueFirebaseDeviceCommandDirect(

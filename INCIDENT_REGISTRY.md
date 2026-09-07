@@ -1,5 +1,54 @@
 # WonRemote Incident Registry
 
+## INC-20260908-002: Rules test reused a refreshed heartbeat for its stale case
+
+- Cause: The metadata-preservation scenario refreshed lastSeenAtServer before the stale-presence rejection scenario.
+- Guard: Restore the old timestamp through the emulator-only admin endpoint immediately before testing rejection; preserve the denial assertion.
+- Proof: Java 21, npm run firebase:rules:test passed with emulator v1.22.0 on 2026-09-08, including unauthorized access and stale-session rejection.
+- Remaining verification: Live cross-client metadata after deployment; remote input assigned to user.
+- Reporting correction: Prior replies incorrectly made optional Authenticode signing a release blocker. No certificate is configured; issuance needs account identity verification, but existing policy does not require it to deploy.
+
+## INC-20260907-003: Runtime diagnostic storage has no bound
+- Detected: 2026-09-07
+- Severity: P2
+- Affected: Windows Agent and Viewer runtime diagnostics
+- Status: fixed-not-released
+- User-visible symptom: Runtime logs keep accumulating; local wonremote-tauri.log measured 102.20 MiB.
+- Minimal trigger: Keep installed applications running over repeated sessions.
+- Root cause and contributors: append_runtime_log_entry always appends without rotation; Agent capture streamStderrText retains all stderr until process close. Screenshot also includes unrelated Windows and third-party files, which must not be attributed to WonRemote.
+- Fix commit(s): uncommitted; shared log 5 MiB x 3 rotation, bounded capture stderr, daily startup cache-only maintenance, seven-day expired installer cleanup and healthy-handoff artifact deletion.
+- Permanent guard: Filesystem tests cover oversized logs, exclusive log/update locks, live-browser refusal, daily cadence and login/identity preservation. Cache deletion rejects reparse points, and process detection fails closed with a two-second deadline. A threshold recheck cannot turn an unverified browser into permission to delete.
+- Regression proof: rustc --test aether-link-app/src-tauri/src/runtime_storage.rs followed by test binary: 5 passed. npx vitest run src/agent/captureDiagnostics.test.ts src/agent/productionInstallerUpdate.test.ts: 11 passed, including generated PowerShell cleanup against real temporary files. cargo check --lib --offline and npx tsc --noEmit passed.
+- Remaining physical verification: Packaged x86 startup/process detection, successful and failed actual updates, long-session storage stability; no installed data deleted and no build performed.
+
+## INC-20260907-004: Remote taskbar application launch blocks input
+- Detected: 2026-09-07
+- Severity: P1
+- Affected: Windows remote input, reported by user
+- Status: fixed-not-released; remote physical verification required
+- User-visible symptom: Mouse and keyboard stop controlling an application launched from the taskbar.
+- Minimal trigger: Connect remotely and launch affected taskbar application; application name pending.
+- Root cause and contributors: Local Everything installation specifies run_as_admin=1; TokenElevation inspection confirmed its window process elevated=True while this test process is elevated=False. This matches the SendInput integrity restriction; existing selected-tool RunAsInvoker does not cover taskbar launches. Full remote-session reproduction is still pending.
+- Fix commit(s): uncommitted; Agent installer now registers and immediately starts one interactive logon task at highest privilege, replaces it on updates, and removes it on uninstall.
+- Permanent guard: Both x86 and legacy x64 Agent installer hooks must use the shared scheduled-task helper; the helper verifies its exact executable, `--agent` argument and highest run level. Keep the installer in current-user mode so existing silent updater paths are not moved to an incompatible installation scope.
+- Regression proof: `npx vitest run src/desktopPackaging.test.ts -t "installs and removes one highest-privilege Agent login task"` passed 1/1. The actual low-privilege helper displayed the Korean pre-UAC update guidance, accepted UAC, and re-registered the installed v0.1.87 Agent task; Task Scheduler reports Interactive/Highest, AtLogOn, IgnoreNew and the exact Agent path/argument. OpenProcessToken previously confirmed its host PID 30896 elevated=true.
+- Remaining physical verification: Build/install boundary, first migration UAC, next-login launch, subsequent updater replacement, uninstall cleanup, and remote input into both normal and elevated taskbar applications. Windows does not allow an already deployed non-elevated Agent to perform its first privilege migration without one UAC approval.
+
+## INC-20260908-001: Agent installer could not resolve a shared NSIS hook
+
+- Detected: 2026-09-08.
+- Severity: P2.
+- Affected: x86 Agent installer build for v0.1.88.
+- Status: build-verified; deployment blocked.
+- User-visible symptom: Agent installer build aborts before producing an installable artifact.
+- Minimal trigger: Package the Agent NSIS installer after adding a shared hook with a relative `!include`.
+- Root cause and contributors: Tauri generates the final NSIS script in its target directory. NSIS resolves both a bare include and a macro-expanded `__FILEDIR__` relative to that generated script rather than the source hook file.
+- Fix commit(s): uncommitted.
+- Permanent guard: Resolve the shared hook through `${__FILEDIR__}` in both Agent hook variants, capture that directory when the shared file is included, and use the captured value for embedded files. Assert both paths in the packaging contract test.
+- Regression proof: `npx vitest run src/desktopPackaging.test.ts -t "installs and removes one highest-privilege Agent login task"` passed 1/1. Direct x86 Agent NSIS packaging completed after the captured-source-directory correction.
+- Release proof: x86 Viewer and Agent payload SHA-256 checks passed; signed v0.1.88 update manifest verification passed. Not deployed.
+- Remaining blocker: Deployment gate remains blocked by unverified remote input/Firestore boundaries and unsigned installers.
+
 Every production defect, installer failure, update failure, crash, or repeated user-visible malfunction must receive an entry before its fix is declared complete. Entries are append-only. A future change may add evidence or close a verification gap, but must not erase the original failure record.
 
 This also covers development-process escapes: missed requirements, incomplete platform parity, unverified integration boundaries, avoidable build/release failures, and false completion claims. Prevention applies from requirement analysis through post-release verification under `AGENTS.md`; it is not limited to production bug fixes.
@@ -918,6 +967,21 @@ This also covers development-process escapes: missed requirements, incomplete pl
 - Release proof: `npm run firebase:deploy` completed with Firestore rules and Hosting; the public Android ZIP routes returned their expected redirect or 200 responses.
 - Remaining blocker: Firebase Storage-backed 500MB transfer remains unavailable until Storage is initialized and deployment is explicitly run with `-IncludeStorage`.
 
+## INC-20260907-002: Device-list display waited for offline presence timeout
+
+- Detected: 2026-09-07.
+- Severity: P2 startup latency.
+- Affected: Firebase Viewer startup and manual refresh on PC, web and Android Viewer.
+- Status: source fixed; authenticated visual verification pending.
+- User-visible symptom: Registered devices remain hidden until an offline Agent's five-second response timeout expires.
+- Minimal trigger: Refresh a list containing one unavailable manual-presence device.
+- Root cause and contributors: App setDevices only ran after the promise joining list fetch and all presence responses resolved.
+- Fix commit(s): uncommitted.
+- Permanent guard: Publish the loaded list and each validated presence response through the existing request lifecycle; keep cancellation guards and final timeout result.
+- Regression proof: devicePresenceRefresh.test.ts passed 6 tests, including initial and incremental callbacks before timeout, late replies, timeout finalization and no repeated requests across 24h.
+- Release proof: Not built or deployed in this task.
+- Remaining blocker: Authenticated UI rendering and installed startup confirmation. Local HTTP mode is unchanged.
+
 ## INC-20260907-001: Android session end left screen sharing active
 
 - Detected: 2026-09-07.
@@ -1015,3 +1079,50 @@ This also covers development-process escapes: missed requirements, incomplete pl
 - Regression proof: `gradlew :agent:testDebugUnitTest --tests com.wonremote.agent.AgentProjectionRequestTest :controladdon:compileDebugJavaWithJavac --build-cache` passed 4/4 focused tests and compiled all changed Android modules; `npx vitest run src/desktopPackaging.test.ts -t "requests Android screen-share consent only after an explicit Viewer request"` passed 1/1.
 - Release proof: GitHub Actions run `33981740879` completed successfully for `v0.1.80` and published the two signed x86 installers plus update manifest. The Android signed Agent, Viewer, and Control Add-On ZIPs were rebuilt locally and published through Firebase Hosting. Firebase BOM 33.16.0 resolved the Android lint compatibility failure.
 - Remaining blocker: Physically verify background consent launch, notification fallback, red-indicator persistence, and first-frame delivery on Android.
+## INC-20260907-005: Automatic model names duplicated and custom desktop names lacked ownership
+
+- Cause: Automatically reported manufacturer/model text can repeat the same name; an editable raw desktopName would be overwritten by subsequent Agent reports.
+- Permanent guard: Normalize repeated automatic name sequences at the device mapping boundary; keep a separate Viewer-owned desktopNameOverride across first-run merges and heartbeat updates. Never normalize explicit custom names.
+- Proof: deviceOrganization, firestoreDevice and viewerDeviceMetadata runtime tests cover automatic duplicates, custom persistence and metadata write counts. verify-device-organization-ui.mjs exercises the actual React edit and drag flow without production traffic.
+- Remaining verification: Installed Agent refresh and deployed Firestore override permissions. Emulator could not start with the available Java below 21; do not treat mocked database tests as permission proof.
+## INC-20260907-006: Desktop installer embedded Android distribution archives
+
+- Detected: 2026-09-07.
+- Severity: P2 installer size and bandwidth waste.
+- Affected: PC Viewer and Agent x86 packaging; shared Firebase Hosting build output.
+- Status: build-verified-deployment-blocked.
+- User-visible symptom: PC installers grew to 99.22 MiB while unrelated Android archives occupied 90.92 MiB in the frontend build.
+- Minimal trigger: Build Android Hosting downloads, then build a Tauri desktop installer using the same dist directory.
+- Root cause and contributors: Tauri frontendDist included the entire web Hosting output. Binary reuse fingerprint also omitted embedded frontend source changes.
+- Fix commit(s): pending.
+- Permanent guard: Separate generated dist-desktop excluding download; keep Hosting dist untouched. Fingerprint frontend inputs so stale embedded UI cannot be reused.
+- Regression proof: npx vitest run src/desktopAssets.test.js covers Hosting preservation, repeated preparation and changed frontend cache invalidation. Initial TS test imported untyped build scripts and failed tsc; use a JavaScript build-tool test without weakening application type checking, and require tsc before packaging retry.
+- Remaining blocker: Deployment withheld because the earlier taskbar-input outcome lacks required proof; live deployment verification pending. Both x86 installers built at 19.30 MiB with verified extracted payload hashes, down from 99.22 MiB; all 25 Hosting download files preserved byte-for-byte.
+## INC-20260908-003: Remote paste overwrote the remote clipboard
+
+- Detected: 2026-09-08.
+- Severity: P1 functional correctness.
+- Affected: Viewer remote keyboard and clipboard transfer.
+- Status: automated-verified; deployment pending.
+- User-visible symptom: Ctrl+V could overwrite the remote clipboard with the Viewer PC clipboard, and automatic synchronization could move clipboard data without an explicit action.
+- Minimal trigger: Connect a Viewer, copy text locally, then press Ctrl+V or leave automatic clipboard synchronization enabled.
+- Root cause and contributors: Viewer intercepted Ctrl+V to read and send its local clipboard. The saved automatic-sync preference also started an unbounded 1.5-second clipboard polling loop.
+- Fix commit(s): pending.
+- Permanent guard: Route Ctrl+C/V as tracked remote keyboard events only. Remove automatic clipboard polling and incoming writes. Explicit directional controls have session lifetime and duplicate-transfer guards.
+- Regression proof: npx tsx scripts/verify-session-clipboard.test.mjs executes the actual handlers: it proves Ctrl+C/V never reads/transfers the local clipboard, manual transfer sends once, duplicates are blocked, late reads are discarded and permission failure releases the lock.
+- Release proof: Pending x86 build, installer payload verification and published-release byte verification.
+- Remaining blocker: Verify installed Viewer-to-Agent text/image copy and paste on two PCs after deployment.
+
+## INC-20260907-007: Remote update integration verification prerequisites
+
+- Detected: 2026-09-07.
+- Severity: P2 development validation gap.
+- Affected: Viewer remote update action and PC/Android Agent command integration.
+- Status: automated-partial-physical-pending.
+- User-visible symptom: New remote-update controls could otherwise be reported ready without compiling the platform integrations.
+- Minimal trigger: Compile a new icon/import or run Android tests with missing SDK environment and uncached dependencies.
+- Root cause and contributors: Initial integration used an unimported icon and an incorrectly typed Firebase environment; Android SDK path was not configured in the shell and offline dependencies were incomplete.
+- Fix commit(s): pending.
+- Permanent guard: TypeScript check and Android Agent/updatecore compilation before readiness claims; resolve the existing SDK path before running tests. Receiver policies reject duplicate/expired commands, defer active sessions and cancel pending PC work on shutdown. Sending a command is never installation success.
+- Regression proof: TypeScript passed; focused Node tests 8 passed, Android RemoteUpdateRequestTest passed, actual Viewer button sent one request for two clicks in Playwright. Existing signed PC installer and Android package signer/version checks remain in the update path.
+- Remaining blocker: Installed end-to-end update/consent/restart and combined cloud request accounting; do not deploy based only on request delivery tests.

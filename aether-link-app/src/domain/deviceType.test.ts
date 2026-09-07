@@ -10,6 +10,8 @@ describe("device type editor", () => {
   });
 
   it("keeps known presets and preserves existing custom names", () => {
+    expect(resolveDeviceTypeEditor("태블릿")).toEqual({ choice: "태블릿", value: "태블릿" });
+    expect(resolveDeviceTypeValue("태블릿", "Android")).toBe("태블릿");
     expect(resolveDeviceTypeEditor("오더포스")).toEqual({ choice: "오더포스", value: "오더포스" });
     expect(resolveDeviceTypeEditor("주방 KDS")).toEqual({ choice: "custom", value: "주방 KDS" });
   });

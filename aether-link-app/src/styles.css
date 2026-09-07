@@ -609,6 +609,12 @@ input:focus {
   margin-left: auto;
 }
 
+.group-button.drop-target {
+  outline: 2px solid #29bda7;
+  outline-offset: -2px;
+  background: #234b54;
+}
+
 .group-button.active,
 .group-button:hover {
   background: #263244;

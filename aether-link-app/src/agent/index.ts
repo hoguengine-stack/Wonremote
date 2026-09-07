@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { appendCaptureDiagnostic } from "./captureDiagnostics";
 import { mkdir, readFile, writeFile, rm, cp, access } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
@@ -45,6 +46,7 @@ import {
 import { WONREMOTE_APP_VERSION } from "../domain/appVersion";
 import { CURRENT_REMOTE_PROTOCOL_VERSION } from "../domain/remoteProtocol";
 import { decideUpdateEligibility } from "../domain/updateFleetPolicy";
+import { createRemoteUpdateRequest } from "./remoteUpdateRequest";
 import { computeSha256 } from "./checksum";
 import { saveTransferredFileChunk } from "./fileTransferReceiver";
 import { downloadFirebaseStorageFile } from "./firebaseStorageDownload";
@@ -515,8 +517,8 @@ async function startStreaming(
 
   child.stderr.on("data", (data: any) => {
     const chunk = data.toString();
-    streamStderrText += chunk;
-    streamStderrBuffer += chunk;
+    streamStderrText = appendCaptureDiagnostic(streamStderrText, chunk);
+    streamStderrBuffer = appendCaptureDiagnostic(streamStderrBuffer, chunk);
     const lines = streamStderrBuffer.split(/\r?\n/);
     streamStderrBuffer = lines.pop() ?? "";
     for (const line of lines) {
@@ -525,7 +527,7 @@ async function startStreaming(
   });
 
   child.on("close", (code: number) => {
-    const finalStderr = streamStderrText + streamStderrBuffer;
+    const finalStderr = streamStderrText;
     flushStreamLogLine(streamStderrBuffer);
     streamStderrBuffer = "";
     console.log(`Capture stream process exited with code ${code}`);
@@ -779,6 +781,7 @@ async function stopSessionPolling(): Promise<void> {
     { pointer: pointerState, pressedKeys },
     "Agent remote session stopped.",
   );
+  void remoteUpdateRequest.drain().catch(error => console.error("Remote update failed:", error));
 }
 
 function markWebRtcUnavailable(reason: string) {
@@ -1154,6 +1157,7 @@ async function main() {
 }
 
 let isUpdating = false;
+const remoteUpdateRequest = createRemoteUpdateRequest(() => Boolean(activeSessionId));
 let lastUpdateCheckAttemptAtMs: number | null = null;
 let currentUpdateTelemetry: AgentUpdateTelemetry = {
   currentVersion: WONREMOTE_APP_VERSION,
@@ -1190,10 +1194,10 @@ function scheduleAgentUpdateRetry(): void {
   console.error(`[WonRemote Agent] Update retry scheduled in ${retryAfterMs}ms.`);
 }
 
-async function checkUpdate(config: AgentLocalConfig) {
+async function checkUpdate(config: AgentLocalConfig, manual = false) {
   if (isUpdating) return;
   const attemptAtMs = Date.now();
-  if (!shouldAttemptAgentUpdateCheck(attemptAtMs, lastUpdateCheckAttemptAtMs, UPDATE_CHECK_INTERVAL_MS)) {
+  if (!manual && !shouldAttemptAgentUpdateCheck(attemptAtMs, lastUpdateCheckAttemptAtMs, UPDATE_CHECK_INTERVAL_MS)) {
     return;
   }
   lastUpdateCheckAttemptAtMs = attemptAtMs;
@@ -1230,6 +1234,12 @@ async function checkUpdate(config: AgentLocalConfig) {
     }
 
     if (data.latestVersion && (data.forceUpdate || isHigherVersion(data.latestVersion, currentVersion))) {
+      if (activeSessionId) {
+        remoteUpdateRequest.defer(() => checkUpdate(config, true));
+        await setUpdateTelemetry(config, {state:"idle",error:"원격 세션 종료 후 업데이트 대기"});
+        isUpdating = false;
+        return;
+      }
       if (USE_FIREBASE && config.registeredDeviceId) {
         const rolloutControl = await loadAgentUpdateRolloutWithFirebase(config.registeredDeviceId);
         if (rolloutControl) {
@@ -1481,6 +1491,12 @@ async function handoffToProductionInstallerUpdate(
       };
     },
   });
+  if (activeSessionId) {
+    remoteUpdateRequest.defer(() => checkUpdate(config, true));
+    await setUpdateTelemetry(config, {state:"idle",error:"원격 세션 종료 후 업데이트 대기"});
+    isUpdating = false;
+    return;
+  }
   await setUpdateTelemetry(config, { progress: 100, state: "installing" });
   const handoff = await prepareInstallerHandoff(download, {
     baseDir,
@@ -1834,6 +1850,11 @@ async function pollCommands(config: AgentLocalConfig): Promise<void> {
 
 async function executeReceivedCommands(config: AgentLocalConfig, commands: AgentCommand[]): Promise<void> {
   for (const command of commands) {
+    if (command.action.startsWith("request-update ")) {
+      const accepted = await remoteUpdateRequest.receive(command.action, () => checkUpdate(config, true));
+      if (accepted && activeSessionId) await setUpdateTelemetry(config, {state:"idle",error:"원격 세션 종료 후 업데이트 대기"});
+      continue;
+    }
     if (command.action.startsWith("refresh-status ")) {
       const requestId = command.action.slice("refresh-status ".length);
       const age = Date.now() - Date.parse(command.createdAt);
@@ -2258,6 +2279,7 @@ async function handleRegistryUninstall() {
 }
 
 process.once("exit", () => {
+  remoteUpdateRequest.dispose();
   firebaseCommandUnsubscribe?.();
   firebaseCommandUnsubscribe = null;
   if (firebaseCommandRetryTimer) {
@@ -2268,6 +2290,7 @@ process.once("exit", () => {
 });
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => {
+    remoteUpdateRequest.dispose();
     void agentCommandQueue.enqueue(() => releasePressedInputAndClose(
       persistentInputInjector,
       { pointer: pointerState, pressedKeys },

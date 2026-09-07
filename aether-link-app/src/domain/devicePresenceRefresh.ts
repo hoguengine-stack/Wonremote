@@ -7,7 +7,9 @@ export function collectDevicePresence(
   subscribe: (next: (device: ManagedDevice) => void, fail: (error: unknown) => void) => () => void,
   send: (device: ManagedDevice, action: string) => Promise<unknown>,
   signal?: AbortSignal,
+  onProgress?: (devices: ManagedDevice[]) => void,
 ): Promise<ManagedDevice[]> {
+  if (!signal?.aborted) onProgress?.(devices);
   const targets = devices.filter((device) => device.presenceMode === "manual");
   if (!targets.length) return Promise.resolve(devices);
   return new Promise((resolve, reject) => {
@@ -30,6 +32,7 @@ export function collectDevicePresence(
       stop = subscribe((device) => {
         if (!active || !pending.has(device.id) || device.heartbeatRequestId !== requestId) return;
         replies.set(device.id, device); pending.delete(device.id);
+        onProgress?.(devices.map((item) => replies.get(item.id) ?? item));
         if (!pending.size) finish();
       }, finish);
       if (!active) { stop(); return; }

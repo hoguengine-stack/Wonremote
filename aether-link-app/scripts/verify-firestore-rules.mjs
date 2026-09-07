@@ -96,6 +96,16 @@ try {
   if (!managedViewerDevices.docs.some((snapshot) => snapshot.id === DEVICE_ID)) {
     throw new Error("Managed Viewer claim could not list the Agent device.");
   }
+  await setDoc(doc(viewer.db, "devices", DEVICE_ID), {
+    desktopNameOverride: "Table 1", deviceName: "Tablet", storeName: "Store A", storeNameSource: "user",
+  }, { merge: true });
+  await setDoc(doc(agent.db, "devices", DEVICE_ID), { desktopName: "CTD-7000 CTD-7000", lastSeenAtServer: serverTimestamp() }, { merge: true });
+  if ((await getDoc(doc(viewer.db, "devices", DEVICE_ID))).data().desktopNameOverride !== "Table 1") {
+    throw new Error("Agent heartbeat overwrote the Viewer desktop name override.");
+  }
+  await expectPermissionDenied(() => setDoc(doc(unauthorized.db, "devices", DEVICE_ID), {
+    desktopNameOverride: "unauthorized",
+  }, { merge: true }), "Unauthorized desktop name edit");
 
   await expectPermissionDenied(
     () => getDocs(collection(unauthorized.db, "devices")),
@@ -113,6 +123,11 @@ try {
     id: `${SESSION_ID}-unauthorized`, ownerUid: UNAUTHORIZED_UID, deviceId: DEVICE_ID, state: "connected",
   }), "Unauthorized manual-presence connection");
   await setDoc(doc(agent.db, "devices", DEVICE_ID), { presenceMode: "periodic" }, { merge: true });
+  const staleSeed = await fetch(`http://${emulatorHost}/v1/projects/wonremote-a7fd3/databases/(default)/documents/devices/${DEVICE_ID}?updateMask.fieldPaths=lastSeenAtServer`, {
+    method: "PATCH", headers: { authorization: "Bearer owner", "content-type": "application/json" },
+    body: JSON.stringify({ fields: { lastSeenAtServer: { timestampValue: "2020-01-01T00:00:00Z" } } }),
+  });
+  if (!staleSeed.ok) throw new Error(`Stale emulator seed failed: ${staleSeed.status}`);
   await expectPermissionDenied(() => setDoc(doc(viewer.db, "sessions", `${SESSION_ID}-stale-legacy`), {
     id: `${SESSION_ID}-stale-legacy`, ownerUid: CENTRAL_VIEWER_UID, deviceId: DEVICE_ID, state: "connected",
   }), "Stale legacy presence connection");

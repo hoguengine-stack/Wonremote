@@ -1,13 +1,13 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "WonRemote Viewer",
-  "version": "0.1.87",
+  "version": "0.1.88",
   "identifier": "com.wonremote.viewer",
   "build": {
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
     "devUrl": "http://127.0.0.1:5173",
-    "frontendDist": "../dist"
+    "frontendDist": "../dist-desktop"
   },
   "app": {
     "windows": [

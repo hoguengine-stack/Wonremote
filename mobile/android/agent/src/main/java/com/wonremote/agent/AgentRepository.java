@@ -101,6 +101,16 @@ final class AgentRepository {
         return firestore.collection("devices").document(store.deviceId()).set(fields, SetOptions.merge());
     }
 
+    Task<Void> reportUpdate(String state, String message) {
+        if (store.deviceId().isEmpty()) return Tasks.forResult(null);
+        Map<String,Object> fields = new HashMap<>();
+        fields.put("updateState", state);
+        fields.put("updateError", message);
+        fields.put("updateCurrentVersion", BuildConfig.VERSION_NAME);
+        fields.put("updateUpdatedAt", Instant.now().toString());
+        return firestore.collection("devices").document(store.deviceId()).set(fields, SetOptions.merge());
+    }
+
     ListenerRegistration listenForCommands(Consumer<String> onAction, Consumer<Exception> onError) {
         Set<String> delivering = new HashSet<>();
         Query commands = firestore.collection("devices").document(store.deviceId())

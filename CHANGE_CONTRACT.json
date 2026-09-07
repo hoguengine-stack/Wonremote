@@ -1,42 +1,129 @@
 {
-  "status": "verified",
-  "intent": "Stop Android screen sharing automatically when the current Viewer session ends; preserve stale-session guards and request fresh consent on the next connection.",
+  "status": "ready-to-deploy",
+  "clipboardChange": "2026-09-08: Remote shortcuts must use only the remote clipboard. Local clipboard transfer requires an explicit toolbar action; remove automatic synchronization including saved preferences. Build/deployment deferred until this change is verified.",
+  "intent": "Persist the locally proven highest-privilege Agent startup through install, update, login and uninstall while preserving the pending v0.1.88 work and release blockers.",
   "changeType": "fix",
   "risk": "high",
   "releaseImpact": "build-and-deploy",
-  "rollback": "Revert the readOfferSdp accessor change and release a higher Android Agent version; retain existing diagnostics and JNI keep rules.",
-  "incident": "INC-20260907-001",
+  "rollback": "Keep published v0.1.87 unchanged while deployment is blocked. Revert the isolated desktop staging/config and fingerprint changes to restore prior packaging; no Hosting download source was deleted.",
+  "deploymentBlockers": ["Taskbar input remote verification is assigned to the user; awaiting their result.", "Installed cross-client metadata proof and existing request-budget gaps remain pending."],
+  "firestoreVerification": "2026-09-08: Java 21 JRE checksum verified; npm run firebase:rules:test passed against Firestore emulator v1.22.0. Viewer desktopNameOverride edit and preservation, unauthorized access denial, session/command access, manual presence and stale legacy denial verified. No production database traffic. Fixed test fixture: restore stale heartbeat after the preceding preservation test updates it.",
+  "authenticodeStatus": "No code-signing certificate in CurrentUser/LocalMachine My stores or configured Process/User/Machine PFX variables. Public-trust issuance requires user identity/account setup. Existing release policy makes Authenticode optional; unsigned status alone is not a deployment blocker. Installers remain unsigned.",
+  "incident": "INC-20260908-003",
   "requestReview": {
-    "impact": "none",
-    "reason": "Current-session shutdown now also releases local MediaProjection, capture resources and wake lock. The same existing session listeners are removed; no network request, write, timer, or retry is introduced.",
-    "assumptions": "No request lifecycle changes are included.",
+    "impact": "changed",
+    "reason": "Group drops retain their measured budget. Remote update sends one explicit command write through the existing listener; no new polling/listener. Agent manifest checks, rollout reads and update telemetry are also affected and are not covered by the earlier grouping-only dailyBudget. The Agent scheduled task is local Windows state and adds no cloud request, polling, listener or retry.",
+    "remoteUpdateBudgetStatus": "Incomplete: sender boundary proves one write/no read/no retry; receiver policy proves duplicate/expired/shutdown suppression. Combined device-rule reads, existing listener delivery/ack writes, PC rollout/telemetry and Android consent/installation telemetry still need end-to-end request counting. Do not use the grouping-only dailyBudget as a fleet total or pass deployment based on it.",
+    "assumptions": "Incremental budget only: 10 Viewers each perform 20 deliberate moves daily. Central Viewer metadata rules use authentication claims/UID without dependent document reads. Existing fleet traffic is outside this change budget. No added polling or automatic inheritance writes.",
     "dailyBudget": {
-      "clients": 0,
-      "readsPerClient": 0,
-      "writesPerClient": 0,
-      "maxReads": 0,
-      "maxWrites": 0
+      "clients": 10,
+      "readsPerClient": 40,
+      "writesPerClient": 20,
+      "maxReads": 400,
+      "maxWrites": 200
     },
     "checks": {
-      "idle": "No request path changes.",
-      "rerender": "No UI request lifecycle changes.",
-      "concurrency": "No request concurrency changes.",
-      "failure": "No request retry changes.",
-      "cleanup": "No request resource changes."
+      "idle": "deviceOrganization.test: fake 24h produces zero updates.",
+      "rerender": "deviceOrganization.test: 100 list projections produce zero updates.",
+      "concurrency": "deviceOrganization.test: overlapping drops suppressed; viewerDeviceMetadata.test: 20 successful moves produce 40 reads/20 writes.",
+      "failure": "viewerDeviceMetadata.test: rejected quota write produces one read/one attempted write, no readback/retry.",
+      "cleanup": "deviceOrganization.test: disposal blocks calls and ignores pending responses, including reactivation."
     },
     "contractTests": [
-      "mobile/android/agent/src/test/java/com/wonremote/agent/RemoteSessionDiagnosticsTest.java"
+      "aether-link-app/src/domain/deviceOrganization.test.ts",
+      "aether-link-app/src/firebase/viewerDeviceMetadata.test.ts"
     ]
   },
   "outcomes": [
     {
-      "id": "android-session-end-stops-sharing",
-      "acceptance": "Ending the current Viewer session removes Android's screen-sharing indicator and stops capture; a late old-session stop cannot interrupt a new session, and the next connection requests consent again.",
-      "boundaries": ["Viewer session end", "session-closed snapshot or named stop-stream command", "current-session guard", "AgentService.endProjection", "MediaProjection.stop", "notification and wake lock cleanup", "new connection consent"],
-      "contractTests": ["mobile/android/agent/src/androidTest/java/com/wonremote/agent/SessionEndProjectionTest.java", "mobile/android/agent/src/test/java/com/wonremote/agent/AgentProjectionRequestTest.java"],
+      "id": "manual-session-clipboard",
+      "acceptance": "Ctrl+C/V operate on the remote PC only. A clipboard sync icon immediately left of Tools sends the local clipboard once; Tools offers explicit directional send/get and no automatic checkbox.",
+      "boundaries": ["Viewer keyboard handler", "local clipboard", "session command", "remote clipboard", "toolbar", "saved preferences"],
+      "contractTests": ["aether-link-app/src/domain/viewerInputState.test.ts", "aether-link-app/scripts/verify-session-clipboard.test.mjs"],
+      "proofLevel": "deployment-required",
+      "verification": "2026-09-08: npx tsx scripts/verify-session-clipboard.mjs passed actual keyboard-handler remote down/up and explicit local transfer checks. npx tsc --noEmit passed. Automatic clipboard listener and 1.5-second polling removed; no idle clipboard requests. Runtime lifecycle checks cover duplicate clicks, permission failure and late clipboard reads after session end. Installed two-PC proof remains pending.",
+      "physicalGap": "Installed remote text/image copy and paste requires two-PC verification. Automatic clipboard polling and subscriptions are removed; explicit send/get reuse existing transport. Existing unrelated request-budget gaps remain pending."
+    },
+    {
+      "id": "agent-highest-login-task",
+      "acceptance": "When administrator approval is required, the Agent installer first explains in Korean that this is a WonRemote installation or update and asks the user to press Yes in the following Windows prompt. It then replaces the WonRemote Agent login task with the installed executable and --agent argument, starts that task after install or update, launches it at the next interactive login with highest privileges, and removes it on uninstall.",
+      "boundaries": ["current-user NSIS installer", "Windows UAC", "Task Scheduler", "Agent process token", "silent updater handoff", "uninstaller"],
+      "contractTests": ["aether-link-app/src/desktopPackaging.test.ts"],
       "proofLevel": "physical-required",
-      "verification": "2026-09-07: gradlew :agent:testDebugUnitTest --tests com.wonremote.agent.AgentProjectionRequestTest :agent:compileDebugAndroidTestJavaWithJavac --build-cache --console=plain passed. Five JVM tests cover current/old/duplicate stop guards and fresh consent. Instrumentation shutdown-delegation test compiled but was not executed without an Android device. Android v0.1.87 Agent, Viewer and Control Add-On release build passed JNI mapping and APK signature checks. x86 Viewer and Agent installers passed payload verification. GitHub Release v0.1.87 is published with two installers and signed manifest; Firebase Hosting returns Android update metadata versionCode 1087 and HTTP 200 for all three ZIPs. Actual MediaProjection.stop and notification disappearance remain physical-required.",
-      "physicalGap": "Verify red sharing indicator disappears on the affected Android, then reconnect and approve again; no physical Android is attached."
+      "verification": "2026-09-08: focused desktop packaging contract passed 1/1 and the PowerShell helper parsed successfully. The actual low-privilege helper displayed the Korean pre-UAC update guidance, accepted UAC, then re-registered and ran the installed v0.1.87 Agent as an Interactive/Highest AtLogOn task with the exact executable and --agent argument. Task last-run time advanced to 00:26:06. The v0.1.88 x86 Agent NSIS installer compiled successfully with the shared helper; the two x86 payloads and signed update manifest passed verification.",
+      "physicalGap": "An existing non-elevated Agent cannot bypass Windows UAC during its first migration update. Verify first install UAC, old-version migration prompt, subsequent silent elevated update, reboot/login launch, elevated taskbar input and uninstall cleanup on a packaged installer. Authenticode signing remains unavailable."
+    },
+    {
+      "id": "remote-agent-update-request",
+      "acceptance": "Viewer explicitly requests an Agent update using its existing authenticated command channel; PC reuses verified installer checks and defers while a session is active; Android offers its existing consent-based updater. Sending never claims installation success for unsupported old Agents.",
+      "boundaries": ["Viewer device action", "authenticated Firebase/local API", "existing command delivery", "PC updater", "Android consent", "session shutdown"],
+      "contractTests": ["aether-link-app/src/agent/remoteUpdateRequest.test.ts", "aether-link-app/src/firebase/viewerDeviceMetadata.test.ts", "aether-link-app/src/server/apiServer.test.ts", "mobile/android/agent/src/test/java/com/wonremote/agent/RemoteUpdateRequestTest.java"],
+      "proofLevel": "physical-required",
+      "verification": "2026-09-07: focused Node tests passed 8 (3 receiver, 4 Firebase metadata/request, 1 actual local HTTP delivery); Java RemoteUpdateRequestTest passed and Agent/updatecore compiled. TypeScript passed. Playwright clicked the actual update request button twice and observed one isolated HTTP request. No installer/APK packaging or deployment this turn.",
+      "physicalGap": "Installed PC updater handoff, Android background notification/installer consent/restart success reporting, and full cloud request accounting remain unverified. Already-installed Agents without request-update support cannot be upgraded by this new command alone."
+    },
+    {
+      "id": "desktop-assets-only",
+      "acceptance": "PC Viewer and Agent installers exclude Android downloads while their UI assets remain usable and Firebase Hosting retains Android downloads and update metadata.",
+      "boundaries": ["web build", "isolated desktop frontend", "Tauri embedded assets", "x86 installers", "Firebase Hosting downloads"],
+      "contractTests": ["aether-link-app/src/desktopAssets.test.js"],
+      "proofLevel": "deployment-required",
+      "verification": "2026-09-07: desktopAssets runtime tests 2 passed, focused Tauri config test 1 passed, TypeScript passed. PC frontend 0.83 MiB; all 25 Hosting download files byte-identical to public/download. Production frontend login rendered in Playwright without page errors. release:exes passed: x86 Viewer 20235794 bytes, Agent 20241857 bytes (19.30 MiB each versus prior 99.22 MiB); extracted x86 payload SHA-256 verification passed for both. Binary is 5.71 MiB and no longer contains download/android paths. Not signed/published; deployment gate remains blocked by prior taskbar input outcome.",
+      "physicalGap": "New installed PC runtime and live release/download verification remain pending."
+    },
+    {
+      "id": "tablet-name-editing",
+      "acceptance": "Device editor offers Tablet; desktop name edits persist across refresh and Agent re-registration while automatically repeated model names display once, without altering custom names.",
+      "boundaries": ["React editor", "metadata API", "Firestore viewer permissions", "desktopNameOverride", "Agent heartbeat and first-run merge", "device mapping"],
+      "contractTests": ["aether-link-app/src/domain/deviceType.test.ts", "aether-link-app/src/firebase/firestoreDevice.test.ts", "aether-link-app/src/domain/deviceOrganization.test.ts"],
+      "proofLevel": "physical-required",
+      "verification": "2026-09-07: four focused Vitest files passed 42 tests; Firebase metadata boundary passed 3 tests; tsc passed. node scripts/verify-device-organization-ui.mjs passed actual React editor/name/group flow with isolated HTTP fixtures. Firestore emulator blocked by installed Java <21; deployed permissions not proven.",
+      "physicalGap": "Installed PC/Android refresh after name change and deployed Firestore rule require verification."
+    },
+    {
+      "id": "drag-and-business-grouping",
+      "acceptance": "Drag a registered device onto a sidebar store to copy and persist that store name without changing its business number; newly loaded unnamed devices inherit the unique existing store for their business number automatically. Explicitly named devices and ambiguous business numbers are preserved.",
+      "boundaries": ["device row drag", "sidebar drop", "single metadata update", "refresh list projection", "PC and Android registrations"],
+      "contractTests": ["aether-link-app/src/domain/deviceOrganization.test.ts"],
+      "proofLevel": "physical-required",
+      "verification": "2026-09-07: deviceOrganization and viewerDeviceMetadata tests passed including persistence, same-business inheritance, conflicts, concurrency, quota failure and cleanup. Playwright actual row drag copied storeName only and preserved businessNumber. Inheritance uses the fetched list only; no automatic writes. Live cross-client persistence remains pending.",
+      "physicalGap": "Authenticated cross-device persisted group movement and batch tablet registration require live validation."
+    },
+    {
+      "id": "taskbar-input-audit",
+      "acceptance": "Mouse and keyboard continue working after a remote taskbar application opens.",
+      "boundaries": ["Viewer input", "remote control channel", "Agent native SendInput", "foreground application integrity and desktop"],
+      "contractTests": ["aether-link-app/src/desktopPackaging.test.ts"],
+      "proofLevel": "physical-required",
+      "verification": "2026-09-07: Everything.ini has run_as_admin=1; OpenProcessToken/TokenElevation confirmed foreground Everything PID 3616 elevated=True and test process elevated=False. 2026-09-08: source installer helper registered the installed Agent as Interactive/Highest and started its live worker; focused packaging contract passed 1/1.",
+      "physicalGap": "Remote SendInput into normal and elevated taskbar applications still requires an installed Viewer-to-Agent session. Build/install, login restart, update replacement and uninstall cleanup also remain physical-required."
+    },
+    {
+      "id": "runtime-storage-audit",
+      "acceptance": "Preserve the existing shared desktop log: 5 MiB per file, three files total (15 MiB, below the proposed 30 MiB budget). Capture diagnostics keep two bounded 16K-character tails. Startup checks disposable WebView cache once per day and removes only allowlisted cache folders above 128 MiB with the matching browser closed; login and registration remain intact.",
+      "boundaries": ["Agent stdout and stderr", "Tauri append_runtime_log_entry", "APPDATA runtime log", "WebView2 user data"],
+      "contractTests": ["aether-link-app/src-tauri/src/runtime_storage.rs", "aether-link-app/src/agent/captureDiagnostics.test.ts", "aether-link-app/src/agent/productionInstallerUpdate.test.ts"],
+      "proofLevel": "physical-required",
+      "verification": "2026-09-07: standalone rustc runtime_storage tests passed 5 (rotation/oversized legacy log, lock contention, daily cache/login preservation, seven-day retention, active installer lock); Vitest captureDiagnostics and productionInstallerUpdate passed 11; cargo check --lib --offline and npx tsc --noEmit passed.",
+      "physicalGap": "Packaged Viewer/Agent startup, matching WebView process detection, x86 and long-session installed runtime proof remain pending. No installed files were cleaned and no installer was built."
+    },
+    {
+      "id": "update-artifact-retention",
+      "acceptance": "Healthy installer handoff deletes its installer and temporary script; expired failed artifacts are removed after seven days when no update owns the update lock, while failed rollback backups remain recoverable.",
+      "boundaries": ["installer handoff", "runtime health proof", "exclusive update lock", "startup cleanup"],
+      "contractTests": ["aether-link-app/src/agent/productionInstallerUpdate.test.ts", "aether-link-app/src-tauri/src/runtime_storage.rs"],
+      "proofLevel": "physical-required",
+      "verification": "2026-09-07: generated successful-handoff cleanup statements executed in PowerShell against temporary installer, partial file and script; artifacts deleted while unrelated failed installer and identity preserved. Runtime Rust filesystem tests prove seven-day retention and refusal to clean under an active installer lock.",
+      "physicalGap": "Installed update success/failure and startup recovery must be checked on a packaged build."
+    },
+    {
+      "id": "viewer-progressive-device-list",
+      "acceptance": "On Firebase Viewer initial load and manual refresh, fetched devices appear before offline-device timeout; replies update rows immediately, timeout finalizes offline devices and logout blocks late updates.",
+      "boundaries": ["authenticated App refresh effect", "fetchDevices", "Firebase getDocsFromServer", "presence progress callback", "React setDevices", "timeout and abort cleanup"],
+      "contractTests": ["aether-link-app/src/domain/devicePresenceRefresh.test.ts"],
+      "proofLevel": "physical-required",
+      "verification": "2026-09-07: npx vitest run src/domain/devicePresenceRefresh.test.ts passed 6 tests including synchronous list delivery before timeout, progressive response, late-callback rejection, 24h idle no repeats, cancellation, quota error and real local HTTP refresh. Callback-boundary proof does not prove authenticated React rendering.",
+      "physicalGap": "Authenticated installed Viewer startup with an offline device still requires visual confirmation. Local HTTP mode retains its previous response timing; production Firebase Viewer is the changed path."
     }
   ]
 }

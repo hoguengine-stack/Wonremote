@@ -1,5 +1,6 @@
 !include LogicLib.nsh
 !include x64.nsh
+!include "${__FILEDIR__}\agent-login-task.nsh"
 
 !macro WONREMOTE_REQUIRE_X64_WINDOWS
   ${IfNot} ${RunningX64}
@@ -42,6 +43,7 @@
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
+  !insertmacro WONREMOTE_MANAGE_AGENT_LOGIN_TASK Install
   CreateDirectory "$SMPROGRAMS\WonRemote"
   CreateShortCut "$DESKTOP\WonRemote Agent.lnk" "$INSTDIR\wonremote-viewer.exe" "--agent --show-window"
   CreateShortCut "$SMPROGRAMS\WonRemote\WonRemote Agent.lnk" "$INSTDIR\wonremote-viewer.exe" "--agent --show-window"
@@ -49,6 +51,7 @@
 
 !macro NSIS_HOOK_PREUNINSTALL
   !insertmacro WONREMOTE_STOP_RUNNING_PROCESSES
+  !insertmacro WONREMOTE_MANAGE_AGENT_LOGIN_TASK Uninstall
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "WonRemoteAgent"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "WonRemoteAgentCLI"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "AetherLinkAgent"

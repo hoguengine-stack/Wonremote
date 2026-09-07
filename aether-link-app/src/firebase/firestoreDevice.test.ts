@@ -2,6 +2,14 @@ import { describe, expect, it } from "vitest";
 import { buildFirestoreDevice, mapFirestoreDevice, mergeFirstRunDeviceDocument } from "./firestoreDevice";
 
 describe("firestore device mapping", () => {
+  it("preserves a custom desktop name through Android heartbeat and first-run merge", () => {
+    const device = buildFirestoreDevice({businessNumber: "1234567890", installId: "tablet", ownerUid: "owner", nowIso: "2026-09-07T00:00:00Z", desktopName: "CTD-7000 CTD-7000"});
+    expect(mapFirestoreDevice(device.id, device).desktopName).toBe("CTD-7000");
+    const stored = { ...device, desktopNameOverride: "테이블 1 CTD-7000 CTD-7000" };
+    const registered = mergeFirstRunDeviceDocument(device, stored, true);
+    expect(mapFirestoreDevice(device.id, {...registered, desktopName: "new automatic name"}).desktopName).toBe(stored.desktopNameOverride);
+    expect(mapFirestoreDevice(device.id, {...registered, desktopNameOverride: undefined}).desktopName).toBe("CTD-7000");
+  });
   it("builds a Firestore device document from first-run agent data", () => {
     const device = buildFirestoreDevice({
       businessNumber: "1234567890",

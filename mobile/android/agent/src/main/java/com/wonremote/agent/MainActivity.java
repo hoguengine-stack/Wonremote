@@ -25,6 +25,9 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 
 public final class MainActivity extends com.wonremote.update.UpdateActivity {
+    @Override protected void onRemoteUpdateState(String state, String message) {
+        new AgentRepository(this).reportUpdate(state, message);
+    }
     static final String ACTION_REQUEST_SCREEN_SHARE = "com.wonremote.agent.REQUEST_SCREEN_SHARE";
     private static volatile boolean visible;
 

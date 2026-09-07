@@ -9,14 +9,14 @@ describe("desktop packaging scaffold", () => {
   it("uses Tauri with the existing Vite build output", () => {
     const configPath = path.join(projectRoot, "src-tauri", "tauri.conf.json");
     expect(existsSync(configPath)).toBe(true);
-    expect(packageJson.version).toBe("0.1.87");
+    expect(packageJson.version).toBe("0.1.88");
 
     const config = JSON.parse(readFileSync(configPath, "utf8"));
     expect(config.build).toMatchObject({
       beforeDevCommand: "npm run dev",
       beforeBuildCommand: "npm run build",
       devUrl: "http://127.0.0.1:5173",
-      frontendDist: "../dist",
+      frontendDist: "../dist-desktop",
     });
     expect(config.productName).toBe("WonRemote Viewer");
     expect(config.version).toBe(packageJson.version);
@@ -188,6 +188,36 @@ describe("desktop packaging scaffold", () => {
     expect(tauriLib).not.toContain("agent x86 tray interactions disabled; icon-only mode");
     expect(tauriLib).not.toContain("agent x86 tray disabled; shortcut-only mode");
     expect(tauriLib).not.toContain("single-instance guard already held; exiting");
+  });
+
+  it("installs and removes one highest-privilege Agent login task", () => {
+    const taskHook = readFileSync(path.join(projectRoot, "src-tauri", "windows", "agent-login-task.nsh"), "utf8");
+    const taskScript = readFileSync(
+      path.join(projectRoot, "src-tauri", "windows", "manage-agent-login-task.ps1"),
+      "utf8",
+    );
+
+    for (const hookName of ["agent-install-hooks.nsh", "agent-install-hooks-x86.nsh"]) {
+      const hook = readFileSync(path.join(projectRoot, "src-tauri", "windows", hookName), "utf8");
+      expect(hook).toContain('!include "${__FILEDIR__}\\agent-login-task.nsh"');
+      expect(hook).toContain("!insertmacro WONREMOTE_MANAGE_AGENT_LOGIN_TASK Install");
+      expect(hook).toContain("!insertmacro WONREMOTE_MANAGE_AGENT_LOGIN_TASK Uninstall");
+    }
+
+    expect(taskHook).toContain("manage-agent-login-task.ps1");
+    expect(taskHook).toContain('!define WONREMOTE_AGENT_TASK_HOOK_DIR "${__FILEDIR__}"');
+    expect(taskHook).toContain('"${WONREMOTE_AGENT_TASK_HOOK_DIR}\\manage-agent-login-task.ps1"');
+    expect(taskHook).toContain("-AgentPath \"$INSTDIR\\wonremote-viewer.exe\"");
+    expect(taskHook).toContain("Abort");
+    expect(taskScript).toContain("WonRemote 원격프로그램 설치 또는 업데이트입니다.");
+    expect(taskScript).toContain("다음 관리자 승인 창에서 '예'를 눌러주세요.");
+    expect(taskScript.indexOf("MessageBox]::Show")).toBeLessThan(taskScript.indexOf("Start-Process powershell.exe -Verb RunAs"));
+    expect(taskScript).toContain('Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden');
+    expect(taskScript).toContain('New-ScheduledTaskPrincipal -UserId $identity.Name -LogonType Interactive -RunLevel Highest');
+    expect(taskScript).toContain('New-ScheduledTaskTrigger -AtLogOn -User $identity.Name');
+    expect(taskScript).toContain('New-ScheduledTaskAction -Execute $resolvedAgentPath -Argument "--agent"');
+    expect(taskScript).toContain("Start-ScheduledTask -TaskName $taskName");
+    expect(taskScript).toContain("Unregister-ScheduledTask -TaskName $taskName");
   });
 
   it("removes startup entries and custom Agent shortcuts during x86 and x64 uninstall", () => {

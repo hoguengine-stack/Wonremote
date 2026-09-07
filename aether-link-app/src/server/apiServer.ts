@@ -303,6 +303,18 @@ async function routeRequest(
 
   await ensureDevicesLoaded(state);
 
+  const updateRequest = url.pathname.match(/^\/api\/devices\/([^/]+)\/request-update$/);
+  if (request.method === "POST" && updateRequest) {
+    const deviceId = decodeURIComponent(updateRequest[1]);
+    if (!state.devices.some(device => device.id === deviceId)) {
+      writeJson(response, 404, {error:"Device not found"});
+      return;
+    }
+    enqueueAgentCommand(state, deviceId, `request-update ${Date.now()}`);
+    writeJson(response, 202, {accepted:true});
+    return;
+  }
+
   if (request.method === "GET" && url.pathname === "/api/devices") {
     let devices = resolveDeviceStatuses(state.devices, nowIso(state), state.offlineAfterMs);
     if (url.searchParams.get("refresh") === "1") {

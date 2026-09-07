@@ -19,6 +19,29 @@ const device: ManagedDevice = {
 afterEach(() => vi.useRealTimers());
 
 describe("on-demand Agent presence", () => {
+  it("shows the list before waiting, progressively publishes replies and cancels late updates without idle requests", async () => {
+    vi.useFakeTimers();
+    let next!: (device: ManagedDevice) => void;
+    const other = { ...device, id: "other" };
+    const progress = vi.fn(); const send = vi.fn().mockResolvedValue(undefined);
+    const stop = vi.fn();
+    const result = collectDevicePresence([device, other], "nonce", (callback) => {
+      next = callback; return stop;
+    }, send, undefined, progress);
+    expect(progress).toHaveBeenCalledExactlyOnceWith([device, other]);
+    next({ ...device, desktopName: "Fresh", heartbeatRequestId: "nonce" });
+    expect(progress.mock.lastCall?.[0][0].desktopName).toBe("Fresh");
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect((await result)[1].status).toBe("offline");
+    const updates = progress.mock.calls.length;
+    next({ ...other, heartbeatRequestId: "nonce" });
+    await vi.advanceTimersByTimeAsync(86_400_000);
+    expect(progress).toHaveBeenCalledTimes(updates);
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(stop).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("accepts only the requested reply, closes its listener and has zero idle repeats", async () => {
     vi.useFakeTimers();
     let next!: (device: ManagedDevice) => void;

@@ -1,4 +1,5 @@
 use std::ffi::OsStr;
+mod runtime_storage;
 use std::os::windows::{ffi::OsStrExt, io::AsRawHandle};
 use std::{
     env, io, mem,
@@ -590,22 +591,53 @@ fn start_arch_specific_agent_tray(app: &tauri::App, agent_state: &tauri::State<'
 fn start_arch_specific_agent_tray(_app: &tauri::App, _agent_state: &tauri::State<'_, AgentState>) {}
 
 fn append_runtime_log_entry(log_path: &Path, component: &str, message: &str) -> io::Result<()> {
-    if let Some(parent) = log_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_path)?;
     let sanitized_message = message.replace(['\r', '\n'], " ");
-    writeln!(
-        file,
-        "{} [{}] {}",
+    runtime_storage::append_log(log_path, &format!(
+        "{} [{}] {}\n",
         runtime_log_timestamp(),
         component,
         sanitized_message
-    )
+    ))
+}
+
+fn maintain_runtime_storage(is_agent: bool) {
+    let now = SystemTime::now();
+    if let Some(appdata) = env::var_os("APPDATA") {
+        if let Err(error) = runtime_storage::clean_updates(&PathBuf::from(appdata).join("WonRemote/updates"), now) {
+            append_runtime_log("storage", &format!("update cleanup deferred: {error}"));
+        }
+    }
+    let Some(local) = env::var_os("LOCALAPPDATA") else { return; };
+    let identifier = if is_agent { "com.wonremote.agent" } else { "com.wonremote.viewer" };
+    let profile = PathBuf::from(local).join(identifier).join("EBWebView");
+    if !profile.is_dir() || !runtime_storage::maintenance_due(&profile, now) { return; }
+    let closed = if runtime_storage::cache_size(&profile) <= runtime_storage::CACHE_LIMIT {
+        // No deletion below the threshold; only stamp the daily check.
+        false
+    } else {
+        webview_profile_is_closed(&profile)
+    };
+    if let Err(error) = runtime_storage::clean_cache(&profile, closed, now) {
+        append_runtime_log("storage", &format!("cache cleanup deferred: {error}"));
+    }
+}
+
+fn webview_profile_is_closed(profile: &Path) -> bool {
+    let mut command = Command::new("powershell.exe");
+    command.args(["-NoProfile", "-NonInteractive", "-Command",
+        "$ErrorActionPreference='Stop'; try { $items=Get-CimInstance Win32_Process -Filter \"name='msedgewebview2.exe'\"; foreach($item in $items) { if (!$item.CommandLine -or $item.CommandLine.IndexOf($env:WONREMOTE_CACHE_PROFILE,[StringComparison]::OrdinalIgnoreCase) -ge 0) { exit 1 } }; exit 0 } catch { exit 1 }"])
+        .env("WONREMOTE_CACHE_PROFILE", profile)
+        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    add_no_window(&mut command);
+    let Ok(mut child) = command.spawn() else { return false; };
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(20)),
+            _ => { let _ = child.kill(); let _ = child.wait(); return false; }
+        }
+    }
 }
 
 fn append_runtime_log(component: &str, message: &str) {
@@ -2110,6 +2142,7 @@ pub fn run() {
         }
     };
 
+    maintain_runtime_storage(is_agent);
     tauri::Builder::default()
         .manage(AgentState::new())
         .invoke_handler(tauri::generate_handler![

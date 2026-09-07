@@ -1,5 +1,6 @@
 import { mkdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -13,6 +14,35 @@ import {
 } from "./productionInstallerUpdate";
 
 describe("production installer update", () => {
+  it.runIf(process.platform === "win32")("executes successful handoff cleanup without deleting failure evidence or identity", async () => {
+    const baseDir = path.join(os.tmpdir(), `wonremote-cleanup-${process.pid}-${Date.now()}`);
+    const updates = path.join(baseDir, "WonRemote", "updates");
+    await mkdir(updates, { recursive: true });
+    const installer = path.join(updates, "current.exe");
+    try {
+      const handoff = await prepareInstallerHandoff({ installerPath: installer, installerArgs: ["/S"] }, { baseDir });
+      const script = await readFile(handoff.scriptPath, "utf8");
+      const start = script.indexOf("  Remove-Item", script.indexOf("Write-UpdateResult 'healthy' ''"));
+      const end = script.indexOf("  Close-UpdateLock", start);
+      expect(start).toBeGreaterThan(0);
+      expect(end).toBeGreaterThan(start);
+      const artifacts = [installer, `${installer}.part`, `${handoff.scriptPath}.accepted`];
+      for (const file of artifacts) await writeFile(file, "temporary");
+      const retained = path.join(updates, "failed-installer.exe");
+      const identity = path.join(baseDir, "agent-config.json");
+      await writeFile(retained, "failure evidence");
+      await writeFile(identity, "identity");
+      const harness = path.join(baseDir, "cleanup-test.ps1");
+      await writeFile(harness, "$InstallerPath=$env:WR_TEST_INSTALLER\n$PSCommandPath=$env:WR_TEST_HANDOFF\n" + script.slice(start, end));
+      const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", harness], {
+        env: { ...process.env, WR_TEST_INSTALLER: installer, WR_TEST_HANDOFF: handoff.scriptPath }, encoding: "utf8", timeout: 10_000, windowsHide: true,
+      });
+      expect(result.status, result.stderr).toBe(0);
+      for (const file of [...artifacts, handoff.scriptPath]) await expect(stat(file)).rejects.toThrow();
+      expect(await readFile(retained, "utf8")).toBe("failure evidence");
+      expect(await readFile(identity, "utf8")).toBe("identity");
+    } finally { await rm(baseDir, { recursive: true, force: true }); }
+  });
   it("downloads a verified installer asset into the WonRemote update directory", async () => {
     const baseDir = path.join(os.tmpdir(), `wonremote-installer-update-${process.pid}-${Date.now()}`);
     const body = Buffer.from("installer-binary");
@@ -205,7 +235,7 @@ describe("production installer update", () => {
       expect(script).toContain("Write-UpdateResult 'healthy'");
       expect(script).toContain("Write-UpdateResult 'rollback'");
       expect(script).toContain("Write-UpdateResult 'failed'");
-      expect(script).toContain("Remove-WonRemoteRollback\n  Write-UpdateResult 'healthy' ''\n  Close-UpdateLock");
+      expect(script).toContain("Remove-WonRemoteRollback\n  Write-UpdateResult 'healthy' ''\n  Remove-Item");
       expect(script).not.toContain("WONREMOTE_RESTART_MODE");
       expect(script).toContain("Start-WonRemoteAgent");
       expect(script).toContain("Join-Path $root \"wonremote-viewer.exe\"");

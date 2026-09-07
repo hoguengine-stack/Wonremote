@@ -116,6 +116,10 @@ export function viewerRustInputFingerprint(projectRoot = appRoot, options = {}) 
   hash.update("wonremote-viewer-rust-inputs-v1\0");
   appendFingerprintInput(hash, tauriRoot, ".");
   appendFingerprintInput(hash, projectRoot, ".env");
+  // Tauri embeds the frontend: changed UI must invalidate binary reuse too.
+  for (const input of ["src", "vite.config.ts", "package.json", "scripts/prepare-desktop-assets.js"]) {
+    appendFingerprintInput(hash, projectRoot, input);
+  }
   hash.update(options.rustcIdentity ?? currentRustToolchainIdentity());
   appendRustCompileEnvironment(hash, options.env ?? process.env);
   return hash.digest("hex");

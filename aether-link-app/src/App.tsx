@@ -19,6 +19,7 @@ import {
   ChevronDown,
   ChevronUp,
   RotateCcw,
+  RefreshCw,
   Power,
   Trash2,
   LayoutDashboard,
@@ -55,6 +56,7 @@ import {
   uploadFileChunk,
   uploadFileToStorage,
   fetchConnectionHistory,
+  requestAgentUpdate,
   fetchTiles,
   updateDeviceMetadata,
   wakeRemoteDevice,
@@ -80,6 +82,7 @@ import { ViewerAccountManager } from "./components/ViewerAccountManager";
 import { IosCapabilityProbe } from "./components/IosCapabilityProbe";
 import { isMobileViewerPath } from "./domain/mobileViewer";
 import { groupDevicesByStore } from "./domain/agentRegistry";
+import { organizeDevices, createDeviceGroupMover, DEVICE_DRAG_TYPE } from "./domain/deviceOrganization";
 import {
   scheduleVisualPingPresentedMeasurement,
 } from "./domain/visualPing";
@@ -122,7 +125,6 @@ import {
 import {
   buildKeyboardCommand,
   buildMouseCommand,
-  buildPasteTextCommand,
   buildReplaceUnicodeTextCommand,
   buildUnicodeTextCommand,
   buildSwitchMonitorCommand,
@@ -329,7 +331,11 @@ function ViewerApp() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isCheckingAutoLogin, setIsCheckingAutoLogin] = useState(() => isViewerFirebaseEnabled());
   const [loginError, setLoginError] = useState("");
-  const [devices, setDevices] = useState<ManagedDevice[]>([]);
+  const [rawDevices, setDevices] = useState<ManagedDevice[]>([]);
+  const devices = useMemo(() => organizeDevices(rawDevices), [rawDevices]);
+  const [dropStore, setDropStore] = useState<string | null>(null);
+  const groupMover = useMemo(() => createDeviceGroupMover(updateDeviceMetadata), [isAuthenticated]);
+  useEffect(() => { groupMover.activate(); return () => groupMover.dispose(); }, [groupMover]);
   const [sessions, setSessions] = useState<RemoteSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [splitSessionIds, setSplitSessionIds] = useState<readonly [string, string] | null>(null);
@@ -651,7 +657,12 @@ function ViewerApp() {
 
     let cancelled = false;
     const abort = new AbortController();
-    const request = fetchDevices(true, abort.signal);
+    const request = fetchDevices(true, abort.signal, (nextDevices) => {
+      if (!cancelled) {
+        setDevices(nextDevices);
+        setApiError("");
+      }
+    });
     deviceListRequestRef.current = request;
     setIsRefreshingDevices(true);
     void request
@@ -1013,6 +1024,24 @@ function ViewerApp() {
     }
   }
 
+  const updateRequestsRef = useRef(new Map<string, number>());
+  const updateRequestEpochRef = useRef(0);
+  useEffect(() => () => { updateRequestEpochRef.current++; updateRequestsRef.current.clear(); }, [isAuthenticated]);
+  async function handleRequestAgentUpdate(device: ManagedDevice) {
+    const epoch = updateRequestEpochRef.current;
+    const now = Date.now();
+    if (now - (updateRequestsRef.current.get(device.id) ?? 0) < 60_000) return;
+    updateRequestsRef.current.set(device.id, now);
+    try {
+      await requestAgentUpdate(device.id);
+      if (epoch !== updateRequestEpochRef.current) return;
+      setApiError(`${device.desktopName}: 업데이트 요청을 전송했습니다. 설치 완료는 아닙니다. 결과는 장비 새로고침으로 확인하세요. 미지원 구버전은 반응하지 않을 수 있습니다.`);
+    } catch (error) {
+      if (epoch !== updateRequestEpochRef.current) return;
+      setApiError(error instanceof Error ? error.message : "업데이트 요청 전송 실패");
+    }
+  }
+
   async function handleWakeDevice(device: ManagedDevice) {
     const macAddress = device.macAddresses?.[0];
     if (!macAddress) {
@@ -1063,6 +1092,7 @@ function ViewerApp() {
             : {
                 contactName: input.contactName,
                 deviceName: input.deviceName,
+                desktopName: input.desktopName === device.desktopName ? undefined : input.desktopName,
                 installLocation: input.installLocation,
                 notes: input.notes,
                 storeName: input.storeName,
@@ -1173,10 +1203,32 @@ function ViewerApp() {
           <div className="group-list">
           {groups.map((group) => (
             <button
-              className={`group-button ${selectedStore === group.storeName ? "active" : ""}`}
+              className={`group-button ${selectedStore === group.storeName ? "active" : ""} ${dropStore === group.storeName ? "drop-target" : ""}`}
               key={group.storeName}
               type="button"
               onClick={() => setSelectedStore(group.storeName)}
+              onDragOver={(event) => {
+                if (!event.dataTransfer.types.includes(DEVICE_DRAG_TYPE)) return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "move";
+                setDropStore(group.storeName);
+              }}
+              onDragLeave={() => setDropStore(null)}
+              onDrop={async (event) => {
+                event.preventDefault();
+                setDropStore(null);
+                const device = devices.find((item) => item.id === event.dataTransfer.getData(DEVICE_DRAG_TYPE));
+                if (!device) return;
+                try {
+                  const updated = await groupMover.move(device, group.storeName);
+                  if (updated) {
+                    setDevices((current) => current.map((item) => item.id === updated.id ? updated : item));
+                    setApiError("");
+                  }
+                } catch (error) {
+                  setApiError(error instanceof Error ? error.message : "매장 그룹 이동 실패");
+                }
+              }}
               onContextMenu={(event) => {
                 event.preventDefault();
                 if (group.devices.length > 0) {
@@ -1337,6 +1389,7 @@ function ViewerApp() {
               onEdit={(device) => setEditTarget({ mode: "device", devices: [device] })}
               onSecureConnect={handleSecureConnectRequest}
               onWake={handleWakeDevice}
+              onRequestUpdate={handleRequestAgentUpdate}
               onRefresh={handleRefreshDeviceList}
               isRefreshing={isRefreshingDevices}
               favoriteDeviceIds={favoriteDeviceIds}
@@ -1611,11 +1664,11 @@ function DeviceEditDialog({
               <label>
                 데스크탑명
                 <input
-                  readOnly
+                  maxLength={255}
                   value={form.desktopName}
+                  onChange={(event) => setForm((prev) => ({ ...prev, desktopName: event.target.value }))}
                   placeholder="데스크탑명"
                 />
-                <small className="field-help">Agent PC의 Windows 컴퓨터 이름을 자동으로 표시합니다.</small>
               </label>
               <label>
                 담당자
@@ -2362,6 +2415,7 @@ function DeviceTable({
   onToggleFavorite,
   onToggleSelected,
   onWake,
+  onRequestUpdate,
   onRefresh,
   isRefreshing,
   selectedDeviceIds,
@@ -2376,6 +2430,7 @@ function DeviceTable({
   onToggleFavorite: (deviceId: string) => void;
   onToggleSelected: (deviceId: string) => void;
   onWake: (device: ManagedDevice) => void | Promise<void>;
+  onRequestUpdate: (device: ManagedDevice) => void | Promise<void>;
   onRefresh: () => void | Promise<void>;
   isRefreshing: boolean;
   selectedDeviceIds: string[];
@@ -2436,6 +2491,11 @@ function DeviceTable({
             <div
               className="table-row"
               key={device.id}
+              draggable
+              onDragStart={(event) => {
+                event.dataTransfer.setData(DEVICE_DRAG_TYPE, device.id);
+                event.dataTransfer.effectAllowed = "move";
+              }}
               onContextMenu={(event) => {
                 event.preventDefault();
                 onEdit(device);
@@ -2488,7 +2548,9 @@ function DeviceTable({
                 )}
               </span>
               <span className="software-cell">
+                <button className="connect-button connect-icon" type="button" title="에이전트 업데이트 요청" aria-label="에이전트 업데이트 요청" onClick={() => onRequestUpdate(device)}><RefreshCw size={16} /></button>
                 <span className={`version-badge ${updateInfo.kind}`}>{updateInfo.label}</span>
+                {device.updateError && <small>{device.updateError}</small>}
                 {device.controlDiagnostics && (
                   <small>{device.controlDiagnostics.elevated ? "관리자 권한" : "사용자 권한"}</small>
                 )}
@@ -2699,8 +2761,6 @@ function RemoteSessionPanel({
   const lastMoveSentAtRef = React.useRef(0);
   const pendingMoveRef = React.useRef<{ dx: number; dy: number } | null>(null);
   const lastPointerPointRef = React.useRef({ dx: 32768, dy: 32768 });
-  const lastClipboardTextRef = React.useRef<string>("");
-  const lastClipboardImageHashRef = React.useRef<string>("");
   const pingStateRef = React.useRef<{ start: number } | null>(null);
   const activeTransferIdRef = React.useRef<string>("");
   const storageTransfersRef = React.useRef(
@@ -2712,7 +2772,6 @@ function RemoteSessionPanel({
   const [sessionDataError, setSessionDataError] = useState("");
   const [sessionDataRetry, setSessionDataRetry] = useState(0);
   const sessionDataHandlerRef = useRef<(data: SessionData, isCurrent: () => boolean) => Promise<void>>(async () => {});
-  const clipboardRequestRef = useRef<((text: string) => void) | null>(null);
   const tileSequenceRef = React.useRef<Map<string, number>>(new Map());
   const receivedFrameSequenceRef = React.useRef(0);
   const webRtcTransportRef = React.useRef<ViewerWebRtcTransport | null>(null);
@@ -2765,7 +2824,6 @@ function RemoteSessionPanel({
   const [isRecording, setIsRecording] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
-  const [isClipboardSyncOn, setIsClipboardSyncOn] = useState(initialViewPreferences.clipboardSync);
   const [isChatOpen, setIsChatOpen] = useState(false);
 
   useEffect(() => {
@@ -2780,12 +2838,12 @@ function RemoteSessionPanel({
   useEffect(() => {
     if (!preferenceDeviceId) return;
     window.localStorage.setItem(deviceViewPreferencesKey(preferenceDeviceId), JSON.stringify({
-      clipboardSync: isClipboardSyncOn,
+      clipboardSync: false,
       fullscreen: isSessionFullscreen,
       selectedDisplayIndex,
       zoom,
     }));
-  }, [isClipboardSyncOn, isSessionFullscreen, preferenceDeviceId, selectedDisplayIndex, zoom]);
+  }, [isSessionFullscreen, preferenceDeviceId, selectedDisplayIndex, zoom]);
 
   useEffect(() => {
     if ((window as any).__TAURI_INTERNALS__) return;
@@ -2867,7 +2925,6 @@ function RemoteSessionPanel({
     if (!sent) {
       throw new Error("WebRTC 파일 채널이 아직 준비되지 않았습니다.");
     }
-    lastClipboardImageHashRef.current = fileSha256;
   }, [sessionId]);
 
   const mapRemotePoint = (clientX: number, clientY: number, rect: DOMRect) =>
@@ -2948,20 +3005,6 @@ function RemoteSessionPanel({
             return c;
           });
           setChatMessages((prev) => [...prev, ...processed]);
-        }
-
-        // 2. Clipboard
-        const clips = data.clipboards;
-        if (clips.length > 0) {
-          for (const clip of clips) {
-            if (!isCurrent()) return;
-            if (clip.sender === "agent") {
-              clipboardRequestRef.current?.(clip.text);
-              if (isActive && isClipboardSyncOn) {
-                await navigator.clipboard.writeText(clip.text).catch(() => {});
-              }
-            }
-          }
         }
 
         // 3. Files
@@ -3046,13 +3089,12 @@ function RemoteSessionPanel({
     const unsubscribe = subscribeSessionData(sessionId,
       (data) => sessionDataHandlerRef.current(data, () => active),
       (error) => { if (active) setSessionDataError(error.message); },
-      { clipboard: isActive && isClipboardSyncOn });
+      { clipboard: false });
     return () => {
       active = false;
-      clipboardRequestRef.current = null;
       unsubscribe();
     };
-  }, [isActive, sessionId, session?.state, isClipboardSyncOn, sessionDataRetry]);
+  }, [isActive, sessionId, session?.state, sessionDataRetry]);
 
   const receiptKey = JSON.stringify(receiptIds);
   useEffect(() => {
@@ -3089,46 +3131,6 @@ function RemoteSessionPanel({
     })();
     return () => { active = false; };
   }, [sessionId, sessionDataRetry]);
-
-  useEffect(() => {
-    if (!isActive || !isClipboardSyncOn || !sessionId || !session || session.state !== "connected") {
-      return;
-    }
-
-    let active = true;
-    let inFlight = false;
-    const syncClipboard = async () => {
-      if (!active || inFlight) return;
-      inFlight = true;
-      try {
-        const image = await readClipboardPngBlob();
-        if (image) {
-          const imageSha256 = await sha256BlobHex(image);
-          if (active && imageSha256 && imageSha256 !== lastClipboardImageHashRef.current) {
-            await sendClipboardImage(image, imageSha256);
-          }
-          return;
-        }
-        const text = await navigator.clipboard.readText();
-        if (!active || !text || text === lastClipboardTextRef.current) {
-          return;
-        }
-        lastClipboardTextRef.current = text;
-        await sendClipboardText(sessionId, text, "viewer");
-      } catch {
-        // Clipboard permission can be unavailable outside the packaged app.
-      } finally {
-        inFlight = false;
-      }
-    };
-
-    void syncClipboard();
-    const intervalId = window.setInterval(() => void syncClipboard(), 1500);
-    return () => {
-      active = false;
-      window.clearInterval(intervalId);
-    };
-  }, [isActive, isClipboardSyncOn, sessionId, session, sendClipboardImage]);
 
   // Stream Frame drawing
   useEffect(() => {
@@ -3638,48 +3640,6 @@ function RemoteSessionPanel({
       return;
     }
 
-    if (isExactCtrlShortcut(event, "v")) {
-      event.preventDefault();
-      if (event.repeat) {
-        return;
-      }
-      suppressedKeyUpsRef.current.add(event.code || event.key);
-      const targetSessionId = sessionId;
-      const targetTransport = webRtcTransportRef.current;
-      if (!targetSessionId || activeSessionIdRef.current !== targetSessionId) {
-        return;
-      }
-      const image = await readClipboardPngBlob();
-      if (image) {
-        if (!targetTransport || activeSessionIdRef.current !== targetSessionId || webRtcTransportRef.current !== targetTransport) {
-          return;
-        }
-        try {
-          await sendClipboardImage(image);
-          if (
-            activeSessionIdRef.current === targetSessionId &&
-            webRtcTransportRef.current === targetTransport
-          ) {
-            onInputEvent("paste");
-          }
-        } catch (error) {
-          console.error("클립보드 이미지 붙여넣기 실패:", error);
-        }
-        return;
-      }
-      try {
-        const text = await navigator.clipboard.readText();
-        if (activeSessionIdRef.current === targetSessionId && webRtcTransportRef.current === targetTransport) {
-          onInputEvent(text ? buildPasteTextCommand(text) : "paste");
-        }
-      } catch {
-        if (activeSessionIdRef.current === targetSessionId && webRtcTransportRef.current === targetTransport) {
-          onInputEvent("paste");
-        }
-      }
-      return;
-    }
-
     const isLocalText = isRemoteTextInputKeystroke({
       key: event.key,
       code: event.code,
@@ -3920,15 +3880,20 @@ function RemoteSessionPanel({
   };
 
   // Clipboard
+  const isClipboardBusyRef = useRef(false);
   const handleSendClipboard = async () => {
+    if (!isActive || !sessionId || isClipboardBusyRef.current) return;
+    isClipboardBusyRef.current = true;
     try {
       const image = await readClipboardPngBlob().catch(() => null);
+      if (activeSessionIdRef.current !== sessionId) return;
       if (image) {
         await sendClipboardImage(image);
         alert("클립보드 이미지를 원격 장비로 전송했습니다.");
         return;
       }
       const text = await navigator.clipboard.readText();
+      if (activeSessionIdRef.current !== sessionId) return;
       if (text && sessionId) {
         await sendClipboardText(sessionId, text, "viewer");
         alert("클립보드 텍스트가 에이전트로 전송되었습니다.");
@@ -3939,27 +3904,19 @@ function RemoteSessionPanel({
         return;
       }
       alert("클립보드 권한이 없거나 데이터가 비어있습니다.");
+    } finally {
+      isClipboardBusyRef.current = false;
     }
   };
 
   const handleFetchClipboard = async () => {
+    if (!isActive || !sessionId || isClipboardBusyRef.current) return;
+    isClipboardBusyRef.current = true;
     try {
-      if (isActive && isClipboardSyncOn) {
-        let timeout: ReturnType<typeof setTimeout> | undefined;
-        const response = new Promise<string>((resolve, reject) => {
-          clipboardRequestRef.current = resolve;
-          timeout = setTimeout(() => reject(new Error("클립보드 응답 시간 초과")), 5_000);
-        });
-        try {
-          await Promise.resolve(onInputEvent("clipboard-request"));
-          await navigator.clipboard.writeText(await response);
-          alert("클립보드 수신 완료");
-        } finally { clearTimeout(timeout); clipboardRequestRef.current = null; }
-        return;
-      }
       await Promise.resolve(onInputEvent("clipboard-request"));
       await new Promise((resolve) => window.setTimeout(resolve, 600));
       const clips = await fetchClipboardText(sessionId);
+      if (activeSessionIdRef.current !== sessionId) return;
       const agentClips = clips.filter((clip) => clip.sender === "agent");
       if (agentClips.length > 0) {
         const lastClip = agentClips[agentClips.length - 1];
@@ -3970,6 +3927,9 @@ function RemoteSessionPanel({
       }
     } catch (err) {
       console.error("클립보드 수집 실패:", err);
+      alert("클립보드를 가져오지 못했습니다. 다시 시도해 주세요.");
+    } finally {
+      isClipboardBusyRef.current = false;
     }
   };
 
@@ -4643,6 +4603,9 @@ function RemoteSessionPanel({
         </div>
 
         <div className="session-command-actions">
+          <button className="secondary-button" type="button" onClick={handleSendClipboard} title="클립보드 동기화: 내 PC → 원격 PC" aria-label="클립보드 동기화: 내 PC → 원격 PC">
+            <Clipboard size={17} />
+          </button>
           <details className="session-tool-menu" data-testid="secondary-tools">
             <summary>
               <SlidersHorizontal size={17} />
@@ -4696,16 +4659,12 @@ function RemoteSessionPanel({
                   </button>
                   <button className="secondary-button" type="button" onClick={handleSendClipboard} title="뷰어 복사 텍스트 에이전트로 전달">
                     <Clipboard size={17} />
-                    <span>클립보드 보내기</span>
+                    <span>내 PC → 원격 PC</span>
                   </button>
                   <button className="secondary-button" type="button" onClick={handleFetchClipboard} title="에이전트 복사 텍스트 가져오기">
                     <Clipboard size={17} />
-                    <span>클립보드 가져오기</span>
+                    <span>원격 PC → 내 PC</span>
                   </button>
-                  <label className="session-clipboard-sync">
-                    <input type="checkbox" checked={isClipboardSyncOn} onChange={(e) => setIsClipboardSyncOn(e.target.checked)} />
-                    자동 동기화
-                  </label>
                   <button className="secondary-button" type="button" onClick={() => fileInputRef.current?.click()}>
                     <FileUp size={17} />
                     <span>{`파일 전송 (${remoteFileLimitLabel()})`}</span>

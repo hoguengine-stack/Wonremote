@@ -83,6 +83,7 @@ export function registerAgentConnection(
     connectionCode: generateConnectionCode(),
     version: input.version,
     ...sanitizeExistingDeviceOperationalMetadata(existing),
+    ...(existing?.desktopNameOverride ? { desktopNameOverride: existing.desktopNameOverride } : {}),
   };
 
   const index = devices.findIndex((item) => item.id === id);
@@ -305,6 +306,9 @@ export function updateDeviceMetadata(
     desktopName: nextDesktopName,
   };
   applyOperationalMetadataUpdate(device, input);
+  if (typeof input.desktopName === "string") {
+    device.desktopNameOverride = input.desktopName.trim().slice(0, 255) || undefined;
+  }
   const nextDevices = devices.map((item, itemIndex) => (itemIndex === index ? device : item));
 
   return {

@@ -8,6 +8,7 @@ target/
 **/build/
 .firebase/
 aether-link-app/dist/
+aether-link-app/dist-desktop/
 aether-link-app/dist-agent/
 aether-link-app/dist-agent-pkg/
 dist-agent-pkg/

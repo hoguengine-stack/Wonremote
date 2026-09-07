@@ -35,6 +35,18 @@ describe("WonRemote local API server", () => {
     expect(await response.json()).toEqual({ ok: true });
   });
 
+  it("queues an explicit update request for an existing Agent without opening a session", async () => {
+    const registration = await postJson("/api/agent/first-run", {businessNumber:"2223344444",password:"1234",installId:"agent-pos-77"});
+    const {device} = await registration.json();
+    const sent = await postJson(`/api/devices/${encodeURIComponent(device.id)}/request-update`, {});
+    expect(sent.status).toBe(202);
+    const poll = await postJson("/api/agent/commands",{deviceId:device.id,installId:"agent-pos-77"});
+    const {commands} = await poll.json();
+    expect(commands).toHaveLength(1);
+    expect(commands[0].action).toMatch(/^request-update \d{13}$/);
+    expect((await postJson("/api/devices/missing/request-update",{})).status).toBe(404);
+  });
+
   it("rejects malformed and oversized JSON before route processing", async () => {
     const malformed = await fetch(`${baseUrl}/api/admin/login`, {
       method: "POST",

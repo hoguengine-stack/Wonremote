@@ -8,6 +8,7 @@ const supportedStages = new Set(["full", "frontend-only", "backend-only", "reuse
 
 export const requiredReuseArtifacts = [
   "dist/index.html",
+  "dist-desktop/index.html",
   "dist-server/index.mjs",
   "dist-agent/index.mjs",
   "dist-runtime/node.exe",
@@ -45,6 +46,7 @@ export function createBuildCommands({
   const frontendCommands = [
     { command: resolvePackageExecutable("npx", platform), args: ["tsc"] },
     { command: resolvePackageExecutable("npx", platform), args: ["vite", "build"] },
+    { command: nodeExecutable, args: ["scripts/prepare-desktop-assets.js"] },
   ];
   const backendCommands = [
     { command: nodeExecutable, args: ["scripts/build-backend.js"] },

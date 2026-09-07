@@ -3,6 +3,7 @@ import { DEFAULT_STORE_NAME, normalizeStoreNameForDisplay } from "../domain/devi
 import { DEFAULT_DEVICE_TYPE, isGeneratedAgentDeviceName } from "../domain/deviceType";
 import { sanitizeDeviceSystemInfo } from "../domain/deviceSystemInfo";
 import { normalizeDevicePlatform, type DevicePlatform } from "../domain/devicePlatform";
+import { automaticDesktopName } from "../domain/deviceOrganization";
 import {
   DEVICE_CONTACT_NAME_MAX_LENGTH,
   DEVICE_INSTALL_LOCATION_MAX_LENGTH,
@@ -23,6 +24,7 @@ export interface FirestoreDeviceDocument {
   businessNumber: string;
   connectionCode?: string;
   desktopName: string;
+  desktopNameOverride?: string;
   deviceName: string;
   deviceNumber: string;
   lastSeenAt: string;
@@ -99,6 +101,9 @@ export function mergeFirstRunDeviceDocument(
   if (!existing) {
     return merged;
   }
+  if (typeof existing.desktopNameOverride === "string" && existing.desktopNameOverride.trim()) {
+    merged.desktopNameOverride = existing.desktopNameOverride.trim().slice(0, 255);
+  }
 
   const existingStore = existing.storeName?.trim();
   if (existingStore) {
@@ -154,12 +159,13 @@ export function mapFirestoreDevice(id: string, data: Partial<FirestoreDeviceDocu
     storeName: normalizeStoreNameForDisplay(data.storeName, String(data.businessNumber ?? "")),
     deviceNumber: String(data.deviceNumber ?? ""),
     deviceName: String(data.deviceName ?? ""),
-    desktopName: String(data.desktopName ?? ""),
+    desktopName: sanitizeOptionalString(data.desktopNameOverride) || automaticDesktopName(String(data.desktopName ?? "")),
     status: data.status === "offline" ? "offline" : "online",
     lastSeenAt: coerceTimestamp(data.lastSeenAt),
     platform: normalizeDevicePlatform(data.platform),
   };
   assignIfDefined(device, "storeNameSource", sanitizeOptionalString(data.storeNameSource));
+  assignIfDefined(device, "desktopNameOverride", sanitizeOptionalString(data.desktopNameOverride));
   assignIfDefined(device, "connectionCode", sanitizeOptionalString(data.connectionCode));
   assignIfDefined(device, "presenceMode", data.presenceMode === "manual" ? "manual" : undefined);
   assignIfDefined(device, "heartbeatRequestId", sanitizeOptionalString(data.heartbeatRequestId));

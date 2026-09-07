@@ -26,12 +26,13 @@ describe("Viewer input state", () => {
     expect(isRemoteTextInputKeystroke({ key: "F5" })).toBe(false);
   });
 
-  it("reserves only plain Ctrl shortcuts for Viewer-specific handling", () => {
+  it("reserves only Ctrl+Escape for Viewer-specific handling and preserves remote Ctrl+C/V", () => {
     expect(isExactCtrlShortcut({ key: "Escape", ctrlKey: true }, "Escape")).toBe(true);
-    expect(isExactCtrlShortcut({ key: "v", ctrlKey: true }, "v")).toBe(true);
+    expect(isExactCtrlShortcut({ key: "c", ctrlKey: true }, "Escape")).toBe(false);
+    expect(isExactCtrlShortcut({ key: "v", ctrlKey: true }, "Escape")).toBe(false);
     expect(isExactCtrlShortcut({ key: "Escape", ctrlKey: true, shiftKey: true }, "Escape")).toBe(false);
-    expect(isExactCtrlShortcut({ key: "v", ctrlKey: true, shiftKey: true }, "v")).toBe(false);
-    expect(isExactCtrlShortcut({ key: "v", ctrlKey: true, altKey: true }, "v")).toBe(false);
+    expect(isExactCtrlShortcut({ key: "Escape", ctrlKey: true, shiftKey: true }, "Escape")).toBe(false);
+    expect(isExactCtrlShortcut({ key: "Escape", ctrlKey: true, altKey: true }, "Escape")).toBe(false);
   });
 
   it("emits completed Korean composition once even when a trailing input event repeats it", () => {

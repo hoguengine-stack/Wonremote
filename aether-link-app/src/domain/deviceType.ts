@@ -1,5 +1,5 @@
 export const DEFAULT_DEVICE_TYPE = "메인포스";
-export const DEVICE_TYPE_PRESETS = [DEFAULT_DEVICE_TYPE, "오더포스"] as const;
+export const DEVICE_TYPE_PRESETS = [DEFAULT_DEVICE_TYPE, "오더포스", "태블릿"] as const;
 
 export type DeviceTypeChoice = (typeof DEVICE_TYPE_PRESETS)[number] | "custom";
 

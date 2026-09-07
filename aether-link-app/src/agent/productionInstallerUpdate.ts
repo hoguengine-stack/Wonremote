@@ -543,6 +543,10 @@ try {
   }
   Remove-WonRemoteRollback
   Write-UpdateResult 'healthy' ''
+  Remove-Item -LiteralPath $InstallerPath -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath ($InstallerPath + '.part') -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath ($PSCommandPath + '.accepted') -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
   Close-UpdateLock
   exit 0
 } catch {

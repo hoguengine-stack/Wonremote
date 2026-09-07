@@ -26,6 +26,11 @@ public abstract class UpdateActivity extends Activity {
     private File downloadedApk;
     private AlertDialog dialog;
     private ImageButton updateButton;
+    private boolean remoteRequested;
+    protected void onRemoteUpdateState(String state, String message) { }
+    private void reportRemote(String state, String message) {
+        if (remoteRequested) onRemoteUpdateState(state, message);
+    }
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -45,6 +50,23 @@ public abstract class UpdateActivity extends Activity {
     @Override protected void onPostResume() {
         super.onPostResume();
         resumed = true;
+        long pendingVersion = getPreferences(MODE_PRIVATE).getLong("remote_update_version", 0);
+        if (pendingVersion > 0) {
+            try {
+                if (version(getPackageManager().getPackageInfo(getPackageName(), 0)) >= pendingVersion) {
+                    remoteRequested = true;
+                    reportRemote("healthy", "");
+                    getPreferences(MODE_PRIVATE).edit().remove("remote_update_version").apply();
+                    remoteRequested = false;
+                }
+            } catch (PackageManager.NameNotFoundException ignored) { }
+        }
+        if (getIntent().getBooleanExtra("wonremote_request_update", false)) {
+            getIntent().removeExtra("wonremote_request_update");
+            checked = true;
+            remoteRequested = true;
+            checkUpdate(true);
+        }
         if (waitingPermission) {
             waitingPermission = false;
             if (getPackageManager().canRequestPackageInstalls()) launchInstaller();
@@ -61,6 +83,7 @@ public abstract class UpdateActivity extends Activity {
     public final void checkUpdate(boolean manual) {
         if (busy || updater == null || (dialog != null && dialog.isShowing())) return;
         setBusy(true);
+        reportRemote("checking", "업데이트 확인 중");
         worker.execute(() -> {
             try {
                 UpdateClient.Release release = updater.check(manual);
@@ -70,13 +93,18 @@ public abstract class UpdateActivity extends Activity {
                         dialog = new AlertDialog.Builder(this).setTitle("업데이트")
                             .setMessage("최신 버전 " + release.versionName + "이 있습니다. 확인을 누르면 업데이트를 진행합니다.")
                             .setPositiveButton("확인", (d, which) -> download(release)).show();
-                    } else if (manual) message("업데이트", "현재 최신 버전입니다.");
+                    } else {
+                        reportRemote("healthy", "");
+                        if (manual) message("업데이트", "현재 최신 버전입니다.");
+                    }
                 });
             } catch (Exception error) { failure(error); }
         });
     }
     private void download(UpdateClient.Release release) {
         setBusy(true);
+        reportRemote("downloading", "업데이트 다운로드 중");
+        if (remoteRequested) getPreferences(MODE_PRIVATE).edit().putLong("remote_update_version", release.versionCode).apply();
         Toast.makeText(this, "업데이트 다운로드 중", Toast.LENGTH_LONG).show();
         worker.execute(() -> {
             File apk = new File(getCacheDir(), "updates/update.apk");
@@ -118,6 +146,7 @@ public abstract class UpdateActivity extends Activity {
             Intent intent = new Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive")
                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
             startActivity(intent);
+            reportRemote("installing", "Android 시스템 설치 승인 대기");
         } catch (RuntimeException error) { failure(error); }
     }
     private static long version(PackageInfo info) {
@@ -134,6 +163,7 @@ public abstract class UpdateActivity extends Activity {
         if (updateButton != null) updateButton.setEnabled(!value);
     }
     private void failure(Exception error) {
+        reportRemote("failed", "업데이트 실패: 기기에서 다시 확인해 주세요.");
         android.util.Log.w("WonRemoteUpdate", "APK update failed", error);
         ui(() -> {
             setBusy(false);

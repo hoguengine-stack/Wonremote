@@ -17,6 +17,7 @@ import {
 } from "../domain/fileTransferPolicy";
 import {
   closeFirebaseSession,
+  requestFirebaseAgentUpdate,
   deleteFirebaseDevice,
   fetchFirebaseChatMessages,
   subscribeViewerSessionData,
@@ -102,13 +103,18 @@ export async function logoutAdmin(): Promise<void> {
   }
 }
 
-export async function fetchDevices(refreshPresence = false, signal?: AbortSignal): Promise<ManagedDevice[]> {
+export async function fetchDevices(refreshPresence = false, signal?: AbortSignal, onProgress?: (devices: ManagedDevice[]) => void): Promise<ManagedDevice[]> {
   if (isViewerFirebaseEnabled()) {
-    return fetchFirebaseDevices(undefined, refreshPresence, signal);
+    return fetchFirebaseDevices(undefined, refreshPresence, signal, onProgress);
   }
 
   const body = await request<{ devices: ManagedDevice[] }>(`/api/devices${refreshPresence ? "?refresh=1" : ""}`, { signal });
   return body.devices;
+}
+
+export async function requestAgentUpdate(deviceId: string): Promise<void> {
+  if (isViewerFirebaseEnabled()) return requestFirebaseAgentUpdate(deviceId);
+  await request(`/api/devices/${encodeURIComponent(deviceId)}/request-update`, {method:"POST"});
 }
 
 export async function wakeRemoteDevice(

@@ -42,6 +42,9 @@ public class AgentService extends Service {
     private String pendingSessionId;
     private PowerManager.WakeLock sessionWakeLock;
     private boolean shuttingDown;
+    private final RemoteUpdateRequest remoteUpdate = new RemoteUpdateRequest();
+    private com.wonremote.update.UpdateClient remoteUpdater;
+    private com.wonremote.update.UpdateClient.Release pendingUpdateRelease;
     private long quotaRetryAtMs;
     private final Runnable projectionRequestTimeout = () -> cancelProjectionRequest("화면 공유 요청 만료");
 
@@ -182,6 +185,7 @@ public class AgentService extends Service {
     @Override
     public void onDestroy() {
         shuttingDown = true;
+        if (remoteUpdater != null) remoteUpdater.close();
         handler.removeCallbacksAndMessages(null);
         stopCommandListener();
         if (remoteSession != null) {
@@ -370,6 +374,11 @@ public class AgentService extends Service {
 
     void finishRemoteSession() {
         endProjection("온라인");
+        if (pendingUpdateRelease != null) {
+            showUpdateNotification(pendingUpdateRelease);
+            pendingUpdateRelease = null;
+        }
+        startRemoteUpdate();
     }
 
     void endProjection(String status) {
@@ -392,6 +401,10 @@ public class AgentService extends Service {
     private void handleCommand(String action) {
         if (Looper.myLooper() != Looper.getMainLooper()) {
             handler.post(() -> handleCommand(action));
+            return;
+        }
+        if (action.startsWith("request-update ")) {
+            if (remoteUpdate.accept(action, System.currentTimeMillis())) startRemoteUpdate();
             return;
         }
         if (action.startsWith("refresh-status ")) {
@@ -436,6 +449,48 @@ public class AgentService extends Service {
         } else if (!ControlAddonClient.execute(this, action)) {
             WonRemoteAccessibilityService.execute(action);
         }
+    }
+
+    private void startRemoteUpdate() {
+        if (shuttingDown || !remoteUpdate.start(pendingSessionId != null)) return;
+        repository.reportUpdate("checking", "업데이트 확인 중");
+        remoteUpdater = new com.wonremote.update.UpdateClient(getPackageName(), BuildConfig.VERSION_CODE,
+            com.wonremote.update.UpdateClient::openHttps);
+        com.wonremote.update.UpdateClient client = remoteUpdater;
+        new Thread(() -> {
+            try {
+                com.wonremote.update.UpdateClient.Release release = client.check(true);
+                handler.post(() -> {
+                    if (shuttingDown) return;
+                    remoteUpdate.finish();
+                    if (release == null) { repository.reportUpdate("healthy", ""); return; }
+                    if (pendingSessionId != null) {
+                        pendingUpdateRelease = release;
+                        repository.reportUpdate("idle", "원격 세션 종료 후 업데이트 승인 대기");
+                    } else showUpdateNotification(release);
+                });
+            } catch (Exception error) {
+                handler.post(() -> {
+                    if (!shuttingDown) { remoteUpdate.finish(); repository.reportUpdate("failed", "업데이트 확인 실패"); }
+                });
+            } finally { client.close(); }
+        }, "WonRemote-update-request").start();
+    }
+
+    private void showUpdateNotification(com.wonremote.update.UpdateClient.Release release) {
+        if (shuttingDown) return;
+        Intent intent = new Intent(this, MainActivity.class)
+            .putExtra("wonremote_request_update", true)
+            .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        PendingIntent open = PendingIntent.getActivity(this, 179, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        getSystemService(NotificationManager.class).notify(179,
+            new Notification.Builder(this, REQUEST_CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.stat_sys_download)
+                .setContentTitle("WonRemote 업데이트 요청")
+                .setContentText("버전 " + release.versionName + " 설치를 승인하려면 누르세요.")
+                .setContentIntent(open).setAutoCancel(true).build());
+        repository.reportUpdate("idle", "기기에서 업데이트 알림을 눌러 설치 승인 필요");
     }
 
     private RemoteSessionController remoteController() {

@@ -34,6 +34,7 @@ export interface ManagedDevice {
   deviceNumber: string;
   deviceName: string;
   desktopName: string;
+  desktopNameOverride?: string;
   platform?: DevicePlatform;
   status: DeviceStatus;
   lastSeenAt: string;
