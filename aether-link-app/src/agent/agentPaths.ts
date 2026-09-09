@@ -6,6 +6,22 @@ type AgentPathEnv = {
   readonly WONREMOTE_POC_PATH?: string;
 };
 
+export interface AgentCaptureSpawnPlan {
+  args: string[];
+  secure: boolean;
+}
+
+export function nextSecureDesktopCaptureState(
+  current: boolean,
+  sessionChanged: boolean,
+  eventType?: unknown,
+): boolean {
+  if (sessionChanged) return false;
+  if (eventType === "secure-desktop-required") return true;
+  if (eventType === "default-desktop-required") return false;
+  return current;
+}
+
 export function resolveAgentAppDir(env: AgentPathEnv, defaultAppDir: string): string {
   return path.resolve(env.WONREMOTE_APP_DIR?.trim() || defaultAppDir);
 }
@@ -31,4 +47,15 @@ export function resolveAgentPocPath(env: AgentPathEnv, appDir: string): string {
   return path.resolve(
     path.join(appDir, "..", "aether-link-poc", "target", "release", "wonremote-poc.exe"),
   );
+}
+
+export function resolveAgentCaptureSpawnPlan(
+  _env: AgentPathEnv,
+  directArgs: string[],
+  _secureDesktop: boolean,
+): AgentCaptureSpawnPlan {
+  return {
+    args: ["--mode", "secure-client", ...directArgs.slice(2)],
+    secure: true,
+  };
 }

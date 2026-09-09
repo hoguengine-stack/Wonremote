@@ -9,7 +9,7 @@ describe("desktop packaging scaffold", () => {
   it("uses Tauri with the existing Vite build output", () => {
     const configPath = path.join(projectRoot, "src-tauri", "tauri.conf.json");
     expect(existsSync(configPath)).toBe(true);
-    expect(packageJson.version).toBe("0.1.88");
+    expect(packageJson.version).toMatch(/^\d+\.\d+\.\d+$/);
 
     const config = JSON.parse(readFileSync(configPath, "utf8"));
     expect(config.build).toMatchObject({
@@ -42,10 +42,11 @@ describe("desktop packaging scaffold", () => {
       identifier: "com.wonremote.agent",
     });
     expect(agentConfig.bundle.windows.nsis).toMatchObject({
+      installMode: "perMachine",
       installerHooks: "./windows/agent-install-hooks.nsh",
       startMenuFolder: "WonRemote",
     });
-    expect(readFileSync(agentHookPath, "utf8")).toContain('StrCpy $INSTDIR "$LOCALAPPDATA\\WonRemote\\Agent"');
+    expect(readFileSync(agentHookPath, "utf8")).not.toContain('StrCpy $INSTDIR "$LOCALAPPDATA\\WonRemote\\Agent"');
     expect(packageReleaseScript).toContain("tauri.agent.x86.conf.json");
   });
 
@@ -86,23 +87,21 @@ describe("desktop packaging scaffold", () => {
     expect(appSource).toContain("Agent · v{agentVersion}");
   });
 
-  it("resets the NSIS output path after overriding split install folders", () => {
+  it("keeps Viewer per-user while Agent uses the protected installer directory", () => {
     const viewerHook = readFileSync(path.join(projectRoot, "src-tauri", "windows", "viewer-install-hooks.nsh"), "utf8");
     const agentHook = readFileSync(path.join(projectRoot, "src-tauri", "windows", "agent-install-hooks.nsh"), "utf8");
     const viewerInstallDir = 'StrCpy $INSTDIR "$LOCALAPPDATA\\WonRemote\\Viewer"';
-    const agentInstallDir = 'StrCpy $INSTDIR "$LOCALAPPDATA\\WonRemote\\Agent"';
 
     const viewerInstallDirIndex = viewerHook.indexOf(viewerInstallDir);
-    const agentInstallDirIndex = agentHook.indexOf(agentInstallDir);
 
     expect(viewerInstallDirIndex).toBeGreaterThan(-1);
-    expect(agentInstallDirIndex).toBeGreaterThan(-1);
+    expect(agentHook).not.toContain('StrCpy $INSTDIR "$LOCALAPPDATA\\WonRemote\\Agent"');
     expect(viewerHook.indexOf('CreateDirectory "$INSTDIR"', viewerInstallDirIndex)).toBeGreaterThan(
       viewerInstallDirIndex,
     );
-    expect(agentHook.indexOf('CreateDirectory "$INSTDIR"', agentInstallDirIndex)).toBeGreaterThan(agentInstallDirIndex);
+    expect(agentHook).toContain('CreateDirectory "$INSTDIR"');
     expect(viewerHook.indexOf("SetOutPath $INSTDIR", viewerInstallDirIndex)).toBeGreaterThan(viewerInstallDirIndex);
-    expect(agentHook.indexOf("SetOutPath $INSTDIR", agentInstallDirIndex)).toBeGreaterThan(agentInstallDirIndex);
+    expect(agentHook).toContain("SetOutPath $INSTDIR");
   });
 
   it("stops running WonRemote processes before installer overwrite", () => {
@@ -117,6 +116,9 @@ describe("desktop packaging scaffold", () => {
       expect(hook).toContain("WONREMOTE_STOP_RUNNING_PROCESSES");
       expect(hook).toContain("stop-wonremote-processes.ps1");
       expect(hook).toContain(`-Product ${product}`);
+      if (product === "Agent") {
+        expect(hook).toContain('-InstallRoot "$INSTDIR"');
+      }
       expect(hook).not.toContain("-Architecture");
       expect(hook).toContain("SetErrorLevel $1");
       expect(hook).not.toContain("Get-Process");
@@ -124,6 +126,8 @@ describe("desktop packaging scaffold", () => {
     }
 
     expect(processStopper).toContain('Join-Path $env:LOCALAPPDATA "WonRemote\\$Product"');
+    expect(processStopper).toContain('Stop-ScheduledTask -TaskName "WonRemote Secure Capture"');
+    expect(processStopper).toContain("$candidate.StartsWith($_");
     expect(processStopper).toContain("Get-CimInstance Win32_Process");
     expect(processStopper).toContain("Stop-Process -Id");
     expect(processStopper).not.toContain("Test-TargetArchitecture");
@@ -190,7 +194,7 @@ describe("desktop packaging scaffold", () => {
     expect(tauriLib).not.toContain("single-instance guard already held; exiting");
   });
 
-  it("installs and removes one highest-privilege Agent login task", () => {
+  it("installs the protected Agent and local SYSTEM session-broker tasks", () => {
     const taskHook = readFileSync(path.join(projectRoot, "src-tauri", "windows", "agent-login-task.nsh"), "utf8");
     const taskScript = readFileSync(
       path.join(projectRoot, "src-tauri", "windows", "manage-agent-login-task.ps1"),
@@ -201,6 +205,16 @@ describe("desktop packaging scaffold", () => {
       const hook = readFileSync(path.join(projectRoot, "src-tauri", "windows", hookName), "utf8");
       expect(hook).toContain('!include "${__FILEDIR__}\\agent-login-task.nsh"');
       expect(hook).toContain("!insertmacro WONREMOTE_MANAGE_AGENT_LOGIN_TASK Install");
+      expect(hook).toContain("!insertmacro WONREMOTE_DETECT_LEGACY_AGENT");
+      expect(hook).toContain("!insertmacro WONREMOTE_MIGRATE_LEGACY_AGENT");
+      expect(hook).toContain('${If} $WonRemoteLegacyAgentRoot != ""');
+      expect(hook.indexOf("!insertmacro WONREMOTE_MIGRATE_LEGACY_AGENT")).toBeLessThan(
+        hook.indexOf("!insertmacro WONREMOTE_MANAGE_AGENT_LOGIN_TASK Install"),
+      );
+      expect(hook.indexOf("!insertmacro WONREMOTE_DETECT_LEGACY_AGENT")).toBeLessThan(
+        hook.indexOf("!insertmacro WONREMOTE_STOP_RUNNING_PROCESSES"),
+      );
+      expect(hook).toContain('File /oname=$INSTDIR\\manage-agent-login-task.ps1');
       expect(hook).toContain("!insertmacro WONREMOTE_MANAGE_AGENT_LOGIN_TASK Uninstall");
     }
 
@@ -209,15 +223,91 @@ describe("desktop packaging scaffold", () => {
     expect(taskHook).toContain('"${WONREMOTE_AGENT_TASK_HOOK_DIR}\\manage-agent-login-task.ps1"');
     expect(taskHook).toContain("-AgentPath \"$INSTDIR\\wonremote-viewer.exe\"");
     expect(taskHook).toContain("Abort");
-    expect(taskScript).toContain("WonRemote 원격프로그램 설치 또는 업데이트입니다.");
+    expect(taskScript).toContain("WonRemote 에이전트 최초 실행 설정입니다.");
+    expect(taskScript.charCodeAt(0)).toBe(0xfeff);
     expect(taskScript).toContain("다음 관리자 승인 창에서 '예'를 눌러주세요.");
     expect(taskScript.indexOf("MessageBox]::Show")).toBeLessThan(taskScript.indexOf("Start-Process powershell.exe -Verb RunAs"));
     expect(taskScript).toContain('Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden');
-    expect(taskScript).toContain('New-ScheduledTaskPrincipal -UserId $identity.Name -LogonType Interactive -RunLevel Highest');
-    expect(taskScript).toContain('New-ScheduledTaskTrigger -AtLogOn -User $identity.Name');
-    expect(taskScript).toContain('New-ScheduledTaskAction -Execute $resolvedAgentPath -Argument "--agent"');
-    expect(taskScript).toContain("Start-ScheduledTask -TaskName $taskName");
+    expect(taskScript).toContain('New-ScheduledTaskPrincipal -UserId $UserId -LogonType Interactive -RunLevel Highest');
+    expect(taskScript).toContain('New-ScheduledTaskTrigger -AtLogOn -User $UserId');
+    expect(taskScript).toContain('New-ScheduledTaskAction -Execute $runtime.Agent -Argument "--agent"');
+    expect(taskScript.indexOf("Start-ScheduledTask -TaskName $taskName")).toBeGreaterThan(
+      taskScript.indexOf('function Start-LegacyMigration'),
+    );
+    expect(taskScript).toContain('$secureTaskName = "WonRemote Secure Capture"');
+    expect(taskScript).toContain('New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest');
+    expect(taskScript).toContain('$brokerArguments = "--mode secure-broker"');
+    const config = JSON.parse(readFileSync(path.join(projectRoot, "src-tauri", "tauri.conf.json"), "utf8"));
+    const captureResource = config.bundle.resources["../dist-poc/wonremote-poc.exe"].replaceAll("/", "\\");
+    expect(captureResource).toBe("bin\\wonremote-poc.exe");
+    expect(taskScript).toContain(`"${captureResource}"`);
+    expect(taskScript).toContain('"runtime\\node.exe"');
+    expect(taskScript).toContain('"agent\\index.mjs"');
+    expect(taskScript).not.toContain('resources\\bin\\wonremote-poc.exe');
+    expect(taskScript).toContain('[ValidateSet("Install", "Ensure", "Uninstall", "Migrate", "MonitorMigration", "RunMigrationBridge")]');
+    expect(taskScript).toContain('New-ScheduledTaskPrincipal -UserId $UserId -LogonType Interactive -RunLevel Limited');
+    expect(taskScript).toContain("Wait-ProtectedAgentRuntime");
+    expect(taskScript).toContain("Start-MigrationMonitor");
+    expect(taskScript).toContain("state -eq \"healthy\"");
+    const elevatedMigration = taskScript.slice(
+      taskScript.indexOf("function Start-LegacyMigration"),
+      taskScript.indexOf('$brokerArguments = "--mode secure-broker"'),
+    );
+    const limitedMigration = taskScript.slice(
+      taskScript.indexOf("function Invoke-RunMigrationBridge"),
+      taskScript.indexOf("function Invoke-MigrationMonitor"),
+    );
+    expect(elevatedMigration).toContain('RunLevel Limited');
+    expect(elevatedMigration).not.toContain('Remove-Item -LiteralPath $legacy');
+    expect(elevatedMigration).not.toContain('Copy-Item -LiteralPath $Runtime.Node');
+    expect(limitedMigration).toContain('Remove-LegacyRuntime $legacy');
+    expect(limitedMigration).toContain('Remove-LegacyUninstallRegistration $legacy');
+    expect(limitedMigration).toContain('& $legacyNode $legacyScript --watch');
+    expect(taskScript).toContain('Get-ScheduledTaskInfo -TaskName $migrationTaskName');
+    expect(taskScript).toContain('must be installed under Program Files');
+    expect(taskScript).not.toContain("secure-capture.token");
+    expect(taskScript).toContain('Unregister-ScheduledTask -TaskName $secureTaskName');
+    expect(taskHook).toContain('!undef MUI_FINISHPAGE_RUN');
+    expect(taskHook).toContain('!undef MUI_FINISHPAGE_SHOWREADME');
+    expect(taskHook).toContain('MUI_PAGE_CUSTOMFUNCTION_LEAVE WonRemoteAgentFinish');
     expect(taskScript).toContain("Unregister-ScheduledTask -TaskName $taskName");
+  });
+
+  it("keeps privileged capture and input behind the protected local session broker", () => {
+    const secureCapture = readFileSync(
+      path.join(projectRoot, "..", "aether-link-poc", "src", "secure_capture.rs"),
+      "utf8",
+    );
+    const nativeMain = readFileSync(
+      path.join(projectRoot, "..", "aether-link-poc", "src", "main.rs"),
+      "utf8",
+    );
+    const agentSource = readFileSync(path.join(projectRoot, "src", "agent", "index.ts"), "utf8");
+
+    expect(secureCapture).toContain('r"winsta0\\Default"');
+    expect(secureCapture).toContain('" --mode secure-stream ');
+    expect(secureCapture).toContain('" --mode secure-input-server ');
+    expect(secureCapture).toContain("OpenInputDesktop");
+    expect(secureCapture).toContain("SetThreadDesktop");
+    expect(secureCapture).toContain("CreateNamedPipeW");
+    expect(secureCapture).toContain("GetNamedPipeServerProcessId");
+    expect(secureCapture).toContain("process_is_local_system");
+    expect(secureCapture).toContain('D:P(A;;GA;;;SY)(A;;GA;;;BA)');
+    expect(secureCapture).not.toContain("TcpListener");
+    expect(secureCapture).not.toContain("TcpStream");
+    expect(secureCapture).not.toContain("inject_input(");
+    expect(secureCapture).toContain('!is_capture_control("mouse-down 1 1 left")');
+    expect(secureCapture).toContain("crate::is_valid_input_server_request_line(&line)");
+    expect(nativeMain).toContain("secure_capture::run_input_client()");
+    expect(nativeMain).toContain("run_input_server(true).await");
+    expect(agentSource).toContain('data.type === "secure-desktop-required"');
+    expect(agentSource).toContain('data.type === "default-desktop-required"');
+    expect(agentSource).toContain("resolveAgentCaptureSpawnPlan");
+  });
+
+  it("allows HTML device drag/drop in the installed Windows Viewer", () => {
+    const config = JSON.parse(readFileSync(path.join(projectRoot, "src-tauri", "tauri.conf.json"), "utf8"));
+    expect(config.app.windows.find((window: { label: string }) => window.label === "main").dragDropEnabled).toBe(false);
   });
 
   it("removes startup entries and custom Agent shortcuts during x86 and x64 uninstall", () => {
@@ -312,6 +402,9 @@ describe("desktop packaging scaffold", () => {
     expect(packageReleaseScript.match(/"npx tauri build"/g)).toHaveLength(1);
     expect(packageReleaseScript.match(/"npx tauri bundle"/g)).toHaveLength(1);
     expect(packageReleaseScript).not.toContain('WONREMOTE_BUILD_STAGE: "reuse"');
+    expect(packageReleaseScript.indexOf("verifyAgentRuntimeBundle(target)")).toBeLessThan(
+      packageReleaseScript.indexOf("buildAgentDefaultInstaller(target)", viewerStage),
+    );
     expect(packageReleaseScript).toContain('--assemble-only');
   });
 
@@ -767,6 +860,8 @@ describe("desktop packaging scaffold", () => {
       ?.split('if ("request-keyframe".equals(action))')[0] ?? "";
     const cancelRequestBranch = service.split("private void cancelProjectionRequest")[1]
       ?.split("private void finishRemoteSession")[0] ?? "";
+    const projectionRequestBranch = service.split("private void showProjectionRequest()")[1]
+      ?.split("private Notification notification")[0] ?? "";
 
     expect(manifest).toContain('android:launchMode="singleTop"');
     expect(activity).toContain("ACTION_REQUEST_SCREEN_SHARE");
@@ -777,8 +872,8 @@ describe("desktop packaging scaffold", () => {
     expect(service).toContain("APPROVAL_TIMEOUT_MS");
     expect(service).toContain("shouldPromptForProjection");
     expect(service).toContain("shouldStopRemoteSession");
-    expect(service).toContain("setDeleteIntent");
-    expect(service).not.toContain(".setAutoCancel(true)");
+    expect(projectionRequestBranch).toContain("setDeleteIntent");
+    expect(projectionRequestBranch).not.toContain(".setAutoCancel(true)");
     expect(service).toContain("MainActivity.isVisible()");
     expect(service).toContain("startActivity(projectionApprovalActivityIntent())");
     expect(service).toContain("WonRemoteAccessibilityService.requestScreenShareConsent()");

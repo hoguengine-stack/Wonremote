@@ -1,5 +1,5 @@
 use windows::core::{ComInterface, Error, Result, HSTRING};
-use windows::Win32::Foundation::{BOOL, E_INVALIDARG, LPARAM, RECT};
+use windows::Win32::Foundation::{BOOL, E_ACCESSDENIED, E_INVALIDARG, LPARAM, RECT};
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_11_1};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, D3D11_CPU_ACCESS_READ,
@@ -40,6 +40,9 @@ impl DesktopCapturer {
                 backend: CaptureBackend::Dxgi(capturer),
             }),
             Err(dxgi_error) => {
+                if !should_fallback_to_gdi(dxgi_error.code()) {
+                    return Err(dxgi_error);
+                }
                 eprintln!(
                     "DXGI capture init failed: {:?}. Falling back to GDI BitBlt capture.",
                     dxgi_error
@@ -84,6 +87,10 @@ fn should_force_gdi_capture_backend() -> bool {
     std::env::var("WONREMOTE_CAPTURE_BACKEND")
         .map(|value| value.eq_ignore_ascii_case("gdi"))
         .unwrap_or(false)
+}
+
+fn should_fallback_to_gdi(error_code: windows::core::HRESULT) -> bool {
+    error_code != E_ACCESSDENIED
 }
 
 pub enum CaptureFrameStatus {
@@ -488,6 +495,12 @@ fn bgra_to_rgb565(bgra_buffer: &[u8], width: usize, height: usize) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn secure_desktop_access_denied_is_not_a_gdi_fallback_error() {
+        assert!(!should_fallback_to_gdi(E_ACCESSDENIED));
+        assert!(should_fallback_to_gdi(E_INVALIDARG));
+    }
 
     #[test]
     fn gdi_capture_backend_can_be_forced_by_environment() {

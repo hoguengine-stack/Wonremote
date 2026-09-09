@@ -22,7 +22,7 @@
     "icon": ["icons/agent.ico"],
     "windows": {
       "nsis": {
-        "installMode": "currentUser",
+        "installMode": "perMachine",
         "installerHooks": "./windows/agent-install-hooks.nsh",
         "startMenuFolder": "WonRemote"
       }

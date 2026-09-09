@@ -12,11 +12,13 @@ afterEach(() => {
 });
 
 describe("persistent Agent input injector", () => {
-  it("reuses one hidden input-server process and writes unique JSONL request IDs", async () => {
+  it("reuses one hidden brokered input-server client and writes unique JSONL request IDs", async () => {
     const child = new FakeInputServerChild((request) => {
       child.respond({ id: request.id, ok: true });
     });
-    const spawnInputServer = vi.fn(() => child as unknown as InputServerChild);
+    const spawnInputServer = vi.fn<SpawnInputServer>(
+      () => child as unknown as InputServerChild,
+    );
     const injector = new PersistentInputInjector("C:\\WonRemote\\wonremote-poc.exe", { spawnInputServer });
 
     await injector.inject("key-down A");
@@ -28,6 +30,7 @@ describe("persistent Agent input injector", () => {
       ["--mode", "input-server"],
       { stdio: ["pipe", "pipe", "ignore"], windowsHide: true },
     );
+    expect(spawnInputServer.mock.calls[0][1]).not.toContain("inject-input");
     expect(child.requests).toEqual([
       { id: "input-1", action: "key-down A" },
       { id: "input-2", action: "key-up A" },

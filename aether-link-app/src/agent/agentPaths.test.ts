@@ -1,6 +1,11 @@
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { resolveAgentAppDir, resolveAgentPocPath } from "./agentPaths";
+import {
+  nextSecureDesktopCaptureState,
+  resolveAgentAppDir,
+  resolveAgentCaptureSpawnPlan,
+  resolveAgentPocPath,
+} from "./agentPaths";
 
 describe("agent runtime paths", () => {
   it("uses WONREMOTE_APP_DIR to isolate the app update target", () => {
@@ -54,5 +59,35 @@ describe("agent runtime paths", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+
+  it("uses the protected active-console broker for every installed capture", () => {
+    const directArgs = ["--mode", "stream", "--output-index", "0"];
+
+    expect(resolveAgentCaptureSpawnPlan({}, directArgs, false)).toEqual({
+      args: [
+        "--mode",
+        "secure-client",
+        "--output-index",
+        "0",
+      ],
+      secure: true,
+    });
+    expect(resolveAgentCaptureSpawnPlan({}, directArgs, true)).toEqual({
+      args: [
+        "--mode",
+        "secure-client",
+        "--output-index",
+        "0",
+      ],
+      secure: true,
+    });
+  });
+
+  it("switches capture in both desktop directions and resets it for a new session", () => {
+    expect(nextSecureDesktopCaptureState(false, false, "secure-desktop-required")).toBe(true);
+    expect(nextSecureDesktopCaptureState(true, false, "frame")).toBe(true);
+    expect(nextSecureDesktopCaptureState(true, false, "default-desktop-required")).toBe(false);
+    expect(nextSecureDesktopCaptureState(true, true)).toBe(false);
   });
 });

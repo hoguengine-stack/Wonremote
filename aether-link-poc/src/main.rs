@@ -1,4 +1,5 @@
 mod capturer;
+mod secure_capture;
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use capturer::{CaptureFrameStatus, DesktopCapturer, DxgiCapturer};
@@ -9,7 +10,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 use turbojpeg::{Compressor, Decompressor, Image, PixelFormat, Subsamp};
-use windows::Win32::Foundation::{CloseHandle, BOOL, HANDLE, LPARAM, RECT};
+use windows::Win32::Foundation::{CloseHandle, BOOL, E_ACCESSDENIED, HANDLE, LPARAM, RECT};
 use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
 };
@@ -18,6 +19,9 @@ use windows::Win32::Security::{
     TokenIntegrityLevel, TOKEN_ELEVATION, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
 };
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+use windows::Win32::UI::Input::Ime::{
+    ImmGetContext, ImmGetOpenStatus, ImmReleaseContext, ImmSetOpenStatus,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     MapVirtualKeyW, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
     KEYBD_EVENT_FLAGS, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE,
@@ -25,9 +29,6 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE,
     MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL,
     MOUSEINPUT, VIRTUAL_KEY,
-};
-use windows::Win32::UI::Input::Ime::{
-    ImmGetContext, ImmGetOpenStatus, ImmReleaseContext, ImmSetOpenStatus,
 };
 use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
@@ -52,10 +53,15 @@ pub enum RunMode {
     InjectInput { action: String },
     InputServer,
     ListDisplays,
+    SecureBroker,
+    SecureClient,
+    SecureInputServer,
+    SecureStream,
     Stream,
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 struct InputServerRequest {
     id: String,
     action: String,
@@ -87,6 +93,7 @@ pub struct BenchmarkConfig {
     pub max_merge_width: usize,
     pub run_mode: RunMode,
     pub output_index: u32,
+    pub secure_worker_pipe: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -330,9 +337,18 @@ mod tests {
                 max_merge_width: 512,
             }),
         );
-        assert_eq!(parse_runtime_stream_profile("set-stream-profile 16 0 512"), None);
-        assert_eq!(parse_runtime_stream_profile("set-stream-profile 16 75 16"), None);
-        assert_eq!(parse_runtime_stream_profile("set-stream-profile 16 75 512 extra"), None);
+        assert_eq!(
+            parse_runtime_stream_profile("set-stream-profile 16 0 512"),
+            None
+        );
+        assert_eq!(
+            parse_runtime_stream_profile("set-stream-profile 16 75 16"),
+            None
+        );
+        assert_eq!(
+            parse_runtime_stream_profile("set-stream-profile 16 75 512 extra"),
+            None
+        );
     }
 
     #[test]
@@ -355,6 +371,59 @@ mod tests {
         let config = parse_benchmark_config(["wonremote-poc", "--mode", "input-server"]).unwrap();
 
         assert!(matches!(config.run_mode, RunMode::InputServer));
+    }
+
+    #[test]
+    fn parse_config_distinguishes_secure_broker_client_and_worker_modes() {
+        let broker = parse_benchmark_config(["wonremote-poc", "--mode", "secure-broker"]).unwrap();
+        let client = parse_benchmark_config(["wonremote-poc", "--mode", "secure-client"]).unwrap();
+        let worker = parse_benchmark_config([
+            "wonremote-poc",
+            "--mode",
+            "secure-stream",
+            "--secure-worker-pipe",
+            r"\\.\pipe\WonRemoteSecureCaptureWorkerV1-1-1",
+        ])
+        .unwrap();
+        let input_worker = parse_benchmark_config([
+            "wonremote-poc",
+            "--mode",
+            "secure-input-server",
+            "--secure-worker-pipe",
+            r"\\.\pipe\WonRemoteSecureCaptureWorkerV1-1-2",
+        ])
+        .unwrap();
+
+        assert!(matches!(broker.run_mode, RunMode::SecureBroker));
+        assert!(matches!(client.run_mode, RunMode::SecureClient));
+        assert!(matches!(worker.run_mode, RunMode::SecureStream));
+        assert!(matches!(input_worker.run_mode, RunMode::SecureInputServer));
+        assert!(parse_benchmark_config(["wonremote-poc", "--mode", "secure-stream"]).is_err());
+        assert!(
+            parse_benchmark_config(["wonremote-poc", "--mode", "secure-input-server"]).is_err()
+        );
+        assert!(parse_benchmark_config([
+            "wonremote-poc",
+            "--mode",
+            "stream",
+            "--secure-worker-pipe",
+            r"\\.\pipe\WonRemoteSecureCaptureWorkerV1-1-1",
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn capture_switches_only_when_the_active_desktop_changes_class() {
+        assert_eq!(
+            desktop_transition_event(false, true),
+            Some("secure-desktop-required")
+        );
+        assert_eq!(
+            desktop_transition_event(true, false),
+            Some("default-desktop-required")
+        );
+        assert_eq!(desktop_transition_event(false, false), None);
+        assert_eq!(desktop_transition_event(true, true), None);
     }
 
     #[test]
@@ -1008,6 +1077,7 @@ impl Default for BenchmarkConfig {
             max_merge_width: 256,
             run_mode: RunMode::Benchmark,
             output_index: 0,
+            secure_worker_pipe: None,
         }
     }
 }
@@ -1070,6 +1140,18 @@ where
                     "list-displays" => {
                         config.run_mode = RunMode::ListDisplays;
                     }
+                    "secure-broker" => {
+                        config.run_mode = RunMode::SecureBroker;
+                    }
+                    "secure-client" => {
+                        config.run_mode = RunMode::SecureClient;
+                    }
+                    "secure-input-server" => {
+                        config.run_mode = RunMode::SecureInputServer;
+                    }
+                    "secure-stream" => {
+                        config.run_mode = RunMode::SecureStream;
+                    }
                     "stream" => {
                         config.run_mode = RunMode::Stream;
                     }
@@ -1085,6 +1167,10 @@ where
                 config.output_index =
                     u32::try_from(value).map_err(|_| "--output-index is too large".to_string())?;
             }
+            "--secure-worker-pipe" => {
+                config.secure_worker_pipe =
+                    Some(parse_string_arg("--secure-worker-pipe", args.next())?);
+            }
             "--help" | "-h" => {
                 return Err(benchmark_usage());
             }
@@ -1094,6 +1180,17 @@ where
         }
     }
 
+    match (&config.run_mode, config.secure_worker_pipe.as_deref()) {
+        (RunMode::SecureStream | RunMode::SecureInputServer, Some(name))
+            if secure_capture::is_valid_worker_pipe_name(name) => {}
+        (RunMode::SecureStream | RunMode::SecureInputServer, _) => {
+            return Err("secure worker mode requires a valid --secure-worker-pipe".to_string())
+        }
+        (_, Some(_)) => {
+            return Err("--secure-worker-pipe is valid only in a secure worker mode".to_string())
+        }
+        _ => {}
+    }
     Ok(config)
 }
 
@@ -1139,7 +1236,7 @@ fn parse_bounded_u64_arg(
 }
 
 fn benchmark_usage() -> String {
-    "usage: aether-link-poc [--duration seconds] [--output file.json] [--snapshot file.png] [--loop-sleep-ms ms] [--capture-timeout-ms ms] [--jpeg-quality 1..100] [--max-merge-width 32..2048] [--mode benchmark|diagnostics|inject-input|input-server|list-displays|stream] [--action command] [--output-index index]".to_string()
+    "usage: aether-link-poc [--duration seconds] [--output file.json] [--snapshot file.png] [--loop-sleep-ms ms] [--capture-timeout-ms ms] [--jpeg-quality 1..100] [--max-merge-width 32..2048] [--mode benchmark|diagnostics|inject-input|input-server|list-displays|secure-broker|secure-client|secure-input-server|secure-stream|stream] [--action command] [--output-index index]".to_string()
 }
 
 fn benchmark_output_path(
@@ -1583,7 +1680,9 @@ fn inject_input(action: &str) -> std::result::Result<(), String> {
         }
         "text-replace-base64" => {
             if parts.len() != 3 {
-                return Err("Usage: text-replace-base64 <delete_count> <utf8_base64_or_dash>".to_string());
+                return Err(
+                    "Usage: text-replace-base64 <delete_count> <utf8_base64_or_dash>".to_string(),
+                );
             }
             let inputs = text_replacement_inputs(parts[1], parts[2])?;
             if !inputs.is_empty() {
@@ -2168,10 +2267,43 @@ fn parse_runtime_stream_profile(line: &str) -> Option<RuntimeStreamProfile> {
     })
 }
 
-async fn run_streaming_loop(config: BenchmarkConfig) {
+fn desktop_transition_event(
+    expected_secure_desktop: bool,
+    active_secure_desktop: bool,
+) -> Option<&'static str> {
+    match (expected_secure_desktop, active_secure_desktop) {
+        (false, true) => Some("secure-desktop-required"),
+        (true, false) => Some("default-desktop-required"),
+        _ => None,
+    }
+}
+
+fn emit_desktop_transition(expected_secure_desktop: bool) -> bool {
+    let Ok(active_secure_desktop) = secure_capture::active_input_desktop_is_secure() else {
+        return false;
+    };
+    let Some(event) = desktop_transition_event(expected_secure_desktop, active_secure_desktop)
+    else {
+        return false;
+    };
+    println!("{}", serde_json::json!({ "type": event }));
+    true
+}
+
+async fn run_streaming_loop(
+    config: BenchmarkConfig,
+    expected_secure_desktop: bool,
+    session_worker: bool,
+) {
+    if emit_desktop_transition(expected_secure_desktop) {
+        return;
+    }
     let mut capturer = match DesktopCapturer::new_stream(config.output_index) {
         Ok(c) => c,
         Err(e) => {
+            if e.code() == E_ACCESSDENIED && emit_desktop_transition(expected_secure_desktop) {
+                return;
+            }
             eprintln!("Screen capture initialization failed: {:?}", e);
             return;
         }
@@ -2203,20 +2335,18 @@ async fn run_streaming_loop(config: BenchmarkConfig) {
     use tokio::io::{AsyncBufReadExt, BufReader};
     let inject_ping_marker = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let request_keyframe = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let runtime_loop_sleep_ms = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(
-        config.loop_sleep_ms,
-    ));
-    let runtime_jpeg_quality = std::sync::Arc::new(std::sync::atomic::AtomicI32::new(
-        config.jpeg_quality,
-    ));
-    let runtime_max_merge_width = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(
-        config.max_merge_width,
-    ));
+    let runtime_loop_sleep_ms =
+        std::sync::Arc::new(std::sync::atomic::AtomicU64::new(config.loop_sleep_ms));
+    let runtime_jpeg_quality =
+        std::sync::Arc::new(std::sync::atomic::AtomicI32::new(config.jpeg_quality));
+    let runtime_max_merge_width =
+        std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(config.max_merge_width));
     let inject_ping_marker_clone = inject_ping_marker.clone();
     let request_keyframe_clone = request_keyframe.clone();
     let runtime_loop_sleep_ms_clone = runtime_loop_sleep_ms.clone();
     let runtime_jpeg_quality_clone = runtime_jpeg_quality.clone();
     let runtime_max_merge_width_clone = runtime_max_merge_width.clone();
+    let mut next_desktop_probe = Instant::now() + Duration::from_millis(100);
 
     tokio::spawn(async move {
         let stdin = tokio::io::stdin();
@@ -2227,18 +2357,12 @@ async fn run_streaming_loop(config: BenchmarkConfig) {
             } else if line.trim() == "request-keyframe" {
                 request_keyframe_clone.store(true, std::sync::atomic::Ordering::SeqCst);
             } else if let Some(profile) = parse_runtime_stream_profile(&line) {
-                runtime_loop_sleep_ms_clone.store(
-                    profile.loop_sleep_ms,
-                    std::sync::atomic::Ordering::SeqCst,
-                );
-                runtime_jpeg_quality_clone.store(
-                    profile.jpeg_quality,
-                    std::sync::atomic::Ordering::SeqCst,
-                );
-                runtime_max_merge_width_clone.store(
-                    profile.max_merge_width,
-                    std::sync::atomic::Ordering::SeqCst,
-                );
+                runtime_loop_sleep_ms_clone
+                    .store(profile.loop_sleep_ms, std::sync::atomic::Ordering::SeqCst);
+                runtime_jpeg_quality_clone
+                    .store(profile.jpeg_quality, std::sync::atomic::Ordering::SeqCst);
+                runtime_max_merge_width_clone
+                    .store(profile.max_merge_width, std::sync::atomic::Ordering::SeqCst);
                 request_keyframe_clone.store(true, std::sync::atomic::Ordering::SeqCst);
             }
         }
@@ -2246,6 +2370,12 @@ async fn run_streaming_loop(config: BenchmarkConfig) {
 
     loop {
         let loop_start = Instant::now();
+        if loop_start >= next_desktop_probe {
+            if emit_desktop_transition(expected_secure_desktop) {
+                return;
+            }
+            next_desktop_probe = loop_start + Duration::from_millis(100);
+        }
         match capturer.capture_frame(config.capture_timeout_ms) {
             Ok(CaptureFrameStatus::Frame { mut rgb565, .. }) => {
                 let jpeg_quality = runtime_jpeg_quality.load(std::sync::atomic::Ordering::SeqCst);
@@ -2280,8 +2410,8 @@ async fn run_streaming_loop(config: BenchmarkConfig) {
                     let h = height as usize;
                     let ts = tile_size as usize;
 
-                    let max_merge_width = runtime_max_merge_width
-                        .load(std::sync::atomic::Ordering::SeqCst);
+                    let max_merge_width =
+                        runtime_max_merge_width.load(std::sync::atomic::Ordering::SeqCst);
                     let merged_tiles =
                         merge_dirty_tiles(&dirty_tiles, cols, w, h, ts, max_merge_width);
 
@@ -2331,9 +2461,17 @@ async fn run_streaming_loop(config: BenchmarkConfig) {
             }
             Ok(CaptureFrameStatus::Timeout) => {}
             Ok(CaptureFrameStatus::AccessLost) => {
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                if emit_desktop_transition(expected_secure_desktop) || session_worker {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
             }
             Err(e) => {
+                if e.code() == E_ACCESSDENIED
+                    && (emit_desktop_transition(expected_secure_desktop) || session_worker)
+                {
+                    return;
+                }
                 eprintln!("Capture error: {:?}", e);
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
@@ -2356,6 +2494,34 @@ async fn run_streaming_loop(config: BenchmarkConfig) {
 const MAX_INPUT_SERVER_ID_BYTES: usize = 128;
 const MAX_INPUT_SERVER_ACTION_BYTES: usize = 16 * 1024;
 
+fn validate_input_server_request(request: &InputServerRequest) -> Result<(), &'static str> {
+    if request.id.is_empty()
+        || request.id.len() > MAX_INPUT_SERVER_ID_BYTES
+        || request
+            .id
+            .chars()
+            .any(|character| matches!(character, '\r' | '\n' | '\0'))
+    {
+        return Err("Invalid input-server request id.");
+    }
+    if request.action.is_empty()
+        || request.action.len() > MAX_INPUT_SERVER_ACTION_BYTES
+        || request
+            .action
+            .chars()
+            .any(|character| matches!(character, '\r' | '\n' | '\0'))
+    {
+        return Err("Invalid input-server action.");
+    }
+    Ok(())
+}
+
+pub(crate) fn is_valid_input_server_request_line(line: &str) -> bool {
+    line.len() <= MAX_INPUT_SERVER_ACTION_BYTES + 4 * 1024
+        && serde_json::from_str::<InputServerRequest>(line)
+            .is_ok_and(|request| validate_input_server_request(&request).is_ok())
+}
+
 fn process_input_server_line<F>(line: &str, inject: F) -> InputServerResponse
 where
     F: FnOnce(&str) -> std::result::Result<(), String>,
@@ -2371,30 +2537,11 @@ where
         }
     };
 
-    if request.id.is_empty()
-        || request.id.len() > MAX_INPUT_SERVER_ID_BYTES
-        || request
-            .id
-            .chars()
-            .any(|character| matches!(character, '\r' | '\n' | '\0'))
-    {
+    if let Err(error) = validate_input_server_request(&request) {
         return InputServerResponse {
             id: request.id,
             ok: false,
-            error: Some("Invalid input-server request id.".to_string()),
-        };
-    }
-    if request.action.is_empty()
-        || request.action.len() > MAX_INPUT_SERVER_ACTION_BYTES
-        || request
-            .action
-            .chars()
-            .any(|character| matches!(character, '\r' | '\n' | '\0'))
-    {
-        return InputServerResponse {
-            id: request.id,
-            ok: false,
-            error: Some("Invalid input-server action.".to_string()),
+            error: Some(error.to_string()),
         };
     }
 
@@ -2412,11 +2559,12 @@ where
     }
 }
 
-async fn run_input_server() -> std::result::Result<(), String> {
+async fn run_input_server(attach_to_input_desktop: bool) -> std::result::Result<(), String> {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
     let stdin = tokio::io::stdin();
     let mut lines = BufReader::new(stdin).lines();
+    let mut _desktop_attachment = None;
     loop {
         let line = lines
             .next_line()
@@ -2432,7 +2580,13 @@ async fn run_input_server() -> std::result::Result<(), String> {
                 error: Some("Input-server request is too large.".to_string()),
             }
         } else {
-            process_input_server_line(&line, inject_input)
+            process_input_server_line(&line, |action| {
+                if attach_to_input_desktop {
+                    _desktop_attachment =
+                        Some(secure_capture::attach_current_thread_to_active_input_desktop()?);
+                }
+                inject_input(action)
+            })
         };
         let serialized = serde_json::to_string(&response)
             .map_err(|error| format!("input-server response serialization failed: {error}"))?;
@@ -2477,14 +2631,76 @@ async fn main() {
             return;
         }
         RunMode::InputServer => {
-            if let Err(error) = run_input_server().await {
-                eprintln!("Persistent input server failed: {error}");
+            if let Err(error) = secure_capture::run_input_client() {
+                eprintln!("Privileged input client failed: {error}");
                 std::process::exit(1);
             }
             return;
         }
+        RunMode::SecureBroker => {
+            if let Err(error) = secure_capture::run_broker() {
+                eprintln!("Secure capture broker failed: {error}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        RunMode::SecureClient => {
+            if let Err(error) = secure_capture::run_client(&config) {
+                if secure_capture::active_input_desktop_is_secure().is_ok_and(|secure| !secure) {
+                    eprintln!(
+                        "Protected session broker unavailable on Default desktop; using direct capture: {error}"
+                    );
+                    run_streaming_loop(config, false, false).await;
+                } else {
+                    eprintln!("Protected session broker failed: {error}");
+                    std::process::exit(1);
+                }
+            }
+            return;
+        }
+        RunMode::SecureInputServer => {
+            let _transport =
+                match secure_capture::attach_worker_transport(config.secure_worker_pipe.as_deref())
+                {
+                    Ok(transport) => transport,
+                    Err(error) => {
+                        eprintln!("Secure input worker transport failed: {error}");
+                        std::process::exit(1);
+                    }
+                };
+            if let Err(error) = run_input_server(true).await {
+                eprintln!("Secure input worker failed: {error}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        RunMode::SecureStream => {
+            let _transport =
+                match secure_capture::attach_worker_transport(config.secure_worker_pipe.as_deref())
+                {
+                    Ok(transport) => transport,
+                    Err(error) => {
+                        eprintln!("Secure capture worker transport failed: {error}");
+                        std::process::exit(1);
+                    }
+                };
+            let desktop = match secure_capture::attach_current_thread_to_active_input_desktop() {
+                Ok(desktop) => desktop,
+                Err(error) => {
+                    eprintln!("Secure capture desktop attachment failed: {error}");
+                    std::process::exit(1);
+                }
+            };
+            eprintln!(
+                "Secure capture worker attached to active input desktop: {}",
+                desktop.name()
+            );
+            let expected_secure_desktop = desktop.is_secure();
+            run_streaming_loop(config, expected_secure_desktop, true).await;
+            return;
+        }
         RunMode::Stream => {
-            run_streaming_loop(config).await;
+            run_streaming_loop(config, false, false).await;
             return;
         }
         RunMode::ListDisplays => {

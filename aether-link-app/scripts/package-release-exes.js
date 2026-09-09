@@ -10,6 +10,12 @@ const outputDir = path.join(appRoot, "release-exe");
 const packageJson = JSON.parse(fs.readFileSync(path.join(appRoot, "package.json"), "utf8"));
 const requiredResourceDirs = ["server", "agent", "runtime", "bin", "node_modules"];
 const x86WebRtcRuntimeMarker = "wonremote-webrtc-runtime:werift";
+const protectedSessionAgentMarker = "secure-client";
+const protectedSessionNativeMarkers = [
+  "secure-input-server",
+  "SetThreadDesktop",
+  "WonRemoteSecureCaptureV1",
+];
 const viewerBuildStampName = ".wonremote-viewer-rust-inputs.json";
 const viewerRustInputExcludedDirectories = new Set(["target"]);
 const rustCompileEnvironmentKeys = new Set([
@@ -221,14 +227,28 @@ function buildAgentDefaultInstaller(target) {
 export function verifyAgentRuntimeBundle(
   target,
   agentBundlePath = path.join(appRoot, "dist-agent", "index.mjs"),
+  nativeBundlePath = path.join(appRoot, "dist-poc", "wonremote-poc.exe"),
 ) {
   ensureExists(agentBundlePath, `${target.key} Agent bundle`);
+  ensureExists(nativeBundlePath, `${target.key} native capture bundle`);
   const source = fs.readFileSync(agentBundlePath, "utf8");
   if (target.key === "x86" && !source.includes(x86WebRtcRuntimeMarker)) {
     throw new Error("x86 release payload is missing the bundled werift runtime marker.");
   }
   if (target.key === "x86" && /import\(["']werift["']\)/.test(source)) {
     throw new Error("x86 release payload contains an unresolved werift import.");
+  }
+  if (!source.includes(protectedSessionAgentMarker)) {
+    throw new Error("Agent release payload is missing protected-session broker support.");
+  }
+  const nativePayload = fs.readFileSync(nativeBundlePath);
+  const missingNativeMarkers = protectedSessionNativeMarkers.filter(
+    (marker) => !nativePayload.includes(marker),
+  );
+  if (missingNativeMarkers.length > 0) {
+    throw new Error(
+      `Agent/native protected-session protocol mismatch; native payload is missing: ${missingNativeMarkers.join(", ")}.`,
+    );
   }
 }
 
@@ -243,9 +263,9 @@ function packageTarget(target) {
   const expectedAgentInstallerPath = path.join(installerDir, expectedAgentInstaller);
   ensureExists(expectedInstallerPath, `${target.key} WonRemote Viewer NSIS installer`);
 
+  verifyAgentRuntimeBundle(target);
   buildAgentDefaultInstaller(target);
   ensureExists(expectedAgentInstallerPath, `${target.key} Agent-default WonRemote Agent NSIS installer`);
-  verifyAgentRuntimeBundle(target);
   return {
     agentInstallerPath: expectedAgentInstallerPath,
     viewerInstallerPath: expectedInstallerPath,

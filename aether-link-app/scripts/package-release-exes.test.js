@@ -64,10 +64,20 @@ describe("x86 release installers", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "wonremote-agent-resource-"));
     temporaryDirectories.push(root);
     const agentBundlePath = path.join(root, "dist-agent", "index.mjs");
+    const nativeBundlePath = path.join(root, "dist-poc", "wonremote-poc.exe");
     fs.mkdirSync(path.dirname(agentBundlePath), { recursive: true });
-    fs.writeFileSync(agentBundlePath, "// wonremote-webrtc-runtime:werift\n");
+    fs.mkdirSync(path.dirname(nativeBundlePath), { recursive: true });
+    fs.writeFileSync(agentBundlePath, "// wonremote-webrtc-runtime:werift secure-client\n");
+    fs.writeFileSync(
+      nativeBundlePath,
+      "MZ secure-input-server SetThreadDesktop WonRemoteSecureCaptureV1",
+    );
 
-    expect(() => verifyAgentRuntimeBundle({ key: "x86" }, agentBundlePath)).not.toThrow();
+    expect(() => verifyAgentRuntimeBundle({ key: "x86" }, agentBundlePath, nativeBundlePath)).not.toThrow();
+
+    fs.writeFileSync(nativeBundlePath, "MZ secure-client winsta0\\Winlogon");
+    expect(() => verifyAgentRuntimeBundle({ key: "x86" }, agentBundlePath, nativeBundlePath))
+      .toThrow(/protected-session protocol mismatch/);
   });
 
   it("packages the Agent from the existing x86 binary without invoking tauri build", () => {
@@ -101,5 +111,15 @@ describe("x86 release installers", () => {
     ]);
     expect(fs.readFileSync(path.join(output, "WonRemote-Viewer-Setup.exe"), "utf8")).toBe("viewer-x86");
     expect(fs.readFileSync(path.join(output, "WonRemote-Agent-Setup.exe"), "utf8")).toBe("agent-x86");
+  });
+
+  it("blocks publication unless the release source is committed and pushed to main", () => {
+    const publishScript = fs.readFileSync(path.join(process.cwd(), "scripts", "publish-github-release.ps1"), "utf8");
+
+    expect(publishScript).toContain("function Assert-ReleaseSourceIsPublished");
+    expect(publishScript).toContain("git -C $RepoRoot diff --name-only");
+    expect(publishScript).toContain("git -C $RepoRoot diff --cached --name-only");
+    expect(publishScript).toContain("git -C $RepoRoot ls-remote origin refs/heads/main");
+    expect(publishScript).toContain("Assert-ReleaseSourceIsPublished");
   });
 });

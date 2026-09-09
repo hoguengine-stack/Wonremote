@@ -18,7 +18,12 @@ import {
   reconcileAgentRegistration,
   recoverMissingAgentRegistration,
 } from "./agentRegistrationRecovery";
-import { resolveAgentAppDir, resolveAgentPocPath } from "./agentPaths";
+import {
+  nextSecureDesktopCaptureState,
+  resolveAgentAppDir,
+  resolveAgentCaptureSpawnPlan,
+  resolveAgentPocPath,
+} from "./agentPaths";
 import { resolveAgentCredentials } from "./agentRuntime";
 import { resolveAgentComputerName } from "./agentComputerName";
 import { discoverAgentSystemInfo } from "./agentSystemInfo";
@@ -214,6 +219,7 @@ let streamDesired = false;
 let streamRestartTimer: any = null;
 let streamFailureCount = 0;
 let streamBackend: StreamCaptureBackend = "dxgi";
+let streamSecureDesktop = false;
 let captureGeneration = 0;
 let sessionGeneration = 0;
 let webRtcTransport: AgentWebRtcTransport | null = null;
@@ -343,6 +349,7 @@ async function startStreaming(
   currentOutputIndex = outputIndex;
   currentLoopSleepMs = loopSleepMs;
   if (sessionChanged) {
+    streamSecureDesktop = nextSecureDesktopCaptureState(streamSecureDesktop, true);
     streamTransport = USE_FIREBASE ? "none" : "local-api";
     resetFirestoreTileFallbackBudget();
     streamDroppedFrameCount = 0;
@@ -393,14 +400,20 @@ async function startStreaming(
     ...process.env,
     ...(backend === "gdi" ? { WONREMOTE_CAPTURE_BACKEND: "gdi" } : {}),
   };
-  console.log(`Starting capture stream from: ${pocPath} (monitor: ${outputIndex}, mode: ${currentStreamMode}, sleep: ${loopSleepMs}ms, quality: ${streamProfile.jpegQuality}, merge: ${streamProfile.maxMergeWidth}px, backend: ${backend})`);
-  const child = spawn(pocPath, [
+  const directArgs = [
     "--mode", "stream",
     "--loop-sleep-ms", String(loopSleepMs),
     "--jpeg-quality", String(streamProfile.jpegQuality),
     "--max-merge-width", String(streamProfile.maxMergeWidth),
     "--output-index", String(outputIndex),
-  ], {
+  ];
+  const capturePlan = resolveAgentCaptureSpawnPlan(
+    process.env,
+    directArgs,
+    streamSecureDesktop,
+  );
+  console.log(`Starting capture stream from: ${pocPath} (monitor: ${outputIndex}, mode: ${currentStreamMode}, sleep: ${loopSleepMs}ms, quality: ${streamProfile.jpegQuality}, merge: ${streamProfile.maxMergeWidth}px, backend: ${backend}, secure: ${capturePlan.secure})`);
+  const child = spawn(pocPath, capturePlan.args, {
     env,
     windowsHide: true,
   });
@@ -420,7 +433,23 @@ async function startStreaming(
     }
     try {
       const data = JSON.parse(line);
-      if (data.type === "frame") {
+      if (data.type === "secure-desktop-required") {
+        console.log("[Capture Desktop] Windows entered the secure input desktop.");
+        streamSecureDesktop = nextSecureDesktopCaptureState(
+          streamSecureDesktop,
+          false,
+          data.type,
+        );
+        lastStreamError = "Windows switched to the secure credential desktop; handing capture to the protected broker.";
+      } else if (data.type === "default-desktop-required") {
+        console.log("[Capture Desktop] Windows returned to the default input desktop.");
+        streamSecureDesktop = nextSecureDesktopCaptureState(
+          streamSecureDesktop,
+          false,
+          data.type,
+        );
+        lastStreamError = "Windows left the secure credential desktop; returning capture to the interactive desktop.";
+      } else if (data.type === "frame") {
         streamFrameSequence += 1;
         streamFailureCount = 0;
         lastStreamFrameAt = new Date().toISOString();

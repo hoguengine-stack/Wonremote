@@ -1,14 +1,11 @@
 param(
   [Parameter(Mandatory = $true)]
   [ValidateSet("Agent", "Viewer")]
-  [string] $Product
+  [string] $Product,
+  [string] $InstallRoot
 )
 
 $ErrorActionPreference = "Stop"
-
-if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
-  exit 0
-}
 
 function Convert-ExtendedPath([string] $Value) {
   $normalized = [System.IO.Path]::GetFullPath($Value).TrimEnd(
@@ -26,8 +23,20 @@ function Convert-ExtendedPath([string] $Value) {
   return $normalized
 }
 
-$root = Convert-ExtendedPath (Join-Path $env:LOCALAPPDATA "WonRemote\$Product")
-$prefix = $root + [System.IO.Path]::DirectorySeparatorChar
+if ($Product -eq "Agent") {
+  Stop-ScheduledTask -TaskName "WonRemote Secure Capture" -ErrorAction SilentlyContinue
+}
+
+$roots = @()
+if (-not [string]::IsNullOrWhiteSpace($InstallRoot)) {
+  $roots += Convert-ExtendedPath $InstallRoot
+}
+if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+  $roots += Convert-ExtendedPath (Join-Path $env:LOCALAPPDATA "WonRemote\$Product")
+}
+$roots = @($roots | Select-Object -Unique)
+if ($roots.Count -eq 0) { exit 0 }
+$prefixes = @($roots | ForEach-Object { $_ + [System.IO.Path]::DirectorySeparatorChar })
 $self = Get-CimInstance Win32_Process -Filter ("ProcessId = " + $PID) -ErrorAction SilentlyContinue
 $installerPid = if ($null -ne $self) { [int] $self.ParentProcessId } else { -1 }
 $processes = @(Get-CimInstance Win32_Process)
@@ -48,7 +57,10 @@ foreach ($process in $processes) {
   } catch {
     continue
   }
-  if ($candidate.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+  $insideInstallRoot = $prefixes | Where-Object {
+    $candidate.StartsWith($_, [System.StringComparison]::OrdinalIgnoreCase)
+  }
+  if ($insideInstallRoot) {
     [void] $targetIds.Add($id)
   }
 }

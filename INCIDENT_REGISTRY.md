@@ -1,5 +1,55 @@
 # WonRemote Incident Registry
 
+## INC-20260909-007: Installer stop left a valid secure-capture task idle
+
+- Detected: 2026-09-09
+- Severity: P1 update-time PIN capture outage
+- Affected: Agent installer update followed by protected-desktop capture
+- Status: Automated regression verified; packaged update pending
+- Root cause: installer overwrite correctly stops the SYSTEM broker, but the first Ensure path treated a valid Ready task as complete and did not restart it.
+- Permanent guard: a valid broker definition is not runtime health; elevated Agent startup must start the broker whenever its task state is not Running, with an executed PowerShell regression test.
+- Regression proof: the focused Windows PowerShell test executes the real Ensure branch with a valid Ready broker task and passed, proving exactly one broker restart without re-registration or UAC.
+- Release proof: not applicable; no installer was built or deployed.
+
+## INC-20260909-006: PowerShell fixture asserted after the tested script exited
+
+- Detected: 2026-09-09
+- Severity: Low (test-only failure; no product artifact changed)
+- Affected: Agent installer process-stop regression test
+- Status: Guard added
+- Root cause: the fixture placed its summary output after invoking the real script, whose successful exit 0 correctly terminates the PowerShell process.
+- Permanent guard: assert events emitted by mocked boundaries during script execution; never put required assertions after a script that owns process exit.
+- Regression proof: focused Agent startup test executed the real stop script and passed, proving the broker stops before protected and legacy process trees while an unrelated process is preserved.
+- Release proof: not applicable; no installer build or deployment requested.
+
+## INC-20260909-005: Native verification bypassed the repository toolchain environment
+
+- Detected: 2026-09-09
+- Severity: Low (verification delay only; no product artifact changed)
+- Affected: `aether-link-poc` x86 `cargo check`
+- Status: Guard added to this change's verification procedure
+- Minimal trigger: run Cargo directly without the CMake/NASM directories prepared by `scripts/build-backend.js`.
+- Root cause: the verifier used a generic Cargo command even though `turbojpeg-sys` requires the repository's cached native-tool paths.
+- Permanent guard: native checks must prepend `.local-run/cmake/.../bin` and `.local-run/nasm/...`, or run through the repository build helper. Do not retry the unqualified command.
+- Regression proof: cargo check --release --target i686-pc-windows-msvc passed in 9.88s with the repository CMake/NASM paths prepended.
+- Release proof: not applicable; no installer or installer build was requested.
+
+
+## INC-20260908-004: Installed Windows behavior omitted from browser and installer checks
+
+- Detected: 2026-09-08.
+- Severity: P1 remote availability and input.
+- Affected: Agent protected credential-screen capture, first-run UAC, NSIS finish page, Viewer grouping, Korean IME Enter.
+- Status: secure-capture implementation automated-verified; packaged physical verification pending.
+- User-visible symptom: PIN screen unavailable; installer blocks on unreadable UAC guidance and redundant options; native Viewer group drop fails; Enter during Korean composition is not delivered correctly.
+- Minimal trigger: With the Agent still reachable, click the Windows lock screen into the PIN prompt; or install Agent, drag a row in Tauri, or press Enter during Korean IME composition.
+- Root cause and contributors: For the reported PIN case the Agent remains reachable, but its ordinary DXGI child loses access when Windows switches to the protected Winlogon desktop. The earlier claim that Agent startup absence caused this reproduction was incorrect. Other contributors remain PowerShell 5.1 BOM handling, Tauri native drop interception, Process/229 Enter handling and NSIS callback ordering.
+- Fix commit(s): pending.
+- Permanent guard: Treat explicit DXGI access denial as a protected-desktop transition and hand capture only to a LocalSystem worker on the active console Winlogon desktop. Require a Program Files runtime, a SYSTEM/administrator-only native pipe, exact peer executable matching and a broker command schema that cannot request input injection. First-run helper uses UTF-8 BOM and idempotent task setup. Other guards remain native drag/drop disabling, Process/229 Enter normalization and correctly ordered NSIS callbacks.
+- Regression proof: x86 release-profile Rust tests passed 38/38; focused secure/protected/capture tests passed 6/6; complete desktop packaging and Agent startup tests passed 72/72; TypeScript passed. The secure request rejects unknown fields, the broker hardcodes capture-only secure-stream mode, both desktop transitions are explicit and installer overwrite stops the broker before its process tree.
+- Release proof: No build/deploy requested this turn.
+- Remaining blocker: Packaged Windows lock-screen-to-PIN pixels, reboot behavior, UAC, native drag/drop and actual Windows IME require physical verification; do not claim automated proof verifies those boundaries.
+
 ## INC-20260908-002: Rules test reused a refreshed heartbeat for its stale case
 
 - Cause: The metadata-preservation scenario refreshed lastSeenAtServer before the stale-presence rejection scenario.
@@ -1126,3 +1176,344 @@ This also covers development-process escapes: missed requirements, incomplete pl
 - Permanent guard: TypeScript check and Android Agent/updatecore compilation before readiness claims; resolve the existing SDK path before running tests. Receiver policies reject duplicate/expired commands, defer active sessions and cancel pending PC work on shutdown. Sending a command is never installation success.
 - Regression proof: TypeScript passed; focused Node tests 8 passed, Android RemoteUpdateRequestTest passed, actual Viewer button sent one request for two clicks in Playwright. Existing signed PC installer and Android package signer/version checks remain in the update path.
 - Remaining blocker: Installed end-to-end update/consent/restart and combined cloud request accounting; do not deploy based only on request delivery tests.
+
+### 2026-09-09 correction: PIN-screen diagnosis
+
+- User-observed fact: the running Agent remains reachable and mouse input advances the lock screen to the PIN screen; only the resulting PIN desktop is not visible.
+- Corrected cause: the ordinary user/elevated capture child loses DXGI access when Windows switches to the protected credential desktop. Agent startup absence was an incorrect diagnosis for this reproduction.
+- Permanent guard: secure-screen capture must run as a capture-only SYSTEM worker in the active console session from a machine-protected executable. The network/authenticated Agent remains the only cloud owner, and the privileged broker must not accept input injection.
+- Required proof: automated broker mode/argument/installation-path tests plus an installed Windows lock-screen-to-PIN physical test. Source inspection alone cannot close this incident.
+
+## INC-20260909-008: Secure capture state could remain stuck after unlock
+
+- Detected: 2026-09-09.
+- Severity: P1 remote-screen continuity.
+- Affected: Windows Agent capture while moving from the protected PIN desktop back to the normal user desktop.
+- Status: automated regression verified; packaged physical verification pending.
+- User-visible symptom: PIN capture can start, but a same-session capture restart can keep selecting the protected worker after Windows returns to the normal desktop.
+- Root cause and contributors: The first implementation had only a normal-to-secure marker and retained secure mode until the entire remote session changed. It did not distinguish access loss from a worker already attached to Winlogon.
+- Permanent guard: Emit distinct normal-to-secure and secure-to-normal transition events, preserve the state only across matching worker restarts, and test both directions plus new-session reset.
+- Regression proof: capture state tests cover normal-to-secure, secure-to-normal, retained state and new-session reset; x86 release-profile Rust tests passed 43/43 and TypeScript passed.
+- Required proof: an installed lock-PIN-unlock stream test remains mandatory.
+
+## INC-20260909-009: Protected install-path change would break the deployed updater handoff
+
+- Detected: 2026-09-09.
+- Severity: P1 automatic-update continuity.
+- Affected: Existing v0.1.88 Agent installations under `%LOCALAPPDATA%\WonRemote\Agent` updating to the secure-capture release.
+- Status: automated regression verified; installed migration and rollback verification pending.
+- User-visible symptom: A per-machine installer can start the new Agent under Program Files while the deployed handoff checks only the old path, then report failure or restore the old runtime.
+- Root cause and contributors: The initial security fix changed the installation root without tracing the already-deployed handoff script that performs path-scoped process health checks.
+- Permanent guard: Keep the privileged runtime under Program Files. Do not place a highest-privilege task behind a user-writable parent and do not mask old-updater health with a fake process or path redirect. Block release until a backward-compatible one-time migration has explicit rollback and installed v0.1.88-to-next-version proof.
+- Regression proof: The focused Viewer/Agent suite passed 86/86, including actual helper execution for handoff lock ownership, protected runtime and broker health, one-time limited bridge, exact legacy cleanup, fast task completion and rollback-preserving failure.
+- Required proof: migration branch tests plus an installed v0.1.88-to-next-version update that proves protected runtime health, old-runtime cleanup and rollback. Source-only PIN tests cannot satisfy this boundary.
+
+## INC-20260909-010: Android notification assertion inspected an unrelated method
+
+- Detected: 2026-09-09.
+- Severity: Low (test-only false failure; no product behavior changed).
+- Affected: desktop packaging regression suite.
+- Status: automated regression verified.
+- Root cause and contributors: The screen-share consent test rejected `.setAutoCancel(true)` across the entire Android service, so the separate update notification caused a false failure.
+- Permanent guard: Source-contract assertions for one behavior must isolate that method or branch before checking forbidden tokens.
+- Regression proof: the complete desktop packaging and Agent startup test files pass after scoping the assertion to `showProjectionRequest`.
+- Release proof: not applicable; no product build or deployment requested.
+
+## INC-20260909-011: Secure-capture task resolved a nonexistent packaged resource directory
+
+- Detected: 2026-09-09.
+- Severity: P1 protected-screen capture unavailable after install.
+- Affected: Windows Agent first launch, scheduled secure-capture broker and PIN-screen streaming.
+- Status: automated regression verified; packaged physical verification pending.
+- User-visible symptom: The Agent can remain reachable at the PIN screen while the Viewer receives no protected-desktop pixels because the broker task is never validly registered.
+- Root cause and contributors: The task helper assumed Tauri resources were under `resources\\bin`, while the generated NSIS installer and the installed v0.1.88 layout place them directly under `bin`, `runtime` and `agent`. Source-only tests repeated the same incorrect path and therefore passed without checking the generated installer layout.
+- Permanent guard: Resolve task resources from the actual Tauri resource root next to the installed executable, and make packaging tests compare helper paths with generated NSIS resource destinations. Installed PIN-screen proof remains mandatory.
+- Regression proof: The focused packaging and startup suite passed 86/86 using the actual installer-layout resource paths and helper branches.
+- Required proof: Execute the real helper against an installer-layout fixture, build only when requested, then verify the installed SYSTEM broker path and a lock-to-PIN-to-unlock stream on Windows.
+
+## INC-20260909-012: Secure capture worker inherited handles across Windows sessions
+
+- Detected: 2026-09-09.
+- Severity: P1 PIN-screen stream failure.
+- Affected: Windows SYSTEM broker to active-console Winlogon capture worker transport.
+- Status: automated regression verified; packaged physical verification pending.
+- User-visible symptom: The normal lock screen remains reachable, but entering the protected PIN desktop can leave Viewer without frames even when the secure worker process starts.
+- Root cause and contributors: The broker runs in session 0 and launches the Winlogon worker in the active console session while passing anonymous stdin/stdout handles with `bInheritHandles=true`. Windows explicitly forbids handle inheritance across Terminal Services sessions, so the transport was invalid at the exact boundary the feature needed. Earlier tests checked modes, ACLs and process placement but did not verify the operating-system session transport contract.
+- Permanent guard: Use a unique local named pipe for each worker, allow only LocalSystem on the worker pipe, verify both peer executable and process identity, set `bInheritHandles=false`, and keep the privileged channel capture-only. Cross-session native designs must be checked against official API restrictions before implementation.
+- Regression proof: x86 release-profile Rust tests passed 43/43, including actual duplex named-pipe I/O, strict pipe names and peer rules, bounded capture-only protocol, and a launch contract that forbids inherited handles.
+- Required proof: Rust protocol/argument/identity tests, x86 compilation, and an installed lock-screen-to-PIN-to-unlock test after a user-requested build.
+
+## INC-20260909-013: PowerShell fixture could report success after failing to load helper functions
+
+- Detected: 2026-09-09.
+- Severity: P2 test reliability.
+- Affected: Agent migration task completion and stale uninstall-entry tests.
+- Status: corrected; focused regression verified.
+- Root cause and contributors: A test dot-sourced the helper prefix without its mandatory `Mode` argument, while non-terminating PowerShell errors left exit code 0. One assertion could therefore pass even though the target function never loaded.
+- Permanent guard: PowerShell execution fixtures set `$ErrorActionPreference='Stop'`, pass mandatory parameters, and assert an observable result produced only by the loaded production function.
+- Regression proof: `npx vitest run src/agentStartup.test.ts` passed 13/13 after the corrected fixtures executed the real helper functions.
+
+## INC-20260909-014: Protected migration left the obsolete per-user uninstall entry
+
+- Detected: 2026-09-09.
+- Severity: P2 update and uninstall consistency.
+- Affected: Existing v0.1.88 Agent migration from LocalAppData to Program Files.
+- Status: corrected; focused regression verified.
+- Root cause and contributors: The migration removed the legacy runtime only. Its exact HKCU uninstall registration could remain and present a second stale Agent entry that pointed at deleted files.
+- Permanent guard: Remove only the `WonRemote Agent` HKCU entry whose normalized `InstallLocation` exactly matches one of the validated legacy roots; preserve every ambiguous or unrelated entry.
+- Regression proof: The focused Viewer/Agent suite passed 86/86; `src/agentStartup.test.ts` executes the production helper against matching and nonmatching registry fixtures and verifies exact cleanup behavior.
+- Required proof: Install v0.1.88, apply the protected-path update, and confirm Windows Installed Apps contains only the protected Agent entry.
+
+## INC-20260909-015: Secure capture transitions depended only on DXGI access errors
+
+- Detected: 2026-09-09.
+- Severity: P1 PIN-screen stream continuity.
+- Affected: Windows normal-to-PIN and PIN-to-unlocked capture transitions.
+- Status: automated regression verified; packaged physical verification pending.
+- Root cause and contributors: The first secure worker waited for DXGI access failure to signal a desktop change. A LocalSystem worker can retain broader access after unlock, so the expected failure is not a reliable secure-to-normal transition boundary.
+- Permanent guard: Classify the active input desktop locally and compare it with the capture worker's expected `Default` or `Winlogon` class every 100 ms; retain DXGI errors only as a secondary signal.
+- Regression proof: x86 release-profile Rust tests passed 43/43, including both transition directions, stable same-desktop states, Winlogon classification and real named-pipe frame/control transport.
+- Required proof: x86 native transition tests plus an installed lock-to-PIN-to-unlock stream that proves visible frames before, during and after authentication.
+
+## INC-20260909-016: Native handle conversion patch contained an invalid token
+
+- Detected: 2026-09-09.
+- Severity: P3 pre-compile development error; no product artifact affected.
+- Affected: New active-input-desktop helper source only.
+- Status: corrected before compilation.
+- Root cause and contributors: A malformed token was introduced while converting the desktop handle for the Windows binding and was noticed immediately in the patch result review.
+- Permanent guard: Format and compile the x86 native target after every native edit before running broader suites or reporting completion.
+- Regression proof: `cargo fmt --all -- --check` and x86 release-profile Rust tests passed 43/43 after correction.
+- Release proof: Not applicable; no product build or deployment occurred.
+
+## INC-20260909-017: Native security module initially failed warnings-as-errors analysis
+
+- Detected: 2026-09-09.
+- Severity: P3 source-quality gate; no product artifact affected.
+- Affected: Buffer sizing in the new secure-capture module.
+- Status: corrected before build.
+- Root cause and contributors: Two ceiling-division expressions manually duplicated a standard integer operation and were accepted by compilation but rejected by the repository's strict Clippy invocation.
+- Permanent guard: Run x86 Clippy with `-D warnings` after native secure-capture changes, in addition to formatting and tests.
+- Regression proof: `cargo clippy --release --target i686-pc-windows-msvc -- -D warnings` passed after correction; x86 release-profile Rust tests also passed 43/43.
+- Release proof: Not applicable; no product build or deployment occurred.
+
+## INC-20260909-018: Packaging test hardcoded a previous release version
+
+- Detected: 2026-09-09.
+- Severity: P3 build-gate maintenance.
+- Affected: Desktop packaging regression test during a legitimate release version bump.
+- Status: corrected before installer packaging completed.
+- Root cause and contributors: The packaging scaffold asserted the literal prior version `0.1.88` even though version consistency is already verified across the package, Cargo, Tauri and application version sources.
+- Permanent guard: Packaging tests validate semantic-version shape and cross-file equality; release scripts retain the concrete version-consistency check.
+- Regression proof: The focused desktop packaging suite is rerun after the `0.1.89` bump, and `release:exes` independently checks all release version sources before packaging.
+- Release proof: Pending the requested build; this incident cannot be closed by a source-only assertion.
+
+## INC-20260909-019: Fixed Winlogon worker regressed lock-screen capture and could not control SYSTEM windows
+
+- Detected: 2026-09-09.
+- Severity: P1 remote-screen and input regression.
+- Affected: Installed v0.1.89 Windows Agent during lock/welcome/PIN transitions and visible SYSTEM-owned windows on the normal desktop.
+- Status: source corrected; installed physical verification pending.
+- User-visible symptom: A competing remote product continues showing the Windows transition and PIN screen, while WonRemote becomes black where its previous build showed the lock screen. The observed nProtect warning also cannot be closed remotely.
+- Root cause and contributors: The v0.1.89 worker is launched on a hardcoded `winsta0\\Winlogon` desktop, and that worker is used only after a user-session probe classifies a secure transition. The installed reproduction contained no transition event, so capture could remain on the obsolete desktop and turn black. The ordinary input worker also runs below SYSTEM integrity. The installed Mastersoft architecture instead keeps a LocalSystem owner, launches a worker in the active console session, and calls `OpenInputDesktop` plus `SetThreadDesktop` to follow the current input desktop. The release was built before this installed lock/PIN boundary was physically proven.
+- Permanent guard: Run capture and privileged input on dedicated active-console worker threads that attach to the current input desktop before creating windows or hooks. Keep the broker local-only, validate peer executable, identity, request size and command grammar, and retain the authenticated Agent as the only network owner. A build must not be published until another-PC lock/PIN/unlock continuity and SYSTEM-window input are physically checked.
+- Regression proof: i686 release-profile native tests passed 47/47; six focused install, packaging and Agent test files passed 154/154; TypeScript, rustfmt and warnings-denied Clippy passed.
+- Required proof: Install over v0.1.89; verify normal desktop, lock, welcome, PIN and unlock without black frames; operate the SYSTEM-owned nProtect window; repeat reconnect and reboot.
+
+## INC-20260909-020: Windows desktop access flags were combined with an unsupported operator
+
+- Detected: 2026-09-09.
+- Severity: P3 pre-compile development error; no product artifact affected.
+- Affected: New active-input-desktop attachment source only.
+- Status: corrected before build.
+- Root cause and contributors: The pinned `windows` crate wraps desktop access rights in a type that does not implement Rust's bitwise-or operator, while the initial patch treated it like newer bitflags APIs.
+- Permanent guard: Construct `DESKTOP_ACCESS_FLAGS` from the wrapped numeric values and run the focused i686 native compile immediately after every Windows API signature change.
+- Regression proof: Corrected i686 release-profile tests passed 47/47 and warnings-denied Clippy passed.
+- Release proof: Not applicable; no product build or deployment occurred.
+
+## INC-20260909-021: Broker request serialization test searched for escaped JSON text
+
+- Detected: 2026-09-09.
+- Severity: P3 test-only error; no product artifact affected.
+- Affected: New secure broker request unit test.
+- Status: corrected before build.
+- Root cause and contributors: A Rust raw string assertion included literal backslashes even though `serde_json::to_string` returns ordinary JSON text.
+- Permanent guard: Assert the exact unescaped JSON token and rerun only the focused native tests before broader validation.
+- Regression proof: Corrected native request serialization test passed within the 47/47 i686 suite.
+- Release proof: Not applicable; no product build or deployment occurred.
+
+## INC-20260909-022: Secure worker race could leave Agent in privileged capture mode after unlock
+
+- Detected: 2026-09-09.
+- Severity: P2 pre-build state-transition error; no product artifact affected.
+- Affected: New dynamic desktop attachment when Windows returns to Default before the secure worker finishes starting.
+- Status: superseded before build by always using the active-console broker for capture.
+- Root cause and contributors: The first dynamic-attachment patch derived the worker's expected state from the desktop it found at startup. In a fast unlock race that would make a secure-requested worker accept Default as its steady state, preventing the Agent from receiving `default-desktop-required`.
+- Permanent guard: Every installed capture starts through the active-console broker. The worker derives the desktop class it actually attached to, exits on a class change or capture access loss, and the Agent starts a fresh worker on the current input desktop. Preserve bidirectional transition tests.
+- Regression proof: Native desktop-transition and concurrent broker tests passed within 47/47; Agent capture-plan and packaging tests passed within the 154/154 focused app suite.
+- Release proof: Not applicable; no product build or deployment occurred.
+
+## INC-20260909-023: Conditional secure-desktop handoff missed the installed black-screen transition
+
+- Detected: 2026-09-09.
+- Severity: P1 installed remote-screen regression.
+- Affected: v0.1.89 Agent capture before and during Windows lock, welcome and PIN UI.
+- Status: source corrected; physical verification pending.
+- User-visible symptom: Another installed remote product showed the Windows welcome and PIN screens, while WonRemote showed black; the WonRemote log contained neither a secure transition nor a secure worker start.
+- Root cause and contributors: The design left ordinary capture in the user session and started the SYSTEM worker only after a desktop-name or access-denied signal. That conditional boundary could fail before the protected worker was engaged, so improving only the Winlogon worker could not restore a path that never launched.
+- Permanent guard: Installed capture uses the protected active-console broker from its first frame. Each short-lived SYSTEM worker attaches to the current input desktop before creating the capturer and restarts on desktop-class change or access loss. Direct capture is only a Default-desktop fallback when the local broker is unavailable.
+- Regression proof: i686 native tests passed 47/47; focused install/package/Agent tests passed 154/154; TypeScript, rustfmt and warnings-denied Clippy passed.
+- Required proof: Install over v0.1.89 and verify another-PC continuity across normal desktop, lock, welcome, PIN, unlock and reconnect.
+
+## INC-20260909-024: New input-client assertion used an untyped mock call tuple
+
+- Detected: 2026-09-09.
+- Severity: P3 test-only type error; runtime tests passed and no product artifact was affected.
+- Affected: Persistent input injector regression test.
+- Status: corrected before build.
+- Root cause and contributors: Vitest inferred the zero-argument implementation signature for a mock, so indexing its recorded second argument failed strict TypeScript even though the runtime mock accepted the call.
+- Permanent guard: Type transport mocks with the production SpawnInputServer signature and run tsc --noEmit alongside focused runtime tests.
+- Regression proof: Strict TypeScript and the focused 154/154 app test suite passed.
+- Release proof: Not applicable; no product build or deployment occurred.
+
+## INC-20260909-025: Installed Agent required a protected broker that was absent
+
+- Detected: 2026-09-09.
+- Severity: P1 installed remote-screen regression.
+- Affected: The observed v0.1.89 Program Files Agent install and lock/welcome/PIN capture.
+- Status: source corrected; installed repair and physical verification pending.
+- User-visible symptom: WonRemote becomes black during the Windows lock/PIN interval while the installed Mastersoft remote product continues showing the same active console screen. Remote input also cannot operate the SYSTEM-owned nProtect warning.
+- Minimal trigger: Update the affected PC to v0.1.89, connect from another PC, and move from the ordinary desktop through lock or welcome into the PIN screen; the protected broker task is absent and the Viewer receives black frames.
+- Confirmed evidence: `WonRemote Agent` is Running as an Interactive/Highest task from `C:\Program Files (x86)\WonRemote Agent`, but `WonRemote Secure Capture` is absent. The installed Agent bundle requests `secure-client`; the packaged native executable still advertises the fixed-Winlogon broker modes and lacks `secure-input-server` and `SetThreadDesktop`.
+- Root cause and contributors: Agent install/update stopped the broker before overwriting files but the non-legacy postinstall path did not invoke task registration or restart; it relied on a later first-launch repair. Release validation checked that files existed and were x86, but did not assert that the Agent bundle and native payload implemented the same protected-desktop protocol.
+- Fix commit(s): pending; source changes are uncommitted.
+- Permanent guard: Register and start both protected tasks during every elevated install/update, retain first-launch repair, use the active-console input desktop rather than a fixed desktop, and reject release resources unless both the Agent bundle and native payload contain the required broker protocol markers.
+- Regression proof: Corrected NSIS install/update path compiled; the real PowerShell helper created missing tasks and restarted a stopped broker; package compatibility tests rejected the installed old native payload; focused app tests passed 154/154 and native tests passed 47/47.
+- Release proof: Not applicable in this turn; no installer was built, installed or deployed.
+- Remaining blocker: Install over the affected v0.1.89 PC and verify broker task creation/running state, continuous normal/lock/welcome/PIN/unlock frames, nProtect input, update restart and reboot recovery.
+
+## INC-20260909-026: Multi-file patch contained malformed native-edit content
+
+- Detected: 2026-09-09.
+- Severity: P3 development tooling error; no product artifact was built or released.
+- Affected: First attempt to apply the broker-install and release-compatibility correction.
+- Status: corrected before build.
+- Root cause and contributors: An unrelated token was accidentally inserted into a large multi-file patch. The tool reported a context failure, but inspection showed one intended native hunk had applied while the malformed token had not.
+- Permanent guard: Apply the correction in small file-owned patches and inspect the actual diff after any partial or failed multi-file edit before retrying.
+- Regression proof: Corrected hunks passed `git diff --check` and all focused tests.
+- Release proof: Not applicable; no product build or deployment occurred.
+
+## INC-20260909-027: Active-desktop input edit missed Rust formatting
+
+- Detected: 2026-09-09.
+- Severity: P3 source-formatting issue; compiled tests passed and no product artifact was built.
+- Affected: One assignment in the new secure input-server loop.
+- Status: corrected before build.
+- Root cause and contributors: The semantic edit compiled but did not match `rustfmt` line wrapping.
+- Permanent guard: Keep `cargo fmt --all -- --check` in the focused native gate and apply formatter output before final verification.
+- Regression proof: `cargo fmt --all -- --check` and `git diff --check` passed after formatter application.
+- Release proof: Not applicable; no product build or deployment occurred.
+
+## INC-20260909-028: Incident-registry patch used an invalid placeholder context
+
+- Detected: 2026-09-09.
+- Severity: P3 documentation tooling error; the patch was rejected and no source or artifact changed.
+- Affected: First attempt to record the formatting failure.
+- Status: corrected before build.
+- Root cause and contributors: A placeholder incident heading was submitted instead of the verified file tail context.
+- Permanent guard: Read the target tail first and patch only an exact existing anchor.
+- Regression proof: Exact-tail patch applied and `git diff --check` passed.
+- Release proof: Not applicable; no product build or deployment occurred.
+
+## INC-20260909-029: Release-order patch used a mistyped contract context
+
+- Detected: 2026-09-09.
+- Severity: P3 development tooling error; the patch was rejected and no product artifact was built.
+- Affected: First attempt to move the compatibility gate ahead of Agent installer bundling.
+- Status: corrected before build.
+- Root cause and contributors: The multi-file patch expected a duplicated word that was not present in the inspected contract entry, so context validation failed.
+- Permanent guard: Patch source, test and contract as separate exact hunks after reading their current content.
+- Regression proof: Packaging tests passed within the 154/154 focused suite and `git diff --check` passed.
+- Release proof: Not applicable; no product build or deployment occurred.
+
+## INC-20260909-030: Contract evidence update retried with invalid long-line contexts
+
+- Detected: 2026-09-09.
+- Severity: P3 documentation tooling error; rejected patches changed no runtime source or product artifact.
+- Affected: Attempts to replace verification text in minified `CHANGE_CONTRACT.json` outcome lines.
+- Status: corrected before build.
+- Root cause and contributors: Two manually copied long lines contained mistyped path or identifier text, and a later multi-hunk update was rejected at its last long-line context.
+- Permanent guard: Read and replace one exact outcome line at a time, generate the patch from the current line, and parse the JSON after all replacements.
+- Regression proof: `CHANGE_CONTRACT.json` parsed successfully; final contract gate and diff check are run after this evidence update.
+- Release proof: Not applicable; no product build or deployment occurred.
+
+## INC-20260909-031: Final evidence commands contained transcription errors
+
+- Detected: 2026-09-09.
+- Severity: P3 documentation and verification-command errors; no runtime source or product artifact was affected.
+- Affected: One JSON parse command and one incident proof sentence during final bookkeeping.
+- Status: corrected before build.
+- Root cause and contributors: The cmdlet name and proof wording were mistyped while batching unrelated final evidence reads.
+- Permanent guard: Keep final evidence commands single-purpose, copy executable cmdlet names, and search the resulting diff for malformed words before closing.
+- Regression proof: `CHANGE_CONTRACT.json` parsed successfully, the malformed-word scan found no matches, and `git diff --check` passed apart from existing line-ending warnings.
+- Release proof: Not applicable; no product build or deployment occurred.
+
+## INC-20260909-032: Final contract lookup used the application directory instead of the repository root
+
+- Detected: 2026-09-09.
+- Severity: P3 verification-command error; no runtime source or product artifact was affected.
+- Affected: One read-only attempt to inspect `CHANGE_CONTRACT.json` and `INCIDENT_REGISTRY.md`.
+- Status: corrected before build.
+- User-visible symptom: The first bookkeeping command printed file-not-found and null-index errors; it did not alter the product.
+- Minimal trigger: Run the repository-root contract lookup with `aether-link-app` as the working directory while using unqualified root filenames.
+- Root cause and contributors: The command reused the application working directory from npm verification even though both governance files live one directory above it.
+- Fix commit(s): pending; documentation changes are uncommitted.
+- Permanent guard: Use the repository root for governance-file reads and reserve the application directory only for npm commands.
+- Regression proof: The corrected repository-root command parsed the contract and listed all requested outcome identifiers.
+- Release proof: Not applicable; no product build or deployment occurred.
+- Remaining blocker: None for this command error; the separate cumulative contract/test mapping failure remains reported without weakening the gate.
+
+## INC-20260909-033: Published release tag did not identify the built source tree
+
+- Detected: 2026-09-09.
+- Severity: P1 release provenance failure.
+- Affected: Public `v0.1.90` GitHub release assets and their source-tag relationship.
+- Status: corrective `v0.1.91` release in progress; v0.1.90 assets remain byte-verified but its tag is not an adequate source identifier.
+- User-visible symptom: Installers download and verify successfully, but a user or maintainer cannot inspect the matching source from the published release tag.
+- Minimal trigger: Build installers from a dirty local worktree, then publish with a script that creates a tag from remote `main` rather than the local build commit.
+- Root cause and contributors: The publisher validated installer bytes and manifest signatures but did not require a clean source tree or require local HEAD to equal GitHub `main` before creating the release.
+- Fix commit(s): pending; source changes are being committed before the corrective release.
+- Permanent guard: `publish-github-release.ps1` rejects tracked or relevant untracked release-source changes and rejects a local HEAD that is not already pushed to `origin/main`; its packaging test asserts all three checks.
+- Regression proof: Focused release packaging test verifies the committed-and-pushed source guard is present; the existing publisher still verifies remote asset bytes, checksums and manifest signatures.
+- Release proof: v0.1.90 uploaded exactly the Viewer installer, Agent installer and signed manifest, then downloaded and verified the stored assets. Its source-tag mismatch requires supersession, not mutation.
+- Remaining blocker: Commit and push the exact v0.1.91 source, rebuild, publish a new immutable release and deploy Hosting against that release.
+
+## INC-20260909-034: Native verification was invoked from the application directory
+
+- Detected: 2026-09-09.
+- Severity: P3 verification-command error; no runtime source or product artifact was affected.
+- Affected: First attempt to rerun the x86 Rust native test and Clippy gate for v0.1.91.
+- Status: corrected before build.
+- User-visible symptom: The command stopped immediately because `aether-link-app` has no Cargo manifest; no verification result was accepted from that attempt.
+- Minimal trigger: Run the native Cargo commands from `aether-link-app` instead of `aether-link-poc`.
+- Root cause and contributors: The combined verification command used the application work directory for both JavaScript and Rust checks.
+- Fix commit(s): pending; documentation changes are uncommitted.
+- Permanent guard: Execute frontend checks from `aether-link-app` and native Cargo checks from `aether-link-poc` as separate commands.
+- Regression proof: Corrected i686 release test passed 47/47, warnings-denied Clippy passed and rustfmt check passed from `aether-link-poc`.
+- Release proof: Not applicable; no v0.1.91 installer was built or deployed at this point.
+- Remaining blocker: None for the command error; the normal v0.1.91 build and release checks continue.
+
+## INC-20260909-035: Final bookkeeping commands mixed repository and PowerShell syntax contexts
+
+- Detected: 2026-09-09.
+- Severity: P3 verification-command error; no runtime source or product artifact was affected.
+- Affected: One root contract read and one branch-upstream inspection command.
+- Status: corrected before build.
+- User-visible symptom: The root file lookup reported not found from the application directory, and PowerShell parsed an unquoted Git upstream selector as a hashtable.
+- Minimal trigger: Use root-relative governance filenames from `aether-link-app`, or pass `@{upstream}` to PowerShell without quotes.
+- Root cause and contributors: Combined inspection commands reused incompatible working-directory and shell syntaxes.
+- Fix commit(s): pending; documentation changes are uncommitted.
+- Permanent guard: Run repository-governance reads from the repository root and quote Git revision selectors when invoking them through PowerShell.
+- Regression proof: Corrected root reads and quoted branch inspection completed; no product file was changed by either failed command.
+- Release proof: Not applicable; no v0.1.91 installer was built or deployed at this point.
+- Remaining blocker: None for these command errors; the normal v0.1.91 build and release checks continue.

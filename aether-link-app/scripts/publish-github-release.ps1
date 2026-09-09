@@ -9,7 +9,25 @@ $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $AppRoot = Split-Path -Parent $ScriptDir
+$RepoRoot = Resolve-Path (Join-Path $AppRoot "..")
 $PackageJson = Get-Content -Raw -LiteralPath (Join-Path $AppRoot "package.json") | ConvertFrom-Json
+
+function Assert-ReleaseSourceIsPublished {
+  $Dirty = @(
+    & git -C $RepoRoot diff --name-only
+    & git -C $RepoRoot diff --cached --name-only
+    & git -C $RepoRoot ls-files --others --exclude-standard -- aether-link-app aether-link-poc mobile/android
+  ) | Where-Object { $_.Trim() }
+  if ($Dirty.Count -gt 0) {
+    throw "Refusing to publish a release from an uncommitted source tree. Commit the release source first."
+  }
+
+  $Head = (& git -C $RepoRoot rev-parse HEAD).Trim()
+  $RemoteMain = ((& git -C $RepoRoot ls-remote origin refs/heads/main) -split '\s+')[0]
+  if (-not $RemoteMain -or $Head -ne $RemoteMain) {
+    throw "Refusing to publish because GitHub main does not match the local release commit. Push main first."
+  }
+}
 
 if (-not $Version) {
   $Version = $PackageJson.version
@@ -23,6 +41,8 @@ Set WONREMOTE_RELEASE_GATE_APPROVED=YES only after confirming all P0/P1 requirem
 Do not use this flag for routine E2E update testing; use a local fixture/update server instead.
 "@
 }
+
+Assert-ReleaseSourceIsPublished
 
 $Token = $env:GITHUB_TOKEN
 if (-not $Token) {

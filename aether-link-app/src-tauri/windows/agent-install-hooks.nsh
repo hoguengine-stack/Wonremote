@@ -15,7 +15,7 @@
   Push $1
   InitPluginsDir
   File /oname=$PLUGINSDIR\wonremote-stop-processes.ps1 "${__FILEDIR__}\..\..\stop-wonremote-processes.ps1"
-  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\wonremote-stop-processes.ps1" -Product Agent'
+  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\wonremote-stop-processes.ps1" -Product Agent -InstallRoot "$INSTDIR"'
   Delete "$PLUGINSDIR\wonremote-stop-processes.ps1"
   Pop $1
   ${If} $1 != 0
@@ -36,22 +36,28 @@
 
 !macro NSIS_HOOK_PREINSTALL
   !insertmacro WONREMOTE_REQUIRE_X64_WINDOWS
+  !insertmacro WONREMOTE_DETECT_LEGACY_AGENT
   !insertmacro WONREMOTE_STOP_RUNNING_PROCESSES
-  StrCpy $INSTDIR "$LOCALAPPDATA\WonRemote\Agent"
   CreateDirectory "$INSTDIR"
   SetOutPath $INSTDIR
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
-  !insertmacro WONREMOTE_MANAGE_AGENT_LOGIN_TASK Install
+  File /oname=$INSTDIR\manage-agent-login-task.ps1 "${WONREMOTE_AGENT_TASK_HOOK_DIR}\manage-agent-login-task.ps1"
+  ${If} $WonRemoteLegacyAgentRoot != ""
+    !insertmacro WONREMOTE_MIGRATE_LEGACY_AGENT
+  ${Else}
+    !insertmacro WONREMOTE_MANAGE_AGENT_LOGIN_TASK Install
+  ${EndIf}
   CreateDirectory "$SMPROGRAMS\WonRemote"
   CreateShortCut "$DESKTOP\WonRemote Agent.lnk" "$INSTDIR\wonremote-viewer.exe" "--agent --show-window"
   CreateShortCut "$SMPROGRAMS\WonRemote\WonRemote Agent.lnk" "$INSTDIR\wonremote-viewer.exe" "--agent --show-window"
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
-  !insertmacro WONREMOTE_STOP_RUNNING_PROCESSES
   !insertmacro WONREMOTE_MANAGE_AGENT_LOGIN_TASK Uninstall
+  !insertmacro WONREMOTE_STOP_RUNNING_PROCESSES
+  Delete "$INSTDIR\manage-agent-login-task.ps1"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "WonRemoteAgent"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "WonRemoteAgentCLI"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "AetherLinkAgent"
