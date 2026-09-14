@@ -12,6 +12,12 @@ export const approvedAssets = {
 const repository = "hoguengine-stack/Wonremote";
 const tag = "v0.1.94";
 
+export function loadApprovedDraft(gh) {
+  const release = JSON.parse(gh("api", `repos/${repository}/releases/388555161`));
+  assertDraft(release);
+  return release;
+}
+
 export function assertDraft(release) {
   if (release.tag_name !== tag || release.draft !== true) throw Error("Only approved unpublished v0.1.94 can be signed");
   if (!Array.isArray(release.assets) || release.assets.length !== 2) throw Error("Exactly two approved installers required");
@@ -32,7 +38,7 @@ export function assertBytes(bytes, expected) {
 export function signApprovedRelease() {
   const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const gh = (...args) => execFileSync("gh", args, { encoding: "utf8", windowsHide: true });
-  assertDraft(JSON.parse(gh("api", `repos/${repository}/releases/tags/${tag}`)));
+  loadApprovedDraft(gh);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wonremote-approved-sign-"));
   for (const [name, expected] of Object.entries(approvedAssets)) {
     gh("release", "download", tag, "--repo", repository, "--pattern", name, "--dir", dir);
@@ -46,7 +52,7 @@ export function signApprovedRelease() {
   execFileSync(process.execPath, ["scripts/verify-release-manifest.js", "--manifest", manifest, "--version", "0.1.94",
     "--viewer-x64", viewer, "--agent-x64", agent], { cwd: appRoot, stdio: "inherit" });
   // Recheck draft identity before adding the public manifest; never publish or replace assets here.
-  assertDraft(JSON.parse(gh("api", `repos/${repository}/releases/tags/${tag}`)));
+  loadApprovedDraft(gh);
   gh("release", "upload", tag, manifest, "--repo", repository);
   console.log("Approved v0.1.94 manifest signed, trust-verified and uploaded to draft; not published.");
 }

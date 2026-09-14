@@ -1,9 +1,20 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { approvedAssets, assertDraft, assertBytes } from "./sign-approved-release.js";
+import { approvedAssets, assertDraft, assertBytes, loadApprovedDraft } from "./sign-approved-release.js";
 
 const draft = () => ({tag_name:"v0.1.94",draft:true,assets:Object.entries(approvedAssets).map(([name,a])=>({name,size:a.size,digest:`sha256:${a.sha256}`,state:"uploaded"}))});
+test("reads a draft by immutable ID even when tag lookup is unavailable", () => {
+  const calls=[];
+  const gh=(...args)=>{
+    calls.push(args);
+    if(args[1]!=="repos/hoguengine-stack/Wonremote/releases/388555161") throw Error("404 draft tag lookup");
+    return JSON.stringify(draft());
+  };
+  assert.equal(loadApprovedDraft(gh).tag_name,"v0.1.94");
+  assert.equal(calls.length,1);
+  assert.throws(()=>loadApprovedDraft(()=>JSON.stringify({...draft(),draft:false})));
+});
 test("accepts only the exact approved unpublished release assets", () => {
   assert.doesNotThrow(()=>assertDraft(draft()));
   for (const change of [d=>d.draft=false,d=>d.tag_name="v0.1.95",d=>d.assets.pop(),d=>d.assets.push(d.assets[0]),d=>d.assets[0].digest="sha256:bad",d=>d.assets[0].size++,d=>d.assets[0].state="new"]) {

@@ -1,5 +1,22 @@
 # WonRemote Incident Registry
 
+
+## INC-20260915-080: Signing job used a tag lookup for an unpublished draft
+
+- Detected: 2026-09-15, CI run34870543317.
+- Severity: P2 publication blocker.
+- Affected: Isolated approved-artifact signing job only.
+- Status: Source corrected; CI retry pending.
+- User-visible symptom: Signed manifest is not available for the requested update publication.
+- Minimal trigger: GET releases/tags/v0.1.94 while release388555161 remains a draft.
+- Root cause and contributors: Tag endpoint returns404 for the unpublished draft; immutable release ID is available. Local tag query reproduced404 and ID query returned the expected draft.
+- Fix commit(s): Current signing-branch correction.
+- Permanent guard: Read the pinned immutable release ID, then still require exact tag, draft status and approved assets before and after signing.
+- Regression proof: Node tests3 passed, including mocked unavailable tag endpoint, one ID lookup, published-release rejection and exact-byte/x86 guards.
+- Release proof: No latest-channel change at failure. CI signing retry required.
+- Remaining blocker: Successful CI signing and live signed metadata/download verification; original physical tests remain separate.
+
+
 ## INC-20260909-007: Installer stop left a valid secure-capture task idle
 
 - Detected: 2026-09-09
