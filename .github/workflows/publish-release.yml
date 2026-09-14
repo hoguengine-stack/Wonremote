@@ -31,9 +31,28 @@ jobs:
             node aether-link-app/scripts/verify-recurrence-coverage.js
           fi
 
+  sign-approved-artifacts:
+    needs: change-guard
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/sign-v0194-update'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify approved release boundaries
+        run: node --test aether-link-app/scripts/sign-approved-release.test.js
+      - name: Sign only the approved existing installers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY: ${{ secrets.WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY }}
+        run: node aether-link-app/scripts/sign-approved-release.js
+
   build-release:
     needs: change-guard
-    if: github.event_name == 'workflow_dispatch' || (github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'Prepare WonRemote v'))
+    if: github.ref != 'refs/heads/codex/sign-v0194-update' && (github.event_name == 'workflow_dispatch' || (github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'Prepare WonRemote v')))
     runs-on: windows-2022
     permissions:
       contents: read

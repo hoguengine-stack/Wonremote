@@ -1,19 +1,20 @@
 {
-  "status": "ready-to-deploy",
+  "status": "verified",
+  "signingTask": "Isolated branch for user-approved0.1.94 artifact signing only. Runtime worktree and its pending acceptance remain untouched. Baseline contract below is preserved as historical context, not marked completed by this task.",
   "currentRequest": "2026-09-09: Fix the installed v0.1.89 regression where Viewer turns black during the normal lock-screen/PIN transition, and allow authenticated remote input to operate a SYSTEM-owned window such as the observed nProtect warning. The affected PC has no WonRemote Secure Capture task and its packaged Agent/native capture components expose different secure-desktop capabilities. Match the proven Windows architecture seen in the installed Mastersoft product: a LocalSystem broker launches an active-console worker that attaches to the current input desktop. Make install/update and first launch self-heal the broker, reject incompatible release resources, preserve Windows authentication, and do not build or deploy until explicitly requested.",
   "clipboardChange": "2026-09-08: Remote shortcuts must use only the remote clipboard. Local clipboard transfer requires an explicit toolbar action; remove automatic synchronization including saved preferences. Build/deployment deferred until this change is verified.",
-  "intent": "Keep capture and authenticated input attached to the active console input desktop through a protected LocalSystem broker and session worker, without exposing a network-facing privileged endpoint, bypassing Windows authentication or losing ordinary desktop frames during lock/PIN transitions.",
-  "changeType": "fix",
+  "intent": "Use the existing GitHub signing key only for two explicitly approved0.1.94 installers, refusing changed bytes, published releases or extra assets; upload a verified manifest without publication.",
+  "changeType": "build",
   "risk": "high",
-  "releaseImpact": "build-and-deploy",
-  "rollback": "No release is changed by this source-only work. Revert the dynamic input-desktop attachment and brokered input changes before any future build if installed lock/PIN continuity or SYSTEM-window input validation fails.",
+  "releaseImpact": "deploy",
+  "rollback": "Do not merge this signing-only branch into main. Cancel its workflow if validation fails; it only adds a manifest to a draft. Retain v0.1.90 latest until separate live verification and explicit publication.",
   "deploymentBlockers": ["Do not release until the implemented v0.1.88 LocalAppData-to-ProgramFiles migration, protected runtime health, legacy cleanup and rollback are physically proven on an installed Agent.", "Taskbar input remote verification is assigned to the user; awaiting their result.", "Installed cross-client metadata proof and existing request-budget gaps remain pending."],
   "firestoreVerification": "2026-09-08: Java 21 JRE checksum verified; npm run firebase:rules:test passed against Firestore emulator v1.22.0. Viewer desktopNameOverride edit and preservation, unauthorized access denial, session/command access, manual presence and stale legacy denial verified. No production database traffic. Fixed test fixture: restore stale heartbeat after the preceding preservation test updates it.",
   "authenticodeStatus": "No code-signing certificate in CurrentUser/LocalMachine My stores or configured Process/User/Machine PFX variables. Public-trust issuance requires user identity/account setup. Existing release policy makes Authenticode optional; unsigned status alone is not a deployment blocker. Installers remain unsigned.",
   "incident": "INC-20260909-025",
   "requestReview": {
     "impact": "none",
-    "reason": "This protected-desktop repair adds no cloud request, polling, listener, retry or persistence write. The authenticated Agent remains the sole network owner; LocalSystem broker and session workers communicate only through local named pipes."
+    "reason": "One manually dispatched CI signing operation, no product request paths or production database changes. It performs two draft metadata reads, two installer downloads and one manifest upload; no polling, listeners or retries. Existing client lifecycle unchanged."
   },
   "priorOutcomes": [
     {"id":"v0189-desktop-continuity-regression","acceptance":"After updating the installed Agent from the previously working version to v0.1.89, Viewer continues showing the normal lock screen, welcome transition, PIN credential screen and unlocked desktop instead of replacing any interval with black. Every installed capture starts through the LocalSystem active-console broker; the worker attaches to whichever Windows input desktop is current rather than waiting for a conditional handoff to a fixed Winlogon desktop.","boundaries":["installed protected Agent","LocalSystem broker from first frame","active console session","OpenInputDesktop","SetThreadDesktop on a dedicated worker thread","DXGI capture","desktop change or access-loss restart","normal-to-lock-to-PIN-to-unlock transition","authenticated Viewer stream"],"contractTests":["aether-link-poc/src/secure_capture.rs","aether-link-poc/src/main.rs","aether-link-app/src/desktopPackaging.test.ts","aether-link-app/src/agent/agentPaths.test.ts"],"proofLevel":"physical-required","verification":"2026-09-09: i686 release-profile native tests passed 47/47, including live input-desktop attachment and concurrent broker channels. Six focused install/package/Agent files passed 154/154; TypeScript and warnings-denied Clippy passed. No product installer was built or deployed.","physicalGap":"Install the next build over v0.1.89 and compare continuous lock/PIN/unlock visibility from another PC. Protected credential-screen pixels cannot be proven by an automated test."},
@@ -117,6 +118,9 @@
     }
   ],
   "outcomes": [
+    {"id":"approved-signing-boundary","acceptance":"Signing accepts only exact approved draft assets and validates downloaded x86 bytes before producing a trusted manifest; it cannot publish or replace existing assets.","boundaries":["GitHub draft metadata","download bytes","existing manifest signer","bundled public-key verification","draft manifest upload"],"contractTests":["aether-link-app/scripts/sign-approved-release.test.js"],"proofLevel":"deployment-required","verification":"2026-09-15 node --test aether-link-app/scripts/sign-approved-release.test.js passed2: exact draft metadata, changed/missing/extra assets, digest/size, downloaded corrupt bytes and non-x86 rejection. Existing signer and trust verifier unchanged. Actual CI signing remains deployment-required; no production success claim. Runtime product acceptance unchanged in original worktree contract."}
+  ],
+  "baselineOutcomesUnchanged": [
     {
       "id": "v0189-desktop-continuity-regression",
       "acceptance": "Viewer preserves visible normal, lock, welcome, PIN and unlocked frames without a black interval by capturing through the LocalSystem active-console broker from the first frame.",
