@@ -1,6 +1,22 @@
 import { REMOTE_FILE_MAX_BYTES } from "./fileTransferPolicy";
 
 export const WEBRTC_FILE_CHANNEL_LABEL = "wonremote-files";
+export const WEBRTC_REVERSE_FILE_CAPABILITY = '{"type":"file-capabilities","reverseFileSend":1,"reverseFileResume":1}';
+
+export function supportsReverseFileResume(payload: unknown): boolean {
+  const value = parseJsonObject(payload);
+  return isReverseFileCapability(payload) && value?.reverseFileResume === 1;
+}
+
+export function parseResumeFileRequest(action: string): string | null {
+  const match = /^request-file-resume (\S+)$/.exec(action);
+  return match && isSafeTransferId(match[1]) ? match[1] : null;
+}
+
+export function isReverseFileCapability(payload: unknown): boolean {
+  const value = parseJsonObject(payload);
+  return value?.type === "file-capabilities" && value.reverseFileSend === 1;
+}
 export const WEBRTC_FILE_CHUNK_BYTES = 32 * 1024;
 export const WEBRTC_FILE_WINDOW_CHUNKS = 8;
 export const WEBRTC_FILE_ACK_TIMEOUT_MS = 20_000;
@@ -30,6 +46,26 @@ export type WebRtcFileAckMessage = {
   status: "complete" | "duplicate" | "error" | "partial";
   error?: string;
 };
+
+export type WebRtcFileStatusMessage = {
+  type: "file-status";
+  requestId: string;
+  state: "selecting" | "sending" | "complete" | "cancelled" | "selection-failed" | "send-failed";
+};
+
+export function parseWebRtcFileStatus(payload: unknown): WebRtcFileStatusMessage | null {
+  if (typeof payload !== "string" || encodedBytes(payload) > 512) return null;
+  const value = parseJsonObject(payload);
+  if (!value || value.type !== "file-status" || !isSafeTransferId(value.requestId) ||
+    !["selecting", "sending", "complete", "cancelled", "selection-failed", "send-failed"].includes(value.state as string)) return null;
+  return { type: "file-status", requestId: value.requestId, state: value.state as WebRtcFileStatusMessage["state"] };
+}
+
+export function serializeWebRtcFileStatus(value: WebRtcFileStatusMessage): string {
+  const parsed = parseWebRtcFileStatus(JSON.stringify(value));
+  if (!parsed) throw new Error("Invalid file status.");
+  return JSON.stringify(parsed);
+}
 
 export function serializeWebRtcFileChunk(message: WebRtcFileChunkMessage): string {
   validateFileChunk(message);

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { addDoc, getDoc, updateDoc } from "firebase/firestore";
+import { addDoc, deleteField, getDoc, updateDoc } from "firebase/firestore";
 import { requestFirebaseAgentUpdate, updateFirebaseDeviceMetadata } from "./viewerFirebase";
 import { createDeviceGroupMover } from "../domain/deviceOrganization";
 
@@ -42,6 +42,30 @@ describe("Viewer metadata request boundary", () => {
     expect(updateDoc).toHaveBeenCalledTimes(20);
     expect(state.data.businessNumber).toBe("123-45-67890");
     expect(state.data.storeName).toBe("매장 A");
+  });
+  it("saves a bounded phone through the existing metadata request and preserves omitted phone", async () => {
+    const result = await updateFirebaseDeviceMetadata("device", { contactPhone: `  ${"1".repeat(50)}  ` });
+    expect(result.contactPhone).toBe("1".repeat(40));
+    expect(getDoc).toHaveBeenCalledTimes(2);
+    expect(updateDoc).toHaveBeenCalledTimes(1);
+    vi.clearAllMocks();
+    const renamed = await updateFirebaseDeviceMetadata("device", { deviceName: "Tablet" });
+    expect(renamed.contactPhone).toBe("1".repeat(40));
+    expect(vi.mocked(updateDoc).mock.calls[0][1]).not.toHaveProperty("contactPhone");
+    expect(getDoc).toHaveBeenCalledTimes(2);
+    expect(updateDoc).toHaveBeenCalledTimes(1);
+  });
+  it("clears a phone with a delete transform and does not retry a rejected phone write", async () => {
+    state.data.contactPhone = "010-1234-5678";
+    await updateFirebaseDeviceMetadata("device", { contactPhone: "  " });
+    expect(updateDoc).toHaveBeenCalledWith({ id: "device" }, expect.objectContaining({ contactPhone: deleteField() }));
+    expect(getDoc).toHaveBeenCalledTimes(2);
+    expect(updateDoc).toHaveBeenCalledTimes(1);
+    vi.clearAllMocks();
+    vi.mocked(updateDoc).mockRejectedValueOnce(new Error("permission-denied"));
+    await expect(updateFirebaseDeviceMetadata("device", { contactPhone: "010-9999-8888" })).rejects.toThrow("permission-denied");
+    expect(getDoc).toHaveBeenCalledTimes(1);
+    expect(updateDoc).toHaveBeenCalledTimes(1);
   });
   it("quota failure causes one failed write and no retry or readback", async () => {
     vi.mocked(updateDoc).mockRejectedValueOnce(new Error("resource-exhausted"));

@@ -11,6 +11,10 @@ type RemoteTextKeystroke = {
 };
 
 export function isRemoteTextInputKeystroke(event: RemoteTextKeystroke): boolean {
+  if (/^(Control|Shift|Alt|Meta)(Left|Right)$/.test(event.code ?? "")
+      || /^(Control|Shift|Alt|Meta)$/.test(event.key)) {
+    return false;
+  }
   if (event.code === "Enter" || event.code === "NumpadEnter") {
     return false;
   }

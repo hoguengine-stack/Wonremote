@@ -50,7 +50,13 @@ export function getAdaptiveStreamPerformanceProfile(input: {
   backpressured: boolean;
   bufferedAmount: number;
   droppedFrames: number;
+  processingMs?: number;
 }): StreamPerformanceProfile {
+  const processingMs = Number.isFinite(input.processingMs) ? Math.max(0, input.processingMs!) : 0;
+  if (processingMs >= 20) {
+    const network = getAdaptiveStreamPerformanceProfile({...input,processingMs:0});
+    return {...network, loopSleepMs: Math.max(network.loopSleepMs, Math.min(250, Math.ceil(processingMs*2)))};
+  }
   if (input.backpressured || input.bufferedAmount >= 1024 * 1024 || input.droppedFrames >= 3) {
     return { loopSleepMs: 66, jpegQuality: 60, maxMergeWidth: 128, maxBufferedAmount: 2 * 1024 * 1024 };
   }

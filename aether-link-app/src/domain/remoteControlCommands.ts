@@ -61,6 +61,15 @@ const KEY_ALIASES: Record<string, string> = {
 };
 
 const PHYSICAL_CODE_ALIASES: Record<string, string> = {
+  ControlLeft: "Ctrl",
+  ControlRight: "Ctrl",
+  ShiftLeft: "Shift",
+  ShiftRight: "Shift",
+  AltLeft: "Alt",
+  AltRight: "Alt",
+  MetaLeft: "Win",
+  MetaRight: "Win",
+  Enter: "Enter",
   Backquote: "Oem3",
   Backslash: "Oem5",
   BracketLeft: "Oem4",

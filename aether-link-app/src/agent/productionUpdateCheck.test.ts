@@ -1,7 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 import { checkProductionUpdate } from "./productionUpdateCheck";
+import { version } from "../../package.json";
 
 describe("production update check", () => {
+  it("offers the corrected version to an already installed0.1.94 Viewer without forcing reinstall", async () => {
+    const metadata = async () => ({ forceUpdate: false, latestVersion: version }) as any;
+    await expect(checkProductionUpdate("0.1.94", metadata)).resolves.toEqual({
+      available: true, latestVersion: version,
+    });
+    await expect(checkProductionUpdate(version, metadata)).resolves.toEqual({
+      available: false, latestVersion: version,
+    });
+  });
   it("reports an available signed update without downloading it", async () => {
     const loadMetadata = vi.fn(async () => ({
       forceUpdate: false,

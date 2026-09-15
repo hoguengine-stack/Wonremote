@@ -21,6 +21,32 @@ import {
 } from "./agentCommandExecution";
 
 describe("Agent command execution", () => {
+  it("starts/cancels file selection only for an active session without path arguments", async () => {
+    const runtime = createRuntime();
+    runtime.getActiveSessionId = () => "session-1";
+    await expect(executeAgentCommand("request-file-send", "webrtc", runtime)).resolves.toBe("executed");
+    expect(runtime.requestFileSend).toHaveBeenCalledOnce();
+    await expect(executeAgentCommand("cancel-file-send", "webrtc", runtime)).resolves.toBe("executed");
+    expect(runtime.cancelFileSend).toHaveBeenCalledOnce();
+    await expect(executeAgentCommand("request-file-send C:\\secret.txt", "webrtc", runtime)).resolves.toBe("rejected");
+    await expect(executeAgentCommand("request-file-send C:\\secret.txt", "poll", runtime)).resolves.toBe("rejected");
+    runtime.getActiveSessionId = () => null;
+    await expect(executeAgentCommand("request-file-send", "webrtc", runtime)).resolves.toBe("ignored");
+    expect(runtime.requestFileSend).toHaveBeenCalledOnce();
+  });
+  it("resumes only an ID-bound selection in the active session", async () => {
+    const runtime = createRuntime();
+    runtime.getActiveSessionId = () => "session-1";
+    await expect(executeAgentCommand("request-file-resume reverse-persisted", "webrtc", runtime)).resolves.toBe("executed");
+    expect(runtime.requestFileSend).toHaveBeenCalledExactlyOnceWith("reverse-persisted");
+    for (const id of ["C:\\secret.txt", "../secret", "a b", "", "x".repeat(201)]) {
+      await expect(executeAgentCommand(`request-file-resume ${id}`, "webrtc", runtime)).resolves.toBe("rejected");
+      await expect(executeAgentCommand(`request-file-resume ${id}`, "poll", runtime)).resolves.toBe("rejected");
+    }
+    runtime.getActiveSessionId = () => null;
+    await expect(executeAgentCommand("request-file-resume reverse-persisted", "webrtc", runtime)).resolves.toBe("ignored");
+    expect(runtime.requestFileSend).toHaveBeenCalledOnce();
+  });
   it.each([
     "move 100 200",
     "mouse-down 100 200 left",
@@ -341,12 +367,13 @@ describe("Agent command execution", () => {
     expect(startBlock).toContain("void previousTransport?.close()");
     expect(startBlock).toContain("ensureSessionWebRtcTransport(deviceId, sessionId, transportGeneration)");
     expect(startBlock).toContain("keyframe: data.keyframe === true");
-    expect(startBlock).toContain('streamProcess.stdin.write("request-keyframe\\n")');
+    expect(startBlock).toContain('writeCaptureControl(streamProcess.stdin, "request-keyframe\\n"');
+    expect(startBlock).toContain("observeCaptureControlErrors(child.stdin");
     expect(startBlock).not.toContain("data.keyframe === true && keyframeRetryTimer");
     expect(startBlock).not.toContain("webRtcTransport.close()");
     expect(ensureBlock).toContain("webRtcTransport ||");
     expect(ensureBlock).toContain("webRtcTransportStartGeneration === expectedSessionGeneration");
-    expect(ensureBlock).toContain('streamProcess.stdin.write("request-keyframe\\n")');
+    expect(ensureBlock).toContain('writeCaptureControl(streamProcess.stdin, "request-keyframe\\n"');
   });
 
   it("deduplicates an active start-stream command and rechecks recovery after its query", () => {
@@ -376,12 +403,12 @@ describe("Agent command execution", () => {
     expect(block).toContain("initialFrameSynchronized = true");
     expect(block).toContain('if (state === "negotiating")');
     expect(block).toContain("initialFrameSynchronized = false");
-    expect(block).toContain('streamProcess.stdin.write("request-keyframe\\n")');
+    expect(block).toContain('writeCaptureControl(streamProcess.stdin, "request-keyframe\\n"');
     expect(block).toContain('if (action === "request-keyframe")');
-    expect(block).toContain('streamProcess?.stdin.write("request-keyframe\\n")');
+    expect(block).toContain('writeCaptureControl(streamProcess?.stdin, "request-keyframe\\n"');
     expect(block).toContain("if (!flushPendingInitialKeyframe(expectedSessionGeneration))");
     expect(block).not.toMatch(
-      /flushPendingInitialKeyframe\(expectedSessionGeneration\);\s*streamProcess\.stdin\.write\("request-keyframe\\n"\)/,
+      /flushPendingInitialKeyframe\(expectedSessionGeneration\);\s*writeCaptureControl\(streamProcess\.stdin, "request-keyframe\\n"/,
     );
   });
 
@@ -410,6 +437,9 @@ function createRuntime(): AgentCommandRuntime {
     injectAction: vi.fn(async () => undefined),
     requestApproval: vi.fn(async () => undefined),
     requestClipboard: vi.fn(async () => undefined),
+    openDownloadFolder: vi.fn(async () => undefined),
+    requestFileSend: vi.fn(),
+    cancelFileSend: vi.fn(),
     sendWakeOnLan: vi.fn(async () => undefined),
     setClipboardText: vi.fn(async () => undefined),
     setSleep: vi.fn(async () => undefined),

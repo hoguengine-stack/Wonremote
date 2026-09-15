@@ -80,6 +80,6 @@ describe("Firebase history read budget", () => {
     expect(section).not.toContain("setInterval(");
     expect(section).toContain("if (refreshKey === 0) return;");
     expect(section).toContain("void fetchConnectionHistory(devicesRef.current)");
-    expect(section).toContain("}, [refreshKey]);");
+    expect(section).toContain("}, [refreshKey, onHistory]);");
   });
 });

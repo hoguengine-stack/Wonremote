@@ -51,6 +51,31 @@ function updateDeps(overrides: Record<string, unknown> = {}) {
 }
 
 describe("non-interactive bundled updater", () => {
+  it("requires an explicit stable rollback version and rejects portable rollback", () => {
+    expect(parseUpdateOnceOptions(["--update-once", "--restart-mode", "agent", "--rollback-version", "0.1.90"], {})).toMatchObject({ rollbackVersion: "0.1.90" });
+    for (const args of [["--rollback-version"], ["--rollback-version", "../latest"], ["--rollback-version", "0.1.90", "--rollback-version", "0.1.89"]]) {
+      expect(() => parseUpdateOnceOptions(["--restart-mode", "agent", ...args], {})).toThrow(UpdateOnceError);
+    }
+    expect(() => parseUpdateOnceOptions(["--restart-mode", "agent", "--rollback-version", "0.1.90"], { WONREMOTE_PACKAGE_KIND: "portable-agent" })).toThrow(UpdateOnceError);
+  });
+  it("hands off only verified explicit rollback metadata and pins the expected restart version", async () => {
+    const old = { ...metadata, latestVersion: "0.1.90" };
+    const loadRollbackMetadata = vi.fn(async () => old);
+    const deps = updateDeps({ currentVersion: "0.2.0", loadRollbackMetadata });
+    const result = await runUpdateOnce({ baseDir: "C:\\Data", restartMode: "agent", rollbackVersion: "0.1.90" }, deps as any);
+    expect(result).toEqual({ status: "handoff-started", latestVersion: "0.1.90" });
+    expect(deps.loadMetadata).not.toHaveBeenCalled();
+    expect(loadRollbackMetadata).toHaveBeenCalledWith("0.1.90", "0.2.0", expect.objectContaining({ WONREMOTE_UPDATE_PRODUCT: "agent" }));
+    expect(deps.downloadInstaller).toHaveBeenCalledWith(old, { baseDir: "C:\\Data" });
+    expect(deps.prepareHandoff).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ targetVersion: "0.1.90" }));
+    expect(deps.launchHandoff).toHaveBeenCalledTimes(1);
+  });
+  it("does not download or launch a mismatching rollback target", async () => {
+    const deps = updateDeps({ currentVersion: "0.2.0", loadRollbackMetadata: vi.fn(async () => metadata) });
+    await expect(runUpdateOnce({ baseDir: "C:\\Data", restartMode: "agent", rollbackVersion: "0.1.90" }, deps as any)).rejects.toThrow("Rollback target");
+    expect(deps.downloadInstaller).not.toHaveBeenCalled();
+    expect(deps.launchHandoff).not.toHaveBeenCalled();
+  });
   it("asks the Tauri broker to launch the handoff when direct child breakaway is unsafe", () => {
     const writeBrokerRequest = vi.fn();
     launchInstallerHandoff({

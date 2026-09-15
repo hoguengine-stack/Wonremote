@@ -1,5 +1,7 @@
 use std::ffi::OsStr;
 mod runtime_storage;
+mod agent_startup;
+mod viewer_downloads;
 use std::os::windows::{ffi::OsStrExt, io::AsRawHandle};
 use std::{
     env, io, mem,
@@ -20,7 +22,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use tauri::{
     menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, WindowEvent,
+    Emitter, Manager, WindowEvent,
 };
 
 use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
@@ -31,7 +33,7 @@ use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EX
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-    SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
+    SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows_sys::Win32::System::Threading::CreateMutexW;
@@ -116,10 +118,10 @@ struct MainWindowPolicy {
 
 fn main_window_policy(is_agent: bool) -> Option<MainWindowPolicy> {
     is_agent.then_some(MainWindowPolicy {
-        width: 340.0,
-        height: 410.0,
-        min_width: 340.0,
-        min_height: 410.0,
+        width: 360.0,
+        height: 340.0,
+        min_width: 360.0,
+        min_height: 340.0,
         resizable: false,
     })
 }
@@ -1516,6 +1518,15 @@ fn packaged_update_kind(resource_dir: &Path) -> &'static str {
     "installer"
 }
 
+fn validate_rollback_version(version: &str) -> Result<(), String> {
+    let parts: Vec<&str> = version.split('.').collect();
+    if parts.len() != 3 || parts.iter().any(|part| part.is_empty() || part.len() > 6
+        || (part.len() > 1 && part.starts_with('0')) || !part.bytes().all(|b| b.is_ascii_digit())) {
+        return Err("Rollback version must be a stable numeric version.".to_string());
+    }
+    Ok(())
+}
+
 fn normalize_installer_restart_mode(restart_mode: &str) -> Result<&str, String> {
     match restart_mode {
         "viewer" | "agent" => Ok(restart_mode),
@@ -1570,8 +1581,15 @@ fn start_installer_update(
     app: tauri::AppHandle,
     restart_mode: String,
     restart_after_check: Option<bool>,
+    rollback_version: Option<String>,
+    selected_viewer: Option<bool>,
 ) -> Result<(), String> {
     let restart_mode = normalize_installer_restart_mode(&restart_mode)?;
+    let selected = selected_viewer.unwrap_or(false);
+    if selected && (restart_mode != "viewer" || rollback_version.is_some()) { return Err("Selected updates support Viewer upgrades only".into()); }
+    if let Some(version) = rollback_version.as_deref() {
+        validate_rollback_version(version)?;
+    }
     let resources = node_resource_paths(&app
         .path()
         .resource_dir()
@@ -1600,6 +1618,9 @@ fn start_installer_update(
     }
     if is_viewer_update && VIEWER_UPDATE_CHECK_IN_FLIGHT.swap(true, Ordering::AcqRel) {
         append_runtime_log("viewer-native-update", "signed update check already running");
+        if rollback_version.is_some() {
+            return Err("Another update check is running. Retry rollback after it finishes.".to_string());
+        }
         return Ok(());
     }
     let mut command = Command::new(&resources.node);
@@ -1617,6 +1638,13 @@ fn start_installer_update(
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    if let Some(version) = rollback_version {
+        command.args(["--rollback-version", &version]);
+    }
+    if selected {
+        command.env("WONREMOTE_SELECTED_VIEWER_UPDATE", "1")
+            .env("WONREMOTE_VIEWER_INSTALL_ID", get_agent_config().map(|c| c.install_id).unwrap_or_default());
+    } else { command.env_remove("WONREMOTE_SELECTED_VIEWER_UPDATE"); }
     add_no_window(&mut command);
 
     let mut child = match command.spawn() {
@@ -1630,7 +1658,7 @@ fn start_installer_update(
         }
     };
     let update_handoff_started = Arc::new(AtomicBool::new(false));
-    if let Some(stdout) = child.stdout.take() {
+    let stdout_reader = child.stdout.take().map(|stdout| {
         let update_handoff_started = Arc::clone(&update_handoff_started);
         thread::spawn(move || {
             for line in BufReader::new(stdout).lines() {
@@ -1653,8 +1681,8 @@ fn start_installer_update(
                     }
                 }
             }
-        });
-    }
+        })
+    });
     if let Some(stderr) = child.stderr.take() {
         thread::spawn(move || {
             for line in BufReader::new(stderr).lines() {
@@ -1668,8 +1696,11 @@ fn start_installer_update(
             }
         });
     }
+    let update_app = app.clone();
     thread::spawn(move || {
-        match child.wait() {
+        let result = child.wait();
+        if let Some(reader) = stdout_reader { let _ = reader.join(); }
+        match result {
             Ok(status) => {
                 append_runtime_log("updater", &format!("process exited: {status}"));
                 if is_viewer_update
@@ -1689,6 +1720,9 @@ fn start_installer_update(
         if is_viewer_update {
             VIEWER_UPDATE_CHECK_IN_FLIGHT.store(false, Ordering::Release);
         }
+        if selected && !update_handoff_started.load(Ordering::Acquire) {
+            let _ = update_app.emit("selected-viewer-update-finished", ());
+        }
     });
     append_runtime_log(
         "updater",
@@ -1701,18 +1735,24 @@ fn start_installer_update(
 
 #[tauri::command]
 fn check_installer_update(app: tauri::AppHandle) -> Result<ViewerUpdateCheck, String> {
-    check_installer_update_for(&app, "viewer", "viewer-native-update")
+    check_installer_update_for(&app, "viewer", "viewer-native-update", false)
+}
+
+#[tauri::command]
+async fn check_selected_viewer_update(app: tauri::AppHandle) -> Result<ViewerUpdateCheck, String> {
+    tauri::async_runtime::spawn_blocking(move || check_installer_update_for(&app, "viewer", "viewer-selected-update", true)).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 fn check_agent_installer_update(app: tauri::AppHandle) -> Result<ViewerUpdateCheck, String> {
-    check_installer_update_for(&app, "agent", "agent-native-update")
+    check_installer_update_for(&app, "agent", "agent-native-update", false)
 }
 
 fn check_installer_update_for(
     app: &tauri::AppHandle,
     product: &str,
     log_scope: &str,
+    selected: bool,
 ) -> Result<ViewerUpdateCheck, String> {
     let resources = node_resource_paths(&app
         .path()
@@ -1734,6 +1774,10 @@ fn check_installer_update_for(
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    if selected {
+        command.env("WONREMOTE_SELECTED_VIEWER_UPDATE", "1")
+            .env("WONREMOTE_VIEWER_INSTALL_ID", get_agent_config().map(|c| c.install_id).unwrap_or_default());
+    } else { command.env_remove("WONREMOTE_SELECTED_VIEWER_UPDATE"); }
     add_no_window(&mut command);
     let output = command.output().map_err(|error| error.to_string())?;
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -2143,9 +2187,17 @@ pub fn run() {
     };
 
     maintain_runtime_storage(is_agent);
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .manage(AgentState::new())
+        .manage(viewer_downloads::Downloads::default())
         .invoke_handler(tauri::generate_handler![
+            viewer_downloads::viewer_download_folder,
+            viewer_downloads::choose_viewer_download_folder,
+            viewer_downloads::open_viewer_download_folder,
+            viewer_downloads::begin_viewer_download,
+            viewer_downloads::write_viewer_download,
+            viewer_downloads::finish_viewer_download,
+            viewer_downloads::abort_viewer_download,
             get_app_mode,
             get_computer_name,
             save_agent_config,
@@ -2153,6 +2205,7 @@ pub fn run() {
             get_or_create_agent_install_id,
             restart_agent_process,
             check_installer_update,
+            check_selected_viewer_update,
             check_agent_installer_update,
             start_installer_update,
             wake_device
@@ -2428,8 +2481,60 @@ pub fn run() {
                 }
             }
         })
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())
         .expect("failed to run WonRemote Viewer desktop shell");
+    if !is_agent || cfg!(debug_assertions) {
+        app.run(|_, _| {});
+        return;
+    }
+    let mut startup_cancel = None;
+    let handoff_requested = Arc::new(AtomicBool::new(false));
+    let handoff_event = handoff_requested.clone();
+    app.run_return(move |handle, event| match event {
+        tauri::RunEvent::ExitRequested { code: Some(10), .. } => {
+            handoff_event.store(true, Ordering::Release);
+        }
+        tauri::RunEvent::Ready => {
+            if let Ok(exe) = env::current_exe() {
+                let helper = exe.with_file_name("manage-agent-login-task.ps1");
+                if helper.is_file() {
+                    use std::os::windows::process::CommandExt;
+                    let mut command = Command::new("powershell.exe");
+                    command.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+                        .arg(helper).args(["-Mode", "Ensure", "-AgentPath"]).arg(exe)
+                        .creation_flags(0x08000000);
+                    let handle = handle.clone();
+                    startup_cancel = Some(agent_startup::start(command, move |status| {
+                        match status {
+                            Ok(status) if status.code() == Some(10) => handle.exit(10),
+                            Ok(status) if status.success() => {},
+                            _ => append_runtime_log("startup", "Agent elevation setup declined or failed; continuing in current user context"),
+                        }
+                    }));
+                }
+            }
+        }
+        tauri::RunEvent::Exit => {
+            drop(startup_cancel.take());
+            let state = handle.state::<AgentState>();
+            state.spawn_generation.fetch_add(1, Ordering::AcqRel);
+            // Stop this instance's children before releasing the single-instance guard.
+            if let Some(job) = handle.try_state::<Job>() {
+                unsafe { TerminateJobObject(job.handle, 0); }
+            }
+        }
+        _ => {},
+    });
+    drop(_single_instance_guard);
+    if handoff_requested.load(Ordering::Acquire) {
+        append_runtime_log("startup", "current Agent exited; starting approved scheduled Agent");
+        use std::os::windows::process::CommandExt;
+        let started = Command::new("schtasks.exe").args(["/Run", "/TN", "WonRemote Agent"])
+            .creation_flags(0x08000000).status();
+        if !matches!(started, Ok(status) if status.success()) {
+            append_runtime_log("startup", "Agent scheduled launch failed; restart Agent to retry");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2525,6 +2630,10 @@ mod registry_tests {
 
     #[test]
     fn test_installer_update_restart_mode_is_strictly_validated() {
+        assert!(validate_rollback_version("0.1.90").is_ok());
+        for version in ["../latest", "1.2", "01.2.3", "1.2.3-beta", "1.2.3 & calc", "1000000.1.2"] {
+            assert!(validate_rollback_version(version).is_err());
+        }
         assert_eq!(normalize_installer_restart_mode("viewer"), Ok("viewer"));
         assert_eq!(normalize_installer_restart_mode("agent"), Ok("agent"));
         assert!(normalize_installer_restart_mode("Viewer").is_err());
@@ -2692,10 +2801,10 @@ mod registry_tests {
     fn test_agent_window_policy_is_compact_and_viewer_is_unchanged() {
         let agent = main_window_policy(true).expect("Agent mode must have a window policy");
 
-        assert_eq!(agent.width, 340.0);
-        assert_eq!(agent.height, 410.0);
-        assert_eq!(agent.min_width, 340.0);
-        assert_eq!(agent.min_height, 410.0);
+        assert_eq!(agent.width, 360.0);
+        assert_eq!(agent.height, 340.0);
+        assert_eq!(agent.min_width, 360.0);
+        assert_eq!(agent.min_height, 340.0);
         assert!(!agent.resizable);
         assert_eq!(main_window_policy(false), None);
     }

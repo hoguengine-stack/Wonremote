@@ -6,6 +6,8 @@ import {
 } from "../domain/webrtcControl";
 import {
   parseWebRtcFileChunk,
+  parseWebRtcFileAck,
+  type WebRtcFileAckMessage,
   WEBRTC_FILE_CHANNEL_LABEL,
   type WebRtcFileChunkMessage,
 } from "../domain/webrtcFileTransfer";
@@ -206,6 +208,7 @@ export function bindAgentFileMessages(
   channel: AgentDataChannelLike,
   handlers: {
     onChunk: (chunk: WebRtcFileChunkMessage) => Promise<void> | void;
+    onAck?: (ack: WebRtcFileAckMessage) => void;
     onError?: (error: unknown) => void;
     onInvalidMessage?: (payload: unknown) => void;
   },
@@ -214,6 +217,12 @@ export function bindAgentFileMessages(
   let tail: Promise<void> = Promise.resolve();
 
   channel.onmessage = (event) => {
+    if (closed) return;
+    const ack = parseWebRtcFileAck(event.data);
+    if (ack) {
+      handlers.onAck?.(ack);
+      return;
+    }
     const chunk = parseWebRtcFileChunk(event.data);
     if (!chunk) {
       handlers.onInvalidMessage?.(event.data);

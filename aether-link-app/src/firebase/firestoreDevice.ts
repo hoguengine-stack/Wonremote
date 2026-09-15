@@ -6,6 +6,7 @@ import { normalizeDevicePlatform, type DevicePlatform } from "../domain/devicePl
 import { automaticDesktopName } from "../domain/deviceOrganization";
 import {
   DEVICE_CONTACT_NAME_MAX_LENGTH,
+  DEVICE_CONTACT_PHONE_MAX_LENGTH,
   DEVICE_INSTALL_LOCATION_MAX_LENGTH,
   DEVICE_NOTES_MAX_LENGTH,
   sanitizeDeviceOperationalMetadataText,
@@ -19,6 +20,8 @@ import {
 } from "./firebaseIdentity";
 
 export interface FirestoreDeviceDocument {
+  selectedRolloutVersion?: unknown;
+  rollbackSupportVersion?: unknown;
   presenceMode?: "manual";
   heartbeatRequestId?: string;
   businessNumber: string;
@@ -49,6 +52,7 @@ export interface FirestoreDeviceDocument {
   updateRing?: unknown;
   updatePaused?: unknown;
   contactName?: unknown;
+  contactPhone?: unknown;
   installLocation?: unknown;
   tags?: unknown;
   notes?: unknown;
@@ -126,6 +130,7 @@ export function mergeFirstRunDeviceDocument(
     merged.desktopName = existing.desktopName.trim();
   }
   const updateRing = sanitizeUpdateRing(existing.updateRing);
+  assignIfDefined(merged, "contactPhone", sanitizeDeviceOperationalMetadataText(existing.contactPhone, DEVICE_CONTACT_PHONE_MAX_LENGTH));
   if (updateRing) {
     merged.updateRing = updateRing;
   }
@@ -194,7 +199,10 @@ export function mapFirestoreDevice(id: string, data: Partial<FirestoreDeviceDocu
   assignIfDefined(device, "updateError", sanitizeOptionalString(data.updateError, 500));
   assignIfDefined(device, "updateUpdatedAt", coerceOptionalTimestamp(data.updateUpdatedAt));
   assignIfDefined(device, "updateRing", sanitizeUpdateRing(data.updateRing));
+  assignIfDefined(device, "selectedRolloutVersion", typeof data.selectedRolloutVersion === "string" && /^\d+\.\d+\.\d+$/.test(data.selectedRolloutVersion) ? data.selectedRolloutVersion : undefined);
+  assignIfDefined(device, "rollbackSupportVersion", typeof data.rollbackSupportVersion === "string" && /^\d+\.\d+\.\d+$/.test(data.rollbackSupportVersion) ? data.rollbackSupportVersion : undefined);
   assignIfDefined(device, "updatePaused", typeof data.updatePaused === "boolean" ? data.updatePaused : undefined);
+  assignIfDefined(device, "contactPhone", sanitizeDeviceOperationalMetadataText(data.contactPhone, DEVICE_CONTACT_PHONE_MAX_LENGTH));
   assignIfDefined(
     device,
     "contactName",

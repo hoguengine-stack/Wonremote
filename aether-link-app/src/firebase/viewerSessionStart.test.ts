@@ -8,6 +8,8 @@ const state = vi.hoisted(() => ({
   getDoc: vi.fn(async () => ({ id: "device-1", exists: () => true, data: () => ({ protocolVersion: 2, status: "online" }) })),
   safeBatchSet: vi.fn((batch: { set: (...args: unknown[]) => unknown }, ref: unknown, data: unknown, options?: unknown) =>
     options === undefined ? batch.set(ref, data) : batch.set(ref, data, options)),
+  snapshot: vi.fn(),
+  add: vi.fn(),
 }));
 
 vi.mock("firebase/firestore", () => ({
@@ -16,9 +18,10 @@ vi.mock("firebase/firestore", () => ({
     ? { path: segments.join("/") }
     : { path: `${root.path}/command-auto` }),
   getDoc: state.getDoc,
+  getDocFromServer: state.getDoc,
   getDocs: vi.fn(),
   limit: vi.fn(),
-  onSnapshot: vi.fn(),
+  onSnapshot: state.snapshot,
   orderBy: vi.fn(),
   query: vi.fn(),
   serverTimestamp: vi.fn(() => "server-time"),
@@ -36,7 +39,7 @@ vi.mock("./firebaseServices", () => ({
 }));
 
 vi.mock("./firestoreWrite", () => ({
-  safeAddDoc: vi.fn(),
+  safeAddDoc: state.add,
   safeBatchSet: state.safeBatchSet,
   safeBatchUpdate: vi.fn(),
   safeSetDoc: vi.fn(),
@@ -67,6 +70,25 @@ describe("Viewer direct session start", () => {
     });
     expect(state.batch.commit).toHaveBeenCalledOnce();
     expect(state.getDoc).toHaveBeenCalledOnce();
+  });
+
+  it("refreshes only the selected manual-presence device before opening a fresh session", async () => {
+    let next: (snapshot: unknown) => void = () => {};
+    const stop = vi.fn();
+    state.getDoc.mockResolvedValueOnce({id:"device-1",exists:()=>true,data:()=>({protocolVersion:2,status:"offline",presenceMode:"manual"})} as any);
+    state.snapshot.mockImplementationOnce((ref, callback) => { expect(ref.path).toBe("devices/device-1"); next=callback; return stop; });
+    state.add.mockImplementationOnce(async (ref, data) => {
+      expect(ref.path).toBe("devices/device-1/commands");
+      next({id:"device-1",exists:()=>true,data:()=>({protocolVersion:2,status:"online",presenceMode:"manual",heartbeatRequestId:data.action.slice("refresh-status ".length)})});
+    });
+    const {openFirebaseSession}=await import("./viewerFirebase");
+    const result=await openFirebaseSession("device-1",{} as ImportMetaEnv,true);
+    expect(result.session.state).toBe("connected");
+    expect(state.getDoc).toHaveBeenCalledTimes(2);
+    expect(state.snapshot).toHaveBeenCalledTimes(1);
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(state.add).toHaveBeenCalledTimes(1);
+    expect(state.safeBatchSet).toHaveBeenCalledTimes(2);
   });
 
   it("rejects a future device protocol before creating the session batch", async () => {

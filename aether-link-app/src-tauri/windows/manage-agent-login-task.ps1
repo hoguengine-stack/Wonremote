@@ -385,11 +385,15 @@ $runtime = Resolve-AgentRuntime $AgentPath
 
 if ($Mode -eq "Ensure") {
   $existingAgent = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-  $existingBroker = Get-ScheduledTask -TaskName $secureTaskName -ErrorAction SilentlyContinue
-  if ($runtime -and $existingAgent -and $existingAgent.Principal.RunLevel -eq "Highest" -and
+  $agentReady = $runtime -and $existingAgent -and $existingAgent.Principal.RunLevel -eq "Highest" -and
       $existingAgent.Actions.Execute -eq $runtime.Agent -and
       $existingAgent.Actions.Arguments -eq "--agent" -and
-      $existingAgent.State -ne "Disabled" -and
+      $existingAgent.State -ne "Disabled"
+  # The SYSTEM task may be unreadable to this caller. Its approved Agent task
+  # performs broker validation after elevation; no new privilege is granted here.
+  if ($agentReady -and -not $isAdmin) { exit 10 }
+  $existingBroker = Get-ScheduledTask -TaskName $secureTaskName -ErrorAction SilentlyContinue
+  if ($agentReady -and
       $existingBroker -and $existingBroker.Principal.UserId -eq "SYSTEM" -and
       $existingBroker.Actions.Execute -eq $runtime.Capture -and
       $existingBroker.Actions.Arguments -eq $brokerArguments -and

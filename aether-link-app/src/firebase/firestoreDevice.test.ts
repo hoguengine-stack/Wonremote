@@ -2,6 +2,11 @@ import { describe, expect, it } from "vitest";
 import { buildFirestoreDevice, mapFirestoreDevice, mergeFirstRunDeviceDocument } from "./firestoreDevice";
 
 describe("firestore device mapping", () => {
+  it("keeps only a version-shaped selected rollout capability", () => {
+    const device=buildFirestoreDevice({businessNumber:'1234567890',installId:'test',ownerUid:'owner',nowIso:'2026-09-14T00:00:00Z',version:'1.2.3'});
+    expect(mapFirestoreDevice(device.id,{...device,selectedRolloutVersion:'1.2.3'}).selectedRolloutVersion).toBe('1.2.3');
+    for(const value of [true,{},'unknown',null]) expect(mapFirestoreDevice(device.id,{...device,selectedRolloutVersion:value}).selectedRolloutVersion).toBeUndefined();
+  });
   it("preserves a custom desktop name through Android heartbeat and first-run merge", () => {
     const device = buildFirestoreDevice({businessNumber: "1234567890", installId: "tablet", ownerUid: "owner", nowIso: "2026-09-07T00:00:00Z", desktopName: "CTD-7000 CTD-7000"});
     expect(mapFirestoreDevice(device.id, device).desktopName).toBe("CTD-7000");
@@ -203,11 +208,13 @@ describe("firestore device mapping", () => {
       status: "online",
       lastSeenAt: "2026-06-12T09:00:00.000Z",
       contactName: `  ${"C".repeat(120)}  `,
+      contactPhone: "1".repeat(50),
       installLocation: `  ${"L".repeat(300)}  `,
       tags: [" kiosk ", "KIOSK", "", ...Array.from({ length: 25 }, (_, index) => `tag-${index}`)],
       notes: `  ${"N".repeat(2_100)}  `,
     });
     expect(mapped.contactName).toHaveLength(100);
+    expect(mapped.contactPhone).toHaveLength(40);
     expect(mapped.installLocation).toHaveLength(255);
     expect(mapped.tags).toHaveLength(20);
     expect(mapped.tags?.slice(0, 2)).toEqual(["kiosk", "tag-0"]);
@@ -228,12 +235,14 @@ describe("firestore device mapping", () => {
       status: "online",
       lastSeenAt: "2026-06-12T09:00:00.000Z",
       contactName: "Kim",
+      contactPhone: "010-1234-5678",
       installLocation: "Front counter",
       tags: ["pos", "priority"],
       notes: "Printer issue history",
     });
     expect(merged).toMatchObject({
       contactName: "Kim",
+      contactPhone: "010-1234-5678",
       installLocation: "Front counter",
       tags: ["pos", "priority"],
       notes: "Printer issue history",

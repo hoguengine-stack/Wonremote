@@ -1,66 +1,17 @@
-# WonRemote Development Guardrails
+# 개발 작업 진입점
 
-These rules apply to every development activity in this repository: requirement analysis, design, implementation, testing, build, deployment, and post-release verification.
+- 한국어로 간결하게 답한다. 최신 요청과 사용자 관찰을 먼저 확인하고, 사실·추정·미확인을 구분한다.
+- 사용자에게 보이는 결과까지 가장 작은 변경으로 연결한다. 기존 사용자 변경과 데이터를 보존한다.
+- [작업 선택표](work-guides/DEVELOPMENT_GUIDE.md)에서 해당 문서를 읽고, 영향 경계가 늘면 추가한다. 전체 지침·계약·사고 기록을 매번 출력하지 않는다.
+- 수정·검증·빌드·배포·설치 확인을 구분한다. 미검증 결과를 완료로 보고하거나 통과를 위해 안전 조건을 낮추지 않는다.
+- 중단·압축 후에는 최신 요청, 이 진입점, 관련 지침·작업 기록·diff로 마지막 검증 지점부터 재개한다.
 
-## Omission Prevention Gate
+## 이 저장소의 추가 필수 조건
 
-Before editing code, update `CHANGE_CONTRACT.json` with `"status": "active"` and add one `outcomes` entry for every user-requested result. Define the outermost result the user must actually see. A class, route, package, successful compile, or mocked call is not an acceptance result.
+[프로젝트 정책](work-guides/PROJECT_POLICY.md)은 이 진입점의 일부이며 아래 시점에 반드시 적용한다.
 
-- Trace the complete vertical path from the user's action to the visible result, including every process, protocol, persistence, permission, and platform boundary.
-- Cover first use, steady state, reconnect/restart, failure recovery, and every requested platform or architecture.
-- Ask: "Could this proof pass while the user-visible feature is still broken?" If yes, the proof is at the wrong boundary and must be replaced or supplemented.
-- Identify physical or external-service proof before implementation. If it cannot be run, the work remains explicitly incomplete at that boundary.
-- For metered services, calculate idle requests per device/Viewer per day, including full-result polling and listener reconnects. Test request counts and quota-error recovery; never claim local code changes restore an already exhausted external quota.
-- A functional source change must include a changed test at the leaking or user-visible boundary, not only a source-string, packaging, or constructor-presence assertion.
-
-At completion, reread the user's exact request and map every requested outcome to one JSON entry and fresh evidence. Set `status` to `verified` only after every automatable outcome is proven; an unverified outcome must be reported as incomplete rather than omitted.
-
-Before deployment, set `status` to `ready-to-deploy` and run `npm run change:verify:predeploy`. Only outcomes marked `deployment-required` may remain pending. After deployment, replace pending evidence with live verification, set `status` to `verified`, and run `npm run change:verify`.
-
-## Mandatory Workflow
-
-1. Define the observable acceptance contract and user constraints in `CHANGE_CONTRACT.json` before editing.
-2. Trace the real execution path and sibling paths that share the behavior. Fix the common root cause, not one visible symptom.
-3. Record affected products, platforms, architectures, persistence, security, update, and rollback boundaries.
-4. For a defect, preserve a failing reproduction or focused regression test. For a feature, add or update its acceptance-contract test.
-5. Make the smallest compatible change and keep unrelated work untouched.
-6. Run the narrowest tests that exercise the changed boundary. Mark hardware or external-service checks as pending instead of claiming success.
-7. Build only when the user explicitly requests it. Release only after the development and recurrence gate passes.
-8. When any development mistake is found, add it to `INCIDENT_REGISTRY.md` immediately with its cause, permanent guard, proof, and remaining physical verification.
-
-## Request Waste Prevention
-
-Review request necessity BEFORE adding/changing timers, effects, listeners, retries, background services, or persistence writes. This covers local and cloud paths on every platform, not only Firestore.
-
-- Prefer existing change notifications and loaded state over repeatedly fetching complete collections. Poll only with a documented freshness requirement and a bounded request budget. Do not combine polling with a listener for the same data.
-- Assign one lifecycle owner; prevent duplicate subscriptions and overlapping requests. Cancel timers/listeners on logout, session end, unmount and service shutdown, and prevent late callbacks from restarting work.
-- Bound retries with backoff; quota/auth/permission failures must not cause tight loops. Preserve session/input correctness when reducing requests. Rate limits are not a substitute for removing unnecessary work.
-- Use fake time/emulators at the actual request boundary to test 24h idle, rerender/remount, slow concurrent calls, failures/reconnects and cleanup. Count requests AND documents, including startup, listener fan-out, writes, security-rule reads and reconnect costs. Do not burn production quota for load tests.
-- Every `CHANGE_CONTRACT.json` requires `requestReview`: `impact` (`none` or `changed`) and a concrete `reason`. `none` means the current change cannot alter requests; it must never conceal an unreviewed request path.
-- For `changed`, also supply `assumptions`, `dailyBudget` (`clients`, `readsPerClient`, `writesPerClient`, `maxReads`, `maxWrites`), `checks` evidence for `idle`, `rerender`, `concurrency`, `failure`, `cleanup`, and `contractTests` naming a changed boundary test. Derive counts from tests and declared fleet assumptions; do not invent counts or raise limits merely to pass. A nonapplicable scenario needs an explicit reason, not a blank.
-- `change:verify` rejects absent review, incomplete evidence and calculated totals above the declared limits; CI also checks the committed contract on a clean checkout. This is an omission guard, not independent proof that declared counts or scope are correct. Runtime tests and human review remain required.
-- Never claim all existing traffic is safe from a single-path fix or activate billing as a substitute for correcting waste. Track unaudited paths and unverified live usage explicitly.
-
-## Completion Rules
-
-- Do not call work complete from source inspection, compilation, or a mocked test when the acceptance contract requires runtime behavior.
-- Do not retry a failed step until its cause is understood and a focused guard has been added.
-- Do not weaken, skip, or delete an existing guard to make a change pass.
-- Prefer focused evidence over repeated full-suite, build, or packaging runs.
-- Before committing, run `npm run change:verify` from `aether-link-app`.
-
-Every commit after the development-policy baseline must include these trailers:
-
-```text
-Intent: concise user-visible objective
-Change-Type: feature | fix | refactor | test | build | docs | chore
-Risk: low | medium | high
-Acceptance: observable user-visible result
-Contract: repository-relative path to a test changed in this commit
-Proof-Level: automated-runtime | deployment-required | physical-completed | physical-required | not-applicable
-Verification: exact command and result
-Release-Impact: none | build | deploy | build-and-deploy
-Rollback: concrete rollback action
-Request-Review: none - why requests cannot change | changed - budget and request-boundary test evidence
-Incident: INC-YYYYMMDD-NNN  # required for fixes
-```
+- 편집 전: Omission Prevention Gate, Mandatory Workflow, Verification Scope And Resume, Completion Rules를 읽고 `CHANGE_CONTRACT.json`을 active로 갱신한다. 요구마다 outcomes와 검증 경계를 기록한다.
+- 모든 계약: requestReview의 impact와 구체적 reason이 필요하다. 요청 경로가 바뀌면 편집 전에 Request Waste Prevention의 예산·증거 스키마도 읽고 적용한다.
+- 커밋 전: Commit Requirements와 `aether-link-app`의 `npm run change:verify`를 적용한다.
+- 배포 전후: Omission Prevention Gate의 상태·predeploy·live 검증 조건과 [제품 전용 조건](work-guides/PROJECT_RULES.md)의 릴리스 절을 적용한다. 빌드·배포는 명시적 요청 범위에서만 수행한다.
+- 제품 실행·설치·권한·성능을 바꿀 때는 PROJECT_RULES의 해당 절을 추가한다. 개발 실수는 `INCIDENT_REGISTRY.md`에 기록하며, 기존 미완료 항목을 문서 변경으로 종료하지 않는다.

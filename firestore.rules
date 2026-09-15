@@ -107,6 +107,9 @@ service cloud.firestore {
 
     function isCentralViewerDeviceUpdate() {
       return isCentralViewer()
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(["contactPhone"])
+          || !("contactPhone" in request.resource.data)
+          || (request.resource.data.contactPhone is string && request.resource.data.contactPhone.size() <= 40))
         && resource.data.ownerUid is string
         && request.resource.data.ownerUid == resource.data.ownerUid
         && request.resource.data.businessNumber == resource.data.businessNumber
@@ -119,6 +122,7 @@ service cloud.firestore {
           "desktopName",
           "desktopNameOverride",
           "contactName",
+          "contactPhone",
           "installLocation",
           "tags",
           "notes",
@@ -241,7 +245,13 @@ service cloud.firestore {
         && request.resource.data.stage in ["canary", "pilot", "general"]
         && request.resource.data.percentage is number
         && request.resource.data.percentage >= 0
-        && request.resource.data.percentage <= 100;
+        && request.resource.data.percentage <= 100
+        && (!('targetDeviceIds' in request.resource.data)
+          || request.resource.data.targetDeviceIds == null
+          || (request.resource.data.targetDeviceIds is list
+            && request.resource.data.targetDeviceIds.size() <= 200
+            && request.resource.data.percentage == 0
+            && request.resource.data.stage == "general"));
       allow delete: if false;
     }
 

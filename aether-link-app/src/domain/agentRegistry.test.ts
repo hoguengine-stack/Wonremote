@@ -190,12 +190,14 @@ describe("agent registry domain", () => {
     const updated = updateDeviceMetadata(registered.devices, {
       deviceId: registered.device.id,
       contactName: `  ${"C".repeat(120)}  `,
+      contactPhone: "1".repeat(50),
       installLocation: `  ${"L".repeat(300)}  `,
       tags: [" kiosk ", "KIOSK", "", ...Array.from({ length: 25 }, (_, index) => `tag-${index}`)],
       notes: `  ${"N".repeat(2_100)}  `,
     });
 
     expect(updated.device.contactName).toHaveLength(100);
+    expect(updated.device.contactPhone).toHaveLength(40);
     expect(updated.device.installLocation).toHaveLength(255);
     expect(updated.device.tags).toHaveLength(20);
     expect(updated.device.tags?.slice(0, 2)).toEqual(["kiosk", "tag-0"]);
@@ -204,11 +206,13 @@ describe("agent registry domain", () => {
     const cleared = updateDeviceMetadata(updated.devices, {
       deviceId: registered.device.id,
       contactName: "   ",
+      contactPhone: " ",
       installLocation: "\t",
       tags: [" ", ""],
       notes: "\n",
     });
     expect(cleared.device).not.toHaveProperty("contactName");
+    expect(cleared.device).not.toHaveProperty("contactPhone");
     expect(cleared.device).not.toHaveProperty("installLocation");
     expect(cleared.device).not.toHaveProperty("tags");
     expect(cleared.device).not.toHaveProperty("notes");
@@ -223,6 +227,7 @@ describe("agent registry domain", () => {
     const edited = updateDeviceMetadata(registered.devices, {
       deviceId: registered.device.id,
       contactName: "Kim",
+      contactPhone: "010-1234-5678",
       installLocation: "Front counter",
       tags: ["pos", "priority"],
       notes: "Printer issue history",
@@ -236,6 +241,7 @@ describe("agent registry domain", () => {
 
     expect(repeated.device).toMatchObject({
       contactName: "Kim",
+      contactPhone: "010-1234-5678",
       installLocation: "Front counter",
       tags: ["pos", "priority"],
       notes: "Printer issue history",

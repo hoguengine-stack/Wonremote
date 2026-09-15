@@ -54,12 +54,12 @@ describe("desktop packaging scaffold", () => {
     for (const configName of ["tauri.agent.conf.json", "tauri.agent.x86.conf.json"]) {
       const config = JSON.parse(readFileSync(path.join(projectRoot, "src-tauri", configName), "utf8"));
       expect(config.app.windows[0]).toMatchObject({
-        width: 340,
-        height: 410,
-        minWidth: 340,
-        minHeight: 410,
-        maxWidth: 340,
-        maxHeight: 410,
+        width: 360,
+        height: 340,
+        minWidth: 360,
+        minHeight: 340,
+        maxWidth: 360,
+        maxHeight: 340,
         resizable: false,
       });
     }
@@ -295,10 +295,14 @@ describe("desktop packaging scaffold", () => {
     expect(secureCapture).toContain('D:P(A;;GA;;;SY)(A;;GA;;;BA)');
     expect(secureCapture).not.toContain("TcpListener");
     expect(secureCapture).not.toContain("TcpStream");
-    expect(secureCapture).not.toContain("inject_input(");
+    // The trailing cfg(test) module contains an opt-in live input probe, not broker runtime.
+    const brokerRuntime = secureCapture.split(/\r?\n#\[cfg\(test\)\]\r?\nmod tests\s*\{/)[0];
+    expect(brokerRuntime).not.toContain("inject_input(");
     expect(secureCapture).toContain('!is_capture_control("mouse-down 1 1 left")');
     expect(secureCapture).toContain("crate::is_valid_input_server_request_line(&line)");
-    expect(nativeMain).toContain("secure_capture::run_input_client()");
+    expect(nativeMain).toContain("secure_capture::active_input_desktop_is_secure()");
+    expect(nativeMain).toContain("secure_capture::InputClient::connect()");
+    expect(nativeMain).toContain("run_input_server(false).await");
     expect(nativeMain).toContain("run_input_server(true).await");
     expect(agentSource).toContain('data.type === "secure-desktop-required"');
     expect(agentSource).toContain('data.type === "default-desktop-required"');

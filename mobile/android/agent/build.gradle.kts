@@ -74,5 +74,7 @@ dependencies {
     implementation("com.google.firebase:firebase-functions")
     implementation("io.github.webrtc-sdk:android:144.7559.14")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.mockito:mockito-core:5.14.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
     androidTestImplementation("junit:junit:4.13.2")
 }

@@ -46,13 +46,16 @@ export function filterDeviceWorkspace(
         device.deviceName,
         device.desktopName,
         device.contactName,
+        device.contactPhone,
         device.installLocation,
         device.tags?.join(" "),
         device.notes,
       ]
         .join(" ")
         .toLocaleLowerCase();
-      if (!searchable.includes(term)) {
+      const phoneQuery = /^[+\d\s().-]+$/.test(term) ? term.replace(/\D/g, "") : "";
+      const phoneMatches = phoneQuery.length > 0 && (device.contactPhone ?? "").replace(/\D/g, "").includes(phoneQuery);
+      if (!searchable.includes(term) && !phoneMatches) {
         return false;
       }
     }

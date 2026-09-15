@@ -33,6 +33,28 @@ describe("event-driven Firebase session queues", () => {
     state.listeners.forEach((item) => expect(item.close).toHaveBeenCalledOnce());
   });
 
+  it("opens a clipboard-only listener and reports ready after stale data is acknowledged", async () => {
+    const received = vi.fn();
+    const ready = vi.fn();
+    subscribeFirebaseSessionData(
+      {} as any,
+      "s",
+      "viewer",
+      received,
+      vi.fn(),
+      { chat: false, files: false },
+      ready,
+    );
+    expect(onSnapshot).toHaveBeenCalledOnce();
+    expect(state.listeners[0].query[0]).toBe("sessions/s/clipboard");
+    emit(0, [change("stale", { text: "old" })]);
+    await flush();
+    expect(received).toHaveBeenCalledOnce();
+    expect(state.remove).toHaveBeenCalledWith("stale");
+    expect(state.commit).toHaveBeenCalledOnce();
+    expect(ready).toHaveBeenCalledOnce();
+  });
+
   it("serializes slow deliveries and acknowledges only after processing, without duplicate events", async () => {
     let finish!: () => void;
     const pending = new Promise<void>((resolve) => { finish = resolve; });

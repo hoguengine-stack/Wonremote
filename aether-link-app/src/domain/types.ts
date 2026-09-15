@@ -25,6 +25,8 @@ export interface AgentUpdateTelemetry {
 }
 
 export interface ManagedDevice {
+  selectedRolloutVersion?: string;
+  rollbackSupportVersion?: string;
   presenceMode?: "manual";
   heartbeatRequestId?: string;
   id: string;
@@ -56,6 +58,7 @@ export interface ManagedDevice {
   updateRing?: DeviceUpdateRing;
   updatePaused?: boolean;
   contactName?: string;
+  contactPhone?: string;
   installLocation?: string;
   tags?: string[];
   notes?: string;
@@ -155,6 +158,7 @@ export interface DeviceMetadataUpdateInput {
   deviceName?: string;
   desktopName?: string;
   contactName?: string;
+  contactPhone?: string;
   installLocation?: string;
   tags?: string[];
   notes?: string;

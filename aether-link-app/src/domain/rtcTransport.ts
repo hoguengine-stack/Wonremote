@@ -78,7 +78,7 @@ export async function resolveRtcConfiguration(
     const hasStaticTurn = staticConfiguration.iceServers.some((server) =>
       server.urls.some((url) => /^turns?:/i.test(url)),
     );
-    if (hasStaticTurn) {
+    if (hasStaticTurn || staticConfiguration.iceTransportPolicy === "all") {
       return staticConfiguration;
     }
     throw error;

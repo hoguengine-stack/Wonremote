@@ -67,10 +67,17 @@ describe("remote control command helpers", () => {
   it("normalizes browser key names to stable agent tokens", () => {
     expect(normalizeRemoteKey(" ")).toBe("Space");
     expect(normalizeRemoteKey("Control")).toBe("Ctrl");
+    for (const [code, expected] of [["ControlLeft", "Ctrl"], ["ControlRight", "Ctrl"], ["ShiftLeft", "Shift"], ["ShiftRight", "Shift"], ["AltLeft", "Alt"], ["AltRight", "Alt"], ["MetaLeft", "Win"], ["MetaRight", "Win"]]) {
+      expect(normalizeRemoteKey("Process", code)).toBe(expected);
+      expect(normalizeRemoteKey("Unidentified", code)).toBe(expected);
+    }
     expect(normalizeRemoteKey("Escape")).toBe("Esc");
     expect(normalizeRemoteKey("Meta")).toBe("Win");
     expect(buildKeyboardCommand("keydown", "ArrowLeft")).toBe("key-down Left");
     expect(buildKeyboardCommand("keyup", "A")).toBe("key-up A");
+    expect(buildKeyboardCommand("keydown", "Process", "Enter", 229)).toBe("key-down Enter");
+    expect(buildKeyboardCommand("keyup", "Process", "Enter", 229)).toBe("key-up Enter");
+    expect(buildKeyboardCommand("keydown", "Process", "NumpadEnter", 229)).toBe("key-down Enter");
     expect(buildKeyboardCommand("keydown", "Process", "Lang1")).toBe("key-down Hangul");
     expect(buildKeyboardCommand("keyup", "HangulMode", "Lang1")).toBe("key-up Hangul");
     expect(buildKeyboardCommand("keydown", "Process", "", 0x15)).toBe("key-down Hangul");

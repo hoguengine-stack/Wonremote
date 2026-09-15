@@ -62,18 +62,16 @@ describe("connected remote session layout", () => {
     expect(block).toContain('["run", "실행"]');
   });
 
-  it("keeps Ctrl shortcuts on the raw key down and key up path", () => {
-    const start = appSource.indexOf("const handleKeyDown");
+  it("keeps Ctrl shortcuts on the raw key path without bridging the local clipboard", () => {
+    const start = appSource.indexOf("const handleKeyDown = async");
     const end = appSource.indexOf("const handleKeyUp", start);
     const keyDownBlock = appSource.slice(start, end);
-    const pasteStart = keyDownBlock.indexOf('event.ctrlKey && event.key.toLowerCase() === "v"');
-    const pasteEnd = keyDownBlock.indexOf("const isLocalText", pasteStart);
-    const pasteBlock = keyDownBlock.slice(pasteStart, pasteEnd);
 
-    expect(pasteStart).toBeGreaterThanOrEqual(0);
-    expect(pasteEnd).toBeGreaterThan(pasteStart);
-    expect(pasteBlock).toContain("buildPasteTextCommand(text)");
-    expect(pasteBlock).not.toContain('onInputEvent("key-up Ctrl")');
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    expect(keyDownBlock).not.toContain("navigator.clipboard");
+    expect(keyDownBlock).not.toContain("buildPasteTextCommand");
+    expect(keyDownBlock).not.toContain("sendClipboardText");
     expect(keyDownBlock).toContain('buildKeyboardCommand("keydown"');
     expect(appSource).toContain('buildKeyboardCommand("keyup"');
   });
@@ -103,6 +101,17 @@ describe("connected remote session layout", () => {
     expect(keyUpBlock).not.toContain("isEditableTarget(event.target)");
   });
 
+  it("lets Android Back return an active mobile session to the device list without closing it", () => {
+    expect(appSource).toContain("__wonRemoteMobileBackScope");
+    expect(appSource).toContain('window.addEventListener("wonremote:show-device-list", showDeviceList)');
+    expect(appSource).toContain('const getBackScope = () => activeSessionId ? "session" as const : "list" as const');
+    const backStart = appSource.indexOf("const getBackScope = () => activeSessionId");
+    const backEnd = appSource.indexOf("function updateSplitRatio", backStart);
+    const backBlock = appSource.slice(backStart, backEnd);
+    expect(backBlock).toContain("handleShowDeviceList()");
+    expect(backBlock).not.toContain("handleCloseSession");
+  });
+
   it("releases held mouse buttons at the last remote pointer position", () => {
     const start = appSource.indexOf("const releaseAllInputs");
     const end = appSource.indexOf("const handlePanelBlur", start);
@@ -124,7 +133,7 @@ describe("connected remote session layout", () => {
     expect(block).toContain("창모드");
     expect(appSource).toContain("useState(initialViewPreferences.fullscreen)");
     expect(appSource).toContain("deviceViewPreferencesKey(preferenceDeviceId)");
-    expect(appSource).toContain("clipboardSync: isClipboardSyncOn");
+    expect(appSource).toContain("clipboardSync: false");
     expect(appSource).toContain("selectedDisplayIndex,");
     expect(appSource).toContain("zoom,");
     expect(appSource).not.toContain("setFullscreen(isRemoteFocusMode)");
@@ -208,6 +217,15 @@ describe("connected remote session layout", () => {
     expect(appSource).toContain('aria-label="원격 연결 새로고침"');
     expect(appSource.slice(diagnosticStart, appSource.indexOf("onError:", diagnosticStart)))
       .not.toContain("scheduleWebRtcReconnect()");
+  });
+
+  it("releases local Viewer input ownership whenever live remote control is unavailable", () => {
+    expect(appSource).toContain("const remoteInputAvailable = isRemoteInputAvailable({");
+    expect(appSource).toContain("if (!remoteInputAvailable) {");
+    expect(appSource).toContain("canvas.releasePointerCapture(pointerId)");
+    expect(appSource).toContain("imeInputRef.current?.blur()");
+    expect(appSource).toContain("enabled={remoteInputAvailable && !mobileRemote}");
+    expect(appSource).toContain("readOnly={!remoteInputAvailable || (mobileRemote && !mobileKeyboardEnabled)}");
   });
 
   it("prevents a stale connection attempt from surviving Viewer shutdown", () => {
@@ -304,7 +322,7 @@ describe("connected remote session layout", () => {
     expect(appSource).toContain("divider.offsetWidth / 2");
     expect(appSource).toContain('splitPosition={splitIndex === 0 ? "left"');
     expect(appSource).toContain("onFocusCapture={() => !isActive && onSelectSession(sessionId)}");
-    expect(appSource).toContain("if (!isActive || !isClipboardSyncOn");
+    expect(appSource).not.toContain("isClipboardSyncOn");
     expect(stylesSource).toContain(".remote-focus-mode .content-grid.content-grid-split");
     expect(stylesSource).toContain(".remote-split-divider");
     expect(stylesSource).toContain("var(--split-right)");
@@ -313,11 +331,11 @@ describe("connected remote session layout", () => {
     const moveEnd = appSource.indexOf("const handleCanvasPointerCancel", moveStart);
     const wheelStart = appSource.indexOf("const handleCanvasWheel");
     const wheelEnd = appSource.indexOf("const handleKeyDown", wheelStart);
-    const keyDownStart = appSource.indexOf("const handleKeyDown");
+    const keyDownStart = appSource.indexOf("const handleKeyDown = async");
     const keyUpStart = appSource.indexOf("const handleKeyUp", keyDownStart);
-    expect(appSource.slice(moveStart, moveEnd)).toContain("if (!isActive)");
-    expect(appSource.slice(wheelStart, wheelEnd)).toContain("if (!isActive)");
-    expect(appSource.slice(keyDownStart, keyUpStart)).toContain("if (!isActive)");
+    expect(appSource.slice(moveStart, moveEnd)).toContain("if (!remoteInputAvailable)");
+    expect(appSource.slice(wheelStart, wheelEnd)).toContain("if (!remoteInputAvailable)");
+    expect(appSource.slice(keyDownStart, keyUpStart)).toContain("if (!remoteInputAvailable)");
   });
 
   it("keeps the remote session alive through a normal reboot reconnect and uses 5 percent zoom steps", () => {

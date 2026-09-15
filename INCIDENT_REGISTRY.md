@@ -1,5 +1,369 @@
 # WonRemote Incident Registry
 
+## INC-20260915-082: Viewer retained remote input ownership after transport loss
+
+- Detected: 2026-09-15 during the local0.1.95 Agent replacement while a PC Viewer session was open.
+- Severity: P1 local-control interruption and release blocker.
+- Affected: Windows Viewer input ownership when an active Firebase remote transport disconnects while the database session still says connected.
+- Status: Source repaired, full automated regression and final local x86 build passed; public and cross-PC verification remain.
+- User-visible symptom: Local keyboard and pointer control appeared unavailable until the Viewer was closed after the Agent restart and Windows approval prompt.
+- Minimal trigger: Keep a Viewer remote tab active, hold a remote key or pointer, then terminate the WebRTC transport without first changing the persisted session state.
+- Root cause and contributors: Keyboard recovery, hidden IME focus and canvas interception used selected-session state, while the disconnect UI used live transport state. The two readiness conditions diverged during Agent restart.
+- Fix commit(s): Current v0.1.95 release commit.
+- Permanent guard: One shared remote-input-availability predicate requires active, visible and connected ownership plus an open Firebase transport and no manual-reconnect state. Actual Chromium covers disconnect while Ctrl and pointer capture are held.
+- Regression proof: Predicate/static suites passed 27 tests; the real Viewer Chromium file passed 42 tests including transport-error input release; repository suite passed 1,036 tests; desktop keyboard and clipboard executable checks passed.
+- Release proof: Fresh local x86 Viewer and Agent installers passed payload verification. Signed CI publication and public download verification are not yet claimed.
+- Remaining blocker: Complete the normal signed v0.1.95 workflow, verify public assets, then confirm remote control and protected UAC/PIN behavior from the other PC.
+- Repair: On lost transport, release tracked keys and buttons, pointer capture and queued pointer moves, blur and lock the hidden IME, and stop canceling local key, pointer and wheel events. Re-enable input only for a live replacement transport; explicit reconnect UI is retained.
+
+## INC-20260915-083: Rollback command bypassed Firestore write wrappers
+
+- Detected: 2026-09-15 in the full pre-release test run.
+- Severity: P2 release-quality boundary; no observed production failure.
+- Affected: Viewer selected rollback command transaction in `requestFirebaseAgentRollback`.
+- Status: Repaired and covered before v0.1.95 publication.
+- User-visible symptom: None observed; the repository architecture test stopped the release because the new transaction used direct batch writes.
+- Minimal trigger: Run `src/firebase/firestoreWriteArchitecture.test.ts` against the rollback implementation containing `batch.update` and `batch.set`.
+- Root cause and contributors: The rollback path did not follow the existing undefined-field sanitizing batch helpers used by other Viewer writes.
+- Fix commit(s): Current v0.1.95 release commit.
+- Permanent guard: The architecture test now rejects both direct `batch.update` and direct `batch.set` in Agent and Viewer Firebase sources.
+- Regression proof: The six initially failing suites passed 98 tests after correction; the full repository suite then passed 1,036 tests.
+- Release proof: Included in the fresh locally verified x86 installers; no public v0.1.95 claim before CI succeeds.
+- Remaining blocker: Normal signed CI publication and live asset verification.
+
+## INC-20260915-081: Ordinary input unnecessarily required the secure broker and release reused installed version
+
+- Detected: 2026-09-15 user reports visible screen without input and no update from0.1.94.
+- Status: Source repaired and focused local tests passed; physical verification pending.
+- Evidence: Installed log contains repeated input-server exit code1. Medium-integrity input-server exits before reading stdin with protected-elevated-Agent error. Published0.1.94 correctly does not update installed0.1.94.
+- Cause: Ordinary input shares the mandatory secure-broker entry, unlike ordinary capture; release validation covered0.1.90/0.1.93 but not a newer offer for the user's existing0.1.94.
+- Guard: Native normal-desktop input boundary test; preserve protected desktop authentication. Prepare a strictly greater version without forceUpdate.
+- Repair: Agent input JSONL dispatches ordinary actions under its own Windows identity; secure desktop requests retain authenticated broker/worker routing, with desktop race rejection and no automatic action replay. Versions aligned to0.1.95 in source only.
+- Proof: Native x86 process test1, existing secure tests15 (live-input test intentionally not run), new actual pipe acknowledgement test1 and production update checks3 pass. No keys or mouse movements injected during tests. Current user session root cause and end-to-end behavior are not claimed verified from historical logs.
+- Remaining: Verify real remote keyboard/mouse on designated devices and subsequent signed release/installation separately.
+
+
+## INC-20260915-080: Signing job used a tag lookup for an unpublished draft
+
+- Detected: 2026-09-15, CI run34870543317.
+- Severity: P2 publication blocker.
+- Affected: Isolated approved-artifact signing job only.
+- Status: Source corrected; CI retry pending.
+- User-visible symptom: Signed manifest is not available for the requested update publication.
+- Minimal trigger: GET releases/tags/v0.1.94 while release388555161 remains a draft.
+- Root cause and contributors: Tag endpoint returns404 for the unpublished draft; immutable release ID is available. Local tag query reproduced404 and ID query returned the expected draft.
+- Fix commit(s): Current signing-branch correction.
+- Permanent guard: Read the pinned immutable release ID, then still require exact tag, draft status and approved assets before and after signing.
+- Regression proof: Node tests3 passed, including mocked unavailable tag endpoint, one ID lookup, published-release rejection and exact-byte/x86 guards.
+- Release proof: No latest-channel change at failure. CI signing retry required.
+- Remaining blocker: Successful CI signing and live signed metadata/download verification; original physical tests remain separate.
+- Final result: CI34870755224 succeeded after pinned-ID correction. v0.1.94 latest published under explicit combined-product authorization. Live signatures, both installer downloads/hashes and real backed-up0.1.93 updater checks passed. Remote recipient installation remains pending; private signing key stayed in GitHub.
+
+
+## INC-20260915-079: Publication contract omitted test links and misclassified documentation
+
+- Detected: 2026-09-15 during requested Viewer test publication.
+- Severity: P2 delivery blocker; no artifact published by this repair.
+- Affected: CHANGE_CONTRACT.json and local recurrence validator.
+- Status: Reference and documentation classification repaired; release readiness remains pending.
+- User-visible symptom: Built Viewer cannot pass the predeploy gate.
+- Minimal trigger: Validate a documentation-only fixed-test-device outcome and new untracked tests alongside functional outcomes.
+- Root cause and contributors: Missing contractTests, new tests outside tracked diff, stale local installation evidence, and functional-only validation applied to documentation records.
+- Fix commit(s): Current uncommitted correction; no commit or release asserted.
+- Permanent guard: Explicit docs/not-applicable records require changed Markdown evidence and completed review. Functional outcomes still require changed test evidence. No product security or release status checks removed.
+- Regression proof: Documentation false rejection reproduced RED; validator suite15 passed GREEN, including missing/invalid evidence, pending review and functional rejection cases. Related package/startup/update/adaptation suites93 passed.
+- Release proof: None. Existing installer unchanged and no remote publication performed.
+- Remaining blocker: Contract cannot truthfully be ready-to-deploy under existing all-outcomes policy while remote physical acceptance remains pending. Test publication needs an explicit scoped sequencing exception or the remaining physical proof; do not relabel it as completed.
+- Subsequent authorized trial: User explicitly reaffirmed Viewer-only publication after the trial-sequencing exception question. Published viewer-test-0.1.94-20260915 as prerelease, not latest. Anonymous downloadHTTP200/full SHA256 matches F70F20E5D40C40910B724E6B3595BE58A31C9ED0B4F61ACACA68AC07EA35761D. Stable latest/Agent/manifest asset IDs and digests unchanged. Original physical gaps remain pending; overall release gate is not claimed passed.
+
+## INC-20260914-078: Test Agent startup waits before showing its window
+
+- Observation: On approved local test install82220F6D, installer0.1.93 exited0 and preserved registration. Unelevated --agent --show-window stayed in synchronous manage-agent-login-task.ps1 Ensure with no visible Agent window; Agent task was Ready. Cause not yet confirmed; a running process is not healthy Agent proof.
+- Containment: Retained full pre-install backup and configuration. Stop only the exact newly launched test process/helper and invoke the existing installer-registered Agent task; do not bypass OS permissions or change task security.
+- Verification: Pending installed startup/UI; do not expand this test build to other devices or public release based on installer exit alone.
+- Follow-up: Existing Agent task launch succeeded; installed UI0.1.93 inspected, compact single-line layout confirmed and heartbeat accepted. This contains the local startup interruption, but does not repair the unelevated Ensure wait; retain as unresolved for normal launch.
+- Source correction 2026-09-15: Moved Ensure subprocess from before Builder creation into a cancellable background operation after Tauri Ready. The UI loop no longer waits for Windows approval. Approved handoff exits the UI, invalidates the current watchdog generation, terminates this instance's job children and releases the single-instance guard before starting the existing protected Agent task. Viewer runtime path and task permission validation remain unchanged.
+- Source proof 2026-09-15: x86 native tests2 passed for a real sleeping PowerShell child, cancellation without completion, and exit0/1/10 propagation. Installed WebView responsiveness, UAC interaction and scheduled handoff remain pending; do not infer runtime success from these tests.
+- Installed follow-up 2026-09-15: New0.1.94 UI displays while setup waits; payload and registration verified. schtasks /Query of secure broker explicitly returned Access is denied. Earlier non-admin Get-ScheduledTask not-found did NOT establish task absence. Ensure incorrectly required non-admin visibility of the SYSTEM broker before handing off to the already-authorized protected Agent task, causing repeated setup. Reordered validation: valid Agent task hands off first; elevated Agent still validates/repairs broker. Regression with broker-query denial failed exit1 versus required10 before repair. No task permissions or OS approval checks weakened.
+- Handoff correction 2026-09-15: Installed r2 exited after ordinary launch without starting task. Current tauri-runtime-wry2.11.2 RequestExit(code) emits code in ExitRequested but sets ControlFlow::Exit without that code, so run_return was0. Remember explicit ExitRequested(Some10) independently, release instance guard after UI/child cleanup, then start the approved task. Existing task was manually started to restore online Agent during repair. Structural regression protects event-code storage; final new-installer handoff remains required before success claim.
+- Final installed result 2026-09-15: r3 installer SHA2567546DD3620FCAA9C7685EFDDD238EF6C6039811D194C0D497460558C2A013478 exit0 on82220F6D. Ordinary launch10384 logged handoff followed by scheduled Agent start01:09:52,Online and accepted heartbeat; no setup dialog. Subsequent ordinary show-window request exited as duplicate and displayed existing0.1.94 UI. Original registration preserved. Normal-launch handoff now physically verified on this PC only; first-ever setup cancellation and cross-PC remote input remain separate checks.
+
+## INC-20260914-076: A new incoming file could replace a completed spool before UI restoration
+
+- Cause: Receiver allowed a new transfer ID to clear completed state automatically; the UI ready-file guard can still be unset during asynchronous restoration.
+- Correction: Require explicit discard before replacing any stored transfer, enforced transactionally in the receiver rather than only in React.
+- Proof: Added completed-spool replacement rejection followed by successful original restoration/duplicate proof. No installed release affected.
+
+## INC-20260914-075: Restore handler referenced an effect-local Firebase flag
+
+- Cause: New tools-toggle callback reused firebaseEnabled, which exists only inside a separate effect.
+- Correction: Use the existing synchronous isViewerFirebaseEnabled helper at the UI boundary.
+- Proof: TypeScript found the out-of-scope reference; corrected compile and actual App restore check passed. No release occurred.
+
+## INC-20260914-074: Reverse command test assumed a plain fixture function was mocked
+
+- Cause: getActiveSessionId in createRuntime is a plain function; vi.mocked does not convert it to a mock at runtime.
+- Correction: Assign explicit session getter functions in the scoped test without changing other fixtures.
+- Proof: Initial focused suite failed on fixture setup,61 other tests passed; corrected focused test and TypeScript passed. No runtime product behavior affected by this test mistake.
+
+## INC-20260914-073: Picker cancellation could throw during child termination
+
+- Cause: Initial helper used kill in a try/finally, allowing a synchronous termination exception to escape the cancellation callback.
+- Correction: Settle and clean the operation first, then attempt termination without replacing the original cancellation/timeout result.
+- Proof: Added process-boundary kill-throws regression; interactive process termination remains unverified.
+
+## INC-20260914-072: Reverse transfer test used Array.at outside configured TypeScript library
+
+- Cause: Test runner accepted Array.at but the repository TypeScript target does not expose it.
+- Correction: Use indexed last-call access; do not raise the platform/library target for a test.
+- Proof: Focused runtime passed before correction; TypeScript rerun passed with indexed access. No production behavior changed.
+
+## INC-20260914-071: PowerShell rg wildcard path repeated during reverse-transfer investigation
+
+- Cause: A literal src/domain/*.ts path was passed to rg; PowerShell did not expand it.
+- Correction: Use the directory operand with -g '*.ts'; locate files before reading them.
+- Proof: Corrected directory search located agentPeerConnection.ts and its tests. No product code or installed behavior affected.
+
+## INC-20260914-070: Selected rollout preview assumed Agent capability
+
+- Cause: Matching target ID was called eligible although older Agents only see the intentionally closed0% policy.
+- Correction: Advertise selected rollout support with current version on existing Agent heartbeat and require matching version in shared eligibility. Missing/stale capability is explicitly unknown; ordinary fleet rollout unchanged.
+- Proof: Four suites53 cases passed including Viewer capability display and one-write/no-read heartbeat. Installed older-Agent bootstrap remains pending.
+
+## INC-20260914-069: Native JPEG failure advanced baseline and emitted incomplete frames
+
+- Cause: Compression errors skipped tiles after get_dirty_tiles had committed the new baseline. Missing cells might not be retried for an unchanged screen.
+- Correction: Publish only when all expected tiles encoded; invalidate baseline on mismatch so next capture is full, for both keyframe and delta failures.
+- Proof: Supported i686 native lifecycle test passed;2 existing merge/edge tests passed. Covers partial initial encode, recovery, failed delta, full retry and clean steady frame; actual compressor fault injection and target hardware remain pending.
+
+## INC-20260914-068: Incomplete keyframes could replace a valid screen
+
+- Cause: JPEG decoding success was checked, but the declared full frame could omit cells or claim tile dimensions different from the decoded image.
+- Correction: Validate full32px-cell coverage without overlap before staging, plus actual image dimensions. Keep last good canvas and report display error on failure.
+- Proof: Geometry and actual App missing-half-frame retained-canvas tests passed3 selected cases; TypeScript passed. Installed protocol compatibility remains pending.
+
+## INC-20260914-067: Viewer downloaded incoming file fragments separately
+
+- Cause: Session files callback created a Blob/download for every file document, ignoring transfer metadata and hashes.
+- Correction: Bounded direct-fallback assembler combines indexed parts, validates sizes/hashes, suppresses recent duplicate completions and clears on session disposal. Corrupt/unsupported delivery reports an error rather than an empty download.
+- Proof: Three focused suites8 tests passed including actual App one-download/byte-content over HTTP and streaming hash helper; TypeScript passed. Reverse sender and500MB WebRTC/Android file save remain incomplete.
+- Test correction: Selecting latest subscription alone did not fix the failure; error-banner evidence identified missing crypto.subtle on HTTP. Reuse existing sha256BlobHex streaming helper, preserving hash verification on local HTTP instead of skipping it. Earlier subscription-only attribution was insufficient.
+
+## INC-20260914-066: Selected rollout preview omitted unlisted target IDs
+
+- Cause: Preview rendered current devices only, but saving retained other selected IDs. Actual policy scope could exceed visible rows.
+- Correction: Display total selected IDs and unlisted IDs with explicit removal; never silently drop them on save.
+- Proof: Actual App test preserves an unlisted ID on first save, explicitly removes it on second save, and verifies one device-list read/no new subscription. Installed capability-aware rollout remains pending.
+
+## INC-20260914-065: Android test invocation omitted existing SDK path
+
+- Cause: Direct Gradle invocation did not reuse build-agent-release.ps1's ANDROID_HOME default; SDK was already present under LOCALAPPDATA/Android/Sdk.
+- Correction: Verify existing SDK and set ANDROID_HOME only for the test process. No duplicate installation or system environment change.
+- Proof: Initial invocation failed before tests. Corrected invocation passed native6 tests using existing SDK; no system setting changed.
+
+## INC-20260914-064: Local tile HTTP failures were represented as empty success
+
+- Cause: fetchTiles returned an empty frame for non-OK HTTP responses; the polling caller swallowed network errors. Status could continue showing the last successfully drawn picture as receiving.
+- Correction: Propagate HTTP errors, show receive-error state, clear on successful response, and ignore results older than a newer completed request or from an ended effect. Existing polling frequency unchanged.
+- Proof: Actual App routed local HTTP503, delayed old success, and recovery status test passed; three related suites33 cases passed. Installed local server verification pending.
+
+## INC-20260914-063: Corrupt keyframes replaced the last valid picture
+
+- Cause: Failed JPEG decoding returned null but the staging canvas was still published and marked with tile sequence numbers. Delta image errors had no status handler.
+- Correction: Reject keyframes with undecodable tiles before publishing, retain last picture, show decode failure until a valid keyframe, and allow existing manual reconnect. Transport failure takes precedence.
+- Proof: Actual App red/corrupt/green frame pixel and status regression plus connection status tests passed18 cases; TypeScript passed. Capture-side and installed-device proof still required.
+
+## INC-20260914-062: Completed file ACK totals were not verified
+
+- Cause: Normal WebRTC transfer accepted complete status without matching source byte/chunk totals. Resume completion with partial totals returned false instead of reporting an invalid acknowledgement.
+- Correction: Match exact totals before success/progress; reject premature resume completion. No additional requests or timers.
+- Proof: Three focused regression cases reproduced false success before repair. Transport suite18 passed after repair, including premature and valid resumed completion; TypeScript passed. Installed remote filesystem proof remains required.
+
+## INC-20260914-061: File cancellation waited for ACK timeout
+
+- Cause: AbortSignal was checked between chunks but not subscribed during ACK waits; cancellation could wait up to20s. Reading/hashing also lacked a final pre-send abort check.
+- Correction: AbortSignal terminates the existing waiter immediately; all terminal paths remove timer/listener, and read/hash completion checks abort before sending.
+- Proof: Transport suite passed13 tests including cancellation, late ACK isolation and next transfer; TypeScript passed. Receiver partials intentionally remain resumable. Installed device verification pending.
+
+## INC-20260914-060: Upload completion concealed remote file-save failures
+
+- Scope: Viewer cloud/fallback file-transfer queue; existing source, not a new production deployment.
+- Cause: Queue entered terminal completed state when upload returned. Agent receipts only changed a separate single-active progress display, so failures could not correct the terminal queue item.
+- Correction: Await remote receipt for cloud paths and update all matching queue entries for received/failed receipts. Preserve cancelled terminals and direct WebRTC final-ACK completion.
+- Proof: Actual App delayed two-file receipts and queue transition tests passed20 cases; TypeScript passed. Awaiting receipts survive terminal cleanup. Installed bidirectional transfer/resume remains pending.
+
+## INC-20260914-059: Native test invocation omitted repository portable toolchain
+
+- Scope: Local verification only, no release or installed application changed.
+- Cause: Direct cargo invocation used default x64 and could not find CMake; existing backend tooling keeps portable CMake/NASM under aether-link-app/.local-run.
+- Correction: Reuse those tool directories on process PATH and explicitly test supported i686-pc-windows-msvc. Do not change system PATH or install duplicate tools.
+- Proof: Native compilation succeeded and two stream profile tests passed. Processing-cost source runtime and low-spec physical performance remain unverified.
+
+## INC-20260914-058: Extracted toolbar browser harness missed new status dependencies
+
+- Scope: Development browser harness only; no release affected.
+- Cause: The extracted App toolbar gained connection-status helper/state dependencies in an earlier stage, but its isolated fixture was not updated. Toolbar visibility timed out.
+- Correction: Import the real status helper and supply fixture connection state; surface page errors immediately. Retain full-App connection tests as the behavioral evidence, not this extracted layout fixture.
+- Verification: Corrected fixture passed five portrait/landscape/keyboard sizes; actual App browser suite passed 14 tests. Installed Android proof remains pending.
+
+## INC-20260914-057: Diagnostic export initially omitted version helper argument
+
+- Scope: Source-only feature development; no installed or public artifact affected.
+- Cause: New export caller omitted the existing required environment argument; TypeScript rejected it before execution. A transport source lookup also assumed an incorrect filename.
+- Correction: Reused `getViewerVersion(import.meta.env)` and located transport code in `viewerFirebase.ts`.
+- Follow-up investigation correction: Windows `rg` wildcard path arguments failed again while locating rollout and workspace helpers; successful searches used directory roots with `-g` filters. No product file was changed by these failed searches.
+- Proof: TypeScript passes; actual App preview/download and connection status plus domain tests pass 15 cases. Check existing call sites before adding helper calls or guessing module paths.
+- Remaining: Feature-level Android delivery and other improvement outcomes remain pending in the active contract.
+
+이 파일은 사고 발생 당시의 관찰·원인·조치·정정을 보존하는 기록이다. 과거 항목의 정책·버전·검증 수치가 현재 상태를 뜻하지는 않는다. 현재 공통 절차는 [범용 개발 지침서](work-guides/DEVELOPMENT_GUIDE.md), 저장소 필수 조건은 [AGENTS.md](AGENTS.md), 진행 상태는 [CHANGE_CONTRACT.json](CHANGE_CONTRACT.json)을 확인한다. 문서 통합 과정에서 기존 사고 본문과 미검증 항목을 삭제하거나 종결 처리하지 않았다.
+
+## INC-20260914-056: Windows search commands used invalid shell-style path globs
+
+- Detected: 2026-09-14 during the resumed whole-product audit.
+- Severity: P3 development inefficiency; no product or user data impact.
+- Affected: Repository search output only.
+- Status: Corrected investigation method; product files were not changed by the failed commands.
+- User-visible symptom: None. Several targeted searches returned Windows path/regex errors or produced truncated combined output; one browser verifier was first called with the wrong filename and then without its required local server.
+- Root cause and contributors: Shell-style wildcard paths and one incorrectly escaped regular expression were passed directly to `rg` on Windows; one combined search also requested too much unrelated context. A JavaScript orchestration snippet and the first PowerShell-to-npm argument pass-through were malformed. A non-ASCII paste typo briefly changed the local API constant during the first patch and was corrected before compilation or execution.
+- Fix commit(s): Current audit workflow correction only.
+- Permanent guard: Use repository roots plus `rg -g` filters, list an uncertain script path before execution, use `cmd /c` for npm argument pass-through on Windows, verify prerequisites such as a local server, and request small line slices instead of broad combined context.
+- Regression proof: Subsequent searches used exact paths or `-g` filters and returned the intended Agent command, session event and keyboard ownership code. The correctly named device-organization verifier passed against a bounded local server with all external traffic blocked, and that server was then stopped.
+- Release proof: Not applicable.
+- Remaining blocker: None.
+
+## INC-20260914-055: Remote clipboard receive depended on a fixed 600ms delay
+
+- Detected: 2026-09-14 while tracing PC Viewer input and collaboration functions.
+- Severity: P1 conditional clipboard failure on delayed links.
+- Affected: Explicit `원격 PC -> 내 PC` text clipboard action in PC and Android Viewer sessions.
+- Status: Source repair and focused regressions verified; not built, installed or released.
+- User-visible symptom: The button can report no clipboard or copy an older queued value when the Agent response takes longer than 600ms.
+- Minimal trigger: Delay Agent clipboard acquisition or response delivery beyond 600ms, then press the explicit receive button.
+- Root cause and contributors: Viewer sent `clipboard-request`, slept for a fixed 600ms, then drained the queue once without waiting for the response lifecycle or distinguishing pre-existing queue data.
+- Fix commit(s): Current scoped working-tree repair; no build, install or deployment.
+- Permanent guard: Use one user-triggered clipboard-only event subscription, establish and drain its initial state before sending the command, accept one subsequent Agent response, and close on every terminal path. Keep automatic synchronization and idle clipboard listeners absent.
+- Regression proof: Domain orchestration, Firebase subscription and real local-HTTP routing passed 13/13. The actual App handler execution passed stale-initial-data rejection, explicit request, one local clipboard write, queue isolation and cleanup. TypeScript passed.
+- Verification correction: The first handler assertion compared an object created inside a VM context with a host-realm object using prototype-sensitive deep equality. Field-level assertions retain the intended queue-selection proof without changing product code.
+- Release proof: Not released.
+- Remaining blocker: Installed cross-PC delayed response and clipboard permission behavior require physical verification.
+
+## INC-20260914-052: Inactive Android session retained an input-blocking settings backdrop
+
+- Detected: 2026-09-14 during the real-browser multi-session functional audit.
+- Severity: P1 Android navigation usability.
+- Affected: Android Viewer settings overlay across device-list return and session switching.
+- Status: Source repaired and focused browser regression verified; not released.
+- User-visible symptom: After returning to the device list and opening another session, visible session-tab controls can stop responding.
+- Minimal trigger: Open a remote session, open Android settings, return to the device list, open a second session, select the first session, and press the second session's close button.
+- Root cause and contributors: `mobileToolsOpen` belonged to each mounted session panel but was not cleared when that panel became inactive or invisible. Its backdrop remained mounted and intercepted pointer events above the visible session tabs.
+- Fix commit(s): Current scoped working-tree repair; no build, install or deployment.
+- Permanent guard: Close session-local overlays whenever their session loses active/visible ownership, regardless of whether navigation came from the settings button, session selection, or native Android Back event.
+- Regression proof: `viewerDeviceRefresh.test.ts` passed all 9 real-browser cases, including settings -> list -> second session -> tab close. `verify-mobile-session-tools.mjs` passed five portrait, landscape and keyboard-sized viewports after the lifecycle cleanup.
+- Release proof: Not released.
+- Remaining blocker: Installed Android Back/list/session switching requires physical-device verification.
+
+## INC-20260914-051: Optional dynamic TURN failure blocked non-relay WebRTC startup
+
+- Detected: 2026-09-14 during the whole-product functional audit.
+- Severity: P1 conditional connection outage.
+- Affected: Shared RTC configuration used by Firebase Viewer and Agent transports when dynamic credentials are enabled.
+- Status: Source repaired and automated transport regression verified; not released.
+- User-visible symptom: A session can remain connecting with no screen or control channel when the dynamic credential callable is unavailable, even on a network where STUN/direct connectivity could work.
+- Minimal trigger: Enable dynamic RTC credentials without static TURN, keep relay-only disabled, and make `getRtcConfiguration` fail.
+- Root cause and contributors: The shared resolver returned its static configuration after dynamic failure only when that configuration contained TURN. It discarded a valid STUN-only `iceTransportPolicy: all` fallback and threw before either peer could be created.
+- Fix commit(s): Current scoped working-tree repair; no build, install or deployment.
+- Permanent guard: A dynamic-load failure may fall back to the already-resolved static configuration whenever relay-only is false; relay-only must continue requiring a usable TURN server. Exercise the same resolver used by Viewer and Agent.
+- Regression proof: The added STUN-only optional-dynamic case failed RED with `callable unavailable`, then passed after the one-condition repair. Repository-wide `npm test` passed 139 files and 865 tests, including the shared RTC, Viewer and Agent signaling paths; relay-only without TURN remains fail-closed.
+- Release proof: Not released.
+- Remaining blocker: External-network P2P and TURN traversal need two-device proof across restrictive NAT/firewall conditions.
+
+## INC-20260914-050: Repository-wide test command mixed stale contracts with standalone scripts
+
+- Detected: 2026-09-14 during the whole-product functional audit.
+- Severity: P2 verification reliability.
+- Affected: `npm test` file discovery and nine build, session, clipboard, Firebase, mobile, native-input and runtime assertions.
+- Status: Test ownership and current-contract assertions corrected and verified.
+- User-visible symptom: The main test command exits red even when three standalone browser checks print PASS, while stale assertions obscure which product boundary is actually broken.
+- Minimal trigger: Run `npm test` from `aether-link-app` on the current supported x86 source tree.
+- Root cause and contributors: Standalone `.test.mjs` scripts were auto-collected as empty Vitest suites; several tests retained obsolete command order, variable names, automatic clipboard state, Firestore mocks, Rust filter names and mobile selectors. The host-architecture smoke also treated a missing unapproved x64 runtime as the supported x86 release result.
+- Fix commit(s): Current scoped working-tree test repair; no product build or deployment.
+- Permanent guard: Keep standalone browser programs outside Vitest discovery, assert current user-visible contracts, run the approved x86 runtime unconditionally, and report optional x64 availability without claiming it is the shipped artifact.
+- Regression proof: `npm test` passed 139 files and 865 tests with the emulator-gated integration and unavailable optional x64 success case intentionally skipped and no standalone empty-suite errors. Explicit clipboard/IME, mobile-controls, mobile-gesture, mobile-session-tools and desktop-keyboard browser programs passed; the separate device-organization browser flow passed. The skipped Firestore integration then passed separately 1/1 under the emulator; approved x86 runtime checks passed.
+- Release proof: Not applicable; no runtime artifact changes from this test repair.
+- Remaining blocker: None for test-runner ownership. User-visible installed-device and external-network gaps remain tracked by their product outcomes.
+
+## INC-20260914-053: Local Vite audit command forwarded options incorrectly
+
+- Detected: 2026-09-14 while starting the temporary browser-audit server.
+- Severity: P3 verification command only; no product or repository state changed.
+- Affected: One local attempt to start Vite on port 5175.
+- Status: Corrected immediately.
+- User-visible symptom: The first start attempt exited with `CACError: Unused args: 5175`; no app server was started by that command.
+- Root cause and contributors: The npm-script invocation was parsed by the current PowerShell/npm combination so `--host` and `--port` became positional arguments.
+- Fix commit(s): Not applicable; execution correction only.
+- Permanent guard: Invoke the local Vite executable directly with `--host=<value>` and `--port=<value>` when a fixed audit port is required.
+- Regression proof: Direct Vite startup reported ready on `http://127.0.0.1:5175/`; the device edit/group/duplicate-update browser check passed, and the temporary server was then stopped.
+- Release proof: Not applicable.
+- Remaining blocker: None.
+
+## INC-20260914-054: Emulator runtime cleanup preceded gated-test inventory
+
+- Detected: 2026-09-14 during whole-product audit cleanup.
+- Severity: P3 verification efficiency; no product or repository state changed.
+- Affected: Temporary Microsoft OpenJDK 21 download used by local Firestore checks.
+- Status: Corrected in the same audit.
+- User-visible symptom: The approximately 200MB temporary JDK archive had to be downloaded a second time before the emulator-gated integration test could run.
+- Root cause and contributors: Temporary dependency cleanup ran after the rules script but before identifying every test guarded by `FIRESTORE_EMULATOR_HOST`.
+- Fix commit(s): Not applicable; audit workflow correction only.
+- Permanent guard: Inventory environment-gated tests before acquiring temporary runtimes, run all tests sharing that runtime in one batch, then clean the verified temporary paths once.
+- Regression proof: The command deletion recovery integration passed 1/1 under the second and final runtime session; the extracted JDK, ZIP and generated emulator log were then removed and their absence checked.
+- Release proof: Not applicable.
+- Remaining blocker: None.
+
+## INC-20260914-049: PC Viewer keyboard ownership was lost outside the session panel
+
+- Detected: 2026-09-14, after the user reported that PC Viewer mouse control worked but keyboard input did not.
+- Severity: P1 remote input unavailable.
+- Affected: PC Viewer WebView keyboard focus and the active remote-session control channel. Android explicit-keyboard behavior is excluded.
+- Status: Source repair and focused browser/IME regressions verified; the running PC Viewer v0.1.90 is unchanged.
+- User-visible symptom: Remote mouse commands operate the PC, but typing in the PC Viewer produces no remote key or text input.
+- Evidence: The installed Agent log records current-session mouse `Inject Success` entries while the last key/text injection predates the current sessions. The control channel is open, so the failure occurs before command transmission. The recently published Android v0.1.93 and Hosting assets did not replace the installed PC Viewer v0.1.90 executable.
+- Root cause and contributors: Keyboard handlers existed only on the remote session panel. If WebView DOM focus fell to the document body or another non-panel target after a window/focus transition, no handler owned the event; mouse input remained unaffected because the canvas sends pointer commands directly. Existing tests exercised handler logic but not this lost-focus boundary.
+- Fix commit(s): Current scoped source repair in the working tree; no PC build, install or release performed.
+- Permanent guard: While one desktop session is active, recover only otherwise-unowned window key events into that session and restore the hidden IME sink. Ignore events already handled inside the panel and preserve local form/button ownership. Disable this recovery for Android.
+- Regression proof: `node scripts/verify-desktop-keyboard-recovery.mjs` passed real Chromium focus loss/recovery, local-input exclusion, disabled mobile-equivalent behavior and no duplicate panel events. The existing IME/Enter/Ctrl/clipboard script passed with its actual event-normalization helper, `remoteSessionLayout.test.ts` passed 22/22, and TypeScript passed.
+- Verification correction: The first disabled-state browser assertion ran before React completed listener cleanup; waiting for the rendered state removed the false failure. The existing standalone IME script also requires the TypeScript loader rather than plain Node or a Vitest suite wrapper. Neither issue changed product behavior.
+- Remaining blocker: Build and install a separately authorized PC Viewer update, then verify English/Korean typing, Enter, modifiers and reconnect from the user's second PC. Source/browser proof cannot change or certify the currently running v0.1.90 binary.
+
+## INC-20260912-048: Android remote viewport omitted native insets and complete touch affordances
+
+- Detected: 2026-09-12, after live video reception was restored.
+- Severity: P1 usability; video is visible but system UI overlaps content, no pointer is shown, Windows-key controls can reopen IME, and only part of the black margin accepts local gestures.
+- Affected: Android Viewer WebView remote-session viewport and mobile control toolbar in portrait and landscape.
+- Status: Focused automated regression verified; signed v0.1.93 build, Hosting publication and installed-device verification pending.
+- User-visible symptom: Remote pixels begin under the Android status bar, the remote pointer is invisible, Fn/Ctrl/Alt/Shift can open the software keyboard, and landscape black margins cannot all be used for pan or pinch.
+- Minimal trigger: Connect from the Android Viewer, rotate once, tap a Windows modifier, and try to pan or pinch from each black margin around the fitted remote image.
+- Root cause and contributors: target-SDK 35 WebView content had no native system-bar/cutout inset handling; mobile input retained no visible normalized pointer; toolbar focus policy did not explicitly revoke IME ownership for non-keyboard controls; the gesture layer existed only as a portrait bottom strip.
+- Fix commit(s): Current scoped working-tree repair for Android Viewer v0.1.93; no commit or PC release has been created yet.
+- Permanent guard: apply native system-bar and cutout padding without duplicating `adjustResize`; render the Viewer-controlled pointer from normalized remote coordinates; make keyboard ownership explicit; derive transparent gesture hit regions from every margin around the transformed canvas in both orientations.
+- Regression proof: TypeScript passed; connected-session layout passed 22/22, including Android Back scope handoff without session close; actual App mobile layout passed five viewport sizes; rendered mobile controls passed three viewport sizes; portrait/landscape gesture geometry and cursor alignment passed; API 35 Robolectric verified status-bar/cutout padding without duplicate IME padding plus 2,000ms same-scope Back behavior, and Android Viewer Java compilation passed.
+- Release proof: 2026-09-12 signed Agent/Viewer/Control Add-On v0.1.93 build passed v2 signature and JNI mapping checks. Firebase Hosting publication completed; live update metadata and all three downloaded ZIP SHA-256 values matched, `/viewer` returned 200 with its new bundle, and all v0.1.92 immutable ZIP URLs remained available. No PC installer, GitHub release or Git push was created.
+- Remaining blocker: Install the resulting Viewer APK and check status-bar/cutout spacing, IME behavior, pointer alignment, rotation, and margin gestures on the user's Android device. The local pointer does not claim synchronization with an independently moved physical mouse at the remote PC.
+
+## INC-20260912-047: Capture first frame blocked by idle synchronous duplex read
+
+- Detected: 2026-09-12, Android Viewer shows 59F19451 but 82220F6D remains black.
+- Severity: P1, authenticated remote session connects without visible desktop.
+- Status: Native source repaired, focused regression verified, i686 protected runtime installed, and Android frame reception confirmed by the user on 82220F6D.
+- Evidence: Live 82220F6D session mtxdebk8-1x0rt4e opened tile/control/file channels and kept capture client/worker running. Unlike the earlier session, no EPIPE occurred. EPIPE handling alone was not the cause or a sufficient repair.
+- Root cause: Capture proxy, broker relay and worker stdio duplicate synchronous duplex pipe handles. Pending control reads serialize writes on the same Windows file object, blocking unsolicited frames. Existing input request/response tests did not exercise idle control plus independently produced frames.
+- Permanent guard: Overlapped named-pipe IO with per-clone events and completed operations before buffer release. Bridge worker stdio through separate synchronous anonymous input/output pipes. Preserve all named-pipe ACL, executable identity, session and command allow-list checks; add no polling or network request.
+- Regression proof: The real Windows 128KiB unsolicited-first-frame test failed before the repair with a 3-second timeout and passed afterward. Fifteen i686 release-profile secure_capture tests pass (one separate live-input test ignored), including 1MiB worker stdio, controls, peer-close EOF and three fresh connections; existing two-pipe mouse/keyboard exchanges also pass. Warnings-denied i686 Clippy passed.
+- Local application proof: 2026-09-12 elevated repair stopped the Agent and SYSTEM broker, verified backup/staged/installed SHA-256, replaced only `Program Files (x86)\\WonRemote Agent\\bin\\wonremote-poc.exe`, then restarted both tasks. Installed hash is `F1DF651A9D9910B832870A2F2FBF7FFB6BFDFEAC0DCBBF8F94ADDD4CCB2DF30A`; the previous `DF46D8856268AED63E653AA82C4D06E12D686348FD0C5E8C6961B4CA25A870C0` is retained as a protected-dir backup. Agent heartbeat and active-session recovery logged after restart.
+- Physical frame proof: After reconnecting from Android, the user reported that screen reception works. This confirms the reported 82220F6D first-frame symptom for the current connection, not every reconnect or monitor path.
+- Release proof: No new installer or public deployment yet. Local repair is not a signed public release.
+- Remaining proof: Repeat reconnect and monitor switching on 82220F6D and confirm 59F19451 remains working; PIN and unrelated older gaps remain open.
+
 ## INC-20260909-007: Installer stop left a valid secure-capture task idle
 
 - Detected: 2026-09-09
@@ -1517,3 +1881,264 @@ This also covers development-process escapes: missed requirements, incomplete pl
 - Regression proof: Corrected root reads and quoted branch inspection completed; no product file was changed by either failed command.
 - Release proof: Not applicable; no v0.1.91 installer was built or deployed at this point.
 - Remaining blocker: None for these command errors; the normal v0.1.91 build and release checks continue.
+
+## INC-20260909-036: Isolated release worktree exceeded the native Windows build path limit
+
+- Detected: 2026-09-09.
+- Severity: P3 build-environment failure; no release artifact was produced.
+- Affected: First v0.1.91 x86 installer build in the isolated release worktree.
+- Status: corrected by moving the isolated build to a short absolute path before retry.
+- User-visible symptom: The release command stopped while CMake compiled turbojpeg because generated MSBuild paths exceeded the Windows path limit.
+- Minimal trigger: Build the x86 native runtime from `C:\Users\qpalz\Documents\wonremote-release-0191`, whose Cargo/CMake output nesting exceeds the compiler path limit.
+- Root cause and contributors: The clean-worktree release strategy used a descriptive directory name without accounting for deeply nested CMake and MSBuild temporary paths.
+- Fix commit(s): not applicable; execution-path correction only.
+- Permanent guard: Use a short drive-root release worktree path for Windows native builds and retain the original dirty worktree untouched.
+- Regression proof: The failure identifies the generated path limit; the retry uses `C:\wr91`, reducing the fixed worktree prefix by more than 35 characters.
+- Release proof: Not applicable; the failed worktree did not produce or publish v0.1.91 artifacts.
+- Remaining blocker: Rebuild and publish from the short clean worktree.
+
+## INC-20260909-037: Shared dependency junction did not contain the local Tauri CLI
+
+- Detected: 2026-09-09.
+- Severity: P3 isolated-build setup failure; no release artifact was produced.
+- Affected: Second v0.1.91 x86 installer build attempt in the short worktree.
+- Status: corrected by installing dependencies inside the isolated worktree instead of sharing an incomplete dependency directory.
+- User-visible symptom: `npx tauri` resolved the unrelated public `tauri` package because the shared junction had no local `.bin\\tauri.cmd` or `@tauri-apps/cli` entry.
+- Minimal trigger: Reuse the source worktree's empty or incomplete `node_modules` directory through a junction in a clean checkout.
+- Root cause and contributors: The original build environment obtains its CLI through a different local dependency state, so checking only that the directory existed was insufficient.
+- Fix commit(s): not applicable; isolated build setup correction only.
+- Permanent guard: Install the lockfile dependencies in each isolated release worktree and verify the local Tauri CLI path before starting installer packaging.
+- Regression proof: The failed worktree lacked both expected CLI paths; the retry removes only its temporary junction and uses `npm ci` from the committed lockfile.
+- Release proof: Not applicable; the failed attempt did not produce or publish v0.1.91 artifacts.
+- Remaining blocker: Restore isolated dependencies, rebuild and publish from the short clean worktree.
+
+## INC-20260912-046: Mobile settings reuse an unbounded desktop popover
+
+- Detected: 2026-09-12 user Android screenshot.
+- Severity: P1 remote-control usability regression.
+- Affected: Android Viewer settings and primary input toolbar.
+- Status: Source and browser boundary verified; installed Android and release pending.
+- User-visible symptom: Desktop toolbar stacks above mobile controls; nested tools extend beyond the left viewport with clipped text.
+- Minimal trigger: Portrait remote session, open mobile settings then desktop tools.
+- Root cause and contributors: Mobile settings exposed the full desktop bar as another flex row and retained an anchor-relative desktop popover. Earlier isolated control tests did not render the App toolbar/full CSS together. Flex shrinking also collapsed display settings during the first overlay implementation; screenshot review caught it.
+- Fix commit(s): uncommitted.
+- Permanent guard: Bounded scrollable mobile overlay independent of canvas/toolbar sizing, inline tools, exclusive Fn/settings and minimum touch sizes. Actual App toolbar JSX and full stylesheet exercised together, including noncollapsed display settings and button reachability.
+- Regression proof: node scripts/verify-mobile-session-tools.mjs passed five viewports; node scripts/verify-mobile-controls.test.mjs passed three input viewports; tsc --noEmit passed. Screenshots at 360x800/800x360 inspected. Initial panel-toggle test was corrected to await React effect completion rather than inspect before its commit.
+- Release proof: None yet. User requests Android build/deploy via GPT-5.6 Terra low.
+- Remaining blocker: Installed Android keyboard/transport effects remain unverified; existing release gates and signing must be checked before publication.
+
+## INC-20260912-045: Deleted command acknowledgement blocks current refresh and input reception
+
+### Android follow-up (2026-09-12)
+
+- Affected: Android AgentRepository pending-command listener; Viewer and control-addon do not own this query.
+- Cause: Whole-snapshot batches could overlap; IDs were released before dispatch, a deleted document failed the entire acknowledgement, and removing the listener did not cancel pending completion callbacks.
+- Permanent guard: AgentService-owned subscription on Android main executor; ADDED-only ID reservation through dispatch; one serialized atomic ACK; NOT_FOUND-only server refresh and one atomic retry restricted to original IDs; terminal error/stop closes queue and ignores late tasks. Distinct IDs remain distinct input events. No persistent cross-process exactly-once claim.
+- Regression proof: AgentCommandSubscriptionTest initially hit the JVM's unimplemented Android Looper, not a product failure; Robolectric supplies Android lifecycle behavior instead of silencing exceptions. Final :agent:testDebugUnitTest selection passed 18 tests (15 command, 2 quota, 1 update), including main-looper, 24h idle/remount, quota, expiry and bounded recovery. Actual Task/main-looper with mocked Firestore request boundaries; no real Android server/device proof. Mockito/Robolectric are test-only dependencies and are not included in APK runtime.
+- Release proof: No APK packaging, installation or release in this change. ADB device inventory is empty; SDK has no installed emulator/AVD. Installed Android gesture/key effects and reconnect remain unverified.
+- Fix commit(s): uncommitted; prior PC work preserved.
+
+
+- Detected: 2026-09-12 while resuming unfinished input/presence repair.
+- Severity: P1 for command reception interrupted by a deleted acknowledgement target.
+- Affected: Agent Firebase listener and explicit poll sibling; Viewer manual refresh and reliable input fallback depend on these callbacks.
+- Status: Source and local Firebase integration verified; installed cross-PC/APK proof remains open.
+- User-visible symptom: Historical installed NOT_FOUND acknowledgement logs precede subscription restarts; manual Viewer refresh can time out without a current response.
+- Minimal trigger: Deliver a snapshot of an older command and a fresh refresh request, then delete the older document immediately before its acknowledgement batch commits.
+- Root cause and contributors: One missing target rejects the whole batch. Complete snapshots also requeue unchanged pending commands, and queued work continued after terminal callback failure. An intermediate per-document recovery was rejected during review because failure midway could acknowledge only a prefix without delivering it; the final retry is atomic.
+- Fix commit(s): Uncommitted working-tree repair; no public release.
+- Permanent guard: Normal batch unchanged. Typed not-found alone permits one server pending-query refresh and one atomic retry restricted to original IDs. Never recreate deleted commands. Queue only added documents, deduplicate in-flight IDs and stop callbacks/writes on cancellation or permission/quota failures.
+- Regression proof: 25 related request/presence tests passed, plus one added 50-command/remount budget test; TypeScript passed. Real SDK 12.14.0/emulator 1.22.0 under unchanged repository rules passed deletion-before-commit, correlated Viewer-visible heartbeat, subsequent input callback, unauthorized-read rejection and cleanup. New integration test is loopback-only and explicitly enabled by FIRESTORE_EMULATOR_HOST.
+- Release proof: None; no build, deployment, installed-agent restart or production load.
+- Remaining blocker: Installed cross-PC/APK refresh and actual input, reconnect/reboot/PIN pixels, plus prior release/signing requirements. Local callbacks are not native input proof.
+- Test environment: Emulator 1.22.0 requires Java 21; default Java 17 was incompatible. Korean-locale emulator resource failure was fixed only in the test launcher with -Duser.language=en -Duser.country=US, without changing system locale or rules. SHA-256-verified portable JRE resides under ignored .codex-tmp/jre21-command-recovery. Emulator was shut down after the successful run.
+
+## INC-20260912-044: Duplicated instructions retain obsolete worker and verification mandates
+
+- Detected: 2026-09-12 during the user-requested general development guide consolidation.
+- Affected: Development guidance, handoff and reporting; no product runtime changed.
+- Cause: Several active documents copied the same quality/release rules while retaining conflicting worker scopes, fixed delegation quotas, mandatory idle-worker work, repeated local re-verification and per-report remote fetch. Old version/test counts appeared alongside active instructions.
+- Permanent guard: One standalone general guide, short legacy entrypoint links, separate project constraints and clearly historical handoff. Preserve existing commit/security/release gates. Add no new automatic checklist layer.
+- Proof: Editorial consolidation completed; 24 local links valid; historical handoff equals its original text after newline normalization; existing policy-wiring assertion passed once. Current contract and incident history stay open where previously unverified.
+- Status: Documentation consolidation verified. This does not resolve or certify any previous product defect.
+- Remaining physical verification: None for documentation organization; existing product hardware and deployment gaps are unchanged.
+
+## INC-20260912-043: Nested verification repeats eight existing regression suites
+
+- Detected: 2026-09-12, while auditing the user's report of unnecessary automatic verification.
+- Cause: src/releaseBoundary.test.ts launches a nested Vitest run of eight suites already discovered by the outer full run; its only assertion checks for a test-runner output heading.
+- Permanent guard: Remove only this duplicate wrapper. Keep all eight original suites and select them directly with npm run test:release-boundaries when relevant. AGENTS.md requires scoped checks and recovery of recorded evidence after compaction, without a new automatic checklist layer.
+- Proof: Before editing, vitest list --filesOnly discovered both the wrapper and original suites. After editing, discovery returns 142 files, no wrapper and each of the eight originals exactly once. The corrected packaging file passed all 67 tests; combined with the unchanged successful suites from the initial run, all 112 original assertions have passing evidence.
+- Initial direct run: Eight files ran once, 111/112 assertions passed. The remaining failure was a source-text packaging assertion matching inject_input inside the trailing Rust cfg(test) live probe added in the earlier input repair, not a production broker call.
+- False-positive repair: Restrict that one no-direct-injection assertion to the production portion preceding the trailing cfg(test) module. Keep the prohibition, other identity/ACL/network assertions and real input tests intact. Rerun only the affected assertion; do not repeat the successful seven suites.
+- Command note: npm consumed the attempted -t filter during the follow-up, running all 67 tests in the selected file instead of one. All passed; no further run was needed. Use node node_modules/vitest/vitest.mjs run <file> -t <name> for exact test-name filters in this environment.
+- Boundaries unchanged: Product runtime, intended regression/security conditions, commit/release gates, cloud traffic and installed applications. No build or deployment.
+- Remaining physical verification: None for test orchestration; earlier product hardware/release gaps remain open in CHANGE_CONTRACT.json.
+
+## INC-20260911-042: Protected input relay hangs despite a connected Viewer
+
+- Detected: 2026-09-11 from installed logs and elevated input-server probe.
+- Severity: P1 keyboard and mouse unavailable.
+- Affected: PC Agent input broker shared by PC and Android Viewers.
+- Status: Ordered relay and input desktop access repaired; installed protected native binary updated and real Windows test window received left/right/wheel/F12. Full cross-PC/APK path remains unverified.
+- User-visible symptom: Video connects but keyboard and mouse do not operate the remote PC.
+- Minimal trigger: Open input-server and send a valid JSONL request through the installed broker.
+- Root cause and contributors: Broker/client clone synchronous duplex pipe handles then read and write concurrently; pending synchronous reads can serialize writes on the same pipe file object. Existing tests covered channel creation and callbacks rather than the complete input exchange. Non-elevated task enumeration also hid the SYSTEM task, causing an incorrect initial missing-task diagnosis.
+- Fix commit(s): pending.
+- Permanent guard: Use ordered request/response input exchanges and test actual named-pipe roundtrips; inspect SYSTEM task state with elevated diagnostics. Input attachment requests DESKTOP_JOURNALPLAYBACK, while capture retains narrower rights. Preserve peer image/LocalSystem checks and restore the existing token privilege used temporarily for broker identity queries.
+- Regression proof: All 48 i686 release native tests passed, including keyboard/mouse JSONL roundtrips through two real synchronous pipes. Installed corrected runtime returned a correlated response where the old runtime timed out. F24 was an unsupported diagnostic key; F12 release reached SendInput and returned win32_error=5, elevated=true, integrity=System. No actual keyboard/mouse success claimed.
+- Additional root cause and proof (2026-09-12): Live F12 key-up succeeded before OpenInputDesktop attachment but failed afterward with win32_error=5. Input-specific DESKTOP_JOURNALPLAYBACK access changed that live test from failure to success. An elevated client also could not query the SYSTEM broker identity without temporarily enabling its existing SeDebugPrivilege; this is scoped to verification and does not remove identity or pipe ACL checks.
+- Release proof: Earlier failed replacements were rolled back; the latest local replacement passed and remains installed. verify-installed-input.ps1 recorded actual left/right/wheel/keyboard events and eight successful replies through the installed broker. No public release. First replacement encountered a file lock; process termination now waits and tolerates already-exited processes before copying.
+- Test limitations: Early GUI attempts inherited hidden startup state or lost foreground, so successful responses alone were rejected. The harness now shows the test window explicitly, checks target hit-testing and records actual window messages. A later instrumented run passed all four event categories; this does not prove the remote Viewer transport.
+- Remaining blocker: Verify keyboard/mouse from another PC Viewer and installed APK, plus reconnect/reboot. Neither the pipe roundtrip nor the local test window alone proves that complete path.
+
+## INC-20260911-041: Android mouse toolbar verification omitted touch activation
+
+- Detected: 2026-09-11, user reported APK clicks and wheel do not work.
+- Severity: P2 remote input usability.
+- Affected: Android Viewer toolbar and initial remote image sizing.
+- Status: Touch activation hardened; physical remote input remains unverified.
+- User-visible symptom: Mouse controls appear unresponsive and connection does not automatically fit image width.
+- Minimal trigger: Tap toolbar on Android or reconnect with saved zoom.
+- Root cause and contributors: Prior tests used desktop mouse click callbacks only; touch activation relied on compatibility click after cancelled pointerdown. Initial zoom reused desktop preferences and canvas was height-constrained. Actual device failure cause is not yet proven.
+- Fix commit(s): pending.
+- Permanent guard: Activate touch buttons on pointerup with compatibility-click deduplication, test touch-generated mouse commands, and initialize mobile zoom to width fit.
+- Regression proof: verify-mobile-controls.test.mjs passes native emulated taps with exact left/right down/up and wheel commands on three viewports; verify-mobile-gesture.test.mjs passes 1920x1080 width-fit and local gesture checks; tsc passes.
+- Release proof: Not deployed in this follow-up yet.
+- Remaining blocker: Installed APK to remote PC input, reconnect and rotation verification.
+
+## INC-20260910-040: Android Viewer reused desktop controls and automatic IME focus
+
+- Detected: 2026-09-10, user portrait/landscape and keyboard screenshots.
+- Severity: P2 remote control usability.
+- Affected: Android Viewer WebView and mobile remote session UI.
+- Status: Firebase Android update and web Viewer deployed; physical APK validation pending.
+- User-visible symptom: Clipped controls, whole-page zoom, unsolicited keyboard and obscured remote image; mouse and Windows key controls missing.
+- Minimal trigger: Open a remote session on a narrow phone, tap remote canvas or open keyboard.
+- Root cause and contributors: Desktop-sized toolbar reused on mobile; canvas and session activation focus hidden IME; viewport fixed to 100dvh instead of actual visible area; native WebView page zoom not explicitly disabled.
+- Fix commit(s): pending.
+- Permanent guard: Dedicated mobile input toolbar outside canvas, explicit IME focus button, portrait visualViewport listener with cleanup, fixed touch target dimensions, Windows key groups and modifier release.
+- Regression proof: node scripts/verify-mobile-controls.test.mjs passed real React controls in Edge at 320x640, 360x800 and 800x360: clicks, scroll, explicit focus, stable zoom dimensions, modifier/chord release and simulated 220px/330px keyboard viewport changes. npx tsc --noEmit passed. The local test server initially omitted a UTF-8 Content-Type, so Korean accessible-name lookup failed; explicit HTML charset fixed the harness.
+- Release proof: 2026-09-11 Firebase Hosting deployment completed. The public Android manifest returns Agent, Viewer and Control Add-on versionName 0.1.91/versionCode 1091; home and /viewer return HTTP 200.
+- Remaining blocker: Full session viewport/IME tests and physical Android keyboard sizing, orientation, multi-touch, remote PC input.
+
+## INC-20260910-039: Capture stdin error terminates Agent after connection
+
+- Detected: 2026-09-10 from installed 0.1.90 log.
+- Severity: P1 remote session unavailable.
+- Affected: PC Agent capture control for profile, keyframe and diagnostic commands.
+- Status: Source fix and regression coverage completed; fresh x86 Agent bundle installed locally on 2026-09-12. Presence recovery and cross-PC video remain unverified.
+- User-visible symptom: Viewer connects without frames and refresh later reports offline.
+- Minimal trigger: Capture stdin closes while Viewer sends monitor/profile commands after data channels open.
+- Root cause and contributors: Capture stdin has no error listener; synchronous try/catch cannot catch asynchronous EPIPE. Every capture command shares this unsafe stream. Separate NOT_FOUND acknowledgement failures also interrupt command reception.
+- Fix commit(s): pending.
+- Permanent guard: Own stdin error handling per capture child, retain it through closure, route all writes through the guarded writer, and preserve the existing generation-scoped restart path.
+- Regression proof: 2026-09-11 captureControl.test.ts uses an actual Writable failing asynchronously with EPIPE and verifies the stdin error listener receives it; Agent command regressions passed 59/59 and the release boundary suite passed.
+- Release proof: Android/PWA Firebase deployment completed, but PC installers were not published because the v0.1.90 update-manifest signing private key remains unavailable.
+- Local repair (2026-09-12): Fresh x86 bundle installed at protected agent/index.mjs with backup and matching SHA256; exactly one Agent Node process after restart, heartbeat accepted and command listener active. The installed GUI input probe passed again after restart. No claim that a remote monitor/profile change has yet proven video continuity.
+- Remaining blocker: Installed cross-PC frames and explicit presence refresh, including deleted command acknowledgement recovery.
+
+## INC-20260909-038: Temporary worktree cleanup removed the local update signing key
+
+- Detected: 2026-09-09.
+- Severity: P1 update-signing continuity failure.
+- Affected: The private key required to publish any post-v0.1.90 update that existing WonRemote installations can verify.
+- Status: v0.1.90 remains deployed and byte/signature verified; later release publication is blocked pending key recovery or an explicit key-rotation decision.
+- User-visible symptom: Existing 0.1.89 clients can update to the already published signed v0.1.90 release, but a new signed v0.1.91 manifest cannot be generated with the bundled public key.
+- Minimal trigger: Remove a temporary Git worktree that contains a junction to the source `.local-run` directory; the worktree removal follows the junction contents instead of preserving the target cache and key.
+- Root cause and contributors: The isolation procedure reused the mutable `.local-run` directory through a junction. Cleanup treated the junction target as worktree content, deleting the local signing key and build cache.
+- Fix commit(s): pending; recovery requires either restoring the original private key or intentionally rotating the trust key.
+- Permanent guard: Never junction a mutable source cache or secret directory into a disposable worktree. Copy only nonsecret build tooling to an isolated directory, and verify the signing-key path before creating or removing any release worktree.
+- Regression proof: The original expected key path and all searched user data locations no longer contain `update-signing-private.pem`; GitHub v0.1.90 still exposes its three uploaded assets and signed manifest.
+- Release proof: v0.1.90 Viewer, Agent and manifest were uploaded, downloaded, checksum-verified and remain public; Firebase Viewer/Agent redirects resolve to the latest release and Android update metadata returns HTTP 200.
+- Remaining blocker: Recover the original private key from an external backup, or explicitly approve public-key rotation knowing existing installations cannot authenticate the first post-rotation update automatically.
+
+## INC-20260914-077: Native export client integration assumptions
+- Agent nowrap fixture: Hidden local-server field in Firebase mode has zero rendered lines. Limit line-count assertions to visible elements; retain checks for the same field in local mode and do not unhide it to satisfy tests.
+- Agent compact fixture: App imports a CSS module transitively; esbuild in-memory test bundle lacked outfile, causing import resolution failure. Configure a virtual output name and explicitly select JS output; product code and layout assertions unchanged.
+- Mobile status-row integration: Added20px status row with4px bottom margin but tools-overlay offset still assumed old control height. Full Viewer browser sweep37/38 passed; existing popup-bound test failed by16px. Include status height only when status row exists in both orientation calculations; retain overlay assertion and visual check, no blanket extra padding.
+- Portrait screenshot interpretation: Width-fit browser fixture resized desktop Chromium without mobile emulation, so screen.orientation remained landscape at a portrait viewport. Centered output was not sufficient proof of Android product defect. Add production viewport meta, opt-in mobile/touch emulation and explicit orientation/top bounds before judging layout; retain real landscape CSS collision evidence separately.
+- Mobile width-fit cascade: Actual App landscape test revealed canvas narrower than available width despite mobile width100% rule. Desktop focus/fullscreen canvas width:auto!important took precedence. Scope more-specific important width/height overrides to mobile-width-fit preview only, preserving desktop behavior; actual decoded-pixel and portrait/landscape geometry tests plus visual checks required.
+- First-use monitor selection: Effect reused the immutable absence of saved preferences as a reason to reset every selection to Agent active monitor. Browser RED showed selecting0 immediately reverted1. Initialize first monitor once; later effect only replaces an unavailable index. Browser selection/reconnect guard required, existing storage failure and quality isolation retained.
+- Preference read preservation: First storage-error repair treated failed read as missing settings and allowed effect to overwrite unread saved values. Browser RED showed saved zoom3/monitor2 replaced by fallback zoom1/monitor0. Retain failed-read marker, suppress writes for that session and show unsaved status; remount retries reading normally. Browser preservation assertions cover both read and write failures, without weakening normal device persistence tests.
+- Preference failure fixture typing: Browser storage override initially omitted key/rest parameter types. Typecheck caught implicit-any despite passing runtime tests; add string/string[] annotations without changing exercised behavior.
+- Device preference storage follow-up: Unguarded localStorage read during render and write in effect unmounted the remote session when storage threw. Real App browser RED reproduced both getItem/setItem failures with missing session controls. Read once lazily with default fallback; contain write failure and show unsaved-settings status while retaining live state, without automatic retries. Focused browser recovery/per-device persistence tests and typecheck required; installed WebView storage remains unverified.
+- Phone resume follow-up: Search placeholder change left the existing 24h idle/refresh test targeting obsolete text. Align that locator only; retain all request-count and idle assertions. Earlier phone-stage zero budget described incremental traffic, not total existing save traffic; resume review explicitly records the unchanged metadata and rollout paths and does not treat that zero as total billing evidence.
+- Phone search fixture follow-up: A broad .table-row count included table headers/history rows. Scope the assertion to device-table non-header rows so it tests actual matching devices rather than unrelated layout elements.
+- Phone editor fixture follow-up: Test metadata mock copied undefined desktopName over the existing name, unlike the production updater's string checks, making the named row disappear. Preserve omitted properties in the mock; keep real UI save/search/clear assertions intact.
+- Device metadata lookup follow-up: Guessed a nonexistent metadata helper path and repeated a literal wildcard path error. Located actual helpers through directory-scoped rg in agentRegistry.ts. No product mutation from lookups; use discovered definitions rather than guessed file names.
+- Incoming-progress mobile test follow-up: Desktop status subtitle is intentionally hidden by compact mobile layout; waiting for that text to be visible was an invalid mobile readiness condition. Wait for the active file receiver callback, then require the actual progress control to be visible/in viewport. Do not unhide desktop-only UI to satisfy the test.
+- Resume UI follow-up: General input callback can swallow transport failure, leaving a new retry button pending without knowing it was not sent. Resume is capability-bound to the live WebRTC channel; inspect readiness/send result directly and show retryable failure without a Firebase fallback. Actual App browser send-failure/retry/download regression and TypeScript passed; unrelated keyboard path unchanged.
+- Resume fixture type follow-up: ACK table always supplied receivedChunks, but its default object also declared the property; TypeScript flagged duplicate overwrite despite runtime pass. Remove only redundant fixture default, keeping every rejection assertion; rerun typecheck.
+- Sender resume follow-up: Receiver persisted-prefix recovery was not connected to sender ACK validation; a correct16-chunk receipt during first8-chunk retry was rejected. Real disk roundtrip RED reproduced it. Accept only bounded partial-prefix negotiation on the first window, continue full source hashing, omit stored middle payload and retain strict final completion validation. Expanded sender18tests passed, including changed skipped bytes rejected without final output; channel3tests also passed with same source. Durable source/restart orchestration remains incomplete.
+- Large-file lookup follow-up: Repeated an invalid literal PowerShell wildcard path while finding the limit; directory-scoped results still located fileTransferPolicy.ts and its500MiB limit. Subsequent lookups must use directory plus -g only; no product mutation from the lookup.
+- Frame baseline follow-up: A non-keyframe partial resize immediately resized/cleared the visible canvas before a complete new picture existed. Actual App browser RED proved width changed32to64 with only one32px tile. Require the existing atomic full-coverage decode path for initial/size-changing frames regardless of keyframe flag; keep prior pixels until commit and invalidate old asynchronous delta draws after baseline replacement. Browser GREEN covers initial/resize completeness, unchanged-size delta, retained pixels, recovery and delayed old delta after replacement; TypeScript passed. Physical peers pending.
+- Recent-history test follow-up: The mixed chronology fixture mutated the previously returned array in place, unlike fetchFirebaseConnectionHistory's mapped server response. React correctly retained the memo for identical state identity. Replaced the fixture array on the next response; kept product memoization and timestamp assertions intact. Focused actual App browser test and TypeScript passed; no production writes.
+- Lookup follow-up: Searched firestore.rules under app directory before locating the actual repository-root file; corrected using rg --files. No rule modification or production access resulted.
+- Rollback UI follow-up: Screenshot exposed global input sizing stretching confirmation checkbox. Fixed explicit18px checkbox dimensions and existing button styles; browser screenshot/interaction rechecked rather than assuming compile proved layout.
+- Rollback fixture follow-up: Signed test data initially omitted the existing required V1 signature and contained only V2. Kept production verification unchanged and added both signatures to the fixture before rerunning. Invalid cases now reach the intended version/product/URL checks instead of all failing on missing signatures.
+- Follow-up: Actual App browser fixture inferred empty messages as never[] and confirm as null; TypeScript caught it despite esbuild runtime pass. Explicit fixture types added; retain both runtime and type checks for this boundary. Literal wildcard search mistake repeated during rollback inspection; corrected to directory plus -g without changing product state.
+- Cause: Initial client matched native postWebMessage sender origin to the destination origin; native messages require separate source handling. A PowerShell search also repeated a literal wildcard path mistake.
+- Guard: Native exact HTTPS target origin, client current-page origin and null source/empty sender origin checks; directory plus -g for subsequent wildcard searches.
+- Proof: Client chunk/ACK/cancellation tests3 and native export tests10 pass. Actual Chromium native handshake and Android provider remain pending, not proven by fake ports.
+- Remaining: Actual App button test and physical native handoff; no release performed.
+
+## INC-20260914-079: Viewer takeover recovery and local receive destination
+- User-visible symptom: PC Viewer freezes after another viewer takes over; panel refresh cannot reconnect. Received-folder action opens remote PC instead of Viewer PC and incoming files need another save step.
+- Minimal trigger: Take over a live PC session with Android, release it, then reconnect from the stale panel; receive a remote file and open its destination.
+- Root cause and contributors: Transport refresh retained obsolete session identity and stale manual presence. Receive completion stopped at browser Blob and folder action reused remote command. Previous browser test incorrectly expected that action.
+- Fix commit(s): Uncommitted scoped repair in App.tsx, viewerFirebase.ts, viewer_downloads.rs and selected Viewer updater. Unrelated changes retained.
+- Permanent guard: Fresh authenticated session plus targeted presence refresh, loss dialog, native local-save completion and local folder IPC; signed target updater only while idle, no global fallback.
+- Regression proof: Six focused suites56 cases pass across53 initial passes and3 corrected expectations; native x86 disk test and TypeScript pass. Service/native browser endpoints are mocked, not installed proof.
+- Release proof: None. Predeploy exit1 reports active contract and missing evidence. No guard weakened or update policy/installer published.
+- Remaining blocker: Real PC/Android takeover/file transfer, installed folder dialog and filesystem compatibility, target policy publication and59F19451 bootstrap/recovery. INC-20260914-078 remains unresolved.
+
+## INC-20260914-080: IME-masked modifier keys and stale composition after shortcut
+- User-visible symptom: During Korean typing Ctrl+A inserts a character instead of selecting all; modifier and Hangul transitions feel delayed.
+- Minimal trigger: IME keydown reports key=Process, code=ControlLeft while composition remains active, followed by KeyA.
+- Root cause and contributors: Modifier physical codes were absent from normalization; composing modifier events could be classified as text. Only Enter explicitly finalized composition, leaving shortcut and Hangul boundaries without that commit.
+- Fix commit(s): Uncommitted scoped changes to App.tsx, viewerInputState.ts and remoteControlCommands.ts; prior changes retained.
+- Permanent guard: Normalize both physical modifier sides before Process fallback; exclude modifier keys from text classification; finalize composition before Ctrl/Alt/Meta, Enter and local Hangul toggle without dual local/remote IME toggles.
+- Regression proof: Actual App Chromium RED sent Process instead of Ctrl. GREEN checks exact Ctrl+A, delayed preedit suppression, local Hangul commit, Shift+Left and Ctrl+C/V;27 domain tests, focus-recovery script and TypeScript pass.
+- Release proof: Not built or deployed for this fix. Earlier0.1.94 installer predates these edits.
+- Remaining blocker: Real Windows IME/WebView and remote application verification required; browser composition events are synthetic and transport is mocked.
+
+## INC-20260914-081: Received file publication depended on hard links
+- User-visible symptom: Selected download folders on filesystems without hard-link support could reject otherwise valid received files.
+- Minimal trigger: Complete native receive into a folder whose filesystem supports rename but not hard links; physical removable/shared-device reproduction not available.
+- Root cause and contributors: Native completion used fs::hard_link for no-overwrite publication, unnecessarily requiring filesystem link support.
+- Fix commit(s): Uncommitted viewer_downloads.rs and Windows filesystem API feature selection.
+- Permanent guard: Same-directory MoveFileExW without replace/copy flags; retain destination collision loop and complete-size checks.
+- Regression proof: Real Windows x86 native test passes exact bytes, original-file preservation, staging-source removal and three concurrent same-name completions. Existing invalid-name/offset/incomplete checks retained.
+- Release proof: Not built into installer or deployed. Earlier0.1.94 artifact remains pre-repair.
+- Remaining blocker: Actual removable/network destination and installed transfer tests; full goal remains incomplete.
+
+## INC-20260914-082: Selected Viewer update stayed submitted after native failure
+- User-visible symptom: Automatic Viewer update could stop retrying for the rest of the app lifetime after failed installer handoff, despite the UI leaving updating state.
+- Minimal trigger: Start selected update, native process finishes without handoff, emit selected-viewer-update-finished, advance beyond hourly check period.
+- Root cause and contributors: Native failure cleared UI state but scheduler submitted remained true; setting submitted after awaited invoke also risked overwriting an early failure notification.
+- Fix commit(s): Uncommitted scheduler/controller callback and App listener integration.
+- Permanent guard: Mark submitted before invoke, reset only on failure, retain one-hour cooldown, ignore duplicate/disposed notifications and preserve busy/session guards.
+- Regression proof: Actual App browser RED observed1 instead of2 install attempts after cooldown; GREEN plus4 scheduler tests cover24h bound, early failure, duplicate events, slow attempts, session deferral and cleanup. TypeScript passed.
+- Release proof: Not built, published or installed. New local policy generator validated against actual client with ephemeral keys; no production policy activated.
+- Remaining blocker: Installed native update failure/restart/settings preservation and designated rollout tests deferred to final physical phase at user request.
+
+## INC-20260914-083: Selected update policy limit applied after full buffering
+- User-visible symptom: An oversized policy response could consume excess Viewer helper memory before rejection.
+- Minimal trigger: HTTP response body supplies more than64KiB without a trustworthy size header.
+- Root cause and contributors: response.text read the complete response before checking JavaScript string length instead of received byte size.
+- Fix commit(s): Uncommitted selectedViewerUpdate.ts bounded stream read.
+- Permanent guard: Fixed64KiB buffer, byte-level bound before copying each chunk, reader cancellation on failure and strict UTF-8 decoding; existing timeout and signature checks retained.
+- Regression proof: RED consumed5 pulls through EOF; GREEN cancels on third32KiB chunk. Exact64KiB signed response accepted. Policy/generator9 tests and TypeScript passed.
+- Release proof: No build or deployment; network response tests use local streams.
+- Remaining blocker: Final installed selected-update checks remain deferred, not passed.
+
+## INC-20260914-084: Lost final file acknowledgement prevented completed-prefix retry
+- User-visible symptom: Agent-to-Viewer retry could fail even though Viewer already committed and verified the complete file.
+- Minimal trigger: Drop final ACK after19 chunks, reopen Viewer IndexedDB receiver, retry same ID/source. First8 probe chunks receive complete19-chunk acknowledgement.
+- Root cause and contributors: Sender allowed only strictly partial prefix negotiation and rejected count equal to total. Initial test selected Agent disk receiver, which has different completed-transfer lifetime; corrected to actual Viewer IndexedDB boundary before changing product.
+- Fix commit(s): Uncommitted webrtcFileSender.ts and persistentFileReceiver.test.ts.
+- Permanent guard: Accept a complete prefix only with exact total/count/status, continue hashing all skipped bytes, resend final chunk and require final acknowledgement. Do not report100 percent from probe alone.
+- Regression proof: Production Node sender and real Chromium IndexedDB RED rejected completion; GREEN sends0..7 plus18, completion once, original bytes exact. Changed skipped source is rejected and prior stored file preserved.23 tests and TypeScript pass.
+- Release proof: Not built or deployed; bridge uses browser evaluation, not live WAN/installed transport.
+- Remaining blocker: Final physical interrupted-transfer/reconnect tests remain deferred under full original goal.

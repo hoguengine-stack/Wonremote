@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   appendFileTransferQueueItems,
+  awaitFileTransferReceipt,
   cancelFileTransfer,
   completeFileTransfer,
   createFileTransferQueueItem,
@@ -12,6 +13,15 @@ import {
 } from "./fileTransferQueue";
 
 describe("file transfer queue item", () => {
+  it("awaits remote confirmation and preserves early receipt or cancellation", () => {
+    const item=createFileTransferQueueItem({id:"a",fileName:"a.txt",totalBytes:10});
+    const pending=awaitFileTransferReceipt(item);
+    expect(pending.status).toBe("awaiting-receipt");
+    expect(failFileTransfer(pending,"disk full").status).toBe("failed");
+    expect(completeFileTransfer(pending).status).toBe("completed");
+    expect(awaitFileTransferReceipt(completeFileTransfer(item)).status).toBe("completed");
+    expect(completeFileTransfer(cancelFileTransfer(pending)).status).toBe("cancelled");
+  });
   it("supports immutable create, progress, completion, percent, and ETA", () => {
     const queued = createFileTransferQueueItem({ id: "transfer-1", fileName: "report.zip", totalBytes: 1_000 });
     const transferring = markFileTransferTransferring(queued, 250);

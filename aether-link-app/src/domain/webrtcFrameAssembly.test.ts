@@ -1,5 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { WebRtcFrameAssembler } from "./webrtcFrameAssembly";
+import { WebRtcFrameAssembler, hasCompleteTileCoverage } from "./webrtcFrameAssembly";
+
+describe("full frame tile coverage", () => {
+  it("accepts merged cells and clipped display edges", () => {
+    expect(hasCompleteTileCoverage(65,33,[{x:0,y:0,w:64,h:32},{x:2,y:0,w:1,h:32},{x:0,y:1,w:65,h:1}])).toBe(true);
+    expect(hasCompleteTileCoverage(64,64,[{x:0,y:0,w:64,h:64}])).toBe(true);
+  });
+  it("rejects missing, overlapping, malformed and out of bounds cells", () => {
+    const left={x:0,y:0,w:32,h:32};
+    for (const tiles of [[],[left],[left,left],[{...left,w:65}],[{...left,x:-1}],[{...left,w:16},{x:1,y:0,w:32,h:32}],[{...left,x:0.5}]]) {
+      expect(hasCompleteTileCoverage(64,32,tiles)).toBe(false);
+    }
+    expect(hasCompleteTileCoverage(32769,32,[left])).toBe(false);
+    expect(hasCompleteTileCoverage(0,32,[left])).toBe(false);
+  });
+});
 
 describe("WebRTC frame assembly", () => {
   it("waits for every initial keyframe chunk and then releases queued deltas in sequence order", () => {

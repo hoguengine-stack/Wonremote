@@ -76,4 +76,25 @@ describe("rtc transport configuration", () => {
     }, async () => { throw new Error("callable unavailable"); });
     expect(fallback).toMatchObject({ source: "static" });
   });
+
+  it("falls back to static STUN after optional dynamic credentials fail outside relay-only mode", async () => {
+    const fallback = await resolveRtcConfiguration(
+      { WONREMOTE_RTC_DYNAMIC_CREDENTIALS: "true" },
+      async () => { throw new Error("callable unavailable"); },
+    );
+
+    expect(fallback).toEqual({
+      source: "static",
+      iceTransportPolicy: "all",
+      iceServers: [{ urls: ["stun:stun.l.google.com:19302"] }],
+    });
+
+    await expect(resolveRtcConfiguration(
+      {
+        WONREMOTE_RTC_DYNAMIC_CREDENTIALS: "true",
+        WONREMOTE_RTC_RELAY_ONLY: "true",
+      },
+      async () => { throw new Error("callable unavailable"); },
+    )).rejects.toThrow("callable unavailable");
+  });
 });

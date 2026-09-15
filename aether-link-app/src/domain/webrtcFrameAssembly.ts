@@ -6,6 +6,29 @@ export interface RemoteTileFrame {
   keyframe?: boolean;
 }
 
+export function hasCompleteTileCoverage(width: number, height: number, tiles: unknown[]): boolean {
+  if (!isDimension(width) || !isDimension(height)) return false;
+  const cols = Math.ceil(width / 32), rows = Math.ceil(height / 32);
+  if (!tiles.length || tiles.length > cols * rows) return false;
+  const covered = new Uint8Array(cols * rows);
+  let count = 0;
+  for (const value of tiles) {
+    if (!value || typeof value !== "object") return false;
+    const {x,y,w,h} = value as {x:number;y:number;w:number;h:number};
+    if (![x,y,w,h].every(Number.isSafeInteger) || x < 0 || y < 0 || w <= 0 || h <= 0) return false;
+    const right = x * 32 + w, bottom = y * 32 + h;
+    if (right > width || bottom > height || (right !== width && right % 32 !== 0) || (bottom !== height && bottom % 32 !== 0)) return false;
+    for (let row = y; row < Math.ceil(bottom / 32); row++) {
+      for (let col = x; col < Math.ceil(right / 32); col++) {
+        const index = row * cols + col;
+        if (covered[index]) return false;
+        covered[index] = 1; count++;
+      }
+    }
+  }
+  return count === cols * rows;
+}
+
 interface PendingFrame {
   chunks: Map<number, unknown[]>;
   chunkCount: number;

@@ -46,6 +46,7 @@ import type {
 import { normalizeWakeMac, selectViewerWakeRelay } from "../domain/wakeRelay";
 import {
   DEVICE_CONTACT_NAME_MAX_LENGTH,
+  DEVICE_CONTACT_PHONE_MAX_LENGTH,
   DEVICE_INSTALL_LOCATION_MAX_LENGTH,
   DEVICE_NOTES_MAX_LENGTH,
   sanitizeDeviceOperationalMetadataText,
@@ -66,6 +67,13 @@ import {
 } from "../domain/webrtcControl";
 import {
   parseWebRtcFileAck,
+  isReverseFileCapability,
+  supportsReverseFileResume,
+  parseWebRtcFileStatus,
+  type WebRtcFileStatusMessage,
+  parseWebRtcFileChunk,
+  serializeWebRtcFileAck,
+  type WebRtcFileChunkMessage,
   serializeWebRtcFileChunk,
   WEBRTC_FILE_ACK_TIMEOUT_MS,
   WEBRTC_FILE_CHANNEL_LABEL,
@@ -97,6 +105,8 @@ import { getWonRemoteFirebaseServices } from "./firebaseServices";
 import { throwExplainedFirebaseAuthError } from "./firebaseError";
 import { safeAddDoc, safeBatchSet, safeBatchUpdate, safeSetDoc, safeUpdateDoc } from "./firestoreWrite";
 import type { UpdateFleetRollout } from "../domain/updateFleetPolicy";
+import { parseRolloutSelection } from "../domain/updateFleetPolicy";
+import { isHigherVersion } from "../domain/versioning";
 
 type ViewerFirebaseEnv = ImportMetaEnv;
 export type ViewerFunctionMode = "auto" | "callable" | "direct";
@@ -113,6 +123,7 @@ export async function loadFirebaseUpdateRollout(
   if (!stage) return null;
   return {
     targetVersion: data.targetVersion.trim(),
+    ...parseRolloutSelection(data.targetDeviceIds),
     stage,
     paused: data.paused === true,
     percentage: typeof data.percentage === "number" ? Math.max(0, Math.min(100, Math.trunc(data.percentage))) : 100,
@@ -126,9 +137,10 @@ export async function saveFirebaseUpdateRollout(
   const services = getViewerFirebaseServices(env);
   await safeSetDoc(doc(services.db, "configuration", "updateRollout"), {
     targetVersion: rollout.targetVersion.trim(),
-    stage: rollout.stage,
+    stage: rollout.targetDeviceIds !== undefined ? "general" : rollout.stage,
     paused: rollout.paused === true,
-    percentage: Math.max(0, Math.min(100, Math.trunc(rollout.percentage ?? 100))),
+    percentage: rollout.targetDeviceIds !== undefined ? 0 : Math.max(0, Math.min(100, Math.trunc(rollout.percentage ?? 100))),
+    targetDeviceIds: parseRolloutSelection(rollout.targetDeviceIds).targetDeviceIds ?? null,
     updatedAt: serverTimestamp(),
   }, { merge: true });
 }
@@ -160,11 +172,16 @@ export interface ViewerAccount {
   lastSignInAt: string | null;
 }
 
+export function getFirebaseViewerStorageOwner(env: ViewerFirebaseEnv = import.meta.env): string {
+  return requireCurrentUserId(getViewerFirebaseServices(env).auth.currentUser?.uid);
+}
+
 export interface ViewerWebRtcTransport {
   close: () => void;
   isControlReady: () => boolean;
   sendControl: (action: string) => boolean;
   sendFile: (input: {
+    resume?: boolean;
     file: Blob;
     filename: string;
     fileSha256: string;
@@ -439,6 +456,9 @@ export async function updateFirebaseDeviceMetadata(
       DEVICE_CONTACT_NAME_MAX_LENGTH,
     ) ?? deleteField();
   }
+  if (typeof input.contactPhone === "string") {
+    update.contactPhone = sanitizeDeviceOperationalMetadataText(input.contactPhone, DEVICE_CONTACT_PHONE_MAX_LENGTH) ?? deleteField();
+  }
   if (typeof input.installLocation === "string") {
     update.installLocation = sanitizeDeviceOperationalMetadataText(
       input.installLocation,
@@ -575,7 +595,20 @@ export async function registerFirstRunAgentWithFirebase(
 export async function openFirebaseSession(
   deviceId: string,
   env: ViewerFirebaseEnv = import.meta.env,
+  refreshPresence = false,
 ): Promise<{ session: RemoteSession; inputLog: string[] }> {
+  if (refreshPresence) {
+    const services = getViewerFirebaseServices(env);
+    requireCurrentUserId(services.auth.currentUser?.uid);
+    const ref = doc(services.db, "devices", deviceId);
+    const snapshot = await getDocFromServer(ref);
+    if (!snapshot.exists()) throw new Error("Firebase device not found.");
+    const device = mapFirestoreDevice(snapshot.id, snapshot.data());
+    const refreshed = await collectDevicePresence([device], crypto.randomUUID(), (next, fail) => onSnapshot(ref,
+      update => { if (update.exists()) next(mapFirestoreDevice(update.id, update.data())); }, fail),
+      (target, action) => enqueueFirebaseDeviceCommandDirect(target.id, action, env));
+    if (refreshed[0]?.status !== "online") throw new Error("원격 PC가 응답하지 않습니다. 다시 시도하세요.");
+  }
   return callViewerFunctionWithFirestoreFallback<
     { deviceId: string },
     { session: RemoteSession; inputLog: string[] }
@@ -666,9 +699,9 @@ export async function fetchFirebaseChatMessages(
 
 export function subscribeViewerSessionData(
   sessionId: string, onData: (data: SessionData) => void | Promise<void>, onError: (error: Error) => void,
-  options: SessionDataOptions = {}, env: ViewerFirebaseEnv = import.meta.env,
+  options: SessionDataOptions = {}, onReady?: () => void | Promise<void>, env: ViewerFirebaseEnv = import.meta.env,
 ): Unsubscribe {
-  return subscribeFirebaseSessionData(getViewerFirebaseServices(env).db, sessionId, "viewer", onData, onError, options);
+  return subscribeFirebaseSessionData(getViewerFirebaseServices(env).db, sessionId, "viewer", onData, onError, options, onReady);
 }
 
 export async function sendFirebaseClipboardText(
@@ -863,6 +896,9 @@ export async function startFirebaseViewerWebRtcTransport(
   sessionId: string,
   handlers: {
     onFrame: (frame: RemoteTileFrame) => void;
+    onFileChunk?: (chunk: WebRtcFileChunkMessage, isCurrent: () => boolean) => Promise<WebRtcFileAckMessage | null>;
+    onFileStatus?: (status: WebRtcFileStatusMessage) => void;
+    onReverseFileSupport?: (resumeSupported?: boolean) => void;
     onState?: (state: string) => void;
     onDiagnostic?: (message: string) => void;
     onError?: (error: Error) => void;
@@ -905,6 +941,8 @@ export async function startFirebaseViewerWebRtcTransport(
   let pendingControlActions: string[] = [];
   const frameAssembler = new WebRtcFrameAssembler();
   const fileAckStates = new Map<string, WebRtcFileAckMessage>();
+  let incomingFileQueue = Promise.resolve();
+  let pendingIncomingFiles = 0;
   const fileAckWaiters = new Map<string, Set<{
     minReceivedChunks: number;
     resolve: (ack: WebRtcFileAckMessage) => void;
@@ -1083,9 +1121,46 @@ export async function startFirebaseViewerWebRtcTransport(
     fileChannelOpened = false;
     const error = new Error("Viewer WebRTC file channel failed.");
     rejectAllFileWaiters(error);
+    if (!closedByCaller && !resourcesClosed) handlers.onState?.("webrtc-file-closed");
     reportDiagnostic("file-channel-error", error.message);
   };
   fileChannel.onmessage = (event) => {
+    if (closedByCaller || resourcesClosed || !fileChannelOpened) return;
+    if (isReverseFileCapability(event.data)) { handlers.onReverseFileSupport?.(supportsReverseFileResume(event.data)); return; }
+    const fileStatus = parseWebRtcFileStatus(event.data);
+    if (fileStatus) { handlers.onFileStatus?.(fileStatus); return; }
+    const chunk = parseWebRtcFileChunk(event.data);
+    if (chunk) {
+      if (pendingIncomingFiles >= 16) {
+        fileChannelOpened = false;
+        fileChannel.close();
+        rejectAllFileWaiters(new Error("Incoming file queue limit exceeded."));
+        reportDiagnostic("file-channel-error", "Incoming file queue limit exceeded.");
+        return;
+      }
+      pendingIncomingFiles += 1;
+      incomingFileQueue = incomingFileQueue.then(async () => {
+        const isCurrent = () => !closedByCaller && !resourcesClosed && fileChannelOpened && fileChannel.readyState === "open";
+        if (!isCurrent()) return;
+        let result: WebRtcFileAckMessage | null;
+        try {
+          if (!handlers.onFileChunk) throw new Error("File receiver unavailable.");
+          result = await handlers.onFileChunk(chunk, isCurrent);
+          if (result && (result.transferId !== chunk.transferId ||
+            result.receivedChunks > chunk.totalChunks || result.receivedBytes > chunk.totalBytes ||
+            (result.status === "complete" && (result.receivedChunks !== chunk.totalChunks || result.receivedBytes !== chunk.totalBytes)))) {
+            throw new Error("Invalid file receipt.");
+          }
+        } catch {
+          result = { type: "file-ack", transferId: chunk.transferId, status: "error", receivedBytes: 0, receivedChunks: 0,
+            error: "Viewer could not save the file." };
+        }
+        if (result && isCurrent()) fileChannel.send(serializeWebRtcFileAck(result));
+      }).catch(() => {
+        if (!closedByCaller && !resourcesClosed) reportDiagnostic("file-channel-error", "Viewer file acknowledgement failed.");
+      }).finally(() => { pendingIncomingFiles -= 1; });
+      return;
+    }
     const ack = parseWebRtcFileAck(event.data);
     if (!ack) {
       return;
@@ -1255,7 +1330,8 @@ export async function startFirebaseViewerWebRtcTransport(
     reportUnavailable("offer-failed", error instanceof Error ? error.message : String(error));
   });
 
-  const waitForFileAck = (transferId: string, minReceivedChunks: number): Promise<WebRtcFileAckMessage> => {
+  const waitForFileAck = (transferId: string, minReceivedChunks: number, signal?: AbortSignal): Promise<WebRtcFileAckMessage> => {
+    if (signal?.aborted) return Promise.reject(new DOMException("File transfer cancelled.", "AbortError"));
     const current = fileAckStates.get(transferId);
     if (current?.status === "error") {
       return Promise.reject(new Error(current.error || "Agent rejected the WebRTC file transfer."));
@@ -1265,24 +1341,34 @@ export async function startFirebaseViewerWebRtcTransport(
     }
     return new Promise((resolve, reject) => {
       const waiters = fileAckWaiters.get(transferId) ?? new Set();
+      const cleanup = () => {
+        clearTimeout(waiter.timer);
+        signal?.removeEventListener("abort", abort);
+        waiters.delete(waiter);
+        if (waiters.size === 0) fileAckWaiters.delete(transferId);
+      };
+      const abort = () => waiter.reject(new DOMException("File transfer cancelled.", "AbortError"));
       const waiter = {
         minReceivedChunks,
-        resolve,
-        reject,
+        resolve: (ack: WebRtcFileAckMessage) => { cleanup(); resolve(ack); },
+        reject: (error: Error) => { cleanup(); reject(error); },
         timer: setTimeout(() => {
           waiters.delete(waiter);
           if (waiters.size === 0) {
             fileAckWaiters.delete(transferId);
           }
-          reject(new Error(`WebRTC file acknowledgement timed out at chunk ${minReceivedChunks}.`));
+          waiter.reject(new Error(`WebRTC file acknowledgement timed out at chunk ${minReceivedChunks}.`));
         }, WEBRTC_FILE_ACK_TIMEOUT_MS),
       };
       waiters.add(waiter);
       fileAckWaiters.set(transferId, waiters);
+      signal?.addEventListener("abort", abort, {once:true});
+      if (signal?.aborted) abort();
     });
   };
 
   const sendFile = async (input: {
+    resume?: boolean;
     file: Blob;
     filename: string;
     fileSha256: string;
@@ -1308,6 +1394,8 @@ export async function startFirebaseViewerWebRtcTransport(
         const start = chunkIndex * WEBRTC_FILE_CHUNK_BYTES;
         const end = Math.min(input.file.size, start + WEBRTC_FILE_CHUNK_BYTES);
         const chunkBuffer = await input.file.slice(start, end).arrayBuffer();
+        const chunkSha256 = await sha256ArrayBufferHex(chunkBuffer);
+        if (input.signal?.aborted) throw new DOMException("File transfer cancelled.", "AbortError");
         fileChannel.send(serializeWebRtcFileChunk({
           type: "file-chunk",
           transferId: input.transferId,
@@ -1317,22 +1405,42 @@ export async function startFirebaseViewerWebRtcTransport(
           totalBytes: input.file.size,
           isLast: chunkIndex === totalChunks - 1,
           fileData: arrayBufferToBase64(chunkBuffer),
-          chunkSha256: await sha256ArrayBufferHex(chunkBuffer),
+          chunkSha256,
           ...(chunkIndex === totalChunks - 1 ? { fileSha256: input.fileSha256 } : {}),
           ...(input.purpose ? { purpose: input.purpose } : {}),
           ...(input.mimeType ? { mimeType: input.mimeType } : {}),
         }));
 
         const sentChunks = chunkIndex + 1;
+        if (input.resume && chunkIndex === 0 && totalChunks > 1) {
+          const ack = await waitForFileAck(input.transferId, 1, input.signal);
+          if (input.signal?.aborted) throw new DOMException("File transfer cancelled.", "AbortError");
+          if (ack.receivedChunks > totalChunks || ack.receivedBytes !== Math.min(input.file.size, ack.receivedChunks * WEBRTC_FILE_CHUNK_BYTES)) {
+            throw new Error("Invalid file resume acknowledgement.");
+          }
+          if (ack.status === "complete") {
+            if (ack.receivedChunks !== totalChunks) throw new Error("Invalid file completion acknowledgement.");
+            input.onProgress?.(input.file.size, input.file.size);
+            return true;
+          }
+          if (ack.receivedChunks === totalChunks) throw new Error("Agent has not confirmed file completion.");
+          input.onProgress?.(ack.receivedBytes,input.file.size);
+          chunkIndex = ack.receivedChunks - 1;
+          continue;
+        }
         if (sentChunks % WEBRTC_FILE_WINDOW_CHUNKS === 0 || sentChunks === totalChunks) {
-          const ack = await waitForFileAck(input.transferId, sentChunks);
+          const ack = await waitForFileAck(input.transferId, sentChunks, input.signal);
           if (input.signal?.aborted) {
             throw new DOMException("File transfer cancelled.", "AbortError");
           }
-          input.onProgress?.(ack.receivedBytes, input.file.size);
+          if (ack.status === "complete" &&
+            (ack.receivedChunks !== totalChunks || ack.receivedBytes !== input.file.size)) {
+            throw new Error("Invalid file completion acknowledgement.");
+          }
           if (sentChunks === totalChunks && ack.status !== "complete") {
             throw new Error("Agent did not confirm the completed WebRTC file transfer.");
           }
+          input.onProgress?.(ack.receivedBytes, input.file.size);
         }
       }
       return true;
@@ -1674,6 +1782,26 @@ async function readOwnedFirebaseSession(
 
 export async function requestFirebaseAgentUpdate(deviceId: string): Promise<void> {
   await enqueueFirebaseDeviceCommandDirect(deviceId, `request-update ${Date.now()}`, import.meta.env);
+}
+
+export async function requestFirebaseAgentRollback(deviceId: string, version: string, env: ViewerFirebaseEnv = import.meta.env): Promise<void> {
+  const services = getViewerFirebaseServices(env);
+  const user = services.auth.currentUser;
+  if (!user || !await isAuthorizedViewerUser(user)) throw new Error("Only the central Viewer can request rollback.");
+  if (!/^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/.test(version)) throw new Error("Invalid rollback version.");
+  const deviceRef = doc(services.db, "devices", deviceId);
+  const snapshot = await getDocFromServer(deviceRef);
+  const device = snapshot.exists() ? snapshot.data() : null;
+  if (!device || device.deletedAt || device.platform === "android" || typeof device.version !== "string"
+      || device.rollbackSupportVersion !== device.version || !isHigherVersion(device.version, version)) {
+    throw new Error("This Agent has not confirmed support for the requested rollback.");
+  }
+  const batch = writeBatch(services.db);
+  safeBatchUpdate(batch, deviceRef, { updatePaused: true, updatedAt: serverTimestamp() });
+  safeBatchSet(batch, doc(collection(services.db, "devices", deviceId, "commands")), {
+    action: `request-rollback ${version} ${Date.now()}`, createdAt: serverTimestamp(), state: "pending",
+  });
+  await batch.commit();
 }
 
 async function enqueueFirebaseDeviceCommandDirect(

@@ -26,6 +26,9 @@ function device(
 }
 
 describe("device workspace", () => {
+  it.each(["01012345678", "010-1234", "1234 5678"])("finds formatted contact phone with %s", query => {
+    expect(filterDeviceWorkspace([device("phone", { contactPhone: "010-1234-5678" }), device("other")], { query }).map(item => item.id)).toEqual(["phone"]);
+  });
   it("applies status, store, query, and favorite filters together", () => {
     const result = filterDeviceWorkspace(
       [

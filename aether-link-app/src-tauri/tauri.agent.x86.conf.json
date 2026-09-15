@@ -6,12 +6,12 @@
       {
         "label": "main",
         "title": "WonRemote Agent",
-        "width": 340,
-        "height": 410,
-        "minWidth": 340,
-        "minHeight": 410,
-        "maxWidth": 340,
-        "maxHeight": 410,
+        "width": 360,
+        "height": 340,
+        "minWidth": 360,
+        "minHeight": 340,
+        "maxWidth": 360,
+        "maxHeight": 340,
         "resizable": false,
         "center": true,
         "visible": false

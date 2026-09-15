@@ -10,6 +10,8 @@ import {
   MessageSquare,
   Clipboard,
   FileUp,
+  Download,
+  FolderOpen,
   Video,
   Volume2,
   ZoomIn,
@@ -40,6 +42,7 @@ import {
 import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
 import {
   closeSession,
   fetchDevices,
@@ -52,7 +55,6 @@ import {
   sendChatMessage,
   subscribeSessionData,
   sendClipboardText,
-  fetchClipboardText,
   uploadFileChunk,
   uploadFileToStorage,
   fetchConnectionHistory,
@@ -70,10 +72,12 @@ import type { SessionData } from "./domain/sessionData";
 import {
   isViewerFirebaseEnabled,
   startFirebaseViewerWebRtcTransport,
+  getFirebaseViewerStorageOwner,
   subscribeViewerAuthState,
   loadFirebaseUpdateRollout,
   saveFirebaseUpdateRollout,
   updateFirebaseDeviceRollout,
+  requestFirebaseAgentRollback,
   isCurrentViewerAccountManager,
   requestViewerPasswordReset,
   type ViewerWebRtcTransport,
@@ -81,6 +85,9 @@ import {
 import { ViewerAccountManager } from "./components/ViewerAccountManager";
 import { IosCapabilityProbe } from "./components/IosCapabilityProbe";
 import { isMobileViewerPath } from "./domain/mobileViewer";
+import { MobileRemoteControls, useMobileRemoteHeight } from "./components/MobileRemoteControls";
+import { MobileRemoteGesturePad } from "./components/MobileRemoteGesturePad";
+import { DesktopRemoteKeyboardRecovery } from "./components/DesktopRemoteKeyboardRecovery";
 import { groupDevicesByStore } from "./domain/agentRegistry";
 import { organizeDevices, createDeviceGroupMover, DEVICE_DRAG_TYPE } from "./domain/deviceOrganization";
 import {
@@ -111,6 +118,8 @@ import {
   serializeActiveSession,
 } from "./domain/sessionPersistence";
 import { sha256BlobHex } from "./domain/blobHash";
+import { androidFileExporter } from "./domain/androidFileExport";
+import { ViewerRollbackControl } from "./components/ViewerRollbackControl";
 import {
   STORAGE_TRANSFER_CLEANUP_KEY,
   parseStorageTransferCleanup,
@@ -164,7 +173,7 @@ import type {
   DeviceMetadataUpdateInput,
   DeviceUpdateRing,
 } from "./domain/types";
-import type { UpdateFleetRollout } from "./domain/updateFleetPolicy";
+import { decideUpdateEligibility, type UpdateFleetRollout } from "./domain/updateFleetPolicy";
 import {
   filterDeviceWorkspace,
   parseFavoriteDeviceIds,
@@ -176,6 +185,7 @@ import {
   appendFileTransferQueueItems,
   cancelFileTransfer,
   completeFileTransfer,
+  awaitFileTransferReceipt,
   createFileTransferQueueItem,
   failFileTransfer,
   getFileTransferEtaSeconds,
@@ -192,6 +202,14 @@ import {
   deviceViewPreferencesKey,
   parseDeviceViewPreferences,
 } from "./domain/deviceViewPreferences";
+import { requestFreshClipboardText } from "./domain/requestedClipboard";
+import { isRemoteInputAvailable, sessionConnectionStatus } from "./domain/sessionConnectionStatus";
+import { createDiagnosticReport, nativeDiagnosticExportUrl } from "./domain/diagnosticReport";
+import { IncomingFileAssembler } from "./domain/incomingFile";
+import { saveDesktopFile } from "./domain/desktopFileSave";
+import { startSelectedViewerScheduler } from "./domain/selectedViewerScheduler";
+import { PersistentFileReceiver } from "./domain/persistentFileReceiver";
+import { hasCompleteTileCoverage } from "./domain/webrtcFrameAssembly";
 
 type DeviceEditTarget =
   | { mode: "device"; devices: [ManagedDevice] }
@@ -354,11 +372,44 @@ function ViewerApp() {
   const [viewerUpdateDialog, setViewerUpdateDialog] = useState<ViewerUpdateDialogState | null>(null);
   const [isRefreshingDevices, setIsRefreshingDevices] = useState(false);
   const [deviceListRefreshKey, setDeviceListRefreshKey] = useState(0);
+  const [connectionHistory, setConnectionHistory] = useState<ConnectionHistoryEntry[]>([]);
+  const [observedConnections, setObservedConnections] = useState<Record<string, string>>({});
+  useEffect(() => { if (!isAuthenticated) setObservedConnections({}); }, [isAuthenticated]);
   const deviceListRequestRef = useRef<Promise<ManagedDevice[]> | null>(null);
   const startupSessionCleanupAttemptedRef = useRef(false);
   const connectionEpochRef = useRef(0);
   const pendingConnectAttemptsRef = useRef<Set<Promise<{ cleanupSucceeded: boolean; connected: boolean }>>>(new Set());
   const pendingConnectDeviceIdsRef = useRef<Set<string>>(new Set());
+  const selectedUpdateInstallingRef = useRef(false);
+  const [selectedUpdateInstalling, setSelectedUpdateInstalling] = useState(false);
+  const selectedUpdateIdle = useRef(false);
+  selectedUpdateIdle.current = isAuthenticated && sessions.length === 0 && pendingConnectDeviceIdsRef.current.size === 0;
+  useEffect(() => {
+    if (!(window as any).__TAURI_INTERNALS__ || !isAuthenticated) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    let scheduler: ReturnType<typeof startSelectedViewerScheduler> | undefined;
+    void listen("selected-viewer-update-finished", () => {
+      if (disposed) return;
+      scheduler?.installationFailed();
+      selectedUpdateInstallingRef.current = false; setSelectedUpdateInstalling(false);
+      setApiError("자동 업데이트가 적용되지 않았습니다. 업데이트 확인에서 결과를 확인하세요.");
+    }).then(remove => {
+      if (disposed) { remove(); return; }
+      unlisten = remove;
+      scheduler = startSelectedViewerScheduler({
+      idle: () => selectedUpdateIdle.current && pendingConnectDeviceIdsRef.current.size === 0 && !selectedUpdateInstallingRef.current,
+      check: () => invoke<{available:boolean}>("check_selected_viewer_update"),
+      install: async () => {
+        selectedUpdateInstallingRef.current = true; setSelectedUpdateInstalling(true);
+        try { await invoke("start_installer_update", {restartMode:"viewer",selectedViewer:true}); }
+        catch (error) { selectedUpdateInstallingRef.current = false; setSelectedUpdateInstalling(false); throw error; }
+      },
+      report: error => console.warn("[Selected Viewer update]", error),
+      });
+    }).catch(error => console.warn("[Selected Viewer update listener]", error));
+    return () => { disposed = true; scheduler?.stop(); unlisten?.(); };
+  }, [isAuthenticated]);
   const pendingSessionCloseTasksRef = useRef<Set<Promise<void>>>(new Set());
   const closingDeviceIdsRef = useRef<Set<string>>(new Set());
   const sessionShutdownInProgressRef = useRef(false);
@@ -383,7 +434,7 @@ function ViewerApp() {
           return;
         }
         setIsAuthenticated(hasSession);
-        if (!hasSession) { setDeviceListRefreshKey(0); setIsRefreshingDevices(false); setDevices([]); }
+        if (!hasSession) { setDeviceListRefreshKey(0); setIsRefreshingDevices(false); setDevices([]); setConnectionHistory([]); }
         if (hasSession) {
           setDeviceListRefreshKey((current) => current || 1);
           setLoginError("");
@@ -753,6 +804,7 @@ function ViewerApp() {
       await Promise.all([...pendingSessionCloseTasksRef.current]);
       await Promise.all(sessions.map((openSession) => closeSession(openSession.id)));
       await logoutAdmin();
+      setConnectionHistory([]);
       setIsAuthenticated(false);
       setDeviceListRefreshKey(0);
       setIsRefreshingDevices(false);
@@ -818,6 +870,7 @@ function ViewerApp() {
     openRequest: () => Promise<{ session: RemoteSession }>,
     failureMessage: string,
   ): Promise<RemoteSession | null> {
+    if (selectedUpdateInstallingRef.current) { setApiError("뷰어 업데이트 적용 중입니다. 완료 후 다시 접속하세요."); return null; }
     if (sessionShutdownInProgressRef.current) {
       return null;
     }
@@ -891,6 +944,20 @@ function ViewerApp() {
     await runTrackedSessionOpen(device.id, () => openSession(device.id), "세션 연결 실패");
   }
 
+  async function handleReconnectSession(previous: RemoteSession) {
+    const replacement = await runTrackedSessionOpen(previous.deviceId, () => openSession(previous.deviceId, true), "재접속 실패");
+    if (!replacement) throw new Error("재접속하지 못했습니다. 연결 상태를 확인하고 다시 시도하세요.");
+    if (replacement.id !== previous.id) {
+      setSessions(current => current.filter(item => item.id !== previous.id));
+      setSplitSessionIds(null);
+      enqueueSessionCleanup(window.localStorage, previous);
+      try {
+        await closeSession(previous.id);
+        removeSessionCleanup(window.localStorage, previous.id);
+      } catch { /* Retain the owned old session in the existing cleanup queue. */ }
+    }
+  }
+
   async function handleConnectSplitView() {
     const issue = validateSameGroupSplit(selectedDevices);
     if (issue) {
@@ -933,6 +1000,25 @@ function ViewerApp() {
     setActiveSessionId(null);
     setApiError("");
   }
+
+  useEffect(() => {
+    if (!isMobileViewer) {
+      return;
+    }
+    const mobileWindow = window as Window & typeof globalThis & {
+      __wonRemoteMobileBackScope?: () => "session" | "list";
+    };
+    const getBackScope = () => activeSessionId ? "session" as const : "list" as const;
+    const showDeviceList = () => handleShowDeviceList();
+    mobileWindow.__wonRemoteMobileBackScope = getBackScope;
+    window.addEventListener("wonremote:show-device-list", showDeviceList);
+    return () => {
+      window.removeEventListener("wonremote:show-device-list", showDeviceList);
+      if (mobileWindow.__wonRemoteMobileBackScope === getBackScope) {
+        delete mobileWindow.__wonRemoteMobileBackScope;
+      }
+    };
+  }, [activeSessionId, isMobileViewer]);
 
   function updateSplitRatio(clientX: number, divider: HTMLDivElement) {
     const grid = divider.parentElement;
@@ -1091,6 +1177,7 @@ function ViewerApp() {
               }
             : {
                 contactName: input.contactName,
+                contactPhone: input.contactPhone,
                 deviceName: input.deviceName,
                 desktopName: input.desktopName === device.desktopName ? undefined : input.desktopName,
                 installLocation: input.installLocation,
@@ -1266,6 +1353,7 @@ function ViewerApp() {
             </div>
             <p>{devices.length}대 등록 · {groups.length}개 매장</p>
             {apiError && <p className="topbar-error">{apiError}</p>}
+            {selectedUpdateInstalling && <p role="status">지정된 뷰어 업데이트 적용 중 · 완료 후 다시 실행됩니다</p>}
           </div>
           <div className="topbar-tools">
           <label className="search-box">
@@ -1273,7 +1361,7 @@ function ViewerApp() {
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="매장, 장비, 담당자, 위치, 태그 검색"
+              placeholder="매장, 장비, 담당자, 연락처, 메모 검색"
             />
           </label>
           {!isMobileViewer && <button
@@ -1287,6 +1375,7 @@ function ViewerApp() {
             <RotateCcw size={16} className={isManualUpdateChecking ? "is-spinning" : undefined} />
             <span>업데이트</span>
           </button>}
+          {!isMobileViewer && Boolean((window as any).__TAURI_INTERNALS__) && <ViewerRollbackControl currentVersion={getViewerVersion(import.meta.env)} restore={version => invoke("start_installer_update", { restartMode: "viewer", rollbackVersion: version })} />}
           {isViewerFirebaseEnabled() && <button className="rollout-button" type="button" onClick={() => void handleOpenRollout()}>
             <SlidersHorizontal size={16} />
             <span>단계 배포</span>
@@ -1384,6 +1473,8 @@ function ViewerApp() {
             </section>
             <DeviceTable
               devices={filteredDevices}
+              connectionHistory={connectionHistory}
+              observedConnections={observedConnections}
               activeDeviceIds={sessions.map((openSession) => openSession.deviceId)}
               onConnect={handleConnectDevice}
               onEdit={(device) => setEditTarget({ mode: "device", devices: [device] })}
@@ -1398,7 +1489,7 @@ function ViewerApp() {
               onToggleSelected={toggleSelectedDevice}
               onDiagnostics={setDiagnosticTarget}
             />
-            <ConnectionHistorySection devices={devices} />
+            <ConnectionHistorySection devices={devices} history={connectionHistory} onHistory={setConnectionHistory} />
           </section>
 
           {sessions.map((openSession) => {
@@ -1421,6 +1512,8 @@ function ViewerApp() {
                 onCloseSessionTab={(sessionId) => handleCloseSession(sessionId)}
                 onSelectSession={handleSelectSession}
                 onShowDeviceList={handleShowDeviceList}
+                onPicturePresented={() => setObservedConnections(current => ({ ...current, [openSession.deviceId]: new Date().toISOString() }))}
+                onReconnect={() => handleReconnectSession(openSession)}
               />
             );
           })}
@@ -1479,6 +1572,7 @@ function ViewerApp() {
       {updateDialogOverlay}
       {isRolloutOpen && rolloutDraft && (
         <RolloutDialog
+          devices={devices}
           initial={rolloutDraft}
           isSaving={isRolloutSaving}
           onClose={() => setIsRolloutOpen(false)}
@@ -1532,6 +1626,7 @@ function DeviceEditDialog({
   const [form, setForm] = useState({
     businessNumber: primaryDevice.businessNumber,
     contactName: primaryDevice.contactName ?? "",
+    contactPhone: primaryDevice.contactPhone ?? "",
     desktopName: primaryDevice.desktopName,
     deviceName: initialDeviceType.value,
     installLocation: primaryDevice.installLocation ?? "",
@@ -1551,6 +1646,7 @@ function DeviceEditDialog({
     setForm({
       businessNumber: primaryDevice.businessNumber,
       contactName: primaryDevice.contactName ?? "",
+      contactPhone: primaryDevice.contactPhone ?? "",
       desktopName: primaryDevice.desktopName,
       deviceName: nextDeviceType.value,
       installLocation: primaryDevice.installLocation ?? "",
@@ -1680,6 +1776,11 @@ function DeviceEditDialog({
                 />
               </label>
               <label>
+                연락처
+                <input type="tel" maxLength={40} value={form.contactPhone}
+                  onChange={event => setForm(prev => ({ ...prev, contactPhone: event.target.value }))} />
+              </label>
+              <label>
                 설치 위치
                 <input
                   maxLength={255}
@@ -1722,6 +1823,12 @@ function DeviceEditDialog({
                 <input type="checkbox" checked={updatePaused} onChange={(event) => setUpdatePaused(event.target.checked)} />
                 {isGroupEdit ? "선택 장비 업데이트 일시 중지" : "이 장비 업데이트 일시 중지"}
               </label>
+              {!isGroupEdit && primaryDevice.platform !== "android" && primaryDevice.version && primaryDevice.rollbackSupportVersion === primaryDevice.version && (
+                <ViewerRollbackControl currentVersion={primaryDevice.version} agentName={primaryDevice.desktopName} restore={async version => {
+                  await requestFirebaseAgentRollback(primaryDevice.id, version);
+                  setUpdatePaused(true);
+                }} />
+              )}
             </>
           )}
         </div>
@@ -1806,11 +1913,13 @@ function SecureConnectDialog({
 }
 
 function RolloutDialog({
+  devices,
   initial,
   isSaving,
   onClose,
   onSave,
 }: {
+  devices: ManagedDevice[];
   initial: UpdateFleetRollout;
   isSaving: boolean;
   onClose: () => void;
@@ -1818,6 +1927,21 @@ function RolloutDialog({
 }) {
   useModalEscape(onClose);
   const [draft, setDraft] = useState(initial);
+  const recipients = devices.map((device) => ({ device, decision: decideUpdateEligibility(device, draft) }));
+  const visibleDeviceIds = new Set(devices.map(device => device.id));
+  const unlistedTargetIds = draft.targetDeviceIds?.filter(id => !visibleDeviceIds.has(id)) ?? [];
+  const reasonLabels = {
+    eligible: "업데이트 대상",
+    paused: "업데이트 중지",
+    "missing-device-id": "장비 ID 없음",
+    "missing-target-version": "대상 버전 없음",
+    "already-current": "대상 버전 사용 중",
+    "ring-not-enabled": "배포 단계 제외",
+    "outside-percentage": "배포 비율 제외",
+    "not-selected": "선택하지 않은 PC",
+    "invalid-selection-policy": "선택 배포 설정 오류",
+    "selection-support-unknown": "선택 배포 지원 미확인",
+  };
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
       <form
@@ -1836,22 +1960,54 @@ function RolloutDialog({
           대상 버전
           <input autoFocus value={draft.targetVersion} onChange={(event) => setDraft({ ...draft, targetVersion: event.target.value })} placeholder="예: 0.1.64" />
         </label>
+        <label className="toggle-field">
+          <input type="checkbox" checked={draft.targetDeviceIds !== undefined} onChange={event => setDraft(event.target.checked
+            ? {...draft, targetDeviceIds: [], stage: "general", percentage: 0}
+            : {...draft, targetDeviceIds: undefined, paused: true, percentage: 0})}/>
+          선택한 PC에만 배포
+        </label>
         <div className="rollout-stage" role="group" aria-label="배포 단계">
           {(["canary", "pilot", "general"] as const).map((stage) => (
-            <button className={draft.stage === stage ? "active" : ""} key={stage} type="button" onClick={() => setDraft({ ...draft, stage })}>
+            <button disabled={draft.targetDeviceIds !== undefined} className={draft.stage === stage ? "active" : ""} key={stage} type="button" onClick={() => setDraft({ ...draft, stage })}>
               {stage === "canary" ? "Canary" : stage === "pilot" ? "Pilot" : "General"}
             </button>
           ))}
         </div>
         <label className="range-field">
           <span>단계 내 배포 비율 <strong>{draft.percentage ?? 100}%</strong></span>
-          <input type="range" min="0" max="100" step="5" value={draft.percentage ?? 100} onChange={(event) => setDraft({ ...draft, percentage: Number(event.target.value) })} />
+          <input disabled={draft.targetDeviceIds !== undefined} type="range" min="0" max="100" step="5" value={draft.percentage ?? 100} onChange={(event) => setDraft({ ...draft, percentage: Number(event.target.value) })} />
         </label>
         <label className="toggle-field rollout-pause">
           <input type="checkbox" checked={draft.paused === true} onChange={(event) => setDraft({ ...draft, paused: event.target.checked })} />
           전체 업데이트 일시 중지
         </label>
-        <p className="modal-help">Canary부터 Pilot, General 순서로 확장됩니다. 장비별 업데이트 그룹과 중지 설정이 우선 적용됩니다.</p>
+        <section aria-label="배포 대상 미리보기" className="rollout-recipients">
+          <strong>현재 목록 {devices.length}대 중 대상 {recipients.filter(({ decision }) => decision.eligible).length}대</strong>
+          {draft.targetDeviceIds !== undefined && <p>선택 ID 총 {draft.targetDeviceIds.length}개 · 현재 목록 밖 {unlistedTargetIds.length}개</p>}
+          <ul>
+            {recipients.map(({ device, decision }) => <li key={device.id}>
+              {draft.targetDeviceIds !== undefined && <input type="checkbox" aria-label={`${device.desktopName} 배포 대상`}
+                checked={draft.targetDeviceIds.includes(device.id)}
+                disabled={!draft.targetDeviceIds.includes(device.id) && draft.targetDeviceIds.length >= 200}
+                onChange={event => setDraft({...draft, targetDeviceIds: event.target.checked
+                  ? [...(draft.targetDeviceIds ?? []), device.id] : draft.targetDeviceIds?.filter(id => id !== device.id)})}/>}
+              <span>{device.desktopName} · {device.storeName}</span>
+              <span>{device.version ?? "버전 미확인"} → {draft.targetVersion || "미지정"}</span>
+              <span>{reasonLabels[decision.reason]}</span>
+            </li>)}
+          </ul>
+          {unlistedTargetIds.length > 0 && <section aria-label="현재 목록 밖 배포 대상">
+            <strong>현재 목록 밖 대상 · 장비 정보 미확인</strong>
+            <ul>{unlistedTargetIds.map(id => <li key={id}>
+              <span style={{overflowWrap:"anywhere",minWidth:0}}>{id}</span>
+              <button type="button" title={`${id} 배포 대상 제외`} aria-label={`${id} 배포 대상 제외`}
+                onClick={() => setDraft({...draft,targetDeviceIds:draft.targetDeviceIds?.filter(target => target !== id)})}>
+                <X size={16}/>
+              </button>
+            </li>)}</ul>
+          </section>}
+          <p>{draft.targetDeviceIds !== undefined ? "선택 배포를 지원하는 에이전트만 적용됩니다. 구버전은 제외됩니다." : "이 정책은 현재 목록 밖의 장비에도 적용됩니다."}</p>
+        </section>
         <div className="modal-actions">
           <button className="secondary-button" type="button" onClick={onClose}>취소</button>
           <button className="primary-button compact" disabled={isSaving} type="submit">{isSaving ? "저장 중..." : "정책 저장"}</button>
@@ -1904,8 +2060,11 @@ function ViewerUpdateDialog({
   );
 }
 
-function ConnectionHistorySection({ devices }: { devices: ManagedDevice[] }) {
-  const [history, setHistory] = useState<ConnectionHistoryEntry[]>([]);
+function ConnectionHistorySection({ devices, history, onHistory }: {
+  devices: ManagedDevice[];
+  history: ConnectionHistoryEntry[];
+  onHistory: (entries: ConnectionHistoryEntry[]) => void;
+}) {
   const [statusFilter, setStatusFilter] = useState<"all" | ConnectionHistoryEntry["status"]>("all");
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -1923,11 +2082,11 @@ function ConnectionHistorySection({ devices }: { devices: ManagedDevice[] }) {
     setIsRefreshing(true);
     setHistoryError("");
     void fetchConnectionHistory(devicesRef.current)
-      .then((entries) => { if (active) setHistory(entries); })
+      .then((entries) => { if (active) onHistory(entries); })
       .catch((error) => { if (active) setHistoryError(error instanceof Error ? error.message : String(error)); })
       .finally(() => { if (active) setIsRefreshing(false); });
     return () => { active = false; };
-  }, [refreshKey]);
+  }, [refreshKey, onHistory]);
 
   const filteredHistory = history
     .filter((entry) => statusFilter === "all" || entry.status === statusFilter)
@@ -2214,11 +2373,11 @@ function AgentFirstRunApp() {
             <div className="agent-result active-agent-result">
               <div style={{ display: firebaseMode ? "none" : undefined }}>
                 <span>서버 주소:</span>
-                <strong>{registeredConfig.apiUrl}</strong>
+                <strong title={registeredConfig.apiUrl}>{registeredConfig.apiUrl}</strong>
               </div>
               <div>
                 <span>등록 장비 ID:</span>
-                <strong>{registeredConfig.registeredDeviceId}</strong>
+                <strong title={registeredConfig.registeredDeviceId}>{registeredConfig.registeredDeviceId}</strong>
               </div>
               <div>
                 <span>사업자번호:</span>
@@ -2226,11 +2385,11 @@ function AgentFirstRunApp() {
               </div>
               <div>
                 <span>설치 식별자:</span>
-                <code>{registeredConfig.installId}</code>
+                <code title={registeredConfig.installId}>{registeredConfig.installId}</code>
               </div>
             </div>
             <p className="agent-status-copy">
-              본 프로그램은 백그라운드에서 원격 제어 대기 상태를 유지합니다. 트레이 아이콘을 통해 관리할 수 있습니다.
+              원격 제어 대기 중 · 트레이에서 관리
             </p>
             <div className="agent-action-row">
               <button className="secondary-button" type="button" disabled={isAgentUpdateChecking} onClick={() => void handleAgentUpdateCheck()}>
@@ -2407,6 +2566,8 @@ function getOrCreateAgentInstallId(): string {
 function DeviceTable({
   activeDeviceIds,
   devices,
+  connectionHistory,
+  observedConnections,
   favoriteDeviceIds,
   onConnect,
   onDiagnostics,
@@ -2422,6 +2583,8 @@ function DeviceTable({
 }: {
   activeDeviceIds: string[];
   devices: ManagedDevice[];
+  connectionHistory: ConnectionHistoryEntry[];
+  observedConnections: Record<string, string>;
   favoriteDeviceIds: string[];
   onConnect: (device: ManagedDevice) => void | Promise<void>;
   onDiagnostics: (device: ManagedDevice) => void;
@@ -2435,6 +2598,16 @@ function DeviceTable({
   isRefreshing: boolean;
   selectedDeviceIds: string[];
 }) {
+  const recentConnections = useMemo(() => {
+    const latest = new Map<string, string>(Object.entries(observedConnections));
+    for (const entry of connectionHistory) {
+      const timestamp = Date.parse(entry.startedAt);
+      if ((entry.status !== "success" && entry.status !== "closed") || !Number.isFinite(timestamp)) continue;
+      const previous = latest.get(entry.deviceId);
+      if (!previous || timestamp > Date.parse(previous)) latest.set(entry.deviceId, entry.startedAt);
+    }
+    return latest;
+  }, [connectionHistory, observedConnections]);
   const allSelected = devices.length > 0 && devices.every((device) => selectedDeviceIds.includes(device.id));
 
   const toggleAllVisibleDevices = () => {
@@ -2532,11 +2705,19 @@ function DeviceTable({
                   <b>{device.storeName}</b>
                 </span>
                 <small>{device.businessNumber}</small>
+                {device.contactPhone && <small className="device-contact-phone">{device.contactPhone}</small>}
                 {(device.contactName || device.installLocation) && (
                   <small className="device-operations-summary">
                     {[device.contactName, device.installLocation].filter(Boolean).join(" · ")}
                   </small>
                 )}
+                {recentConnections.has(device.id) && <small className="device-recent-connection">
+                  최근 접속 <time dateTime={recentConnections.get(device.id)}>{new Date(recentConnections.get(device.id)!).toLocaleString()}</time>
+                </small>}
+                {device.notes && <details className="device-row-notes">
+                  <summary>작업 메모</summary>
+                  <p>{device.notes}</p>
+                </details>}
               </span>
               <span className="device-identity-cell">
                 <b>{device.desktopName}</b>
@@ -2619,6 +2800,20 @@ function DeviceTable({
 
 function DeviceDiagnosticsDialog({ device, onClose }: { device: ManagedDevice; onClose: () => void }) {
   useModalEscape(onClose);
+  const [reportPreview, setReportPreview] = useState<string | null>(null);
+  const saveReport = () => {
+    if (!reportPreview) return;
+    const nativeUrl = nativeDiagnosticExportUrl(reportPreview, navigator.userAgent);
+    if (nativeUrl) { window.location.assign(nativeUrl); return; }
+    const url = URL.createObjectURL(new Blob([reportPreview], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "wonremote-diagnostics.json";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
   const protocol = evaluateRemoteProtocolCompatibility(device.protocolVersion);
   const updateInfo = resolveDeviceUpdateInfo(device);
   const streamLines = formatStreamDiagnostics(device.streamDiagnostics, "device-heartbeat", 0, 0);
@@ -2665,7 +2860,10 @@ function DeviceDiagnosticsDialog({ device, onClose }: { device: ManagedDevice; o
           </section>
         </div>
         {!protocol.compatible && <p className="diagnostic-error-message">{remoteProtocolErrorMessage(protocol)}</p>}
+        {reportPreview && <textarea aria-label="저장할 진단 내용" readOnly value={reportPreview} rows={10} />}
         <div className="modal-actions">
+          <button className="secondary-button" type="button" onClick={() => setReportPreview(JSON.stringify(createDiagnosticReport(device, getViewerVersion(import.meta.env)), null, 2))}>진단 내보내기</button>
+          {reportPreview && <button className="secondary-button" type="button" onClick={saveReport}>파일 저장</button>}
           <button className="secondary-button" type="button" onClick={onClose}>닫기</button>
         </div>
       </section>
@@ -2685,6 +2883,12 @@ function isEditableTarget(target: EventTarget | null): boolean {
   return Boolean(target.closest(
     "button, input, select, summary, textarea, a[href], [contenteditable='true'], [role='button']",
   ));
+}
+
+type RemoteKeyboardEvent = React.KeyboardEvent<HTMLElement> | KeyboardEvent;
+
+function isKeyboardEventComposing(event: RemoteKeyboardEvent): boolean {
+  return "nativeEvent" in event ? event.nativeEvent.isComposing : event.isComposing;
 }
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
@@ -2721,6 +2925,8 @@ function RemoteSessionPanel({
   onCloseSession,
   onSelectSession,
   onShowDeviceList,
+  onPicturePresented,
+  onReconnect,
 }: {
   activeSessionId: string | null;
   device: ManagedDevice | null;
@@ -2737,17 +2943,99 @@ function RemoteSessionPanel({
   onCloseSession: (inputReleaseBarrier?: Promise<unknown>) => void;
   onSelectSession: (sessionId: string) => void;
   onShowDeviceList: () => void;
+  onPicturePresented: () => void;
+  onReconnect: () => Promise<void>;
 }) {
   const preferenceDeviceId = device?.id ?? session?.deviceId ?? "";
-  const storedViewPreferences = React.useRef(
-    preferenceDeviceId
-      ? window.localStorage.getItem(deviceViewPreferencesKey(preferenceDeviceId))
-      : null,
-  ).current;
+  const [preferenceSnapshot] = useState(() => {
+    try {
+      return { value: preferenceDeviceId ? window.localStorage.getItem(deviceViewPreferencesKey(preferenceDeviceId)) : null, failed: false };
+    } catch {
+      return { value: null, failed: true };
+    }
+  });
+  const storedViewPreferences = preferenceSnapshot.value;
+  const [preferenceSaveFailed, setPreferenceSaveFailed] = useState(preferenceSnapshot.failed);
   const initialViewPreferences = React.useRef(parseDeviceViewPreferences(storedViewPreferences)).current;
+  const [mobileInputMode, setMobileInputMode] = useState(initialViewPreferences.inputMode ?? "screen");
   const panelRef = React.useRef<HTMLElement | null>(null);
+  const incomingFilesRef = React.useRef(new IncomingFileAssembler());
+  const reverseReceiverRef = React.useRef<PersistentFileReceiver | null>(null);
+  const receivedFileRef = React.useRef<{ id: string; filename: string; blob: Blob } | null>(null);
+  const [receivedFile, setReceivedFile] = useState<{ id: string; filename: string; blob: Blob } | null>(null);
+  const [receivedDownloadRequested, setReceivedDownloadRequested] = useState(false);
+  const [nativeSaveState, setNativeSaveState] = useState("");
+  const nativeSaveRef = React.useRef<AbortController | null>(null);
+  const desktopDownloads = Boolean((window as any).__TAURI_INTERNALS__);
+  const [downloadFolder, setDownloadFolder] = useState("");
+  const autoSavedId = React.useRef<string | null>(null);
+  async function saveReceivedDesktopFile(file: NonNullable<typeof receivedFile>) {
+    if (nativeSaveRef.current) return;
+    const controller = new AbortController();
+    nativeSaveRef.current = controller;
+    setNativeSaveState("저장 중");
+    try {
+      const savedPath = await saveDesktopFile(file, invoke, controller.signal);
+      if (!controller.signal.aborted) setNativeSaveState(`저장 완료 · ${savedPath}`);
+      try {
+        await reverseReceiverRef.current?.discard();
+        receivedFileRef.current = null;
+        if (!controller.signal.aborted) setReceivedDownloadRequested(true);
+      } catch { if (!controller.signal.aborted) setSessionDataError("파일은 저장됐지만 수신 기록 정리에 실패했습니다. 수신 항목을 정리해 주세요."); }
+    } catch (error) {
+      if (!controller.signal.aborted) setNativeSaveState(`저장 실패 · ${error instanceof Error ? error.message : String(error)}`);
+    } finally { if (nativeSaveRef.current === controller) nativeSaveRef.current = null; }
+  }
+  useEffect(() => { setNativeSaveState(""); }, [receivedFile?.id]);
+  useEffect(() => {
+    if (!desktopDownloads || !receivedFile || autoSavedId.current === receivedFile.id) return;
+    autoSavedId.current = receivedFile.id;
+    void saveReceivedDesktopFile(receivedFile);
+  }, [receivedFile?.id, desktopDownloads]);
+  const [remoteFileStatus, setRemoteFileStatus] = useState("");
+  const [reverseFileSupported, setReverseFileSupported] = useState(false);
+  const [reverseResumeSupported, setReverseResumeSupported] = useState(false);
+  const [interruptedFile, setInterruptedFile] = useState<{ transferId: string; filename: string; receivedBytes: number; totalBytes: number; receiving?: boolean } | null>(null);
+  const incomingProgressRef = React.useRef<typeof interruptedFile>(null);
+  const markReceiveInterrupted = () => {
+    if (!incomingProgressRef.current) return;
+    incomingProgressRef.current = { ...incomingProgressRef.current, receiving: false };
+    setInterruptedFile(incomingProgressRef.current);
+  };
+  const getReverseReceiver = () => {
+    if (!reverseReceiverRef.current) {
+      const owner = getFirebaseViewerStorageOwner();
+      if (!owner || !preferenceDeviceId) throw new Error("File storage owner is unavailable.");
+      reverseReceiverRef.current = new PersistentFileReceiver(`wonremote-receive:${encodeURIComponent(owner)}:${encodeURIComponent(preferenceDeviceId)}`, async file => {
+        const ready = { id: file.transferId, filename: file.filename, blob: file.blob };
+        incomingProgressRef.current = null;
+        setSessionDataError(previous => previous === "파일을 수신하지 못했습니다. 저장 공간을 확인한 뒤 다시 시도해 주세요." ? "" : previous);
+        receivedFileRef.current = ready; setReceivedFile(ready); setInterruptedFile(null); setReceivedDownloadRequested(false);
+      });
+    }
+    return reverseReceiverRef.current;
+  };
+  useEffect(() => () => {
+    nativeSaveRef.current?.abort();
+    reverseReceiverRef.current?.close();
+    reverseReceiverRef.current = null;
+    receivedFileRef.current = null;
+  }, [sessionId]);
+  useEffect(() => () => incomingFilesRef.current.clear(), [sessionId]);
   const imeInputRef = React.useRef<HTMLTextAreaElement | null>(null);
+  const mobileRemote = isMobileViewerPath(window.location.pathname);
+  const [mobileToolsOpen, setMobileToolsOpen] = useState(false);
+  useEffect(() => {
+    if (!isActive || !isVisible) {
+      setMobileToolsOpen(false);
+    }
+  }, [isActive, isVisible]);
+  const mobileHeight = useMobileRemoteHeight(mobileRemote && isVisible);
+  const portraitRemote = mobileRemote && mobileHeight !== undefined;
+  const [mobilePan, setMobilePan] = useState({x: 0, y: 0});
+  useEffect(() => { setMobilePan({x: 0, y: 0}); }, [portraitRemote, sessionId]);
   const imeComposingRef = React.useRef(false);
+  const imeEnterCommittedRef = React.useRef(false);
   const imeCompositionValueRef = React.useRef("");
   const suppressNextImeValueRef = React.useRef("");
   const remotePreviewRef = React.useRef<HTMLDivElement | null>(null);
@@ -2761,6 +3049,8 @@ function RemoteSessionPanel({
   const lastMoveSentAtRef = React.useRef(0);
   const pendingMoveRef = React.useRef<{ dx: number; dy: number } | null>(null);
   const lastPointerPointRef = React.useRef({ dx: 32768, dy: 32768 });
+  const [mobilePointer, setMobilePointer] = useState({ dx: 32768, dy: 32768 });
+  const [mobileKeyboardEnabled, setMobileKeyboardEnabled] = useState(false);
   const pingStateRef = React.useRef<{ start: number } | null>(null);
   const activeTransferIdRef = React.useRef<string>("");
   const storageTransfersRef = React.useRef(
@@ -2792,21 +3082,84 @@ function RemoteSessionPanel({
   const dangerConfirmUntilRef = React.useRef<Record<string, number>>({});
   const [latencyReport, setLatencyReport] = useState<string>("");
   const [pingState, setPingState] = useState<{ start: number } | null>(null);
-  const [zoom, setZoom] = useState(initialViewPreferences.zoom);
+  const [zoom, setZoom] = useState(mobileRemote ? 1 : initialViewPreferences.zoom);
+  useEffect(() => {
+    if (mobileRemote) {
+      setZoom(1);
+      setMobilePan({x: 0, y: 0});
+      setMobilePointer({dx: 32768, dy: 32768});
+      setMobileKeyboardEnabled(false);
+      imeInputRef.current?.blur();
+    }
+  }, [mobileRemote, sessionId]);
+  useEffect(() => {
+    if (!mobileRemote || !canvasRef.current || !remotePreviewRef.current) return;
+    const canvas = canvasRef.current, area = remotePreviewRef.current;
+    const x = Math.max(0, (canvas.offsetWidth * zoom - area.clientWidth) / 2);
+    const y = portraitRemote
+      ? Math.max(0, canvas.offsetHeight * zoom - Math.max(1, area.clientHeight - 80))
+      : Math.max(0, (canvas.offsetHeight * zoom - area.clientHeight) / 2);
+    setMobilePan(point => ({
+      x: Math.max(-x, Math.min(x, point.x)),
+      y: Math.max(-y, Math.min(portraitRemote ? 0 : y, point.y)),
+    }));
+  }, [zoom, mobileHeight, mobileRemote, portraitRemote]);
   const [isSessionFullscreen, setIsSessionFullscreen] = useState(initialViewPreferences.fullscreen);
   const [isFullscreenToolbarOpen, setIsFullscreenToolbarOpen] = useState(false);
   const [isWebRtcConnectionReady, setIsWebRtcConnectionReady] = useState(false);
+  const [picturePresented, setPicturePresented] = useState(false);
+  const reportedPictureSessionRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!picturePresented || reportedPictureSessionRef.current === sessionId) return;
+    reportedPictureSessionRef.current = sessionId;
+    onPicturePresented();
+  }, [picturePresented, sessionId, onPicturePresented]);
+  const [pictureError, setPictureError] = useState(false);
+  const [receiveError, setReceiveError] = useState(false);
   const [webRtcReconnectGeneration, setWebRtcReconnectGeneration] = useState(0);
   const [needsManualReconnect, setNeedsManualReconnect] = useState(false);
+  const reconnectBusyRef = React.useRef(false);
+  const [reconnectBusy, setReconnectBusy] = useState(false);
+  const [reconnectError, setReconnectError] = useState("");
+  async function reconnectSession() {
+    if (reconnectBusyRef.current) return;
+    reconnectBusyRef.current = true; setReconnectBusy(true); setReconnectError("");
+    try { await onReconnect(); }
+    catch (error) { setReconnectError(error instanceof Error ? error.message : "재접속 실패"); }
+    finally { reconnectBusyRef.current = false; setReconnectBusy(false); }
+  }
   const [rebootReconnectState, setRebootReconnectState] = useState<"idle" | "restarting" | "reconnecting">("idle");
   const rebootReconnectStateRef = React.useRef(rebootReconnectState);
+  const connectionStatus = sessionConnectionStatus({
+    restarting: rebootReconnectState === "restarting",
+    reconnecting: rebootReconnectState === "reconnecting",
+    disconnected: needsManualReconnect,
+    transportReady: isWebRtcConnectionReady || !isViewerFirebaseEnabled(),
+    picturePresented,
+    pictureError,
+    receiveError,
+  });
+  const remoteInputAvailable = isRemoteInputAvailable({
+    active: isActive,
+    visible: isVisible,
+    sessionConnected: session?.state === "connected",
+    disconnected: needsManualReconnect,
+    firebaseEnabled: isViewerFirebaseEnabled(),
+    transportReady: isWebRtcConnectionReady,
+  });
   React.useEffect(() => {
     rebootReconnectStateRef.current = rebootReconnectState;
   }, [rebootReconnectState]);
   const [streamPerformanceMode, setStreamPerformanceMode] = useState<StreamPerformanceMode>(() =>
-    normalizeStreamPerformanceMode(window.localStorage.getItem("wonremote-stream-performance-mode")),
+    initialViewPreferences.streamPerformanceMode ?? normalizeStreamPerformanceMode(window.localStorage.getItem("wonremote-stream-performance-mode")),
   );
-  const [selectedDisplayIndex, setSelectedDisplayIndex] = useState(initialViewPreferences.selectedDisplayIndex);
+  const [selectedDisplayIndex, setSelectedDisplayIndex] = useState(() => {
+    if (storedViewPreferences) return initialViewPreferences.selectedDisplayIndex;
+    const display = device?.displays?.find(item => item.index === device.activeDisplayIndex)
+      ?? device?.displays?.find(item => item.primary)
+      ?? device?.displays?.[0];
+    return display?.index ?? device?.activeDisplayIndex ?? 0;
+  });
   const [transferProgress, setTransferProgress] = useState<{
     fileName: string;
     progress: number;
@@ -2817,6 +3170,7 @@ function RemoteSessionPanel({
   const transferFilesRef = React.useRef<Map<string, File>>(new Map());
   const transferAbortControllersRef = React.useRef<Map<string, AbortController>>(new Map());
   const cancelledTransferIdsRef = React.useRef<Set<string>>(new Set());
+  const resumeTransferIdsRef = React.useRef(new Map<string, string>());
 
   // Phase 3 states
   const mediaRecorderRef = React.useRef<MediaRecorder | null>(null);
@@ -2829,6 +3183,7 @@ function RemoteSessionPanel({
   useEffect(() => {
     setIsFullscreenToolbarOpen(false);
     setIsWebRtcConnectionReady(false);
+    setPicturePresented(false);
     lastDisplayCommandRef.current = null;
     if (initialViewPreferences.fullscreen) {
       void applySessionFullscreen(true);
@@ -2836,14 +3191,22 @@ function RemoteSessionPanel({
   }, [sessionId]);
 
   useEffect(() => {
-    if (!preferenceDeviceId) return;
-    window.localStorage.setItem(deviceViewPreferencesKey(preferenceDeviceId), JSON.stringify({
-      clipboardSync: false,
-      fullscreen: isSessionFullscreen,
-      selectedDisplayIndex,
-      zoom,
-    }));
-  }, [isSessionFullscreen, preferenceDeviceId, selectedDisplayIndex, zoom]);
+    // A failed read is not an empty setting: preserve the unread stored value.
+    if (!preferenceDeviceId || preferenceSnapshot.failed) return;
+    try {
+      window.localStorage.setItem(deviceViewPreferencesKey(preferenceDeviceId), JSON.stringify({
+        clipboardSync: false,
+        fullscreen: isSessionFullscreen,
+        selectedDisplayIndex,
+        zoom,
+        streamPerformanceMode,
+        inputMode: mobileInputMode,
+      }));
+      setPreferenceSaveFailed(false);
+    } catch {
+      setPreferenceSaveFailed(true);
+    }
+  }, [isSessionFullscreen, preferenceDeviceId, preferenceSnapshot.failed, selectedDisplayIndex, zoom, streamPerformanceMode, mobileInputMode]);
 
   useEffect(() => {
     if ((window as any).__TAURI_INTERNALS__) return;
@@ -2935,6 +3298,11 @@ function RemoteSessionPanel({
       device?.displays?.find((display) => display.index === selectedDisplayIndex),
       device?.displays,
     );
+  const mobileDisplayCorner = (edge: number) => mapCanvasPointToVirtualDesktopAbsolute(
+    edge, edge, {left: 0, top: 0, width: 1, height: 1},
+    device?.displays?.find(display => display.index === selectedDisplayIndex), device?.displays,
+  );
+  const mobileDisplayStart = mobileDisplayCorner(0), mobileDisplayEnd = mobileDisplayCorner(1);
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
   const folderInputRef = React.useRef<HTMLInputElement | null>(null);
 
@@ -2944,18 +3312,7 @@ function RemoteSessionPanel({
   }, [sessionId]);
 
   useEffect(() => {
-    if (!device?.displays?.length) {
-      if (!storedViewPreferences) setSelectedDisplayIndex(device?.activeDisplayIndex ?? 0);
-      return;
-    }
-    if (!storedViewPreferences) {
-      const activeDisplay =
-        device.displays.find((display) => display.index === device.activeDisplayIndex) ??
-        device.displays.find((display) => display.primary) ??
-        device.displays[0];
-      setSelectedDisplayIndex(activeDisplay.index);
-      return;
-    }
+    if (!device?.displays?.length) return;
     if (device.displays.some((display) => display.index === selectedDisplayIndex)) {
       return;
     }
@@ -2964,7 +3321,7 @@ function RemoteSessionPanel({
       device.displays.find((display) => display.primary) ??
       device.displays[0];
     setSelectedDisplayIndex(activeDisplay.index);
-  }, [device?.activeDisplayIndex, device?.displays, selectedDisplayIndex, storedViewPreferences]);
+  }, [device?.activeDisplayIndex, device?.displays, selectedDisplayIndex]);
 
   useEffect(() => {
     if (!isWebRtcConnectionReady || lastDisplayCommandRef.current === selectedDisplayIndex) {
@@ -3012,13 +3369,14 @@ function RemoteSessionPanel({
         if (files.length > 0) {
           for (const file of files) {
             if (!isCurrent()) return;
-            const binaryString = atob(file.fileData);
-            const bytes = new Uint8Array(binaryString.length);
-            for (let i = 0; i < binaryString.length; i++) {
-              bytes[i] = binaryString.charCodeAt(i);
+            let assembled;
+            try { assembled = await incomingFilesRef.current.accept(file); }
+            catch (error) {
+              if (isCurrent()) setSessionDataError(error instanceof Error ? error.message : "원격 파일 수신 실패");
+              continue;
             }
-            const blob = new Blob([bytes]);
-            const url = URL.createObjectURL(blob);
+            if (!assembled || !isCurrent()) continue;
+            const url = URL.createObjectURL(assembled.blob);
             const a = document.createElement("a");
             a.href = url;
             a.download = file.filename;
@@ -3057,6 +3415,8 @@ function RemoteSessionPanel({
         }
         if (!isCurrent()) return;
         for (const receipt of receipts) {
+          if (receipt.status === "received") updateTransferQueueItem(receipt.transferId, completeFileTransfer);
+          if (receipt.status === "failed") updateTransferQueueItem(receipt.transferId, item => failFileTransfer(item, receipt.error ?? "원격 PC 저장 실패"));
           if (receipt.status !== "partial") setReceiptIds((ids) => ids.filter((id) => id !== receipt.transferId));
         }
         if (activeTransferIdRef.current && receipts.length > 0) {
@@ -3146,6 +3506,8 @@ function RemoteSessionPanel({
     let webRtcConnectionOpen = false;
     type TileFrame = { tiles?: any[]; width?: number; height?: number; sequence?: number; keyframe?: boolean };
     let keyframeRenderPending = false;
+    let hasPresentedBaseline = false;
+    let baselineRevision = 0;
     const queuedDuringKeyframe: TileFrame[] = [];
 
     const resolveFrameSequence = (data: TileFrame) => Number.isFinite(data.sequence)
@@ -3226,29 +3588,25 @@ function RemoteSessionPanel({
       const ctx = canvas.getContext("2d", { willReadFrequently: true });
       if (!ctx) return;
 
-      if (data.width && data.height) {
-        if (canvas.width !== data.width || canvas.height !== data.height) {
-          canvas.width = data.width;
-          canvas.height = data.height;
-          ctx.fillStyle = "#1e1e2e";
-          ctx.fillRect(0, 0, data.width, data.height);
-        }
-      }
-
       if (data.tiles && data.tiles.length > 0) {
         const frameSequence = resolveFrameSequence(data);
+        const revision = baselineRevision;
         let loadedCount = 0;
         for (const tile of data.tiles) {
           const img = new Image();
           img.onload = () => {
-            if (active) {
+            if (active && revision === baselineRevision) {
               drawTileCells(ctx, img, tile, frameSequence, true);
+              if (img.naturalWidth > 0 && Number(tile.w) > 0 && Number(tile.h) > 0) {
+                setPicturePresented(true);
+              }
             }
             loadedCount++;
             if (loadedCount === data.tiles!.length) {
               measurePresentedPing(ctx);
             }
           };
+          img.onerror = () => { if (active && revision === baselineRevision) setPictureError(true); };
           img.src = `data:image/jpeg;base64,${tile.data}`;
         }
       }
@@ -3259,9 +3617,10 @@ function RemoteSessionPanel({
       const width = Number(data.width ?? 0);
       const height = Number(data.height ?? 0);
       const tiles = data.tiles ?? [];
-      if (!active || !canvas || width <= 0 || height <= 0 || tiles.length === 0) {
+      if (!active || !canvas) {
         return;
       }
+      if (!hasCompleteTileCoverage(width, height, tiles)) { setPictureError(true); return; }
       const frameSequence = resolveFrameSequence(data);
       const staging = document.createElement("canvas");
       staging.width = width;
@@ -3274,6 +3633,10 @@ function RemoteSessionPanel({
       stagingContext.fillRect(0, 0, width, height);
       const decodedTiles = await Promise.all(tiles.map(async (tile) => ({ tile, img: await loadTileImage(tile) })));
       if (!active) {
+        return;
+      }
+      if (decodedTiles.some(({ tile, img }) => !img || img.naturalWidth !== tile.w || img.naturalHeight !== tile.h)) {
+        setPictureError(true);
         return;
       }
       for (const { tile, img } of decodedTiles) {
@@ -3298,6 +3661,12 @@ function RemoteSessionPanel({
             }
           }
           if (visibleContext) {
+            hasPresentedBaseline = true;
+            baselineRevision++;
+            if (decodedTiles.some(({ img }) => img && img.naturalWidth > 0)) {
+              setPicturePresented(true);
+              setPictureError(false);
+            }
             measurePresentedPing(visibleContext);
           }
         }
@@ -3311,7 +3680,12 @@ function RemoteSessionPanel({
         queuedDuringKeyframe.push(data);
         return;
       }
-      if (data.keyframe) {
+      const canvas = canvasRef.current;
+      const needsBaseline = !hasPresentedBaseline ||
+        (data.width !== undefined && data.width !== canvas?.width) ||
+        (data.height !== undefined && data.height !== canvas?.height);
+      // Legacy senders may omit keyframe; a resize still needs a complete picture.
+      if (data.keyframe || (needsBaseline && (data.tiles?.length ?? 0) > 0)) {
         keyframeRenderPending = true;
         void renderKeyframeAtomically(data).finally(() => {
           keyframeRenderPending = false;
@@ -3335,6 +3709,11 @@ function RemoteSessionPanel({
         setNeedsManualReconnect(false);
         webRtcConnectionOpen = false;
         setIsWebRtcConnectionReady(false);
+        setPicturePresented(false);
+        setPictureError(false);
+        setReverseFileSupported(false);
+        setReverseResumeSupported(false);
+        setRemoteFileStatus("");
         webRtcTransport?.close();
         webRtcTransport = null;
         webRtcTransportRef.current = null;
@@ -3342,8 +3721,39 @@ function RemoteSessionPanel({
         try {
           const transport = await startFirebaseViewerWebRtcTransport(sessionId, {
             onFrame: drawTileFrame,
+            onReverseFileSupport: resumeSupported => { if (active) { setReverseFileSupported(true); setReverseResumeSupported(resumeSupported === true); } },
+            onFileStatus: status => {
+              if (!active) return;
+              const labels = { selecting: "원격 PC에서 파일 선택 중", sending: "원격 파일 수신 중", complete: "원격 파일 수신 완료",
+                cancelled: "원격 파일 가져오기 취소됨", "selection-failed": "원격 파일 선택 창을 열지 못했습니다. 로그인된 사용자 화면을 확인해 주세요.",
+                "send-failed": "원격 파일을 가져오지 못했습니다. 연결과 저장 공간을 확인해 주세요." };
+              setRemoteFileStatus(labels[status.state]);
+              if (status.state === "cancelled" || status.state === "send-failed" || status.state === "selection-failed") markReceiveInterrupted();
+            },
+            onFileChunk: async (chunk, isCurrent) => {
+              if (!active || !isCurrent()) return null;
+              if (/\bWonRemoteViewer\/1\b/.test(navigator.userAgent) && !androidFileExporter.available()) throw new Error("Android file destination is not available yet.");
+              if (receivedFileRef.current && receivedFileRef.current.id !== chunk.transferId) {
+                throw new Error("Save or discard the previous received file first.");
+              }
+              try {
+                const ack = await getReverseReceiver().accept(chunk, () => active && isCurrent());
+                if (ack && active && isCurrent() && ack.status !== "complete") {
+                  const previous = incomingProgressRef.current;
+                  const progress = { transferId: chunk.transferId, filename: chunk.filename, totalBytes: chunk.totalBytes, receivedBytes: ack.receivedBytes, receiving: true };
+                  incomingProgressRef.current = progress;
+                  const percent = (bytes: number, total: number) => Math.floor(bytes * 100 / Math.max(1, total));
+                  if (!previous?.receiving || previous.transferId !== progress.transferId || percent(previous.receivedBytes, previous.totalBytes) !== percent(progress.receivedBytes, progress.totalBytes)) setInterruptedFile(progress);
+                }
+                return ack;
+              } catch (error) {
+                if (active && isCurrent()) { markReceiveInterrupted(); setRemoteFileStatus("파일 수신 중단됨"); setSessionDataError("파일을 수신하지 못했습니다. 저장 공간을 확인한 뒤 다시 시도해 주세요."); }
+                throw error;
+              }
+            },
             onState: (state) => {
               if (!active) return;
+              if (state === "webrtc-file-closed") { markReceiveInterrupted(); setReverseFileSupported(false); setReverseResumeSupported(false); }
               if (state === "webrtc-open") {
                 webRtcConnectionOpen = true;
                 setNeedsManualReconnect(false);
@@ -3360,6 +3770,7 @@ function RemoteSessionPanel({
             },
             onError: (error) => {
               if (!active) return;
+              markReceiveInterrupted();
               failed = true;
               webRtcConnectionOpen = false;
               setIsWebRtcConnectionReady(false);
@@ -3398,15 +3809,23 @@ function RemoteSessionPanel({
       env: import.meta.env,
     });
 
+    let tileRequestSequence = 0;
+    let latestTileResponse = 0;
     const pollTiles = async () => {
       if (!shouldPollTiles) {
         return;
       }
+      const requestSequence = ++tileRequestSequence;
       try {
         const tileData = await fetchTiles(sessionId);
+        if (!active || requestSequence < latestTileResponse) return;
+        latestTileResponse = requestSequence;
+        setReceiveError(false);
         drawTileFrame(tileData);
       } catch {
-        // Diagnostic fallback retries on the next interval.
+        if (!active || requestSequence < latestTileResponse) return;
+        latestTileResponse = requestSequence;
+        setReceiveError(true);
       }
     };
 
@@ -3460,15 +3879,22 @@ function RemoteSessionPanel({
       }
       pressedButtonsRef.current.clear();
     }
+    const pointerId = activePointerIdRef.current;
     activePointerIdRef.current = null;
+    const canvas = canvasRef.current;
+    if (pointerId !== null && canvas?.hasPointerCapture(pointerId)) {
+      canvas.releasePointerCapture(pointerId);
+    }
     return Promise.allSettled(releaseTasks).then(() => undefined);
   };
 
   useEffect(() => {
-    if (!isActive) {
+    if (!remoteInputAvailable) {
       void releaseAllInputs();
+      imeInputRef.current?.blur();
+      panelRef.current?.blur();
     }
-  }, [isActive]);
+  }, [remoteInputAvailable]);
 
   const handlePanelBlur = (event: React.FocusEvent<HTMLElement>) => {
     const nextTarget = event.relatedTarget;
@@ -3479,6 +3905,7 @@ function RemoteSessionPanel({
   };
 
   const handleCanvasPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!remoteInputAvailable) return;
     e.preventDefault();
     if (activePointerIdRef.current !== null && activePointerIdRef.current !== e.pointerId) {
       return;
@@ -3489,6 +3916,7 @@ function RemoteSessionPanel({
     const rect = canvas.getBoundingClientRect();
     const point = mapRemotePoint(e.clientX, e.clientY, rect);
     lastPointerPointRef.current = point;
+    if (mobileRemote) setMobilePointer(point);
     const { dx, dy } = point;
     const button = pressTrackedMouseButton(pressedButtonsRef.current, e.button);
     if (button === null) {
@@ -3496,11 +3924,12 @@ function RemoteSessionPanel({
     }
     activePointerIdRef.current = e.pointerId;
     e.currentTarget.setPointerCapture(e.pointerId);
-    imeInputRef.current?.focus({ preventScroll: true });
+    if (!mobileRemote) imeInputRef.current?.focus({ preventScroll: true });
     onInputEvent(buildMouseCommand("down", dx, dy, button));
   };
 
   const handleCanvasPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!remoteInputAvailable) return;
     e.preventDefault();
     if (activePointerIdRef.current !== null && activePointerIdRef.current !== e.pointerId) {
       return;
@@ -3511,6 +3940,7 @@ function RemoteSessionPanel({
     const rect = canvas.getBoundingClientRect();
     const point = mapRemotePoint(e.clientX, e.clientY, rect);
     lastPointerPointRef.current = point;
+    if (mobileRemote) setMobilePointer(point);
     const { dx, dy } = point;
     cancelPendingPointerMove();
     const button = releaseTrackedMouseButton(pressedButtonsRef.current, e.button);
@@ -3526,7 +3956,7 @@ function RemoteSessionPanel({
   };
 
   const handleCanvasPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!isActive) {
+    if (!remoteInputAvailable) {
       return;
     }
     if (activePointerIdRef.current !== null && activePointerIdRef.current !== e.pointerId) {
@@ -3561,6 +3991,7 @@ function RemoteSessionPanel({
         moveFrameRef.current = null;
         const point = pendingMoveRef.current;
         if (point) {
+          if (mobileRemote) setMobilePointer(point);
           lastMoveSentAtRef.current = performance.now();
           onInputEvent(buildMouseCommand("move", point.dx, point.dy));
         }
@@ -3578,6 +4009,10 @@ function RemoteSessionPanel({
   };
 
   const handleCanvasPointerCancel = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!remoteInputAvailable) {
+      void releaseAllInputs();
+      return;
+    }
     e.preventDefault();
     if (activePointerIdRef.current !== null && activePointerIdRef.current !== e.pointerId) {
       return;
@@ -3592,6 +4027,7 @@ function RemoteSessionPanel({
   };
 
   const handleCanvasWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
+    if (!remoteInputAvailable) return;
     e.preventDefault();
     if (!isActive) {
       onSelectSession(sessionId);
@@ -3603,6 +4039,7 @@ function RemoteSessionPanel({
     const rect = canvas.getBoundingClientRect();
     const point = mapRemotePoint(e.clientX, e.clientY, rect);
     lastPointerPointRef.current = point;
+    if (mobileRemote) setMobilePointer(point);
     const { dx, dy } = point;
     const delta = normalizeWheelDelta(e.deltaY);
     if (delta !== 0) {
@@ -3610,8 +4047,21 @@ function RemoteSessionPanel({
     }
   };
 
-  const handleKeyDown = async (event: React.KeyboardEvent<HTMLElement>) => {
-    if (!isActive) {
+  const commitImeBeforeRemoteKey = () => {
+    if (!imeComposingRef.current || imeEnterCommittedRef.current) return;
+    sendImeCompositionReplacement(imeInputRef.current?.value || imeCompositionValueRef.current);
+    // Finalize before sending a modifier: late preedit replacement must not edit a selection.
+    imeEnterCommittedRef.current = true;
+    panelRef.current?.focus({ preventScroll: true });
+    if (imeInputRef.current) {
+      imeInputRef.current.value = "";
+      imeInputRef.current.focus({ preventScroll: true });
+    }
+    imeComposingRef.current = false;
+  };
+
+  const handleKeyDown = async (event: RemoteKeyboardEvent) => {
+    if (!remoteInputAvailable) {
       return;
     }
     if (isEditableTarget(event.target)) {
@@ -3624,8 +4074,13 @@ function RemoteSessionPanel({
         return;
       }
       suppressedKeyUpsRef.current.add(event.code || "Hangul");
+      commitImeBeforeRemoteKey();
       imeInputRef.current?.focus({ preventScroll: true });
       return;
+    }
+    if (event.ctrlKey || event.altKey || event.metaKey
+        || /^(Control|Alt|Meta)(Left|Right)$/.test(event.code)) {
+      commitImeBeforeRemoteKey();
     }
     if (isExactCtrlShortcut(event, "Escape")) {
       event.preventDefault();
@@ -3647,7 +4102,7 @@ function RemoteSessionPanel({
       altKey: event.altKey,
       metaKey: event.metaKey,
       shiftKey: event.shiftKey,
-      isComposing: event.nativeEvent.isComposing || event.keyCode === 229,
+      isComposing: isKeyboardEventComposing(event) || event.keyCode === 229,
     });
     if (isLocalText) {
       suppressedKeyUpsRef.current.add(event.code || event.key);
@@ -3659,6 +4114,7 @@ function RemoteSessionPanel({
     }
 
     event.preventDefault();
+    if (event.code === "Enter" || event.code === "NumpadEnter") commitImeBeforeRemoteKey();
     const command = buildKeyboardCommand("keydown", event.key, event.code, event.keyCode);
     const remoteKey = command.slice("key-down ".length);
     const physicalKey = event.code || remoteKey;
@@ -3674,8 +4130,8 @@ function RemoteSessionPanel({
     onInputEvent(command);
   };
 
-  const handleKeyUp = (event: React.KeyboardEvent<HTMLElement>) => {
-    if (!isActive) {
+  const handleKeyUp = (event: RemoteKeyboardEvent) => {
+    if (!remoteInputAvailable) {
       return;
     }
     const command = buildKeyboardCommand("keyup", event.key, event.code, event.keyCode);
@@ -3698,6 +4154,7 @@ function RemoteSessionPanel({
       return;
     }
     imeComposingRef.current = true;
+    imeEnterCommittedRef.current = false;
     imeCompositionValueRef.current = "";
     suppressNextImeValueRef.current = "";
   };
@@ -3711,7 +4168,7 @@ function RemoteSessionPanel({
   };
 
   const handleImeCompositionUpdate = (event: React.CompositionEvent<HTMLTextAreaElement>) => {
-    if (!isActive) {
+    if (!isActive || imeEnterCommittedRef.current) {
       return;
     }
     sendImeCompositionReplacement(event.data);
@@ -3724,7 +4181,8 @@ function RemoteSessionPanel({
     }
     imeComposingRef.current = false;
     const result = finishRemoteComposition(event.data, event.currentTarget.value);
-    sendImeCompositionReplacement(result.text);
+    if (!imeEnterCommittedRef.current) sendImeCompositionReplacement(result.text);
+    imeEnterCommittedRef.current = false;
     imeCompositionValueRef.current = "";
     suppressNextImeValueRef.current = result.suppressNextValue;
     event.currentTarget.value = "";
@@ -3752,10 +4210,10 @@ function RemoteSessionPanel({
   };
 
   useEffect(() => {
-    if (isActive) {
+    if (remoteInputAvailable && !mobileRemote) {
       imeInputRef.current?.focus({ preventScroll: true });
     }
-  }, [isActive, sessionId]);
+  }, [remoteInputAvailable, sessionId, mobileRemote]);
 
   useEffect(() => {
     const handleWindowPointerUp = (event: PointerEvent) => {
@@ -3811,7 +4269,6 @@ function RemoteSessionPanel({
 
   const selectStreamPerformanceMode = (mode: StreamPerformanceMode) => {
     setStreamPerformanceMode(mode);
-    window.localStorage.setItem("wonremote-stream-performance-mode", mode);
   };
 
   // Recording
@@ -3881,6 +4338,20 @@ function RemoteSessionPanel({
 
   // Clipboard
   const isClipboardBusyRef = useRef(false);
+  const clipboardRequestAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    if (!isActive || !isVisible) {
+      clipboardRequestAbortRef.current?.abort();
+      clipboardRequestAbortRef.current = null;
+      isClipboardBusyRef.current = false;
+    }
+    return () => {
+      clipboardRequestAbortRef.current?.abort();
+      clipboardRequestAbortRef.current = null;
+      isClipboardBusyRef.current = false;
+    };
+  }, [isActive, isVisible, sessionId]);
+
   const handleSendClipboard = async () => {
     if (!isActive || !sessionId || isClipboardBusyRef.current) return;
     isClipboardBusyRef.current = true;
@@ -3912,24 +4383,34 @@ function RemoteSessionPanel({
   const handleFetchClipboard = async () => {
     if (!isActive || !sessionId || isClipboardBusyRef.current) return;
     isClipboardBusyRef.current = true;
+    const controller = new AbortController();
+    clipboardRequestAbortRef.current = controller;
     try {
-      await Promise.resolve(onInputEvent("clipboard-request"));
-      await new Promise((resolve) => window.setTimeout(resolve, 600));
-      const clips = await fetchClipboardText(sessionId);
-      if (activeSessionIdRef.current !== sessionId) return;
-      const agentClips = clips.filter((clip) => clip.sender === "agent");
-      if (agentClips.length > 0) {
-        const lastClip = agentClips[agentClips.length - 1];
-        await navigator.clipboard.writeText(lastClip.text);
-        alert(`클립보드 수신 완료: "${lastClip.text}"`);
-      } else {
-        alert("대기 중인 클립보드 텍스트가 없습니다.");
-      }
+      const text = await requestFreshClipboardText({
+        request: () => onInputEvent("clipboard-request"),
+        signal: controller.signal,
+        subscribe: (onData, onError, onReady) => subscribeSessionData(
+          sessionId,
+          onData,
+          onError,
+          { chat: false, files: false },
+          onReady,
+        ),
+      });
+      if (controller.signal.aborted || activeSessionIdRef.current !== sessionId) return;
+      await navigator.clipboard.writeText(text);
+      alert(`클립보드 수신 완료: "${text}"`);
     } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
       console.error("클립보드 수집 실패:", err);
-      alert("클립보드를 가져오지 못했습니다. 다시 시도해 주세요.");
+      alert(err instanceof Error && err.message.includes("시간 초과")
+        ? "원격 PC의 클립보드 응답 시간이 초과되었습니다. 다시 시도해 주세요."
+        : "클립보드를 가져오지 못했습니다. 다시 시도해 주세요.");
     } finally {
-      isClipboardBusyRef.current = false;
+      if (clipboardRequestAbortRef.current === controller) {
+        clipboardRequestAbortRef.current = null;
+        isClipboardBusyRef.current = false;
+      }
     }
   };
 
@@ -3968,7 +4449,7 @@ function RemoteSessionPanel({
     });
   };
 
-  const transferSingleFile = async (file: File, transferId: string) => {
+  const transferSingleFile = async (file: File, transferId: string, resumeTransferId?: string) => {
     if (!sessionId) return;
     if (cancelledTransferIdsRef.current.has(transferId)) {
       throw new DOMException("File transfer cancelled.", "AbortError");
@@ -4014,10 +4495,11 @@ function RemoteSessionPanel({
       if (realtimeTransport) {
         try {
           const sentOverWebRtc = await realtimeTransport.sendFile({
+            resume: resumeTransferId !== undefined,
             file,
             filename: remoteFilename,
             fileSha256,
-            transferId,
+            transferId: resumeTransferId ?? transferId,
             signal: abortController.signal,
             onProgress: (receivedBytes, totalBytes) => {
               updateQueuedTransferProgress(transferId, receivedBytes, totalBytes, startedAtMs);
@@ -4064,7 +4546,7 @@ function RemoteSessionPanel({
           fileName: remoteFilename,
           ...formatTransferStats(file.size, file.size, startedAtMs, performance.now()),
         });
-        updateTransferQueueItem(transferId, completeFileTransfer);
+        updateTransferQueueItem(transferId, awaitFileTransferReceipt);
         transferAbortControllersRef.current.delete(transferId);
         scheduleTransferProgressClear(transferId);
         return;
@@ -4111,7 +4593,7 @@ function RemoteSessionPanel({
         sentBytes = end;
         updateQueuedTransferProgress(transferId, sentBytes, file.size, startedAtMs);
       }
-      updateTransferQueueItem(transferId, completeFileTransfer);
+      updateTransferQueueItem(transferId, awaitFileTransferReceipt);
       scheduleTransferProgressClear(transferId);
     } catch (err) {
       setTransferProgress(null);
@@ -4160,9 +4642,13 @@ function RemoteSessionPanel({
   };
 
   const retryQueuedTransfer = (transferId: string) => {
+    if (transferAbortControllersRef.current.has(transferId)) return;
     const file = transferFilesRef.current.get(transferId);
     if (!file) return;
     const retryId = `${transferId}-retry-${Date.now()}`;
+    const resumeId = resumeTransferIdsRef.current.get(transferId) ?? transferId;
+    resumeTransferIdsRef.current.set(retryId, resumeId);
+    resumeTransferIdsRef.current.delete(transferId);
     transferFilesRef.current.set(retryId, file);
     transferFilesRef.current.delete(transferId);
     updateTransferQueueItem(transferId, () => createFileTransferQueueItem({
@@ -4170,7 +4656,7 @@ function RemoteSessionPanel({
       fileName: file.name,
       totalBytes: file.size,
     }));
-    void transferSingleFile(file, retryId)
+    void transferSingleFile(file, retryId, resumeId)
       .catch((error) => {
         if (error instanceof DOMException && error.name === "AbortError") {
           updateTransferQueueItem(retryId, cancelFileTransfer);
@@ -4189,11 +4675,12 @@ function RemoteSessionPanel({
 
   const clearTerminalTransfers = () => {
     setTransferQueue((current) => {
-      const retained = current.filter((item) => item.status === "queued" || item.status === "transferring");
+      const retained = current.filter((item) => item.status === "queued" || item.status === "transferring" || item.status === "awaiting-receipt");
       const retainedIds = new Set(retained.map((item) => item.id));
       for (const transferId of transferFilesRef.current.keys()) {
         if (!retainedIds.has(transferId)) {
           transferFilesRef.current.delete(transferId);
+          resumeTransferIdsRef.current.delete(transferId);
           cancelledTransferIdsRef.current.delete(transferId);
         }
       }
@@ -4214,6 +4701,7 @@ function RemoteSessionPanel({
 
   const setFitZoom = () => {
     setZoom(1);
+    setMobilePan({x: 0, y: 0});
   };
 
   const setActualSizeZoom = () => {
@@ -4331,7 +4819,8 @@ function RemoteSessionPanel({
   return (
     <section
       ref={panelRef}
-      className={`session-panel${isVisible ? "" : " session-panel-inactive"}${splitPanelClass}${isSessionFullscreen ? " session-fullscreen-active" : ""}${isSessionFullscreen && isFullscreenToolbarOpen ? " session-fullscreen-tools-open" : ""}`}
+      className={`session-panel${mobileRemote ? " mobile-session" : ""}${isVisible ? "" : " session-panel-inactive"}${splitPanelClass}${isSessionFullscreen ? " session-fullscreen-active" : ""}${isSessionFullscreen && isFullscreenToolbarOpen ? " session-fullscreen-tools-open" : ""}${mobileToolsOpen ? " mobile-tools-open" : ""}`}
+      style={mobileRemote && mobileHeight ? { height: mobileHeight, maxHeight: mobileHeight } : undefined}
       data-testid="remote-session-workspace"
       tabIndex={0}
       onBlur={handlePanelBlur}
@@ -4341,10 +4830,24 @@ function RemoteSessionPanel({
       onPointerDownCapture={() => !isActive && onSelectSession(sessionId)}
     >
       {sessionTabsBar}
+      {needsManualReconnect && isVisible && <div className="modal-backdrop" onKeyDown={event => event.stopPropagation()} onKeyUp={event => event.stopPropagation()}>
+        <section className="modal-panel compact-modal" role="dialog" aria-modal="true" aria-label="원격 연결 끊김">
+          <h2>원격 연결이 끊겼습니다</h2>
+          <p>다른 기기에서 접속했거나 네트워크 연결이 종료됐습니다.</p>
+          {reconnectError && <p role="alert">{reconnectError}</p>}
+          <div className="button-row">
+            <button type="button" className="secondary-button" onClick={onShowDeviceList}>장비 목록</button>
+            <button type="button" className="primary-button" disabled={reconnectBusy} onClick={() => void reconnectSession()}><RotateCcw size={16} />{reconnectBusy ? "재접속 중" : "재접속"}</button>
+          </div>
+        </section>
+      </div>}
       <textarea
         ref={imeInputRef}
         className="remote-ime-input"
         data-remote-ime-input="true"
+        readOnly={!remoteInputAvailable || (mobileRemote && !mobileKeyboardEnabled)}
+        inputMode={!remoteInputAvailable || (mobileRemote && !mobileKeyboardEnabled) ? "none" : "text"}
+        onBlur={() => { if (mobileRemote) setMobileKeyboardEnabled(false); }}
         aria-label="원격 키보드 입력"
         autoCapitalize="off"
         autoCorrect="off"
@@ -4354,11 +4857,19 @@ function RemoteSessionPanel({
         onCompositionEnd={handleImeCompositionEnd}
         onInput={handleImeInput}
       />
+      <DesktopRemoteKeyboardRecovery
+        enabled={remoteInputAvailable && !mobileRemote}
+        imeInputRef={imeInputRef}
+        isLocalControlTarget={isEditableTarget}
+        onKeyDown={handleKeyDown}
+        onKeyUp={handleKeyUp}
+        panelRef={panelRef}
+      />
       <div className="remote-work-area remote-canvas-viewport" data-testid="remote-canvas-viewport">
           <div className="remote-screen connected">
           <div
             ref={remotePreviewRef}
-            className="remote-preview"
+            className={`remote-preview${mobileRemote ? " mobile-width-fit-preview" : ""}${portraitRemote ? " portrait-remote-preview" : ""}`}
             onDragOver={(event) => event.preventDefault()}
             onDrop={handleFileDrop}
           >
@@ -4375,10 +4886,55 @@ function RemoteSessionPanel({
               style={{
                 display: "block",
                 cursor: "crosshair",
-                transform: `scale(${zoom})`,
-                transformOrigin: "center center",
+                transform: mobileRemote ? `translate(${mobilePan.x}px, ${mobilePan.y}px) scale(${zoom})` : `scale(${zoom})`,
+                transformOrigin: portraitRemote ? "center top" : "center center",
               }}
             />
+            {mobileRemote && <MobileRemoteGesturePad
+              canvas={canvasRef} viewport={remotePreviewRef}
+              pointer={{dx: (mobilePointer.dx-mobileDisplayStart.dx)/Math.max(1,mobileDisplayEnd.dx-mobileDisplayStart.dx)*65535,
+                dy: (mobilePointer.dy-mobileDisplayStart.dy)/Math.max(1,mobileDisplayEnd.dy-mobileDisplayStart.dy)*65535}} portrait={portraitRemote}
+              touchpad={mobileInputMode === "touchpad" && isVisible && isActive ? {
+                move: (x, y) => {
+                  const rect = canvasRef.current?.getBoundingClientRect();
+                  if (!rect || rect.width <= 0 || rect.height <= 0) return;
+                  const previous = lastPointerPointRef.current;
+                  const point = {dx: Math.round(Math.max(mobileDisplayStart.dx, Math.min(mobileDisplayEnd.dx, previous.dx+x/rect.width*(mobileDisplayEnd.dx-mobileDisplayStart.dx)))),
+                    dy: Math.round(Math.max(mobileDisplayStart.dy, Math.min(mobileDisplayEnd.dy, previous.dy+y/rect.height*(mobileDisplayEnd.dy-mobileDisplayStart.dy))))};
+                  lastPointerPointRef.current = point;
+                  setMobilePointer(point);
+                  onInputEvent(buildMouseCommand("move", point.dx, point.dy, 0));
+                },
+                button: (down) => {
+                  const previous = lastPointerPointRef.current;
+                  const point = {dx: Math.max(mobileDisplayStart.dx, Math.min(mobileDisplayEnd.dx, previous.dx)),
+                    dy: Math.max(mobileDisplayStart.dy, Math.min(mobileDisplayEnd.dy, previous.dy))};
+                  lastPointerPointRef.current = point;
+                  setMobilePointer(point);
+                  onInputEvent(buildMouseCommand(down ? "down" : "up", point.dx, point.dy, 0));
+                },
+                scroll: (delta) => {
+                  const point = lastPointerPointRef.current;
+                  onInputEvent(buildMouseCommand("wheel", point.dx, point.dy, 0, Math.round(delta)));
+                },
+              } : undefined}
+              revision={`${zoom}:${mobilePan.x}:${mobilePan.y}`}
+              onGesture={(dx, dy, factor) => {
+                const canvas = canvasRef.current;
+                const area = remotePreviewRef.current;
+                if (!canvas || !area) return;
+                const nextZoom = Math.max(0.25, Math.min(8, zoom * factor));
+                const limitX = Math.max(0, (canvas.offsetWidth * nextZoom - area.clientWidth) / 2);
+                const limitY = portraitRemote
+                  ? Math.max(0, canvas.offsetHeight * nextZoom - Math.max(1, area.clientHeight - 80))
+                  : Math.max(0, (canvas.offsetHeight * nextZoom - area.clientHeight) / 2);
+                setZoom(nextZoom);
+                setMobilePan(point => ({
+                  x: Math.max(-limitX, Math.min(limitX, point.x + dx)),
+                  y: Math.max(-limitY, Math.min(portraitRemote ? 0 : limitY, point.y + dy)),
+                }));
+              }}
+            />}
             </div>
           </div>
 
@@ -4404,10 +4960,20 @@ function RemoteSessionPanel({
             </div>
           )}
 
-          {transferQueue.length > 0 && (
+          {remoteFileStatus && <div className="session-transfer-progress" role="status">{remoteFileStatus}</div>}
+          {(transferQueue.length > 0 || receivedFile || interruptedFile) && (
             <aside className="session-transfer-queue" aria-label="파일 전송 목록">
               <div className="session-transfer-queue-heading">
                 <strong>파일 전송</strong>
+                {desktopDownloads && <button type="button" title={downloadFolder || "기본 다운로드 폴더 설정"} aria-label="기본 다운로드 폴더 설정" onClick={async () => {
+                  try { setDownloadFolder(await invoke<string>("choose_viewer_download_folder")); } catch (error) { setSessionDataError(String(error)); }
+                }}><SlidersHorizontal size={16} /></button>}
+                {desktopDownloads && (
+                  <button type="button" title="내 PC 받은 폴더 열기" aria-label="내 PC 받은 폴더 열기"
+                    onClick={() => void invoke("open_viewer_download_folder").catch(error => setSessionDataError(String(error)))}>
+                    <FolderOpen size={16} />
+                  </button>
+                )}
                 <button
                   type="button"
                   title="완료 항목 정리"
@@ -4417,16 +4983,68 @@ function RemoteSessionPanel({
                   <Trash2 size={14} />
                 </button>
               </div>
+              {interruptedFile && <div className={`session-transfer-queue-item ${interruptedFile.receiving ? "" : "failed"}`}>
+                <span><strong>{interruptedFile.filename}</strong><small>{interruptedFile.receiving ? "수신 중" : "수신 중단됨"} · {Math.floor(interruptedFile.receivedBytes * 100 / Math.max(1, interruptedFile.totalBytes))}% · {interruptedFile.receivedBytes} / {interruptedFile.totalBytes} bytes</small>
+                  <progress aria-label="파일 수신 진행률" max={interruptedFile.totalBytes || 1} value={interruptedFile.receivedBytes} />
+                </span>
+                <button type="button" aria-label="중단된 수신 이어받기" title={reverseResumeSupported ? "원격 PC에서 원본 파일을 다시 선택하여 이어받기" : "에이전트의 이어받기 지원이 확인되지 않았습니다"}
+                  disabled={interruptedFile.receiving || !isWebRtcConnectionReady || !reverseResumeSupported || remoteFileStatus === "원격 PC에서 파일 선택 중" || remoteFileStatus === "원격 파일 수신 중"}
+                  onClick={async () => {
+                    setRemoteFileStatus("원격 PC에서 파일 선택 중");
+                    try {
+                      const transport = webRtcTransportRef.current;
+                      if (!transport?.isControlReady() || !transport.sendControl(`request-file-resume ${interruptedFile.transferId}`)) throw new Error("File control channel unavailable");
+                    }
+                    catch { setRemoteFileStatus("이어받기를 요청하지 못했습니다. 다시 시도해 주세요."); }
+                  }}><RotateCcw size={16} /></button>
+                <button type="button" aria-label="중단된 수신 삭제" title="중단된 수신 삭제" disabled={interruptedFile.receiving} onClick={async () => {
+                  try { await getReverseReceiver().discard(); incomingProgressRef.current = null; setInterruptedFile(null); }
+                  catch { setSessionDataError("수신 임시 파일을 삭제하지 못했습니다."); }
+                }}><Trash2 size={16} /></button>
+              </div>}
+              {receivedFile && (
+                <div className="session-transfer-queue-item completed">
+                  <span><strong>{receivedFile.filename}</strong><small>{nativeSaveState || (receivedDownloadRequested ? "다운로드 요청됨" : "수신 완료 · 저장 대기")}</small></span>
+                  <button type="button" title="받은 파일 저장" aria-label="받은 파일 저장" disabled={nativeSaveState === "저장 중"} onClick={async () => {
+                    if (desktopDownloads) { await saveReceivedDesktopFile(receivedFile); return; }
+                    if (/\bWonRemoteViewer\/1\b/.test(navigator.userAgent)) {
+                      const controller = new AbortController();
+                      nativeSaveRef.current = controller;
+                      setNativeSaveState("저장 중");
+                      try {
+                        const saved = await androidFileExporter.save(receivedFile, controller.signal);
+                        if (!controller.signal.aborted) setNativeSaveState(saved ? "파일 저장 완료" : "저장 취소됨");
+                      } catch {
+                        if (!controller.signal.aborted) setNativeSaveState("저장 실패 · 다시 시도하세요");
+                      } finally { if (nativeSaveRef.current === controller) nativeSaveRef.current = null; }
+                      return;
+                    }
+                    const url = URL.createObjectURL(receivedFile.blob);
+                    const link = document.createElement("a");
+                    link.href = url; link.download = receivedFile.filename;
+                    document.body.appendChild(link); link.click(); link.remove();
+                    window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+                    setReceivedDownloadRequested(true);
+                  }}><Download size={16} /></button>
+                  <button type="button" title="수신 항목 정리" aria-label="수신 항목 정리" disabled={nativeSaveState === "저장 중"} onClick={async () => {
+                    try {
+                      await reverseReceiverRef.current?.discard();
+                      receivedFileRef.current = null; setReceivedFile(null);
+                    } catch { setSessionDataError("수신 임시 파일을 삭제하지 못했습니다."); }
+                  }}><Trash2 size={16} /></button>
+                </div>
+              )}
               {transferQueue.map((item) => {
                 const percent = getFileTransferPercent(item);
                 const eta = getFileTransferEtaSeconds(item);
                 const statusLabel = item.status === "queued" ? "대기"
+                  : item.status === "awaiting-receipt" ? "원격 저장 확인 중"
                   : item.status === "transferring" ? `${percent}%${eta === null ? "" : ` · ${eta}초`}`
                     : item.status === "completed" ? "완료"
                       : item.status === "cancelled" ? "취소됨" : "실패";
                 return (
                   <div className={`session-transfer-queue-item ${item.status}`} key={item.id}>
-                    <span><strong>{item.fileName}</strong><small>{statusLabel}</small></span>
+                    <span><strong>{item.fileName}</strong><small>{statusLabel}</small>{item.error && <small>{item.error}</small>}</span>
                     <span className="session-transfer-progress-track" aria-hidden="true">
                       <span className="session-transfer-progress-fill" style={{ width: `${percent}%` }} />
                     </span>
@@ -4442,6 +5060,11 @@ function RemoteSessionPanel({
             </aside>
           )}
 
+          {preferenceSaveFailed && (
+            <div className="error-banner" role="status">
+              기기 설정을 저장하지 못했습니다. 현재 연결에는 적용되지만 다음 접속에는 유지되지 않을 수 있습니다.
+            </div>
+          )}
           {sessionDataError && (
             <div className="error-banner" role="alert">
               {sessionDataError}
@@ -4484,6 +5107,42 @@ function RemoteSessionPanel({
         )}
       </div>
 
+       {mobileRemote && isVisible && isActive && <MobileRemoteControls
+        key={sessionId}
+        connectionStatus={connectionStatus}
+        deviceName={device.desktopName}
+        touchpad={mobileInputMode === "touchpad"}
+        toggleTouchpad={() => setMobileInputMode(mode => mode === "screen" ? "touchpad" : "screen")}
+        send={onInputEvent}
+        click={(button) => {
+          const { dx, dy } = lastPointerPointRef.current;
+          onInputEvent(buildMouseCommand("down", dx, dy, button));
+          onInputEvent(buildMouseCommand("up", dx, dy, button));
+        }}
+        scroll={(delta) => {
+          const { dx, dy } = lastPointerPointRef.current;
+          onInputEvent(buildMouseCommand("wheel", dx, dy, 0, delta));
+        }}
+        keyboard={() => {
+          if (document.activeElement === imeInputRef.current) {
+            imeInputRef.current?.blur();
+          } else {
+            if (portraitRemote) setFitZoom();
+            setMobileKeyboardEnabled(true);
+            // Enable synchronously within this gesture before WebView requests IME.
+            if (imeInputRef.current) {
+              imeInputRef.current.readOnly = false;
+              imeInputRef.current.inputMode = "text";
+            }
+            imeInputRef.current?.focus({ preventScroll: true });
+          }
+        }}
+        zoom={(delta) => setZoom((value) => Math.max(0.25, Math.min(8, Number((value + delta).toFixed(2)))))}
+        settings={() => setMobileToolsOpen((open) => !open)}
+        settingsOpen={mobileToolsOpen}
+        closeSettings={() => setMobileToolsOpen(false)}
+      />}
+
       {isSessionFullscreen && (
         <>
           <button
@@ -4510,7 +5169,9 @@ function RemoteSessionPanel({
         </>
       )}
 
+      {mobileRemote && mobileToolsOpen && <button className="mobile-tools-backdrop" type="button" aria-label="설정 패널 닫기" onClick={() => setMobileToolsOpen(false)} />}
       <div className="session-actions session-actions-top remote-command-bar" data-testid="remote-command-bar">
+        {mobileRemote && <div className="mobile-tools-heading"><strong>화면 및 도구</strong><button type="button" aria-label="도구 닫기" onClick={() => setMobileToolsOpen(false)}><X size={20} /></button></div>}
         <div className="session-command-identity">
           <button
             className="session-back-button"
@@ -4527,11 +5188,7 @@ function RemoteSessionPanel({
             <div>
               <strong>{device.desktopName}</strong>
               <small>
-                {device.storeName} · {rebootReconnectState === "restarting"
-                  ? "재부팅 시작"
-                  : rebootReconnectState === "reconnecting" || !isWebRtcConnectionReady
-                    ? (needsManualReconnect ? "연결 끊김" : "연결 중")
-                    : "연결됨"}
+                {device.storeName} · {connectionStatus}
               </small>
             </div>
           </div>
@@ -4539,8 +5196,8 @@ function RemoteSessionPanel({
 
         <div className="session-display-controls" data-testid="display-mode-controls" role="group" aria-label="원격 화면 표시 설정">
           <button type="button" title="원격 연결 새로고침" aria-label="원격 연결 새로고침"
-            disabled={!needsManualReconnect && rebootReconnectState === "idle"}
-            onClick={() => { setNeedsManualReconnect(false); setRebootReconnectState("idle"); setWebRtcReconnectGeneration((value) => value + 1); }}>
+            disabled={reconnectBusy || (!needsManualReconnect && !pictureError && rebootReconnectState === "idle")}
+            onClick={() => { if (needsManualReconnect) void reconnectSession(); else { setRebootReconnectState("idle"); setWebRtcReconnectGeneration((value) => value + 1); } }}>
             <RotateCcw size={16} />
           </button>
           <div className="stream-mode-control" role="group" aria-label="화면 반응 속도">
@@ -4605,8 +5262,23 @@ function RemoteSessionPanel({
         <div className="session-command-actions">
           <button className="secondary-button" type="button" onClick={handleSendClipboard} title="클립보드 동기화: 내 PC → 원격 PC" aria-label="클립보드 동기화: 내 PC → 원격 PC">
             <Clipboard size={17} />
+            {mobileRemote && <span>클립보드 보내기</span>}
           </button>
-          <details className="session-tool-menu" data-testid="secondary-tools">
+          <details className="session-tool-menu" data-testid="secondary-tools" open={mobileRemote ? mobileToolsOpen : undefined} onToggle={async event => {
+            if (!event.currentTarget.open || !isViewerFirebaseEnabled()) return;
+            try {
+              const receiver = getReverseReceiver();
+              const restored = await receiver.restore();
+              if (reverseReceiverRef.current !== receiver || !restored) return;
+              if (restored.blob) {
+                const ready = { id: restored.transferId, filename: restored.filename, blob: restored.blob };
+                receivedFileRef.current = ready; setReceivedFile(ready); setInterruptedFile(null);
+              } else {
+                const progress = { ...restored, receiving: incomingProgressRef.current?.receiving === true };
+                incomingProgressRef.current = progress; setInterruptedFile(progress);
+              }
+            } catch { setSessionDataError("받은 파일 목록을 복원하지 못했습니다."); }
+          }}>
             <summary>
               <SlidersHorizontal size={17} />
               <span>도구</span>
@@ -4670,6 +5342,20 @@ function RemoteSessionPanel({
                     <span>{`파일 전송 (${remoteFileLimitLabel()})`}</span>
                   </button>
                   <input multiple type="file" ref={fileInputRef} onChange={handleFileUpload} style={{ display: "none" }} />
+                  {device?.platform !== "android" && (!/\bWonRemoteViewer\/1\b/.test(navigator.userAgent) || androidFileExporter.available()) && (
+                    <>
+                      <button className="secondary-button" type="button" disabled={!isWebRtcConnectionReady || !reverseFileSupported || (Boolean(receivedFile) && !receivedDownloadRequested)} onClick={() => onInputEvent("request-file-send")} title={reverseFileSupported ? "원격 PC에서 보낼 파일 선택" : "연결된 에이전트의 파일 가져오기 지원이 확인되지 않았습니다"}>
+                        <Download size={17} /><span>원격 파일 가져오기</span>
+                      </button>
+                      <button className="secondary-button" type="button" disabled={!isWebRtcConnectionReady || !reverseFileSupported} onClick={() => onInputEvent("cancel-file-send")} title="원격 파일 선택·전송 취소">
+                        <X size={17} /><span>가져오기 취소</span>
+                      </button>
+                    </>
+                  )}
+                  {desktopDownloads && <button className="secondary-button" type="button" title={downloadFolder || "내 PC 기본 다운로드 폴더 설정"} onClick={async () => {
+                    try { setDownloadFolder(await invoke<string>("choose_viewer_download_folder")); }
+                    catch (error) { setSessionDataError(String(error)); }
+                  }}><FolderOpen size={17} /><span>다운로드 폴더 설정</span></button>}
                   <button className="secondary-button" type="button" onClick={() => folderInputRef.current?.click()}>
                     <FileUp size={17} />
                     <span>폴더 전송</span>

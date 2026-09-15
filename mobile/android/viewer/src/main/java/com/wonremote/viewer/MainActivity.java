@@ -8,6 +8,7 @@ import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
@@ -26,31 +27,52 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
+import android.widget.Toast;
 
 public final class MainActivity extends com.wonremote.update.UpdateActivity {
     private static final String VIEWER_HOST = "wonremote-a7fd3.web.app";
     private static final String VIEWER_URL = "https://" + VIEWER_HOST + "/viewer";
     private static final int FILE_CHOOSER_REQUEST = 1001;
+    private static final int DIAGNOSTIC_SAVE_REQUEST = 1002;
+    private String pendingDiagnostic;
+    private boolean diagnosticWriting;
+    private final java.util.concurrent.ExecutorService diagnosticWriter = java.util.concurrent.Executors.newSingleThreadExecutor();
+    private static final long BACK_PRESS_WINDOW_MS = 2000L;
     private static final int DARK = Color.rgb(16, 32, 42);
     private static final int ACCENT = Color.rgb(32, 184, 154);
 
     private WebView webView;
+    private NativeFileExport fileExport;
     private View loadingView;
     private View errorView;
     private boolean mainFrameFailed;
     private ValueCallback<Uri[]> fileChooserCallback;
     private View fullscreenView;
     private WebChromeClient.CustomViewCallback fullscreenCallback;
+    private String pendingBackScope = "";
+    private long pendingBackAt;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        if (savedInstanceState != null) {
+            String restored = savedInstanceState.getString("pendingDiagnostic");
+            if (DiagnosticExport.validReport(restored)) pendingDiagnostic = restored;
+        }
         getWindow().setStatusBarColor(DARK);
         getWindow().setNavigationBarColor(DARK);
 
         FrameLayout root = new FrameLayout(this);
+        // Android 15 enforces edge-to-edge for target 35. Keep WebView outside system UI.
+        if (android.os.Build.VERSION.SDK_INT >= 35) {
+            root.setOnApplyWindowInsetsListener((view, insets) -> {
+                // WebView still needs IME insets to resize its visual viewport.
+                return applySystemBarInsets(view, insets);
+            });
+        }
         root.setBackgroundColor(DARK);
         webView = new WebView(this);
+        fileExport = new NativeFileExport(this);
         webView.setBackgroundColor(DARK);
         configureWebView(webView);
         root.addView(webView, matchMatch());
@@ -61,6 +83,7 @@ public final class MainActivity extends com.wonremote.update.UpdateActivity {
         root.addView(errorView, matchMatch());
         root.addView(updateButton(), new FrameLayout.LayoutParams(dp(40), dp(40), Gravity.END | Gravity.BOTTOM));
         setContentView(root);
+        root.requestApplyInsets();
 
         if (savedInstanceState == null) {
             webView.loadUrl(VIEWER_URL);
@@ -72,6 +95,10 @@ public final class MainActivity extends com.wonremote.update.UpdateActivity {
     private void configureWebView(WebView view) {
         WebSettings settings = view.getSettings();
         settings.setJavaScriptEnabled(true);
+        settings.setUserAgentString(settings.getUserAgentString() + " WonRemoteViewer/1");
+        settings.setSupportZoom(false);
+        settings.setBuiltInZoomControls(false);
+        settings.setDisplayZoomControls(false);
         settings.setDomStorageEnabled(true);
         settings.setAllowContentAccess(true);
         settings.setAllowFileAccess(false);
@@ -159,6 +186,7 @@ public final class MainActivity extends com.wonremote.update.UpdateActivity {
 
     @Override
     protected void onSaveInstanceState(Bundle outState) {
+        if (pendingDiagnostic != null) outState.putString("pendingDiagnostic", pendingDiagnostic);
         webView.saveState(outState);
         super.onSaveInstanceState(outState);
     }
@@ -167,16 +195,89 @@ public final class MainActivity extends com.wonremote.update.UpdateActivity {
     public void onBackPressed() {
         if (fullscreenView != null) {
             hideFullscreen();
-        } else if (webView.canGoBack()) {
+            return;
+        }
+        if (webView == null) {
+            super.onBackPressed();
+            return;
+        }
+        webView.evaluateJavascript(
+            "(function(){var scope=window.__wonRemoteMobileBackScope;return typeof scope==='function'?scope():'native';})()",
+            this::handleMobileBackScope
+        );
+    }
+
+    private void handleMobileBackScope(String result) {
+        String scope = decodeJavascriptString(result);
+        if ("session".equals(scope)) {
+            if (isSecondBackPress(scope)) {
+                webView.evaluateJavascript(
+                    "window.dispatchEvent(new Event('wonremote:show-device-list'))",
+                    null
+                );
+            } else {
+                Toast.makeText(this, "한 번 더 누르면 원격 목록으로 이동합니다.", Toast.LENGTH_SHORT).show();
+            }
+            return;
+        }
+        if ("list".equals(scope)) {
+            if (isSecondBackPress(scope)) {
+                finish();
+            } else {
+                Toast.makeText(this, "한 번 더 누르면 앱이 종료됩니다.", Toast.LENGTH_SHORT).show();
+            }
+            return;
+        }
+        if (webView.canGoBack()) {
             webView.goBack();
         } else {
             super.onBackPressed();
         }
     }
 
+    private boolean isSecondBackPress(String scope) {
+        long now = SystemClock.elapsedRealtime();
+        boolean secondPress = isSecondBackPress(scope, pendingBackScope, now - pendingBackAt);
+        pendingBackScope = secondPress ? "" : scope;
+        pendingBackAt = secondPress ? 0L : now;
+        return secondPress;
+    }
+
+    static boolean isSecondBackPress(String scope, String previousScope, long elapsedMs) {
+        return scope.equals(previousScope) && elapsedMs >= 0L && elapsedMs <= BACK_PRESS_WINDOW_MS;
+    }
+
+    private String decodeJavascriptString(String value) {
+        if (value == null || value.length() < 2 || value.charAt(0) != '"') {
+            return "";
+        }
+        return value.substring(1, value.length() - 1);
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == NativeFileExport.REQUEST) {
+            fileExport.result(resultCode, data);
+            return;
+        }
+        if (requestCode == DIAGNOSTIC_SAVE_REQUEST) {
+            String report = pendingDiagnostic;
+            pendingDiagnostic = null;
+            if (resultCode != RESULT_OK || data == null || report == null) return;
+            diagnosticWriting = true;
+            diagnosticWriter.execute(() -> {
+                boolean saved;
+                try { DiagnosticExport.write(getContentResolver(), data.getData(), report); saved = true; }
+                catch (Exception error) { saved = false; }
+                final boolean success = saved;
+                runOnUiThread(() -> {
+                    diagnosticWriting = false;
+                    if (!isDestroyed()) Toast.makeText(this, success ? "진단 파일 저장 완료" : "진단 파일 저장 실패. 다시 시도하세요.", Toast.LENGTH_LONG).show();
+                });
+            });
+            return;
+        }
         if (requestCode != FILE_CHOOSER_REQUEST || fileChooserCallback == null) {
             return;
         }
@@ -188,6 +289,9 @@ public final class MainActivity extends com.wonremote.update.UpdateActivity {
 
     @Override
     protected void onDestroy() {
+        if (fileExport != null) fileExport.destroy();
+        pendingDiagnostic = null;
+        diagnosticWriter.shutdown();
         if (fileChooserCallback != null) {
             fileChooserCallback.onReceiveValue(null);
             fileChooserCallback = null;
@@ -204,11 +308,10 @@ public final class MainActivity extends com.wonremote.update.UpdateActivity {
         }
         fullscreenView = view;
         fullscreenCallback = callback;
-        addContentView(view, matchMatch());
+        ((FrameLayout) webView.getParent()).addView(view, matchMatch());
         webView.setVisibility(View.GONE);
         getWindow().getDecorView().setSystemUiVisibility(
-            View.SYSTEM_UI_FLAG_FULLSCREEN
-                | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+            View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                 | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
         );
     }
@@ -271,9 +374,17 @@ public final class MainActivity extends com.wonremote.update.UpdateActivity {
         return Math.round(value * getResources().getDisplayMetrics().density);
     }
 
+    static android.view.WindowInsets applySystemBarInsets(View view, android.view.WindowInsets insets) {
+        android.graphics.Insets bars = insets.getInsets(
+            android.view.WindowInsets.Type.systemBars() | android.view.WindowInsets.Type.displayCutout());
+        view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
+        return insets;
+    }
+
     private final class ViewerWebViewClient extends WebViewClient {
         @Override
         public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
+            fileExport.detach();
             mainFrameFailed = false;
             showLoading();
         }
@@ -282,6 +393,7 @@ public final class MainActivity extends com.wonremote.update.UpdateActivity {
         public void onPageFinished(WebView view, String url) {
             if (!mainFrameFailed) {
                 showContent();
+                fileExport.attach(view, url);
             }
         }
 
@@ -304,6 +416,18 @@ public final class MainActivity extends com.wonremote.update.UpdateActivity {
         @Override
         public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
             Uri uri = request.getUrl();
+            if (DiagnosticExport.SCHEME.equals(uri.getScheme())) {
+                String report = DiagnosticExport.parse(uri, view.getUrl(), request.isForMainFrame(), request.hasGesture());
+                if (report != null && pendingDiagnostic == null && !diagnosticWriting) {
+                    pendingDiagnostic = report;
+                    try { startActivityForResult(DiagnosticExport.createIntent(), DIAGNOSTIC_SAVE_REQUEST); }
+                    catch (ActivityNotFoundException error) {
+                        pendingDiagnostic = null;
+                        Toast.makeText(MainActivity.this, "파일 저장 앱을 찾을 수 없습니다.", Toast.LENGTH_LONG).show();
+                    }
+                }
+                return true;
+            }
             if ("https".equals(uri.getScheme()) && VIEWER_HOST.equals(uri.getHost())) {
                 return false;
             }

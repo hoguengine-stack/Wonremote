@@ -67,7 +67,7 @@ struct InputServerRequest {
     action: String,
 }
 
-#[derive(Debug, Serialize, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct InputServerResponse {
     id: String,
     ok: bool,
@@ -529,6 +529,24 @@ mod tests {
         assert!(tile_diff.get_dirty_tiles(&frame).0.is_empty());
         tile_diff.prev_frame = None;
         assert_eq!(tile_diff.get_dirty_tiles(&frame).0, vec![0, 1]);
+    }
+
+    #[test]
+    fn incomplete_encoding_forces_full_frame_retry_without_publishing_partial_tiles() {
+        let mut frame = vec![0xFF; 64 * 32 * 2];
+        let mut diff = TileDiff::new(64, 32, 32);
+        assert_eq!(diff.get_dirty_tiles(&frame).0, vec![0, 1]);
+        assert!(!diff.accept_encoded_frame(2, 1));
+        assert!(diff.prev_frame.is_none());
+        assert_eq!(diff.get_dirty_tiles(&frame).0, vec![0, 1]);
+        assert!(diff.accept_encoded_frame(2, 2));
+        assert!(diff.get_dirty_tiles(&frame).0.is_empty());
+        frame[0] = 0;
+        assert_eq!(diff.get_dirty_tiles(&frame).0, vec![0]);
+        assert!(!diff.accept_encoded_frame(1, 0));
+        assert_eq!(diff.get_dirty_tiles(&frame).0, vec![0, 1]);
+        assert!(diff.accept_encoded_frame(2, 2));
+        assert!(diff.get_dirty_tiles(&frame).0.is_empty());
     }
 
     #[test]
@@ -1371,6 +1389,15 @@ fn parse_process_sample(value: &str) -> Option<ProcessSample> {
 }
 
 impl TileDiff {
+    fn accept_encoded_frame(&mut self, expected: usize, encoded: usize) -> bool {
+        if expected != encoded {
+            // get_dirty_tiles already advanced the baseline; failed pixels must be retried.
+            self.prev_frame = None;
+            return false;
+        }
+        encoded > 0
+    }
+
     pub fn new(width: u32, height: u32, tile_size: u32) -> Self {
         let cols = width.div_ceil(tile_size);
         let rows = height.div_ceil(tile_size);
@@ -2377,7 +2404,12 @@ async fn run_streaming_loop(
             next_desktop_probe = loop_start + Duration::from_millis(100);
         }
         match capturer.capture_frame(config.capture_timeout_ms) {
-            Ok(CaptureFrameStatus::Frame { mut rgb565, .. }) => {
+            Ok(CaptureFrameStatus::Frame {
+                mut rgb565,
+                capture_time_us,
+                ..
+            }) => {
+                let processing_start = Instant::now();
                 let jpeg_quality = runtime_jpeg_quality.load(std::sync::atomic::Ordering::SeqCst);
                 if jpeg_quality != active_jpeg_quality
                     && compressor.set_quality(jpeg_quality).is_ok()
@@ -2446,13 +2478,14 @@ async fn run_streaming_loop(
                         }
                     }
 
-                    if !base64_tiles.is_empty() {
+                    if tile_diff.accept_encoded_frame(merged_tiles.len(), base64_tiles.len()) {
                         let msg = serde_json::json!({
                             "type": "frame",
                             "width": width,
                             "height": height,
                             "tiles": base64_tiles,
                             "keyframe": keyframe,
+                            "processingMs": (capture_time_us as f64 + processing_start.elapsed().as_micros() as f64) / 1000.0,
                             "timestamp": now_unix_ms()
                         });
                         println!("{msg}");
@@ -2559,12 +2592,13 @@ where
     }
 }
 
-async fn run_input_server(attach_to_input_desktop: bool) -> std::result::Result<(), String> {
+async fn run_input_server(secure_worker: bool) -> std::result::Result<(), String> {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
     let stdin = tokio::io::stdin();
     let mut lines = BufReader::new(stdin).lines();
     let mut _desktop_attachment = None;
+    let mut broker_input: Option<secure_capture::InputClient> = None;
     loop {
         let line = lines
             .next_line()
@@ -2581,10 +2615,24 @@ async fn run_input_server(attach_to_input_desktop: bool) -> std::result::Result<
             }
         } else {
             process_input_server_line(&line, |action| {
-                if attach_to_input_desktop {
-                    _desktop_attachment =
-                        Some(secure_capture::attach_current_thread_to_active_input_desktop()?);
+                if !secure_worker && secure_capture::active_input_desktop_is_secure()? {
+                    if broker_input.is_none() {
+                        broker_input = Some(secure_capture::InputClient::connect()?);
+                    }
+                    let result = broker_input.as_mut().unwrap().inject(action);
+                    if result.is_err() {
+                        // Never replay an action after an ambiguous broker failure.
+                        broker_input = None;
+                    }
+                    return result;
                 }
+                broker_input = None;
+                let desktop =
+                    secure_capture::attach_current_thread_to_active_input_desktop_for_input()?;
+                if !secure_worker && desktop.is_secure() {
+                    return Err("Input desktop changed; protected broker required".to_string());
+                }
+                _desktop_attachment = Some(desktop);
                 inject_input(action)
             })
         };
@@ -2631,8 +2679,8 @@ async fn main() {
             return;
         }
         RunMode::InputServer => {
-            if let Err(error) = secure_capture::run_input_client() {
-                eprintln!("Privileged input client failed: {error}");
+            if let Err(error) = run_input_server(false).await {
+                eprintln!("Agent input server failed: {error}");
                 std::process::exit(1);
             }
             return;

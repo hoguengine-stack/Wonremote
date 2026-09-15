@@ -5,7 +5,11 @@ plugins {
     id("com.android.application")
 }
 
-dependencies { implementation(project(":updatecore")) }
+dependencies {
+    implementation(project(":updatecore"))
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
+}
 
 val releaseSigningFile = rootProject.file("keystore.properties")
 val releaseSigning = Properties().apply {

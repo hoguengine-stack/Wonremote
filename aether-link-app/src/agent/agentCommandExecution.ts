@@ -13,6 +13,7 @@ import {
 } from "./agentSessionLifecycle";
 import { parseWakeOnLanCommand } from "./wakeOnLan";
 import { parseSetStreamModeCommand } from "../domain/streamPerformanceMode";
+import { parseResumeFileRequest } from "../domain/webrtcFileTransfer";
 
 type MaybePromise<T = void> = T | Promise<T>;
 
@@ -33,6 +34,9 @@ export interface AgentCommandRuntime {
   injectAction: (action: string) => MaybePromise;
   requestApproval: () => MaybePromise;
   requestClipboard: (sessionId: string) => MaybePromise;
+  openDownloadFolder: () => MaybePromise;
+  requestFileSend: (resumeTransferId?: string) => void;
+  cancelFileSend: () => void;
   sendWakeOnLan: (macAddress: string) => MaybePromise;
   setClipboardText: (text: string) => MaybePromise;
   setSleep: (milliseconds: number) => MaybePromise;
@@ -139,6 +143,27 @@ export async function executeAgentCommand(
     return "executed";
   }
 
+  if (normalizedAction === "open-download-folder") {
+    if (!runtime.getActiveSessionId()) return "ignored";
+    await runtime.openDownloadFolder();
+    return "executed";
+  }
+  if (normalizedAction.startsWith("open-download-folder")) return "rejected";
+  if (normalizedAction.startsWith("request-file-resume")) {
+    const transferId = parseResumeFileRequest(normalizedAction);
+    if (!transferId) return "rejected";
+    if (!runtime.getActiveSessionId()) return "ignored";
+    runtime.requestFileSend(transferId);
+    return "executed";
+  }
+  if (normalizedAction === "request-file-send" || normalizedAction === "cancel-file-send") {
+    if (!runtime.getActiveSessionId()) return "ignored";
+    if (normalizedAction === "request-file-send") runtime.requestFileSend();
+    else runtime.cancelFileSend();
+    return "executed";
+  }
+  if (normalizedAction.startsWith("request-file-send") || normalizedAction.startsWith("cancel-file-send")) return "rejected";
+
   if (normalizedAction === "clipboard-request") {
     const sessionId = currentSessionId(runtime.getActiveSessionId(), {
       deviceId: runtime.deviceId,
@@ -191,7 +216,8 @@ export async function executeAgentCommand(
 
 export function isAllowedWebRtcAgentControlAction(action: string): boolean {
   const normalized = action.trim();
-  if (normalized === "clipboard-request" || normalized === "ping-color-change") {
+  if (parseResumeFileRequest(normalized)) return true;
+  if (normalized === "clipboard-request" || normalized === "ping-color-change" || normalized === "open-download-folder" || normalized === "request-file-send" || normalized === "cancel-file-send") {
     return true;
   }
   if (normalized === "key-release-all" || normalized === "key_release_all") {

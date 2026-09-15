@@ -1,0 +1,51 @@
+import { afterEach, expect, it, vi } from "vitest";
+import { startSelectedViewerScheduler } from "./selectedViewerScheduler";
+afterEach(() => vi.useRealTimers());
+it("checks at most24 times in24h and stops fully on cleanup", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(0);
+  const check = vi.fn(async () => ({available:false}));
+  const install = vi.fn();
+  const dispose = startSelectedViewerScheduler({idle:()=>true,check,install,report:vi.fn()});
+  await vi.advanceTimersByTimeAsync(86400000);
+  expect(check).toHaveBeenCalledTimes(24); expect(install).not.toHaveBeenCalled();
+  dispose.stop(); await vi.advanceTimersByTimeAsync(86400000);
+  expect(check).toHaveBeenCalledTimes(24);
+});
+it("does not overlap slow checks or install after a session begins or cleanup", async () => {
+  vi.useFakeTimers(); let idle = true; let complete: (r:{available:boolean})=>void = ()=>{};
+  const check = vi.fn(() => new Promise<{available:boolean}>(resolve => {complete=resolve;}));
+  const install = vi.fn();
+  const dispose = startSelectedViewerScheduler({idle:()=>idle,check,install,report:vi.fn()});
+  await vi.advanceTimersByTimeAsync(7200000); expect(check).toHaveBeenCalledTimes(1);
+  idle=false; complete({available:true}); await vi.advanceTimersByTimeAsync(60000);
+  expect(install).not.toHaveBeenCalled();
+  idle=true; await vi.advanceTimersByTimeAsync(60000); expect(check).toHaveBeenCalledTimes(2);
+  dispose.stop(); complete({available:true}); await vi.advanceTimersByTimeAsync(1000);
+  expect(install).not.toHaveBeenCalled();
+});
+it("bounds failures and submits an eligible installer only once", async () => {
+  vi.useFakeTimers();
+  const check=vi.fn().mockRejectedValueOnce(Error("offline")).mockResolvedValue({available:true});
+  const install=vi.fn(); const report=vi.fn();
+  const dispose=startSelectedViewerScheduler({idle:()=>true,check,install,report});
+  await vi.advanceTimersByTimeAsync(86400000);
+  expect(check).toHaveBeenCalledTimes(2); expect(report).toHaveBeenCalledTimes(1); expect(install).toHaveBeenCalledTimes(1); dispose.stop();
+});
+it("recovers an early native failure without overlapping or retrying while busy", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(0);
+  let idle=true; let finish:()=>void=()=>{};
+  const check=vi.fn(async()=>({available:true}));
+  const install=vi.fn(()=>new Promise<void>(resolve=>{finish=resolve;}));
+  const control=startSelectedViewerScheduler({idle:()=>idle,check,install,report:vi.fn()});
+  await vi.advanceTimersByTimeAsync(10000);
+  control.installationFailed(); control.installationFailed();
+  await vi.advanceTimersByTimeAsync(7200000);
+  expect(check).toHaveBeenCalledTimes(1);
+  idle=false; finish(); await vi.advanceTimersByTimeAsync(60000);
+  expect(check).toHaveBeenCalledTimes(1);
+  idle=true; await vi.advanceTimersByTimeAsync(60000);
+  expect(install).toHaveBeenCalledTimes(2);
+  control.stop(); control.installationFailed(); finish();
+  await vi.advanceTimersByTimeAsync(86400000);
+  expect(check).toHaveBeenCalledTimes(2);
+});

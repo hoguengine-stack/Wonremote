@@ -6,6 +6,17 @@ import {
 } from "./deviceViewPreferences";
 
 describe("device view preferences", () => {
+  it("restores only supported input modes", () => {
+    expect(parseDeviceViewPreferences('{"inputMode":"touchpad"}').inputMode).toBe("touchpad");
+    expect(parseDeviceViewPreferences('{"inputMode":"screen"}').inputMode).toBe("screen");
+    expect(parseDeviceViewPreferences('{"inputMode":"invalid"}').inputMode).toBeUndefined();
+  });
+  it("restores device quality without accepting unsupported values", () => {
+    expect(parseDeviceViewPreferences(JSON.stringify({ streamPerformanceMode: "fast" })).streamPerformanceMode).toBe("fast");
+    expect(parseDeviceViewPreferences(JSON.stringify({ streamPerformanceMode: "normal" })).streamPerformanceMode).toBe("normal");
+    expect(parseDeviceViewPreferences(JSON.stringify({ streamPerformanceMode: "invalid" })).streamPerformanceMode).toBeUndefined();
+    expect(parseDeviceViewPreferences("{}").streamPerformanceMode).toBeUndefined();
+  });
   it("uses safe defaults for missing or invalid settings", () => {
     expect(parseDeviceViewPreferences(null)).toEqual(DEFAULT_DEVICE_VIEW_PREFERENCES);
     expect(parseDeviceViewPreferences("invalid")).toEqual(DEFAULT_DEVICE_VIEW_PREFERENCES);

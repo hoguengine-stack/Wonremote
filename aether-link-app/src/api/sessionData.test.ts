@@ -42,6 +42,31 @@ describe("local session change delivery", () => {
     expect(fetcher).toHaveBeenCalledTimes(3); expect(onError).toHaveBeenCalledTimes(2);
   });
 
+  it("requests only clipboard events and reports ready after the initial response", async () => {
+    vi.useFakeTimers();
+    const fetcher = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ...emptySessionData(), revision: 0 }) });
+    vi.stubGlobal("fetch", fetcher);
+    const received = vi.fn();
+    const ready = vi.fn();
+    const stop = subscribeLocalSessionData(
+      "http://local",
+      "s",
+      "viewer",
+      received,
+      vi.fn(),
+      { chat: false, files: false },
+      ready,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    const url = new URL(fetcher.mock.calls[0][0]);
+    expect(url.searchParams.get("chat")).toBe("false");
+    expect(url.searchParams.get("clipboard")).toBe("true");
+    expect(url.searchParams.get("files")).toBe("false");
+    expect(received).toHaveBeenCalledOnce();
+    expect(ready).toHaveBeenCalledOnce();
+    stop();
+  });
+
   it("stops receipt-only delivery after all requested transfers finish", async () => {
     vi.useFakeTimers();
     const fetcher = vi.fn().mockResolvedValue({ ok: true, json: async () => ({
@@ -69,11 +94,16 @@ describe("local session change delivery", () => {
     };
     const result = await post("/api/sessions", { deviceId: "device" });
     const id = result.session.id;
-    const agent = vi.fn(); const viewer = vi.fn(); const errors = vi.fn();
+    const agent = vi.fn(); const viewer = vi.fn(); const clipboardViewer = vi.fn(); const errors = vi.fn();
     const stopAgent = subscribeLocalSessionData(base, id, "agent", agent, errors);
     const stopViewer = subscribeLocalSessionData(base, id, "viewer", viewer, errors, { clipboard: false, receiptIds: ["selected"] });
+    const stopClipboardViewer = subscribeLocalSessionData(base, id, "viewer", clipboardViewer, errors, { chat: false, files: false });
     try {
-      await vi.waitFor(() => { expect(agent).toHaveBeenCalledOnce(); expect(viewer).toHaveBeenCalledOnce(); });
+      await vi.waitFor(() => {
+        expect(agent).toHaveBeenCalledOnce();
+        expect(viewer).toHaveBeenCalledOnce();
+        expect(clipboardViewer).toHaveBeenCalledOnce();
+      });
       await post(`/api/sessions/${id}/chat`, { message: "hello", sender: "viewer" });
       await post(`/api/sessions/${id}/clipboard`, { text: "clipboard", sender: "viewer" });
       await post(`/api/sessions/${id}/files`, { filename: "one.txt", fileData: "YQ==" });
@@ -83,14 +113,22 @@ describe("local session change delivery", () => {
         expect(agent.mock.calls.flatMap(([data]) => data.files).map((item) => item.filename)).toEqual(["one.txt"]);
       });
       expect(viewer.mock.calls.flatMap(([data]) => data.messages)).toEqual([]);
+      await post(`/api/sessions/${id}/chat`, { message: "agent-chat", sender: "agent" });
+      await post(`/api/sessions/${id}/clipboard`, { text: "agent-clipboard", sender: "agent" });
+      await vi.waitFor(() => {
+        expect(viewer.mock.calls.flatMap(([data]) => data.messages).map((item) => item.message)).toEqual(["agent-chat"]);
+        expect(clipboardViewer.mock.calls.flatMap(([data]) => data.clipboards).map((item) => item.text)).toEqual(["agent-clipboard"]);
+      });
+      expect(clipboardViewer.mock.calls.flatMap(([data]) => data.messages)).toEqual([]);
+      expect(clipboardViewer.mock.calls.flatMap(([data]) => data.files)).toEqual([]);
       await post(`/api/sessions/${id}/file-receipts`, { transferId: "unrelated", filename: "other", status: "received" });
       await post(`/api/sessions/${id}/file-receipts`, { transferId: "selected", filename: "one.txt", status: "received" });
       await vi.waitFor(() => expect(viewer.mock.calls.flatMap(([data]) => data.receipts).map((item) => item.transferId)).toContain("selected"));
       expect(viewer.mock.calls.flatMap(([data]) => data.receipts).some((item) => item.transferId === "unrelated")).toBe(false);
       await post(`/api/sessions/${id}/close`, {});
-      await vi.waitFor(() => expect(errors).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() => expect(errors).toHaveBeenCalledTimes(3));
     } finally {
-      stopAgent(); stopViewer(); server.closeAllConnections();
+      stopAgent(); stopViewer(); stopClipboardViewer(); server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });

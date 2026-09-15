@@ -5,6 +5,17 @@ import path from "node:path";
 import { describe, it, expect } from "vitest";
 
 describe.skipIf(process.platform !== "win32")("Agent first-run Windows boundaries", () => {
+  it("retains the requested handoff code independently of the event-loop return value", () => {
+    // Installed RED: Wry translated request_exit(10) to ControlFlow::Exit (return0).
+    // This structural guard complements installed handoff verification, not UI runtime proof.
+    const native = readFileSync(path.resolve("src-tauri/src/lib.rs"), "utf8");
+    const startup = native.slice(native.indexOf("let mut startup_cancel = None;"));
+    expect(startup).toContain("tauri::RunEvent::ExitRequested { code: Some(10), .. }");
+    expect(startup).toContain("handoff_event.store(true, Ordering::Release)");
+    expect(startup).toContain("if handoff_requested.load(Ordering::Acquire)");
+    expect(startup).not.toContain("if exit_code == 10");
+    expect(startup.indexOf("drop(_single_instance_guard)")).toBeLessThan(startup.indexOf('Command::new("schtasks.exe")'));
+  });
   it("compiles the actual Agent finish macro without optional action callbacks", () => {
     const root = path.join(process.env.LOCALAPPDATA!, "tauri", "NSIS");
     const output = path.join(mkdtempSync(path.join(os.tmpdir(), "wonremote-finish-test-")), "fixture.exe");
@@ -36,7 +47,7 @@ describe.skipIf(process.platform !== "win32")("Agent first-run Windows boundarie
       const script = `
         function Test-Path { return $true }
         function Resolve-Path { param($LiteralPath); return [pscustomobject]@{Path=$LiteralPath} }
-        function Get-ScheduledTask { param($TaskName); if ($TaskName -eq 'WonRemote Agent') { return [pscustomobject]@{ Principal=@{RunLevel='Highest'}; Actions=@{Execute='C:\\Program Files\\WonRemote Agent\\wonremote-viewer.exe';Arguments='--agent'};State='Ready' } }; return [pscustomobject]@{ Principal=@{UserId='SYSTEM'}; Actions=@{Execute='C:\\Program Files\\WonRemote Agent\\bin\\wonremote-poc.exe';Arguments='--mode secure-broker'};State='Running' } }
+        function Get-ScheduledTask { param($TaskName); if ($TaskName -eq 'WonRemote Agent') { return [pscustomobject]@{ Principal=@{RunLevel='Highest'}; Actions=@{Execute='C:\\Program Files\\WonRemote Agent\\wonremote-viewer.exe';Arguments='--agent'};State='Ready' } }; if ($${!admin}) { throw 'Secure broker task access denied for ordinary user' }; return [pscustomobject]@{ Principal=@{UserId='SYSTEM'}; Actions=@{Execute='C:\\Program Files\\WonRemote Agent\\bin\\wonremote-poc.exe';Arguments='--mode secure-broker'};State='Running' } }
         function Register-ScheduledTask { throw 'Unexpected registration' }
         function Start-ScheduledTask { throw 'Unexpected launch' }
         function Start-Process { throw 'Unexpected elevation' }

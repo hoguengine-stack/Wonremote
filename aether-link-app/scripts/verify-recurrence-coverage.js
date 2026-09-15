@@ -137,7 +137,8 @@ export function worktreeValidationErrors(contract, changedFiles, registry, stage
       errors.push(`${label}.boundaries must describe the complete user path`);
     }
     const proofLevel = String(outcome?.proofLevel ?? "").toLowerCase();
-    if (!PROOF_LEVELS.has(proofLevel) || proofLevel === "not-applicable") {
+    const documentationOnly = outcome?.changeType === "docs" && proofLevel === "not-applicable";
+    if (!PROOF_LEVELS.has(proofLevel) || (proofLevel === "not-applicable" && !documentationOnly)) {
       errors.push(`${label}.proofLevel must prove a functional outcome`);
     }
     const verificationPending = !String(outcome?.verification ?? "").trim()
@@ -145,7 +146,13 @@ export function worktreeValidationErrors(contract, changedFiles, registry, stage
     if (verificationPending && !(stage === "predeploy" && proofLevel === "deployment-required")) {
       errors.push(`${label}.verification must contain fresh evidence`);
     }
-    if (!Array.isArray(outcome?.contractTests) || outcome.contractTests.length === 0) {
+    if (documentationOnly) {
+      if (!Array.isArray(outcome.evidenceFiles) || outcome.evidenceFiles.length === 0
+          || !outcome.evidenceFiles.every((value) => typeof value === "string"
+            && /\.md$/i.test(value) && changed.has(value.replaceAll("\\", "/")))) {
+        errors.push(`${label}.evidenceFiles must name changed documentation`);
+      }
+    } else if (!Array.isArray(outcome?.contractTests) || outcome.contractTests.length === 0) {
       errors.push(`${label}.contractTests must name a changed boundary test`);
     } else if (!outcome.contractTests.some((value) =>
       TEST_PATH_PATTERN.test(String(value)) && changed.has(String(value).replaceAll("\\", "/")),

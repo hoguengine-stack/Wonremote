@@ -5,6 +5,7 @@ import {
   doc,
   getDoc,
   getDocs,
+  getDocsFromServer,
   limit,
   onSnapshot,
   orderBy,
@@ -61,6 +62,9 @@ import {
 } from "./agentPeerConnection";
 import {
   serializeWebRtcFileAck,
+  WEBRTC_REVERSE_FILE_CAPABILITY,
+  serializeWebRtcFileStatus,
+  type WebRtcFileStatusMessage,
   type WebRtcFileAckMessage,
   type WebRtcFileChunkMessage,
 } from "../domain/webrtcFileTransfer";
@@ -71,11 +75,15 @@ import {
 } from "./agentWebRtcNegotiation";
 import { safeAddDoc, safeBatchUpdate, safeSetDoc, safeUpdateDoc } from "./firestoreWrite";
 import type { UpdateFleetRollout } from "../domain/updateFleetPolicy";
+import { parseRolloutSelection } from "../domain/updateFleetPolicy";
 import type { DeviceUpdateRing } from "../domain/types";
 
 type AgentFirebaseEnv = Record<string, string | undefined>;
+import { createFileChannelSender, type AgentFileSendInput } from "../agent/fileChannelSender";
 
 export interface AgentWebRtcTransport {
+  sendFileStatus: (status: WebRtcFileStatusMessage) => boolean;
+  sendFile: (input: AgentFileSendInput) => Promise<void>;
   close: () => Promise<void>;
   getBufferedAmount: () => number;
   sendFrame: (
@@ -244,6 +252,8 @@ export async function sendAgentHeartbeatWithFirebase(
   try {
     // Firestore rules keep installId immutable; a mismatched Agent update is rejected there.
     await safeUpdateDoc(deviceRef, {
+      selectedRolloutVersion: input.version && /^\d+\.\d+\.\d+$/.test(input.version) ? input.version : null,
+      rollbackSupportVersion: input.version && /^\d+\.\d+\.\d+$/.test(input.version) ? input.version : null,
       presenceMode: input.presenceMode,
       heartbeatRequestId: input.heartbeatRequestId,
       activeDisplayIndex: input.activeDisplayIndex,
@@ -327,6 +337,7 @@ export async function loadAgentUpdateRolloutWithFirebase(
     rollout: {
       targetVersion,
       stage,
+      ...parseRolloutSelection(rollout.targetDeviceIds),
       paused: rollout.paused === true,
       percentage: typeof rollout.percentage === "number" ? rollout.percentage : 100,
     },
@@ -372,38 +383,50 @@ export async function pollAgentCommandsWithFirebase(
     limit(50),
   );
   const snapshot = await getDocs(commandQuery);
-  const batch = writeBatch(services.db);
-  const commands: AgentCommand[] = [];
+  return { commands: orderAgentCommands(await acknowledgeAgentCommands(services.db, commandQuery, snapshot.docs, input.deviceId)) };
+}
 
-  snapshot.docs.forEach((commandDoc) => {
-    const command = commandDoc.data() as { action?: unknown; createdAt?: unknown; sessionId?: unknown };
-    const action = typeof command.action === "string" ? command.action : "";
-    if (!action) {
-      safeBatchUpdate(batch, commandDoc.ref, {
-        state: "ignored",
-        deliveredAt: serverTimestamp(),
-      });
-      return;
-    }
-
-    commands.push({
-      id: commandDoc.id,
+async function acknowledgeAgentCommands(
+  db: Parameters<typeof writeBatch>[0],
+  commandQuery: Parameters<typeof getDocsFromServer>[0],
+  documents: readonly { id: string; ref: unknown; data: () => unknown }[],
+  deviceId: string,
+  isActive: () => boolean = () => true,
+  allowRecovery = true,
+): Promise<AgentCommand[]> {
+  if (!isActive() || documents.length === 0) return [];
+  const entries = documents.map((document) => {
+    const data = document.data() as { action?: unknown; createdAt?: unknown; sessionId?: unknown };
+    const action = typeof data.action === "string" ? data.action : "";
+    const command: AgentCommand | undefined = action ? {
+      id: document.id,
       action,
-      createdAt: coerceCreatedAt(command.createdAt),
-      deviceId: input.deviceId,
-      ...(typeof command.sessionId === "string" ? { sessionId: command.sessionId } : {}),
-    });
-    safeBatchUpdate(batch, commandDoc.ref, {
-      state: "delivered",
-      deliveredAt: serverTimestamp(),
-    });
+      createdAt: coerceCreatedAt(data.createdAt),
+      deviceId,
+      ...(typeof data.sessionId === "string" ? { sessionId: data.sessionId } : {}),
+    } : undefined;
+    return {
+      ref: document.ref,
+      update: { state: command ? "delivered" : "ignored", deliveredAt: serverTimestamp() },
+      command,
+    };
   });
-
-  if (snapshot.docs.length > 0) {
+  const batch = writeBatch(db);
+  for (const entry of entries) safeBatchUpdate(batch, entry.ref, entry.update);
+  try {
     await batch.commit();
+    return entries.flatMap((entry) => entry.command ? [entry.command] : []);
+  } catch (error) {
+    if (!allowRecovery || !isFirebaseNotFoundError(error)) throw error;
   }
 
-  return { commands: orderAgentCommands(commands) };
+  if (!isActive()) return [];
+  // One server refresh excludes deleted targets while keeping the retry atomic.
+  // New commands belong to their own queued snapshot, not this recovery batch.
+  const ids = new Set(documents.map((document) => document.id));
+  const current = await getDocsFromServer(commandQuery);
+  return acknowledgeAgentCommands(db, commandQuery,
+    current.docs.filter((document) => ids.has(document.id)), deviceId, isActive, false);
 }
 
 export async function subscribeAgentCommandsWithFirebase(
@@ -436,51 +459,42 @@ export async function subscribeAgentCommandsWithFirebase(
   );
   let active = true;
   let serialized = Promise.resolve();
-  const unsubscribe = onSnapshot(
+  let unsubscribe: Unsubscribe | undefined;
+  const queuedIds = new Set<string>();
+  const stop = () => {
+    active = false;
+    unsubscribe?.();
+    unsubscribe = undefined;
+    queuedIds.clear();
+  };
+  const fail = (error: unknown) => {
+    if (!active) return;
+    stop();
+    onError(error instanceof Error ? error : new Error(String(error)));
+  };
+  unsubscribe = onSnapshot(
     commandQuery,
     (snapshot) => {
+      if (!active) return;
+      const documents = snapshot.docChanges()
+        .filter((change) => change.type === "added" && !queuedIds.has(change.doc.id))
+        .map((change) => change.doc);
+      if (documents.length === 0) return;
+      for (const document of documents) queuedIds.add(document.id);
       serialized = serialized.then(async () => {
-        if (!active || snapshot.docs.length === 0) {
-          return;
-        }
-        const batch = writeBatch(services.db);
-        const commands: AgentCommand[] = [];
-        snapshot.docs.forEach((commandDoc) => {
-          const command = commandDoc.data() as { action?: unknown; createdAt?: unknown; sessionId?: unknown };
-          const action = typeof command.action === "string" ? command.action : "";
-          if (!action) {
-            safeBatchUpdate(batch, commandDoc.ref, {
-              state: "ignored",
-              deliveredAt: serverTimestamp(),
-            });
-            return;
-          }
-          commands.push({
-            id: commandDoc.id,
-            action,
-            createdAt: coerceCreatedAt(command.createdAt),
-            deviceId: input.deviceId,
-            ...(typeof command.sessionId === "string" ? { sessionId: command.sessionId } : {}),
-          });
-          safeBatchUpdate(batch, commandDoc.ref, {
-            state: "delivered",
-            deliveredAt: serverTimestamp(),
-          });
-        });
-        await batch.commit();
+        if (!active) return;
+        const commands = await acknowledgeAgentCommands(services.db, commandQuery, documents, input.deviceId, () => active);
         if (active && commands.length > 0) {
           await onCommands(orderAgentCommands(commands));
         }
-      }).catch((error) => {
-        onError(error instanceof Error ? error : new Error(String(error)));
+      }).catch(fail).finally(() => {
+        for (const document of documents) queuedIds.delete(document.id);
       });
     },
-    (error) => onError(error instanceof Error ? error : new Error(String(error))),
+    fail,
   );
-  return () => {
-    active = false;
-    unsubscribe();
-  };
+  if (!active) stop();
+  return stop;
 }
 
 export async function fetchActiveFirebaseSessionsForAgent(
@@ -568,6 +582,7 @@ export async function startAgentWebRtcTransportWithFirebase(
   let controlChannel: AgentDataChannelLike | null = null;
   let fileChannel: AgentDataChannelLike | null = null;
   let fileChannelTasks: AgentDataChannelTaskQueue | null = null;
+  let fileSender: ReturnType<typeof createFileChannelSender> | null = null;
   let channelOpened = false;
   let closedByCaller = false;
   let connectWatchdog: ReturnType<typeof setTimeout> | null = null;
@@ -599,6 +614,8 @@ export async function startAgentWebRtcTransportWithFirebase(
     }
     clearConnectWatchdog();
     const previousTileChannel = tileChannel;
+    fileSender?.close();
+    fileSender = null;
     const previousControlChannel = controlChannel;
     const previousFileChannel = fileChannel;
     const previousFileChannelTasks = fileChannelTasks;
@@ -781,7 +798,10 @@ export async function startAgentWebRtcTransportWithFirebase(
             return;
           }
           fileChannel = channel;
+          const sender = createFileChannelSender(channel);
+          fileSender = sender;
           const tasks = bindAgentFileMessages(channel, {
+            onAck: (ack) => sender.acknowledge(ack),
             onChunk: async (chunk) => {
               const isCurrentChannel = () => !(
                 closedByCaller ||
@@ -839,6 +859,8 @@ export async function startAgentWebRtcTransportWithFirebase(
           });
           fileChannelTasks = tasks;
           const clearFileChannel = () => {
+            sender.close();
+            if (fileSender === sender) fileSender = null;
             tasks.close();
             if (fileChannelTasks === tasks) {
               fileChannelTasks = null;
@@ -847,7 +869,16 @@ export async function startAgentWebRtcTransportWithFirebase(
               fileChannel = null;
             }
           };
-          channel.onopen = () => console.log("[WebRTC] Agent file data channel state: open");
+          let capabilitySent = false;
+          channel.onopen = () => {
+            if (capabilitySent || closedByCaller || fileChannel !== channel || activeNegotiationId !== offer.negotiationId || channel.readyState !== "open") return;
+            try {
+              if (!channel.send) return;
+              channel.send(WEBRTC_REVERSE_FILE_CAPABILITY);
+              capabilitySent = true;
+            } catch { console.warn("[WebRTC] Could not advertise reverse file support."); }
+          };
+          if (channel.readyState === "open") channel.onopen();
           channel.onclose = () => {
             clearFileChannel();
             console.log("[WebRTC] Agent file data channel state: closed");
@@ -1033,6 +1064,14 @@ export async function startAgentWebRtcTransportWithFirebase(
       await closeActivePeer();
     },
     getBufferedAmount: () => dataChannelBufferedAmount(tileChannel),
+    sendFileStatus: status => {
+      if (closedByCaller || !fileChannel?.send || fileChannel.readyState !== "open") return false;
+      try { fileChannel.send(serializeWebRtcFileStatus(status)); return true; } catch { return false; }
+    },
+    sendFile: async (input) => {
+      if (!fileSender || closedByCaller) throw new Error("File channel is unavailable.");
+      await fileSender.sendFile(input);
+    },
     sendFrame: (frame, maxBufferedAmountOverride) => sendFrameWithBackpressure(
       tileChannel,
       frame,

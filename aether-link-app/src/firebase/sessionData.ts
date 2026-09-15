@@ -21,6 +21,7 @@ export function subscribeFirebaseSessionData(
   db: Firestore, sessionId: string, target: "viewer" | "agent",
   onData: (data: SessionData) => void | Promise<void>, onError: (error: Error) => void,
   options: SessionDataOptions = {},
+  onReady?: () => void | Promise<void>,
 ): Unsubscribe {
   let active = true;
   let tail = Promise.resolve();
@@ -32,7 +33,16 @@ export function subscribeFirebaseSessionData(
     onError(error instanceof Error ? error : new Error(String(error)));
   };
   const addSubscription = (unsubscribe: Unsubscribe) => active ? subscriptions.push(unsubscribe) : unsubscribe();
-  const queues = options.queues === false ? [] : ["chat", ...(options.clipboard === false ? [] : ["clipboard"]), "files"];
+  const queues = options.queues === false ? [] : [
+    ...(options.chat === false ? [] : ["chat"]),
+    ...(options.clipboard === false ? [] : ["clipboard"]),
+    ...(options.files === false ? [] : ["files"]),
+  ];
+  const initialQueues = onReady ? new Set(queues) : new Set<string>();
+  const markQueueReady = async (queueName: string) => {
+    if (!initialQueues.delete(queueName) || initialQueues.size > 0 || !active) return;
+    await onReady?.();
+  };
   try {
     for (const queueName of queues) {
       const pending = new Set<string>();
@@ -41,7 +51,11 @@ export function subscribeFirebaseSessionData(
         if (!active) return;
         for (const change of snapshot.docChanges()) if (change.type === "removed") pending.delete(change.doc.id);
         const docs = snapshot.docChanges().filter((change) => change.type !== "removed" && !pending.has(change.doc.id)).map((change) => change.doc);
-        if (!docs.length) return;
+        const initialSnapshot = initialQueues.has(queueName);
+        if (!docs.length) {
+          if (initialSnapshot) tail = tail.then(() => markQueueReady(queueName)).catch(fail);
+          return;
+        }
         docs.forEach((item) => pending.add(item.id));
         tail = tail.then(async () => {
           if (!active) return;
@@ -62,8 +76,14 @@ export function subscribeFirebaseSessionData(
           docs.forEach((item) => batch.delete(item.ref));
           await batch.commit();
           // IDs stay claimed until removal is observed, including overlapping local snapshots.
+          if (initialSnapshot) await markQueueReady(queueName);
         }).catch(fail);
       }, fail));
+    }
+    if (queues.length === 0 && onReady) {
+      queueMicrotask(() => {
+        if (active) void Promise.resolve(onReady()).catch(fail);
+      });
     }
     for (const transferId of new Set(options.receiptIds ?? [])) {
       let unsubscribe: Unsubscribe | undefined;

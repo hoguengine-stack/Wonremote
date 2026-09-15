@@ -72,7 +72,7 @@ describe("Viewer UI redesign contract", () => {
 
   it("keeps per-device view settings and searchable operating details", () => {
     expect(appSource).toContain("deviceViewPreferencesKey(preferenceDeviceId)");
-    expect(appSource).toContain("clipboardSync: isClipboardSyncOn");
+    expect(appSource).not.toContain("isClipboardSyncOn");
     expect(appSource).toContain("selectedDisplayIndex,");
     expect(appSource).toContain("담당자");
     expect(appSource).toContain("설치 위치");

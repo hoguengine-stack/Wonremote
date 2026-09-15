@@ -64,7 +64,7 @@ describe("Viewer startup session policy", () => {
     expect(logoutBlock).toContain("await Promise.all([...pendingSessionCloseTasksRef.current])");
     expect(panelBlock).toContain("React.useRef(activeSessionId)");
     expect(panelBlock).toContain("activeSessionIdRef.current = activeSessionId");
-    expect(panelBlock).toContain("activeSessionIdRef.current === targetSessionId");
+    expect(panelBlock).toContain("activeSessionIdRef.current !== sessionId");
   });
 
   it("uses a fresh transfer id for retries so an old cancellation cannot overwrite them", () => {
@@ -73,7 +73,7 @@ describe("Viewer startup session policy", () => {
     const retryBlock = appSource.slice(retryStart, retryEnd);
 
     expect(retryBlock).toContain("const retryId = `${transferId}-retry-${Date.now()}`");
-    expect(retryBlock).toContain("transferSingleFile(file, retryId)");
+    expect(retryBlock).toContain("transferSingleFile(file, retryId, resumeId)");
     expect(retryBlock).not.toContain("transferSingleFile(file, transferId)");
   });
 });

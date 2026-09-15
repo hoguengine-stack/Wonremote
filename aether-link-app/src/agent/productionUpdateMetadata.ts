@@ -4,9 +4,33 @@ import {
   type ProductionUpdateKind,
 } from "../domain/updateManifest";
 import { resolveProductionUpdatePublicKey } from "../domain/updateTrust";
+import { isHigherVersion } from "../domain/versioning";
 
 export const DEFAULT_PRODUCTION_UPDATE_MANIFEST_URL =
   "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/wonremote-update-manifest.json";
+
+export async function loadProductionRollbackMetadata(
+  requestedVersion: string,
+  currentVersion: string,
+  env: Parameters<typeof loadProductionInstallerUpdateMetadata>[0] = process.env,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ProductionUpdateMetadata> {
+  const stableVersion = /^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/;
+  if (!stableVersion.test(requestedVersion) || !stableVersion.test(currentVersion)
+      || !isHigherVersion(currentVersion, requestedVersion)) throw new Error("Select an older stable version to restore.");
+  if (resolveRuntimeUpdateKind(env) !== "installer") throw new Error("Rollback requires an installed product.");
+  const releaseBase = `https://github.com/hoguengine-stack/Wonremote/releases/download/v${requestedVersion}/`;
+  const metadata = await loadProductionInstallerUpdateMetadata({
+    ...env, WONREMOTE_UPDATE_MANIFEST_URL: `${releaseBase}wonremote-update-manifest.json`,
+  }, fetchImpl);
+  if (!metadata || metadata.latestVersion !== requestedVersion) throw new Error("Rollback release version did not match.");
+  const name = resolveRuntimeUpdateProduct(env) === "viewer" ? "WonRemote-Viewer-Setup.exe" : "WonRemote-Agent-Setup.exe";
+  // Never replace a signed URL with an inferred historical URL or use mutable latest assets.
+  if (metadata.assetName !== name || metadata.downloadUrl !== `${releaseBase}${name}`) {
+    throw new Error("Rollback requires a signed version-pinned installer for this product.");
+  }
+  return metadata;
+}
 
 export async function loadProductionInstallerUpdateMetadata(
   env: Partial<Record<

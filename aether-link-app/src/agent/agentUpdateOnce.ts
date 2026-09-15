@@ -14,7 +14,8 @@ import {
   type InstallerHandoffResult,
   type InstallerRestartMode,
 } from "./productionInstallerUpdate";
-import { loadProductionInstallerUpdateMetadata } from "./productionUpdateMetadata";
+import { loadProductionInstallerUpdateMetadata, loadProductionRollbackMetadata } from "./productionUpdateMetadata";
+import { loadSelectedViewerUpdate } from "./selectedViewerUpdate";
 import {
   downloadPortableUpdate,
   isPortableUpdateMetadata,
@@ -31,6 +32,7 @@ export const UPDATE_ONCE_EXIT = {
 } as const;
 
 export interface UpdateOnceOptions {
+  rollbackVersion?: string;
   baseDir: string;
   portableRoot?: string;
   restartExecutablePath?: string;
@@ -48,9 +50,10 @@ interface UpdateOnceDeps {
   downloadPortable: typeof downloadPortableUpdate;
   launchHandoff: (handoff: InstallerHandoffResult | PortableHandoffResult) => void;
   loadMetadata: typeof loadProductionInstallerUpdateMetadata;
+  loadRollbackMetadata: typeof loadProductionRollbackMetadata;
   prepareHandoff: (
     download: InstallerDownloadResult,
-    options: { baseDir: string; restartExecutablePath?: string; restartMode: InstallerRestartMode },
+    options: { baseDir: string; restartExecutablePath?: string; restartMode: InstallerRestartMode; targetVersion?: string },
   ) => Promise<InstallerHandoffResult>;
   preparePortableHandoff: (
     download: PortableDownloadResult,
@@ -63,7 +66,8 @@ const defaultDeps: UpdateOnceDeps = {
   downloadInstaller: downloadInstallerUpdate,
   downloadPortable: downloadPortableUpdate,
   launchHandoff: launchInstallerHandoff,
-  loadMetadata: loadProductionInstallerUpdateMetadata,
+  loadMetadata: env => process.env.WONREMOTE_SELECTED_VIEWER_UPDATE === "1" ? loadSelectedViewerUpdate(process.env) : loadProductionInstallerUpdateMetadata(env),
+  loadRollbackMetadata: loadProductionRollbackMetadata,
   prepareHandoff: prepareInstallerHandoff,
   preparePortableHandoff,
 };
@@ -85,10 +89,19 @@ export function parseUpdateOnceOptions(
   >> = process.env,
 ): UpdateOnceOptions {
   let restartMode: InstallerRestartMode | undefined;
+  let rollbackVersion: string | undefined;
   let restartExecutablePath = env.WONREMOTE_HOST_EXE_PATH?.trim();
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--update-once") {
+      continue;
+    }
+    if (arg === "--rollback-version") {
+      const version = argv[++index];
+      if (rollbackVersion !== undefined || !version || !/^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/.test(version)) {
+        throw new UpdateOnceError("--rollback-version requires one stable version.", UPDATE_ONCE_EXIT.invalidArguments);
+      }
+      rollbackVersion = version;
       continue;
     }
     if (arg === "--restart-mode") {
@@ -118,6 +131,9 @@ export function parseUpdateOnceOptions(
     );
   }
   const packageKind = env.WONREMOTE_PACKAGE_KIND?.trim().toLowerCase();
+  if (rollbackVersion && (packageKind === "portable" || packageKind === "portable-agent")) {
+    throw new UpdateOnceError("Rollback requires an installed product.", UPDATE_ONCE_EXIT.invalidArguments);
+  }
   const portableRoot = packageKind === "portable" || packageKind === "portable-agent"
     ? env.WONREMOTE_APP_DIR?.trim()
     : undefined;
@@ -132,6 +148,7 @@ export function parseUpdateOnceOptions(
     ...(portableRoot ? { portableRoot: path.resolve(portableRoot) } : {}),
     ...(restartExecutablePath ? { restartExecutablePath: path.resolve(restartExecutablePath) } : {}),
     restartMode,
+    ...(rollbackVersion ? { rollbackVersion } : {}),
   };
 }
 
@@ -139,14 +156,20 @@ export async function runUpdateOnce(
   options: UpdateOnceOptions,
   deps: UpdateOnceDeps = defaultDeps,
 ): Promise<UpdateOnceResult> {
-  const metadata = await deps.loadMetadata(process.env);
+  const metadata = options.rollbackVersion
+    ? await deps.loadRollbackMetadata(options.rollbackVersion, deps.currentVersion, { ...process.env, WONREMOTE_UPDATE_PRODUCT: options.restartMode })
+    : await deps.loadMetadata(process.env);
   if (!metadata) {
     throw new UpdateOnceError(
       "Production update metadata is unavailable.",
       UPDATE_ONCE_EXIT.metadataUnavailable,
     );
   }
-  if (!metadata.forceUpdate && !isHigherVersion(metadata.latestVersion, deps.currentVersion)) {
+  if (options.rollbackVersion && (options.portableRoot || metadata.updateKind !== "installer"
+      || metadata.latestVersion !== options.rollbackVersion || !isHigherVersion(deps.currentVersion, metadata.latestVersion))) {
+    throw new UpdateOnceError("Rollback target is not an older matching installer.", UPDATE_ONCE_EXIT.updateFailed);
+  }
+  if (!options.rollbackVersion && !metadata.forceUpdate && !isHigherVersion(metadata.latestVersion, deps.currentVersion)) {
     return {
       latestVersion: metadata.latestVersion,
       status: "up-to-date",
@@ -180,6 +203,7 @@ async function prepareVerifiedInstallerUpdate(
     baseDir: options.baseDir,
     restartExecutablePath: options.restartExecutablePath,
     restartMode: options.restartMode,
+    ...(options.rollbackVersion ? { targetVersion: options.rollbackVersion } : {}),
   });
 }
 

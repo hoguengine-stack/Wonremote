@@ -52,6 +52,7 @@ import type { SessionData, SessionDataOptions } from "../domain/sessionData";
 export function subscribeSessionData(
   sessionId: string, onData: (data: SessionData) => void | Promise<void>, onError: (error: Error) => void,
   options: SessionDataOptions = {},
+  onReady?: () => void | Promise<void>,
 ): () => void {
   let active = true;
   let unsubscribe = () => {};
@@ -59,8 +60,8 @@ export function subscribeSessionData(
     if (!active) return;
     try {
       unsubscribe = isViewerFirebaseEnabled()
-        ? subscribeViewerSessionData(sessionId, onData, onError, options)
-        : subscribeLocalSessionData(API_BASE_URL, sessionId, "viewer", onData, onError, options);
+        ? subscribeViewerSessionData(sessionId, onData, onError, options, onReady)
+        : subscribeLocalSessionData(API_BASE_URL, sessionId, "viewer", onData, onError, options, onReady);
     } catch (error) { onError(error instanceof Error ? error : new Error(String(error))); }
   });
   return () => { active = false; unsubscribe(); };
@@ -190,12 +191,12 @@ export async function registerFirstRunAgent(input: AgentFirstRunInput & { apiUrl
   });
 }
 
-export async function openSession(deviceId: string): Promise<{
+export async function openSession(deviceId: string, refreshPresence = false): Promise<{
   session: RemoteSession;
   inputLog: string[];
 }> {
   if (isViewerFirebaseEnabled()) {
-    return openFirebaseSession(deviceId);
+    return openFirebaseSession(deviceId, undefined, refreshPresence);
   }
 
   return request("/api/sessions", {
@@ -391,7 +392,7 @@ export async function fetchTiles(sessionId: string): Promise<{ tiles: any[]; wid
 
   const response = await fetch(`${API_BASE_URL}/api/sessions/${encodeURIComponent(sessionId)}/tiles`);
   if (!response.ok) {
-    return { tiles: [], width: 0, height: 0 };
+    throw new Error(`Screen request failed (${response.status}).`);
   }
   return response.json();
 }

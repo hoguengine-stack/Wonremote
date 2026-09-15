@@ -5,6 +5,7 @@ export interface UpdateFleetRollout {
   stage: DeviceUpdateRing;
   paused?: boolean;
   percentage?: number;
+  targetDeviceIds?: string[];
 }
 
 export type UpdateEligibilityReason =
@@ -14,7 +15,18 @@ export type UpdateEligibilityReason =
   | "missing-target-version"
   | "already-current"
   | "ring-not-enabled"
-  | "outside-percentage";
+  | "outside-percentage"
+  | "not-selected"
+  | "invalid-selection-policy"
+  | "selection-support-unknown";
+
+export function parseRolloutSelection(value: unknown): Pick<UpdateFleetRollout, "targetDeviceIds"> {
+  if (value === null || value === undefined) return {};
+  if (!Array.isArray(value) || value.length > 200 || value.some(id => typeof id !== "string" || !id.trim() || id.length > 256)) {
+    return {targetDeviceIds: []};
+  }
+  return {targetDeviceIds: [...new Set(value)]};
+}
 
 export interface UpdateEligibilityDecision {
   eligible: boolean;
@@ -38,7 +50,7 @@ export function hashDeviceIdToPercentageBucket(deviceId: string): number {
 }
 
 export function decideUpdateEligibility(
-  device: Pick<ManagedDevice, "id" | "version" | "updateCurrentVersion" | "updatePaused" | "updateRing">,
+  device: Pick<ManagedDevice, "id" | "version" | "updateCurrentVersion" | "updatePaused" | "updateRing" | "selectedRolloutVersion">,
   rollout: UpdateFleetRollout,
 ): UpdateEligibilityDecision {
   const bucket = hashDeviceIdToPercentageBucket(device.id);
@@ -56,6 +68,19 @@ export function decideUpdateEligibility(
   const currentVersion = (device.updateCurrentVersion ?? device.version ?? "").trim();
   if (currentVersion === targetVersion) {
     return { eligible: false, reason: "already-current", bucket };
+  }
+
+  if (rollout.targetDeviceIds !== undefined) {
+    // Legacy Agents see 0% and cannot accidentally join a selected-PC rollout.
+    if (rollout.percentage !== 0 || rollout.stage !== "general") {
+      return {eligible: false, reason: "invalid-selection-policy", bucket};
+    }
+    const selected = parseRolloutSelection(rollout.targetDeviceIds).targetDeviceIds ?? [];
+    if (!selected.includes(device.id)) return {eligible:false,reason:"not-selected",bucket};
+    if (!device.version || device.selectedRolloutVersion !== device.version) {
+      return {eligible:false,reason:"selection-support-unknown",bucket};
+    }
+    return {eligible:true,reason:"eligible",bucket};
   }
 
   const deviceRing = device.updateRing ?? "general";

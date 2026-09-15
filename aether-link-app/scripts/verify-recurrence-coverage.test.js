@@ -173,6 +173,29 @@ describe("recurrence coverage gate", () => {
       .toContain("outcomes[1].contractTests must include a test changed with the implementation");
   });
 
+  it("accepts changed documentation evidence without disguising functional outcomes", () => {
+    const documentation = {
+      id: "test-target-record", changeType: "docs", acceptance: "Record approved test targets",
+      boundaries: ["project instructions"], proofLevel: "not-applicable",
+      verification: "Reviewed the changed target record; no rollout writes",
+      evidenceFiles: ["work-guides/PROJECT_RULES.md"],
+    };
+    const contract = {
+      status: "verified", requestReview: { impact: "none", reason: "Local documentation review" },
+      intent: "Record targets", changeType: "docs", risk: "low", releaseImpact: "none",
+      rollback: "Restore previous documentation", outcomes: [documentation],
+    };
+    expect(worktreeValidationErrors(contract, documentation.evidenceFiles, registry)).toEqual([]);
+    expect(worktreeValidationErrors(contract, [], registry))
+      .toContain("outcomes[0].evidenceFiles must name changed documentation");
+    expect(worktreeValidationErrors({ ...contract, outcomes: [{ ...documentation, evidenceFiles: ["src/run.ts"] }] }, ["src/run.ts"], registry))
+      .toContain("outcomes[0].evidenceFiles must name changed documentation");
+    expect(worktreeValidationErrors({ ...contract, outcomes: [{ ...documentation, verification: "pending" }] }, documentation.evidenceFiles, registry))
+      .toContain("outcomes[0].verification must contain fresh evidence");
+    expect(worktreeValidationErrors({ ...contract, outcomes: [{ ...documentation, changeType: "fix" }] }, documentation.evidenceFiles, registry))
+      .toContain("outcomes[0].proofLevel must prove a functional outcome");
+  });
+
   it("allows only deployment outcomes to remain pending at the predeploy gate", () => {
     const contract = {
       status: "ready-to-deploy",
@@ -198,10 +221,12 @@ describe("recurrence coverage gate", () => {
   });
 
   it("keeps the development-wide policy wired into local and CI gates", () => {
-    const rules = readFileSync(path.join(repositoryRoot, "AGENTS.md"), "utf8");
+    const entrypoint = readFileSync(path.join(repositoryRoot, "AGENTS.md"), "utf8");
+    const rules = readFileSync(path.join(repositoryRoot, "work-guides", "PROJECT_POLICY.md"), "utf8");
     const packageJson = JSON.parse(readFileSync(path.join(appRoot, "package.json"), "utf8"));
     const workflow = readFileSync(path.join(repositoryRoot, ".github", "workflows", "publish-release.yml"), "utf8");
 
+    expect(entrypoint).toContain("[프로젝트 정책](work-guides/PROJECT_POLICY.md)");
     expect(rules).toContain("requirement analysis, design, implementation, testing, build, deployment");
     expect(rules).toContain("npm run change:verify");
     expect(rules).toContain("Could this proof pass while the user-visible feature is still broken?");

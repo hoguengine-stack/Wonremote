@@ -3,24 +3,28 @@ use serde::{Deserialize, Serialize};
 use std::ffi::{c_void, OsStr};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
+use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 use windows::core::{Error, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{
-    LocalFree, BOOL, ERROR_PIPE_CONNECTED, E_ACCESSDENIED, HANDLE, HLOCAL, INVALID_HANDLE_VALUE,
-    WAIT_OBJECT_0,
+    LocalFree, BOOL, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, ERROR_PIPE_CONNECTED, E_ACCESSDENIED,
+    HANDLE, HLOCAL, INVALID_HANDLE_VALUE, LUID, WAIT_OBJECT_0,
 };
 use windows::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
 };
 use windows::Win32::Security::{
-    DuplicateTokenEx, GetTokenInformation, IsWellKnownSid, SecurityImpersonation, TokenPrimary,
-    TokenUser, WinLocalSystemSid, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_ALL_ACCESS,
-    TOKEN_QUERY, TOKEN_USER,
+    AdjustTokenPrivileges, DuplicateTokenEx, GetTokenInformation, IsWellKnownSid,
+    LookupPrivilegeValueW, SecurityImpersonation, TokenPrimary, TokenUser, WinLocalSystemSid,
+    LUID_AND_ATTRIBUTES, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, SE_PRIVILEGE_ENABLED,
+    TOKEN_ADJUST_PRIVILEGES, TOKEN_ALL_ACCESS, TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_USER,
 };
-use windows::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
+use windows::Win32::Storage::FileSystem::{
+    ReadFile, WriteFile, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX,
+};
 use windows::Win32::System::Console::{
     SetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
 };
@@ -28,21 +32,23 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 use windows::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeClientProcessId,
-    GetNamedPipeServerProcessId, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
-    PIPE_WAIT,
+    ConnectNamedPipe, CreateNamedPipeW, CreatePipe, DisconnectNamedPipe,
+    GetNamedPipeClientProcessId, GetNamedPipeServerProcessId, PIPE_READMODE_BYTE,
+    PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
 use windows::Win32::System::RemoteDesktop::{ProcessIdToSessionId, WTSGetActiveConsoleSessionId};
 use windows::Win32::System::StationsAndDesktops::{
     CloseDesktop, GetUserObjectInformationW, OpenInputDesktop, SetThreadDesktop,
-    DESKTOP_ACCESS_FLAGS, DESKTOP_READOBJECTS, DESKTOP_SWITCHDESKTOP, DESKTOP_WRITEOBJECTS, HDESK,
-    UOI_NAME,
+    DESKTOP_ACCESS_FLAGS, DESKTOP_JOURNALPLAYBACK, DESKTOP_READOBJECTS, DESKTOP_SWITCHDESKTOP,
+    DESKTOP_WRITEOBJECTS, HDESK, UOI_NAME,
 };
 use windows::Win32::System::Threading::{
-    CreateProcessAsUserW, OpenProcess, OpenProcessToken, QueryFullProcessImageNameW,
-    TerminateProcess, WaitForSingleObject, CREATE_NO_WINDOW, PROCESS_INFORMATION,
-    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, STARTUPINFOW,
+    CreateEventW, CreateProcessAsUserW, GetCurrentProcess, OpenProcess, OpenProcessToken,
+    QueryFullProcessImageNameW, ResetEvent, TerminateProcess, WaitForSingleObject,
+    CREATE_NO_WINDOW, PROCESS_INFORMATION, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    STARTUPINFOW,
 };
+use windows::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
 
 const BROKER_PIPE_NAME: &str = r"\\.\pipe\WonRemoteSecureCaptureV1";
 const WORKER_PIPE_PREFIX: &str = r"\\.\pipe\WonRemoteSecureCaptureWorkerV1-";
@@ -51,6 +57,108 @@ const WORKER_PIPE_SDDL: &str = "D:P(A;;GA;;;SY)";
 const MAX_HANDSHAKE_BYTES: usize = 2_048;
 const MAX_INPUT_PROXY_BYTES: usize = 20 * 1024;
 static WORKER_PIPE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+// Each clone owns its event; pending reads must not serialize writes on the pipe.
+struct DuplexPipe {
+    file: File,
+    event: OwnedHandle,
+}
+
+impl AsRawHandle for DuplexPipe {
+    fn as_raw_handle(&self) -> std::os::windows::io::RawHandle {
+        self.file.as_raw_handle()
+    }
+}
+
+fn pipe_io_error(error: Error) -> io::Error {
+    io::Error::from_raw_os_error(error.code().0 & 0xffff)
+}
+
+impl DuplexPipe {
+    fn new(file: File) -> io::Result<Self> {
+        let event =
+            unsafe { CreateEventW(None, true, false, PCWSTR::null()) }.map_err(pipe_io_error)?;
+        Ok(Self {
+            file,
+            event: unsafe { owned_handle(event) },
+        })
+    }
+
+    fn open(name: impl AsRef<std::path::Path>) -> io::Result<Self> {
+        Self::new(
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .custom_flags(FILE_FLAG_OVERLAPPED.0)
+                .open(name)?,
+        )
+    }
+
+    fn try_clone(&self) -> io::Result<Self> {
+        Self::new(self.file.try_clone()?)
+    }
+
+    fn operation(
+        &mut self,
+        start: impl FnOnce(*mut OVERLAPPED) -> windows::core::Result<()>,
+    ) -> io::Result<usize> {
+        unsafe { ResetEvent(raw_handle(&self.event)) }.map_err(pipe_io_error)?;
+        let mut overlapped = OVERLAPPED {
+            hEvent: raw_handle(&self.event),
+            ..Default::default()
+        };
+        if let Err(error) = start(&mut overlapped) {
+            if error.code() != ERROR_IO_PENDING.to_hresult() {
+                return Err(pipe_io_error(error));
+            }
+        }
+        let mut transferred = 0;
+        // Wait before returning so the OS never retains a pointer to a dropped buffer/event.
+        unsafe { GetOverlappedResult(raw_handle(self), &overlapped, &mut transferred, true) }
+            .map_err(pipe_io_error)?;
+        Ok(transferred as usize)
+    }
+
+    fn connect(&mut self) -> io::Result<()> {
+        let handle = raw_handle(self);
+        match self.operation(|overlapped| unsafe { ConnectNamedPipe(handle, Some(overlapped)) }) {
+            Ok(_) => Ok(()),
+            Err(error) if error.raw_os_error() == Some(ERROR_PIPE_CONNECTED.0 as i32) => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+impl Read for DuplexPipe {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        let handle = raw_handle(self);
+        match self.operation(|overlapped| unsafe {
+            ReadFile(handle, Some(buffer), None, Some(overlapped))
+        }) {
+            Err(error) if error.raw_os_error() == Some(ERROR_BROKEN_PIPE.0 as i32) => Ok(0),
+            result => result,
+        }
+    }
+}
+
+impl Write for DuplexPipe {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        let handle = raw_handle(self);
+        self.operation(|overlapped| unsafe {
+            WriteFile(handle, Some(buffer), None, Some(overlapped))
+        })
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
@@ -73,11 +181,37 @@ pub fn run_client(config: &BenchmarkConfig) -> Result<(), String> {
     })
 }
 
-pub fn run_input_client() -> Result<(), String> {
-    proxy_worker(SecureBrokerRequest::Input)
+pub struct InputClient {
+    pipe: DuplexPipe,
 }
 
-fn proxy_worker(request: SecureBrokerRequest) -> Result<(), String> {
+impl InputClient {
+    pub fn connect() -> Result<Self, String> {
+        Ok(Self {
+            pipe: open_worker(&SecureBrokerRequest::Input)?,
+        })
+    }
+
+    pub fn inject(&mut self, action: &str) -> Result<(), String> {
+        let line = serde_json::json!({"id":"broker-input", "action":action}).to_string();
+        let response =
+            exchange_input_line(&mut self.pipe, &line).map_err(|error| error.to_string())?;
+        let response: crate::InputServerResponse = serde_json::from_str(&response)
+            .map_err(|error| format!("Invalid broker input response: {error}"))?;
+        if response.id != "broker-input" {
+            return Err("Unexpected broker input response id".to_string());
+        }
+        if response.ok {
+            Ok(())
+        } else {
+            Err(response
+                .error
+                .unwrap_or_else(|| "Broker input failed".to_string()))
+        }
+    }
+}
+
+fn open_worker(request: &SecureBrokerRequest) -> Result<DuplexPipe, String> {
     let mut pipe = connect_to_broker()?;
     verify_broker_process(&pipe)?;
     writeln!(
@@ -93,7 +227,29 @@ fn proxy_worker(request: SecureBrokerRequest) -> Result<(), String> {
             "secure capture broker rejected request: {response}"
         ));
     }
+    Ok(pipe)
+}
 
+fn proxy_worker(request: SecureBrokerRequest) -> Result<(), String> {
+    let input_worker = matches!(&request, SecureBrokerRequest::Input);
+    let mut pipe = open_worker(&request)?;
+    if input_worker {
+        let stdin = io::stdin();
+        let stdout = io::stdout();
+        let mut input = stdin.lock();
+        let mut output = stdout.lock();
+        loop {
+            let line = match read_limited_line_with_limit(&mut input, MAX_INPUT_PROXY_BYTES) {
+                Ok(line) => line,
+                Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
+                Err(error) => return Err(error.to_string()),
+            };
+            let response =
+                exchange_input_line(&mut pipe, &line).map_err(|error| error.to_string())?;
+            writeln!(output, "{response}").map_err(|error| error.to_string())?;
+            output.flush().map_err(|error| error.to_string())?;
+        }
+    }
     let mut input_pipe = pipe.try_clone().map_err(|error| error.to_string())?;
     thread::spawn(move || {
         let _ = io::copy(&mut io::stdin().lock(), &mut input_pipe);
@@ -108,12 +264,9 @@ pub fn run_broker() -> Result<(), String> {
     loop {
         let mut pipe = create_server_pipe(first_instance)?;
         first_instance = false;
-        let connected = unsafe { ConnectNamedPipe(raw_handle(&pipe), None) };
-        if let Err(error) = connected {
-            if error.code() != ERROR_PIPE_CONNECTED.to_hresult() {
-                eprintln!("Secure capture pipe connection failed: {error}");
-                continue;
-            }
+        if let Err(error) = pipe.connect() {
+            eprintln!("Secure capture pipe connection failed: {error}");
+            continue;
         }
         thread::spawn(move || {
             match verify_client_process(&pipe) {
@@ -133,14 +286,10 @@ pub fn run_broker() -> Result<(), String> {
     }
 }
 
-fn connect_to_broker() -> Result<File, String> {
+fn connect_to_broker() -> Result<DuplexPipe, String> {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        match OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(BROKER_PIPE_NAME)
-        {
+        match DuplexPipe::open(BROKER_PIPE_NAME) {
             Ok(pipe) => return Ok(pipe),
             Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
                 return Err(
@@ -158,7 +307,7 @@ fn connect_to_broker() -> Result<File, String> {
     }
 }
 
-fn create_server_pipe(first_instance: bool) -> Result<File, String> {
+fn create_server_pipe(first_instance: bool) -> Result<DuplexPipe, String> {
     create_named_pipe(BROKER_PIPE_NAME, BROKER_PIPE_SDDL, first_instance, 16)
 }
 
@@ -167,7 +316,7 @@ fn create_named_pipe(
     sddl: &str,
     first_instance: bool,
     max_instances: u32,
-) -> Result<File, String> {
+) -> Result<DuplexPipe, String> {
     unsafe {
         let mut descriptor = PSECURITY_DESCRIPTOR::default();
         let sddl = wide(OsStr::new(sddl));
@@ -191,7 +340,7 @@ fn create_named_pipe(
         };
         let handle = CreateNamedPipeW(
             PCWSTR(name.as_ptr()),
-            open_mode,
+            open_mode | FILE_FLAG_OVERLAPPED,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             max_instances,
             64 * 1024,
@@ -208,11 +357,14 @@ fn create_named_pipe(
         if let Some(error) = create_error {
             return Err(format!("cannot create secure capture pipe: {error}"));
         }
-        Ok(File::from_raw_handle(handle.0 as *mut c_void))
+        DuplexPipe::new(File::from_raw_handle(handle.0 as *mut c_void))
+            .map_err(|error| error.to_string())
     }
 }
 
-fn verify_broker_process(pipe: &File) -> Result<(), String> {
+fn verify_broker_process(pipe: &DuplexPipe) -> Result<(), String> {
+    // Elevated scheduled clients need their existing debug privilege only while querying SYSTEM identity.
+    let _identity_query_privilege = IdentityQueryPrivilege::enable();
     let mut process_id = 0;
     unsafe {
         GetNamedPipeServerProcessId(raw_handle(pipe), &mut process_id)
@@ -225,7 +377,68 @@ fn verify_broker_process(pipe: &File) -> Result<(), String> {
     Ok(())
 }
 
-fn verify_client_process(pipe: &File) -> Result<(), String> {
+struct IdentityQueryPrivilege {
+    token: OwnedHandle,
+    previous: TOKEN_PRIVILEGES,
+}
+
+impl IdentityQueryPrivilege {
+    fn enable() -> Option<Self> {
+        unsafe {
+            let mut token = HANDLE::default();
+            OpenProcessToken(
+                GetCurrentProcess(),
+                TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+                &mut token,
+            )
+            .ok()?;
+            let token = owned_handle(token);
+            let mut luid = LUID::default();
+            LookupPrivilegeValueW(
+                PCWSTR::null(),
+                windows::core::w!("SeDebugPrivilege"),
+                &mut luid,
+            )
+            .ok()?;
+            let requested = TOKEN_PRIVILEGES {
+                PrivilegeCount: 1,
+                Privileges: [LUID_AND_ATTRIBUTES {
+                    Luid: luid,
+                    Attributes: SE_PRIVILEGE_ENABLED,
+                }],
+            };
+            let mut previous = TOKEN_PRIVILEGES::default();
+            let mut returned = 0;
+            AdjustTokenPrivileges(
+                raw_handle(&token),
+                false,
+                Some(&requested),
+                std::mem::size_of::<TOKEN_PRIVILEGES>() as u32,
+                Some(&mut previous),
+                Some(&mut returned),
+            )
+            .ok()?;
+            Some(Self { token, previous })
+        }
+    }
+}
+
+impl Drop for IdentityQueryPrivilege {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = AdjustTokenPrivileges(
+                raw_handle(&self.token),
+                false,
+                Some(&self.previous),
+                0,
+                None,
+                None,
+            );
+        }
+    }
+}
+
+fn verify_client_process(pipe: &DuplexPipe) -> Result<(), String> {
     let mut process_id = 0;
     unsafe {
         GetNamedPipeClientProcessId(raw_handle(pipe), &mut process_id)
@@ -335,12 +548,28 @@ impl Drop for ActiveInputDesktop {
 }
 
 pub fn attach_current_thread_to_active_input_desktop() -> Result<ActiveInputDesktop, String> {
+    attach_active_input_desktop(false)
+}
+
+pub fn attach_current_thread_to_active_input_desktop_for_input(
+) -> Result<ActiveInputDesktop, String> {
+    attach_active_input_desktop(true)
+}
+
+fn attach_active_input_desktop(for_input: bool) -> Result<ActiveInputDesktop, String> {
     unsafe {
         let desktop = OpenInputDesktop(
             Default::default(),
             false,
             DESKTOP_ACCESS_FLAGS(
-                DESKTOP_READOBJECTS.0 | DESKTOP_WRITEOBJECTS.0 | DESKTOP_SWITCHDESKTOP.0,
+                DESKTOP_READOBJECTS.0
+                    | DESKTOP_WRITEOBJECTS.0
+                    | DESKTOP_SWITCHDESKTOP.0
+                    | if for_input {
+                        DESKTOP_JOURNALPLAYBACK.0
+                    } else {
+                        0
+                    },
             ),
         )
         .map_err(|error| format!("cannot open active input desktop for worker: {error}"))?;
@@ -396,7 +625,7 @@ fn one_line_error(error: &str) -> String {
         .collect()
 }
 
-fn handle_client(pipe: &mut File) -> Result<(), String> {
+fn handle_client(pipe: &mut DuplexPipe) -> Result<(), String> {
     let line = read_limited_line(pipe).map_err(|error| error.to_string())?;
     let request: SecureBrokerRequest =
         serde_json::from_str(&line).map_err(|_| "invalid secure worker request".to_string())?;
@@ -410,6 +639,14 @@ fn handle_client(pipe: &mut File) -> Result<(), String> {
         pipe: mut worker_pipe,
         process,
     } = worker;
+    if input_worker {
+        // Preserve ordered request/response input independently of frame streaming.
+        let result = relay_input_requests(pipe, &mut worker_pipe);
+        unsafe {
+            let _ = TerminateProcess(raw_handle(&process), 0);
+        }
+        return result.map_err(|error| error.to_string());
+    }
     let mut worker_input = worker_pipe.try_clone().map_err(|error| error.to_string())?;
     let mut input_pipe = pipe.try_clone().map_err(|error| error.to_string())?;
     let input_thread = thread::spawn(move || {
@@ -440,6 +677,27 @@ fn handle_client(pipe: &mut File) -> Result<(), String> {
     result.map(|_| ())
 }
 
+fn exchange_input_line(pipe: &mut DuplexPipe, line: &str) -> io::Result<String> {
+    writeln!(pipe, "{line}")?;
+    pipe.flush()?;
+    read_limited_line_with_limit(pipe, MAX_INPUT_PROXY_BYTES)
+}
+
+fn relay_input_requests(client: &mut DuplexPipe, worker: &mut DuplexPipe) -> io::Result<()> {
+    loop {
+        let line = read_limited_line_with_limit(client, MAX_INPUT_PROXY_BYTES)?;
+        if !crate::is_valid_input_server_request_line(&line) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid input request",
+            ));
+        }
+        let response = exchange_input_line(worker, &line)?;
+        writeln!(client, "{response}")?;
+        client.flush()?;
+    }
+}
+
 fn validate_request(request: &SecureBrokerRequest) -> Result<(), String> {
     if let SecureBrokerRequest::Capture {
         loop_sleep_ms,
@@ -466,11 +724,11 @@ fn is_capture_control(line: &str) -> bool {
     crate::parse_runtime_stream_profile(line).is_some_and(|profile| profile.loop_sleep_ms <= 10_000)
 }
 
-fn read_limited_line(stream: &mut File) -> io::Result<String> {
+fn read_limited_line(stream: &mut DuplexPipe) -> io::Result<String> {
     read_limited_line_with_limit(stream, MAX_HANDSHAKE_BYTES)
 }
 
-fn read_limited_line_with_limit(stream: &mut File, limit: usize) -> io::Result<String> {
+fn read_limited_line_with_limit(stream: &mut impl Read, limit: usize) -> io::Result<String> {
     let mut bytes = Vec::new();
     let mut byte = [0u8; 1];
     while bytes.len() <= limit {
@@ -494,7 +752,7 @@ fn read_limited_line_with_limit(stream: &mut File, limit: usize) -> io::Result<S
 }
 
 struct SecureWorker {
-    pipe: File,
+    pipe: DuplexPipe,
     process: OwnedHandle,
 }
 
@@ -508,29 +766,52 @@ pub fn attach_worker_transport(pipe_name: Option<&str>) -> Result<SecureWorkerTr
     let pipe_name = pipe_name
         .filter(|name| is_valid_worker_pipe_name(name))
         .ok_or_else(|| "secure capture worker pipe is missing or invalid".to_string())?;
-    let pipe = create_named_pipe(pipe_name, WORKER_PIPE_SDDL, true, 1)?;
-    let connected = unsafe { ConnectNamedPipe(raw_handle(&pipe), None) };
-    if let Err(error) = connected {
-        if error.code() != ERROR_PIPE_CONNECTED.to_hresult() {
-            return Err(format!("secure worker pipe connection failed: {error}"));
-        }
-    }
+    let mut pipe = create_named_pipe(pipe_name, WORKER_PIPE_SDDL, true, 1)?;
+    pipe.connect()
+        .map_err(|error| format!("secure worker pipe connection failed: {error}"))?;
     verify_worker_broker(&pipe)?;
 
-    let stdin = pipe.try_clone().map_err(|error| error.to_string())?;
-    let stdout = pipe.try_clone().map_err(|error| error.to_string())?;
+    let transport = bridge_worker_stdio(pipe).map_err(|error| error.to_string())?;
     unsafe {
-        SetStdHandle(STD_INPUT_HANDLE, raw_handle(&stdin))
+        SetStdHandle(STD_INPUT_HANDLE, raw_handle(&transport._stdin))
             .map_err(|error| format!("cannot attach secure worker stdin: {error}"))?;
-        SetStdHandle(STD_OUTPUT_HANDLE, raw_handle(&stdout))
+        SetStdHandle(STD_OUTPUT_HANDLE, raw_handle(&transport._stdout))
             .map_err(|error| format!("cannot attach secure worker stdout: {error}"))?;
-        SetStdHandle(STD_ERROR_HANDLE, raw_handle(&pipe))
+        SetStdHandle(STD_ERROR_HANDLE, raw_handle(&transport._stderr))
             .map_err(|error| format!("cannot attach secure worker stderr: {error}"))?;
     }
+    Ok(transport)
+}
+
+fn anonymous_pipe() -> io::Result<(File, File)> {
+    let mut read = HANDLE::default();
+    let mut write = HANDLE::default();
+    unsafe {
+        CreatePipe(&mut read, &mut write, None, 64 * 1024).map_err(pipe_io_error)?;
+        Ok((
+            File::from_raw_handle(read.0 as *mut c_void),
+            File::from_raw_handle(write.0 as *mut c_void),
+        ))
+    }
+}
+
+fn bridge_worker_stdio(mut pipe: DuplexPipe) -> io::Result<SecureWorkerTransport> {
+    // Rust stdio requires synchronous handles. Separate anonymous directions prevent
+    // an idle stdin read from locking stdout; only the IPC boundary is overlapped.
+    let (stdin, mut input_writer) = anonymous_pipe()?;
+    let (mut output_reader, stdout) = anonymous_pipe()?;
+    let stderr = stdout.try_clone()?;
+    let mut input_pipe = pipe.try_clone()?;
+    thread::spawn(move || {
+        let _ = io::copy(&mut input_pipe, &mut input_writer);
+    });
+    thread::spawn(move || {
+        let _ = io::copy(&mut output_reader, &mut pipe);
+    });
     Ok(SecureWorkerTransport {
         _stdin: stdin,
         _stdout: stdout,
-        _stderr: pipe,
+        _stderr: stderr,
     })
 }
 
@@ -559,10 +840,10 @@ fn connect_to_worker(
     worker: &OwnedHandle,
     worker_process_id: u32,
     session_id: u32,
-) -> Result<File, String> {
+) -> Result<DuplexPipe, String> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        match OpenOptions::new().read(true).write(true).open(pipe_name) {
+        match DuplexPipe::open(pipe_name) {
             Ok(pipe) => {
                 verify_worker_process(&pipe, worker_process_id, session_id)?;
                 return Ok(pipe);
@@ -585,7 +866,7 @@ fn connect_to_worker(
     }
 }
 
-fn verify_worker_broker(pipe: &File) -> Result<(), String> {
+fn verify_worker_broker(pipe: &DuplexPipe) -> Result<(), String> {
     let mut process_id = 0;
     unsafe {
         GetNamedPipeClientProcessId(raw_handle(pipe), &mut process_id)
@@ -599,7 +880,7 @@ fn verify_worker_broker(pipe: &File) -> Result<(), String> {
 }
 
 fn verify_worker_process(
-    pipe: &File,
+    pipe: &DuplexPipe,
     expected_process_id: u32,
     expected_session_id: u32,
 ) -> Result<(), String> {
@@ -770,6 +1051,182 @@ mod tests {
     use super::*;
 
     #[test]
+    fn capture_first_frame_does_not_wait_for_control_input() {
+        let name = next_worker_pipe_name();
+        let mut server = create_named_pipe(&name, "D:P(A;;GA;;;WD)", true, 1).unwrap();
+        let (result, received) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let mut client = DuplexPipe::open(name).unwrap();
+            let mut frame = vec![0; 128 * 1024];
+            client.read_exact(&mut frame).unwrap();
+            assert!(frame.iter().all(|byte| *byte == 42));
+            writeln!(client, "request-keyframe").unwrap();
+            result.send(()).unwrap();
+        });
+        server.connect().unwrap();
+        let mut control = server.try_clone().unwrap();
+        let (reading, started) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            reading.send(()).unwrap();
+            assert_eq!(read_limited_line(&mut control).unwrap(), "request-keyframe");
+        });
+        started.recv().unwrap();
+        thread::sleep(Duration::from_millis(100));
+        thread::spawn(move || server.write_all(&vec![42; 128 * 1024]).unwrap());
+        received
+            .recv_timeout(Duration::from_secs(3))
+            .expect("first frame stalled behind idle capture control read");
+    }
+
+    #[test]
+    fn capture_stdio_bridge_delivers_large_frame_and_control_then_eof() {
+        for _ in 0..3 {
+            let name = next_worker_pipe_name();
+            let mut server = create_named_pipe(&name, "D:P(A;;GA;;;WD)", true, 1).unwrap();
+            let (ready, transport) = std::sync::mpsc::channel();
+            thread::spawn(move || {
+                server.connect().unwrap();
+                ready.send(bridge_worker_stdio(server).unwrap()).unwrap();
+            });
+            let mut client = DuplexPipe::open(name).unwrap();
+            let transport = transport.recv_timeout(Duration::from_secs(3)).unwrap();
+            let mut input = transport._stdin.try_clone().unwrap();
+            let (ended, eof) = std::sync::mpsc::channel();
+            thread::spawn(move || {
+                assert_eq!(
+                    read_limited_line_with_limit(&mut input, 64).unwrap(),
+                    "request-keyframe"
+                );
+                assert_eq!(input.read(&mut [0]).unwrap(), 0);
+                ended.send(()).unwrap();
+            });
+            let (delivered, frame) = std::sync::mpsc::channel();
+            let writer = thread::spawn(move || {
+                let mut output = transport._stdout.try_clone().unwrap();
+                output.write_all(&vec![42; 1024 * 1024]).unwrap();
+                drop(output);
+                transport
+            });
+            thread::spawn(move || {
+                let mut bytes = vec![0; 1024 * 1024];
+                client.read_exact(&mut bytes).unwrap();
+                assert!(bytes.iter().all(|byte| *byte == 42));
+                writeln!(client, "request-keyframe").unwrap();
+                delivered.send(()).unwrap();
+                // Dropping the peer must release the worker's idle stdin read.
+            });
+            frame
+                .recv_timeout(Duration::from_secs(3))
+                .expect("worker stdout stalled behind stdin");
+            eof.recv_timeout(Duration::from_secs(3))
+                .expect("worker stdin did not close with peer");
+            drop(writer.join().unwrap());
+        }
+    }
+
+    #[test]
+    #[ignore = "requires an interactive Windows desktop; emits only F12 key-up"]
+    fn live_input_after_desktop_attachment() {
+        thread::spawn(|| {
+            crate::inject_input("key-up F12").expect("input before desktop attachment");
+            let _desktop = attach_current_thread_to_active_input_desktop_for_input().unwrap();
+            crate::inject_input("key-up F12").expect("input after desktop attachment");
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn input_client_checks_acknowledgements_without_replaying_failed_actions() {
+        let name = next_worker_pipe_name();
+        let mut server = create_named_pipe(&name, "D:P(A;;GA;;;WD)", true, 1).unwrap();
+        let (finished, completion) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            server.connect().unwrap();
+            for (index, reply) in [
+                r#"{"id":"broker-input","ok":true}"#,
+                r#"{"id":"broker-input","ok":false,"error":"denied"}"#,
+                r#"{"id":"other","ok":true}"#,
+            ]
+            .iter()
+            .enumerate()
+            {
+                let request =
+                    read_limited_line_with_limit(&mut server, MAX_INPUT_PROXY_BYTES).unwrap();
+                let request: serde_json::Value = serde_json::from_str(&request).unwrap();
+                assert_eq!(request["action"], format!("probe-{index}"));
+                writeln!(server, "{reply}").unwrap();
+            }
+        });
+        thread::spawn(move || {
+            let mut client = InputClient {
+                pipe: DuplexPipe::open(name).unwrap(),
+            };
+            assert!(client.inject("probe-0").is_ok());
+            assert_eq!(client.inject("probe-1").unwrap_err(), "denied");
+            assert!(client
+                .inject("probe-2")
+                .unwrap_err()
+                .contains("response id"));
+            finished.send(()).unwrap();
+        });
+        completion
+            .recv_timeout(Duration::from_secs(5))
+            .expect("input acknowledgement blocked");
+    }
+
+    #[test]
+    fn input_roundtrips_through_two_real_duplex_pipes() {
+        let broker_name = next_worker_pipe_name();
+        let worker_name = next_worker_pipe_name();
+        let mut broker = create_named_pipe(&broker_name, "D:P(A;;GA;;;WD)", true, 1).unwrap();
+        let mut worker = create_named_pipe(&worker_name, "D:P(A;;GA;;;WD)", true, 1).unwrap();
+        let (finished, completion) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            worker.connect().unwrap();
+            for _ in 0..4 {
+                let line =
+                    read_limited_line_with_limit(&mut worker, MAX_INPUT_PROXY_BYTES).unwrap();
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                writeln!(
+                    worker,
+                    "{}",
+                    serde_json::json!({"id":request["id"], "ok":true})
+                )
+                .unwrap();
+            }
+        });
+        thread::spawn(move || {
+            broker.connect().unwrap();
+            let mut downstream = DuplexPipe::open(worker_name).unwrap();
+            let _ = relay_input_requests(&mut broker, &mut downstream);
+        });
+        thread::spawn(move || {
+            let mut client = DuplexPipe::open(broker_name).unwrap();
+            for (index, action) in [
+                "key-up F24",
+                "mouse-down 100 100 left",
+                "mouse-up 100 100 left",
+                "mouse-wheel 100 100 120",
+            ]
+            .iter()
+            .enumerate()
+            {
+                let id = format!("input-{index}");
+                let line = serde_json::json!({"id":id,"action":action}).to_string();
+                let response = exchange_input_line(&mut client, &line).unwrap();
+                let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+                assert_eq!(response["id"], id);
+                assert_eq!(response["ok"], true);
+            }
+            finished.send(()).unwrap();
+        });
+        completion
+            .recv_timeout(Duration::from_secs(5))
+            .expect("input relay blocked");
+    }
+
+    #[test]
     fn privileged_requests_are_typed_and_bounded() {
         let request = SecureBrokerRequest::Capture {
             loop_sleep_ms: 33,
@@ -860,10 +1317,7 @@ mod tests {
         let server_name = pipe_name.clone();
         let server = thread::spawn(move || {
             let mut pipe = create_named_pipe(&server_name, "D:P(A;;GA;;;WD)", true, 1).unwrap();
-            let connected = unsafe { ConnectNamedPipe(raw_handle(&pipe), None) };
-            if let Err(error) = connected {
-                assert_eq!(error.code(), ERROR_PIPE_CONNECTED.to_hresult());
-            }
+            pipe.connect().unwrap();
             assert_eq!(read_limited_line(&mut pipe).unwrap(), "request-keyframe");
             writeln!(pipe, r#"{{"type":"frame","keyframe":true}}"#).unwrap();
             pipe.flush().unwrap();
@@ -871,7 +1325,7 @@ mod tests {
 
         let deadline = Instant::now() + Duration::from_secs(2);
         let mut client = loop {
-            match OpenOptions::new().read(true).write(true).open(&pipe_name) {
+            match DuplexPipe::open(&pipe_name) {
                 Ok(pipe) => break pipe,
                 Err(error) if Instant::now() < deadline => {
                     thread::sleep(Duration::from_millis(10));

@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { createFileChannelSender } from "../agent/fileChannelSender";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { createHash } from "node:crypto";
+import { processWebRtcFileChunk } from "../agent/webrtcFileReceiver";
 import { parseWebRtcControlAction } from "../domain/webrtcControl";
-import { WEBRTC_FILE_CHUNK_BYTES, parseWebRtcFileChunk, serializeWebRtcFileAck } from "../domain/webrtcFileTransfer";
+import { WEBRTC_FILE_CHUNK_BYTES, parseWebRtcFileChunk, parseWebRtcFileAck, serializeWebRtcFileAck, serializeWebRtcFileChunk } from "../domain/webrtcFileTransfer";
 
 const firestoreMocks = vi.hoisted(() => ({
   limit: vi.fn((count: number) => ({ kind: "limit", count })),
@@ -17,6 +23,11 @@ const firestoreMocks = vi.hoisted(() => ({
   safeAddDoc: vi.fn(async () => ({ id: "candidate-1" })),
   safeSetDoc: vi.fn(async () => undefined),
 }));
+
+function reverseEmptyChunk() {
+  return serializeWebRtcFileChunk({ type: "file-chunk", transferId: "incoming", filename: "empty.txt", chunkIndex: 0,
+    totalChunks: 1, totalBytes: 0, isLast: true, fileData: "", chunkSha256: "a".repeat(64) });
+}
 
 vi.mock("firebase/firestore", () => ({
   collection: vi.fn((_db: unknown, ...segments: string[]) => ({ kind: "collection", path: segments.join("/") })),
@@ -85,6 +96,235 @@ class FakePeerConnection {
 }
 
 describe("Viewer WebRTC transport", () => {
+  it("accepts capability only from the active open file channel with the supported protocol", async () => {
+    const { startFirebaseViewerWebRtcTransport } = await import("./viewerFirebase");
+    const onReverseFileSupport = vi.fn();
+    const transport = await startFirebaseViewerWebRtcTransport("capabilities", { onFrame: vi.fn(), onReverseFileSupport }, {} as ImportMetaEnv);
+    const channel = FakePeerConnection.latest.channels.get("wonremote-files")!;
+    const handler = channel.onmessage!;
+    const payload = JSON.stringify({ type: "file-capabilities", reverseFileSend: 1 });
+    handler({ data: payload });
+    expect(onReverseFileSupport).not.toHaveBeenCalled();
+    channel.readyState = "open"; channel.onopen?.();
+    handler({ data: JSON.stringify({ type: "file-capabilities", reverseFileSend: true }) });
+    expect(onReverseFileSupport).not.toHaveBeenCalled();
+    handler({ data: payload });
+    expect(onReverseFileSupport).toHaveBeenCalledOnce();
+    expect(onReverseFileSupport).toHaveBeenLastCalledWith(false);
+    handler({ data: JSON.stringify({ type: "file-capabilities", reverseFileSend: 1, reverseFileResume: true }) });
+    expect(onReverseFileSupport).toHaveBeenLastCalledWith(false);
+    handler({ data: JSON.stringify({ type: "file-capabilities", reverseFileSend: 1, reverseFileResume: 1 }) });
+    expect(onReverseFileSupport).toHaveBeenLastCalledWith(true);
+    transport.close(); handler({ data: payload });
+    expect(onReverseFileSupport).toHaveBeenCalledTimes(3);
+  });
+  it("routes file status only on the active channel and drops invalid or late messages", async () => {
+    const { startFirebaseViewerWebRtcTransport } = await import("./viewerFirebase");
+    const onFileStatus = vi.fn();
+    const transport = await startFirebaseViewerWebRtcTransport("file-status", { onFrame: vi.fn(), onFileStatus }, {} as ImportMetaEnv);
+    const channel = FakePeerConnection.latest.channels.get("wonremote-files")!;
+    const status = { type: "file-status", requestId: "reverse", state: "selecting" };
+    const handler = channel.onmessage!;
+    handler({ data: JSON.stringify(status) });
+    expect(onFileStatus).not.toHaveBeenCalled();
+    channel.readyState = "open"; channel.onopen?.();
+    handler({ data: JSON.stringify(status) });
+    expect(onFileStatus).toHaveBeenCalledExactlyOnceWith(status);
+    handler({ data: JSON.stringify({ ...status, state: "arbitrary" }) });
+    transport.close();
+    handler({ data: JSON.stringify(status) });
+    expect(onFileStatus).toHaveBeenCalledOnce();
+  });
+  it("receives an Agent disk stream and acknowledges only after the storage handler completes", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "wonremote-viewer-reverse-"));
+    const sourcePath = path.join(root, "report.bin");
+    const bytes = Buffer.alloc(WEBRTC_FILE_CHUNK_BYTES * 9 + 4, 53);
+    await writeFile(sourcePath, bytes);
+    const { startFirebaseViewerWebRtcTransport } = await import("./viewerFirebase");
+    const destination = path.join(root, "received");
+    const transport = await startFirebaseViewerWebRtcTransport("reverse", { onFrame: vi.fn(),
+      onFileChunk: (chunk, isCurrent) => processWebRtcFileChunk(chunk, { isCurrent, env: { WONREMOTE_AGENT_DOWNLOADS_DIR: destination } }),
+    }, {} as ImportMetaEnv);
+    const channel = FakePeerConnection.latest.channels.get("wonremote-files")!;
+    channel.readyState = "open"; channel.onopen?.();
+    const sender = createFileChannelSender({ readyState: "open", send: payload => channel.onmessage?.({ data: payload }) });
+    channel.send.mockImplementation(payload => sender.acknowledge(parseWebRtcFileAck(payload)!));
+    try {
+      await sender.sendFile({ sourcePath, transferId: "reverse-file" });
+      expect(await readFile(path.join(destination, "report.bin"))).toEqual(bytes);
+      expect(channel.send).toHaveBeenCalledTimes(10);
+      const calls = channel.send.mock.calls;
+      expect(parseWebRtcFileAck(calls[calls.length - 1][0])).toMatchObject({ status: "complete", receivedBytes: bytes.length });
+    } finally { sender.close(); transport.close(); await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("does not acknowledge a pending save or a save finishing after session close", async () => {
+    const { startFirebaseViewerWebRtcTransport } = await import("./viewerFirebase");
+    const completeAck = { type: "file-ack" as const, transferId: "incoming", status: "complete" as const, receivedBytes: 0, receivedChunks: 1 };
+    let finish!: (value: typeof completeAck) => void;
+    let isCurrent!: () => boolean;
+    const save = vi.fn((_chunk, current: () => boolean) => { isCurrent = current; return new Promise<typeof completeAck>(resolve => { finish = resolve; }); });
+    const transport = await startFirebaseViewerWebRtcTransport("reverse-stale", { onFrame: vi.fn(), onFileChunk: save }, {} as ImportMetaEnv);
+    const channel = FakePeerConnection.latest.channels.get("wonremote-files")!;
+    channel.readyState = "open"; channel.onopen?.();
+    const payload = reverseEmptyChunk();
+    channel.onmessage?.({ data: payload });
+    await vi.waitFor(() => expect(save).toHaveBeenCalledOnce());
+    expect(channel.send).not.toHaveBeenCalled();
+    expect(isCurrent()).toBe(true);
+    transport.close();
+    expect(isCurrent()).toBe(false);
+    finish(completeAck);
+    await Promise.resolve(); await Promise.resolve();
+    expect(channel.send).not.toHaveBeenCalled();
+  });
+
+  it("rejects unsupported receiving and bounds queued inbound chunks", async () => {
+    const { startFirebaseViewerWebRtcTransport } = await import("./viewerFirebase");
+    const unsupported = await startFirebaseViewerWebRtcTransport("reverse-unsupported", { onFrame: vi.fn() }, {} as ImportMetaEnv);
+    let channel = FakePeerConnection.latest.channels.get("wonremote-files")!;
+    channel.readyState = "open"; channel.onopen?.();
+    channel.onmessage?.({ data: reverseEmptyChunk() });
+    await vi.waitFor(() => expect(channel.send).toHaveBeenCalledOnce());
+    expect(parseWebRtcFileAck(channel.send.mock.calls[0][0])).toMatchObject({ status: "error" });
+    unsupported.close();
+    const save = vi.fn(async () => null);
+    const transport = await startFirebaseViewerWebRtcTransport("reverse-overflow", { onFrame: vi.fn(), onFileChunk: save }, {} as ImportMetaEnv);
+    channel = FakePeerConnection.latest.channels.get("wonremote-files")!;
+    channel.readyState = "open"; channel.onopen?.();
+    try {
+      for (let i = 0; i < 17; i++) channel.onmessage?.({ data: reverseEmptyChunk() });
+      expect(channel.readyState).toBe("closed");
+      await Promise.resolve(); await Promise.resolve();
+      expect(save).not.toHaveBeenCalled();
+    } finally { transport.close(); }
+  });
+  it("cancels an ACK wait immediately and removes its timer/listener before another transfer", async () => {
+    vi.useFakeTimers();
+    const {startFirebaseViewerWebRtcTransport}=await import('./viewerFirebase');
+    const transport=await startFirebaseViewerWebRtcTransport('cancel-session',{onFrame:vi.fn()},{} as ImportMetaEnv);
+    const channel=FakePeerConnection.latest.channels.get('wonremote-files')!;
+    channel.readyState='open';channel.onopen?.();
+    const abort=new AbortController();
+    const add=vi.spyOn(abort.signal,'addEventListener'), remove=vi.spyOn(abort.signal,'removeEventListener');
+    try {
+      const pending=transport.sendFile({file:new Blob(['abc']),filename:'a.txt',fileSha256:'a'.repeat(64),transferId:'cancel',signal:abort.signal});
+      const rejected=expect(pending).rejects.toMatchObject({name:'AbortError'});
+      await vi.waitFor(()=>expect(add).toHaveBeenCalledWith('abort',expect.any(Function),{once:true}));
+      const timerCount=vi.getTimerCount();
+      abort.abort();
+      await rejected;
+      expect(remove).toHaveBeenCalledWith('abort',add.mock.calls[0][1]);
+      expect(vi.getTimerCount()).toBe(timerCount-1);
+      channel.onmessage?.({data:serializeWebRtcFileAck({type:'file-ack',transferId:'cancel',receivedBytes:3,receivedChunks:1,status:'complete'})});
+      const next=transport.sendFile({file:new Blob(['abc']),filename:'a.txt',fileSha256:'a'.repeat(64),transferId:'next'});
+      await vi.waitFor(()=>expect(channel.send).toHaveBeenCalledTimes(2));
+      channel.onmessage?.({data:serializeWebRtcFileAck({type:'file-ack',transferId:'next',receivedBytes:3,receivedChunks:1,status:'complete'})});
+      await expect(next).resolves.toBe(true);
+    } finally {transport.close();}
+  });
+
+  it("does not send a chunk if cancelled during file reading", async () => {
+    const {startFirebaseViewerWebRtcTransport}=await import('./viewerFirebase');
+    const transport=await startFirebaseViewerWebRtcTransport('cancel-read',{onFrame:vi.fn()},{} as ImportMetaEnv);
+    const channel=FakePeerConnection.latest.channels.get('wonremote-files')!;
+    channel.readyState='open';channel.onopen?.();
+    const abort=new AbortController();
+    const file=new Blob(['abc']);
+    let finish!: (value:ArrayBuffer)=>void;
+    vi.spyOn(file,'slice').mockReturnValue({arrayBuffer:()=>new Promise<ArrayBuffer>(resolve=>{finish=resolve;})} as Blob);
+    try {
+      const pending=transport.sendFile({file,filename:'a',fileSha256:'a'.repeat(64),transferId:'reading',signal:abort.signal});
+      abort.abort();finish(new Uint8Array([1,2,3]).buffer);
+      await expect(pending).rejects.toMatchObject({name:'AbortError'});
+      expect(channel.send).not.toHaveBeenCalled();
+    } finally {transport.close();}
+  });
+  it("resumes persisted Agent chunks and verifies the final file without resending the prefix", async () => {
+    const root=await mkdtemp(path.join(tmpdir(),'wonremote-resume-'));
+    const env={WONREMOTE_AGENT_DOWNLOADS_DIR:root};
+    const bytes=Buffer.alloc(WEBRTC_FILE_CHUNK_BYTES*4-10,37);
+    const sha=(value:Buffer)=>createHash('sha256').update(value).digest('hex');
+    for(let i=0;i<2;i++) {
+      const chunk=bytes.subarray(i*WEBRTC_FILE_CHUNK_BYTES,(i+1)*WEBRTC_FILE_CHUNK_BYTES);
+      await processWebRtcFileChunk({type:'file-chunk',transferId:'resume-1',filename:'resume.bin',chunkIndex:i,totalChunks:4,totalBytes:bytes.length,isLast:false,fileData:chunk.toString('base64'),chunkSha256:sha(chunk)},{env});
+    }
+    const {startFirebaseViewerWebRtcTransport}=await import('./viewerFirebase');
+    const transport=await startFirebaseViewerWebRtcTransport('resume-session',{onFrame:vi.fn()},{} as ImportMetaEnv);
+    const channel=FakePeerConnection.latest.channels.get('wonremote-files')!;
+    channel.readyState='open';channel.onopen?.();
+    let processing=Promise.resolve();
+    channel.send.mockImplementation((payload:string)=>{
+      processing=processing.then(async()=>{
+        const ack=await processWebRtcFileChunk(parseWebRtcFileChunk(payload)!,{env});
+        channel.onmessage?.({data:serializeWebRtcFileAck(ack!)});
+      });
+    });
+    try {
+      await expect(transport.sendFile({file:new Blob([bytes]),filename:'resume.bin',fileSha256:sha(bytes),transferId:'resume-1',resume:true})).resolves.toBe(true);
+      expect(channel.send.mock.calls.map(([payload])=>parseWebRtcFileChunk(payload)?.chunkIndex)).toEqual([0,2,3]);
+      expect(await readFile(path.join(root,'resume.bin'))).toEqual(bytes);
+    } finally {transport.close();await processing;}
+  });
+
+  it("rejects resume offsets outside the source file", async () => {
+    const {startFirebaseViewerWebRtcTransport}=await import('./viewerFirebase');
+    const transport=await startFirebaseViewerWebRtcTransport('bad-resume',{onFrame:vi.fn()},{} as ImportMetaEnv);
+    const channel=FakePeerConnection.latest.channels.get('wonremote-files')!;
+    channel.readyState='open';channel.onopen?.();
+    channel.send.mockImplementation(()=>channel.onmessage?.({data:serializeWebRtcFileAck({type:'file-ack',transferId:'bad',receivedChunks:99,receivedBytes:99*WEBRTC_FILE_CHUNK_BYTES,status:'duplicate'})}));
+    try {
+      await expect(transport.sendFile({file:new Blob([new Uint8Array(WEBRTC_FILE_CHUNK_BYTES+1)]),filename:'file.bin',fileSha256:'a'.repeat(64),transferId:'bad',resume:true})).rejects.toThrow('Invalid file resume');
+    } finally {transport.close();}
+  });
+  it.each([
+    { receivedBytes: 2, receivedChunks: 1 },
+    { receivedBytes: 4, receivedChunks: 1 },
+    { receivedBytes: 3, receivedChunks: 2 },
+  ])("rejects mismatched completed ACK totals %j", async (totals) => {
+    const { startFirebaseViewerWebRtcTransport } = await import("./viewerFirebase");
+    const transport = await startFirebaseViewerWebRtcTransport("invalid-final", { onFrame: vi.fn() }, {} as ImportMetaEnv);
+    const channel = FakePeerConnection.latest.channels.get("wonremote-files")!;
+    channel.readyState = "open";
+    channel.onopen?.();
+    channel.send.mockImplementation(() => channel.onmessage?.({ data: serializeWebRtcFileAck({
+      type: "file-ack", transferId: "invalid-final", status: "complete", ...totals,
+    }) }));
+    const onProgress = vi.fn();
+    try {
+      await expect(transport.sendFile({ file: new Blob([new Uint8Array(3)]), filename: "file.bin",
+        fileSha256: "a".repeat(64), transferId: "invalid-final", onProgress,
+      })).rejects.toThrow("Invalid file completion acknowledgement");
+      expect(onProgress).not.toHaveBeenCalled();
+    } finally { transport.close(); }
+  });
+
+  it.each([false, true])("validates resumed completion totals (complete=%s)", async (complete) => {
+    const { startFirebaseViewerWebRtcTransport } = await import("./viewerFirebase");
+    const transport = await startFirebaseViewerWebRtcTransport("resume-complete", { onFrame: vi.fn() }, {} as ImportMetaEnv);
+    const channel = FakePeerConnection.latest.channels.get("wonremote-files")!;
+    channel.readyState = "open";
+    channel.onopen?.();
+    const size = WEBRTC_FILE_CHUNK_BYTES + 1;
+    channel.send.mockImplementation(() => channel.onmessage?.({ data: serializeWebRtcFileAck({
+      type: "file-ack", transferId: "resume-complete", status: "complete",
+      receivedBytes: complete ? size : WEBRTC_FILE_CHUNK_BYTES, receivedChunks: complete ? 2 : 1,
+    }) }));
+    const onProgress = vi.fn();
+    try {
+      const result = transport.sendFile({ file: new Blob([new Uint8Array(size)]), filename: "file.bin",
+        fileSha256: "a".repeat(64), transferId: "resume-complete", resume: true, onProgress });
+      if (complete) {
+        await expect(result).resolves.toBe(true);
+        expect(onProgress).toHaveBeenCalledWith(size, size);
+      } else {
+        await expect(result).rejects.toThrow("Invalid file completion acknowledgement");
+        expect(onProgress).not.toHaveBeenCalled();
+      }
+      expect(channel.send).toHaveBeenCalledOnce();
+    } finally { transport.close(); }
+  });
+
   beforeEach(() => {
     vi.stubGlobal("RTCPeerConnection", FakePeerConnection);
     vi.clearAllMocks();

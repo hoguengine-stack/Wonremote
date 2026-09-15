@@ -479,20 +479,22 @@ async function routeRequest(
     const after = Number(url.searchParams.get("after") ?? -1);
     const receiptIds = new Set(url.searchParams.getAll("receipt"));
     const queues = url.searchParams.get("queues") !== "false";
+    const chat = queues && url.searchParams.get("chat") !== "false";
     const clipboard = queues && url.searchParams.get("clipboard") !== "false";
+    const files = queues && url.searchParams.get("files") !== "false";
     const send = () => {
       if (!requireConnectedSession(state, response, sessionId)) return;
       const revision = state.sessionRevisions.get(sessionId) ?? 0;
       if (revision <= after) return;
       state.sessionEvents.off(sessionId, send);
-      const messages = queues ? (state.sessionChats.get(sessionId) ?? []).filter((item) => item.sender !== target) : [];
+      const messages = chat ? (state.sessionChats.get(sessionId) ?? []).filter((item) => item.sender !== target) : [];
       const clipboards = clipboard ? (state.sessionClipboards.get(sessionId) ?? []).filter((item) => item.sender !== target) : [];
-      const files = queues && target === "agent" ? state.sessionFiles.get(sessionId) ?? [] : [];
-      if (queues) state.sessionChats.set(sessionId, (state.sessionChats.get(sessionId) ?? []).filter((item) => item.sender === target));
+      const transferredFiles = files && target === "agent" ? state.sessionFiles.get(sessionId) ?? [] : [];
+      if (chat) state.sessionChats.set(sessionId, (state.sessionChats.get(sessionId) ?? []).filter((item) => item.sender === target));
       if (clipboard) state.sessionClipboards.set(sessionId, (state.sessionClipboards.get(sessionId) ?? []).filter((item) => item.sender === target));
-      if (queues && target === "agent") state.sessionFiles.set(sessionId, []);
+      if (files && target === "agent") state.sessionFiles.set(sessionId, []);
       const receipts = target === "viewer" ? (state.sessionFileReceipts.get(sessionId) ?? []).filter((item) => receiptIds.has(item.transferId)) : [];
-      writeJson(response, 200, { revision, messages, clipboards, files, receipts });
+      writeJson(response, 200, { revision, messages, clipboards, files: transferredFiles, receipts });
     };
     response.setTimeout(0);
     state.sessionEvents.on(sessionId, send);

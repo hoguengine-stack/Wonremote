@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { appendCaptureDiagnostic } from "./captureDiagnostics";
+import { observeCaptureControlErrors, writeCaptureControl } from "./captureControl";
 import { mkdir, readFile, writeFile, rm, cp, access } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
@@ -27,6 +28,7 @@ import {
 import { resolveAgentCredentials } from "./agentRuntime";
 import { resolveAgentComputerName } from "./agentComputerName";
 import { discoverAgentSystemInfo } from "./agentSystemInfo";
+import { openAgentDownloadFolder } from "./openDownloadFolder";
 import {
   beginAgentCaptureGeneration,
   currentSessionId,
@@ -51,9 +53,11 @@ import {
 import { WONREMOTE_APP_VERSION } from "../domain/appVersion";
 import { CURRENT_REMOTE_PROTOCOL_VERSION } from "../domain/remoteProtocol";
 import { decideUpdateEligibility } from "../domain/updateFleetPolicy";
+import { AdaptiveCapture } from "./adaptiveCapture";
 import { createRemoteUpdateRequest } from "./remoteUpdateRequest";
 import { computeSha256 } from "./checksum";
 import { saveTransferredFileChunk } from "./fileTransferReceiver";
+import { createReverseFileRequest } from "./reverseFileRequest";
 import { downloadFirebaseStorageFile } from "./firebaseStorageDownload";
 import {
   resolveAgentUpdateCheckIntervalMs,
@@ -69,7 +73,8 @@ import {
   isInstallerUpdateMetadata,
   type SafeInstallerUpdateMetadata,
 } from "./productionInstallerUpdate";
-import { loadProductionInstallerUpdateMetadata } from "./productionUpdateMetadata";
+import { loadProductionInstallerUpdateMetadata, loadProductionRollbackMetadata } from "./productionUpdateMetadata";
+import { parseAgentRollbackRequest, runPausedAgentRollback } from "./agentRollback";
 import { handleUpdateOnceCli } from "./agentUpdateOnce";
 import {
   downloadPortableUpdate,
@@ -78,6 +83,7 @@ import {
   type SafePortableUpdateMetadata,
 } from "./portableUpdate";
 import { checkProductionUpdate } from "./productionUpdateCheck";
+import { loadSelectedViewerUpdate } from "./selectedViewerUpdate";
 import { sendWakeOnLanMagicPacket } from "./wakeOnLan";
 import { parseAgentDisplayInventory } from "./agentDisplayInventory";
 import { PersistentInputInjector } from "./persistentInputInjector";
@@ -101,7 +107,6 @@ import { runAgentWebRtcRuntimeSmoke } from "./agentWebRtcRuntimeSmoke";
 import { prewarmAgentPeerConnectionRuntime } from "../firebase/agentPeerConnection";
 import { loadInstallerUpdateResult } from "./updateResult";
 import {
-  getAdaptiveStreamPerformanceProfile,
   getStreamPerformanceProfile,
   type StreamPerformanceMode,
 } from "../domain/streamPerformanceMode";
@@ -238,8 +243,7 @@ let streamDroppedFrameCount = 0;
 let streamBackpressured = false;
 let streamBufferedAmount = 0;
 let streamFrameSequence = 0;
-let adaptiveProfileAppliedAtMs = 0;
-let adaptiveProfileDroppedFrames = 0;
+let adaptiveCapture = new AdaptiveCapture();
 let keyframeRetryTimer: ReturnType<typeof setTimeout> | null = null;
 type StreamFramePayload = Parameters<AgentWebRtcTransport["sendFrame"]>[0];
 let pendingInitialKeyframe: {
@@ -264,6 +268,14 @@ const diagnosticFailureCache = new Map<string, { loggedAtMs: number; message: st
 
 let isApprovalPending = false;
 let activeSessionId: string | null = null;
+const reverseFileRequest = createReverseFileRequest({
+  context: () => activeSessionId && webRtcTransport ? {
+    key: `${activeSessionId}:${sessionGeneration}`,
+    sendFile: webRtcTransport.sendFile,
+    sendStatus: webRtcTransport.sendFileStatus,
+  } : null,
+  onError: error => console.warn("[Reverse file transfer failed]", error instanceof Error ? error.message : "Unknown error"),
+});
 let sessionDataUnsubscribe: (() => void) | null = null;
 let activeSessionRecoveryPermissionBlocked = false;
 let lastActiveSessionRecoveryWarning = "";
@@ -291,36 +303,26 @@ function applyStreamProfileToRunningCapture(profile = getStreamPerformanceProfil
   if (!streamProcess || !streamDesired) {
     return false;
   }
-  try {
-    currentStreamProfile = profile;
-    streamProcess.stdin.write(
-      `set-stream-profile ${currentLoopSleepMs} ${profile.jpegQuality} ${profile.maxMergeWidth}\n`,
-    );
-    return true;
-  } catch (error) {
-    console.warn(
-      `[Capture profile update failed] ${error instanceof Error ? error.message : error}`,
-    );
-    return false;
-  }
+  currentStreamProfile = profile;
+  return writeCaptureControl(
+    streamProcess.stdin,
+    `set-stream-profile ${currentLoopSleepMs} ${profile.jpegQuality} ${profile.maxMergeWidth}\n`,
+    (error) => console.warn(`[Capture profile update failed] ${error.message}`),
+  );
 }
 
 function updateAdaptiveStreamProfile(): void {
-  if (currentStreamMode !== "auto" || !streamProcess || Date.now() - adaptiveProfileAppliedAtMs < 2_000) {
+  if (currentStreamMode !== "auto" || !streamProcess) {
     return;
   }
-  const droppedFrames = Math.max(0, streamDroppedFrameCount - adaptiveProfileDroppedFrames);
-  const profile = getAdaptiveStreamPerformanceProfile({
+  adaptiveCapture.update(Date.now(), {
     backpressured: streamBackpressured,
     bufferedAmount: streamBufferedAmount,
-    droppedFrames,
-  });
-  adaptiveProfileAppliedAtMs = Date.now();
-  adaptiveProfileDroppedFrames = streamDroppedFrameCount;
-  if (currentLoopSleepMs !== profile.loopSleepMs) {
+    droppedFrames: streamDroppedFrameCount,
+  }, currentStreamProfile, (profile) => {
     currentLoopSleepMs = profile.loopSleepMs;
     applyStreamProfileToRunningCapture(profile);
-  }
+  });
 }
 
 
@@ -343,11 +345,13 @@ async function startStreaming(
   const captureRunGeneration = captureGeneration;
   const transportGeneration = sessionGeneration;
   const { sessionChanged } = generationTransition;
+  if (sessionChanged) reverseFileRequest.cancel();
   pendingInitialKeyframe = null;
   streamDesired = true;
   streamBackend = backend;
   currentOutputIndex = outputIndex;
   currentLoopSleepMs = loopSleepMs;
+  adaptiveCapture = new AdaptiveCapture();
   if (sessionChanged) {
     streamSecureDesktop = nextSecureDesktopCaptureState(streamSecureDesktop, true);
     streamTransport = USE_FIREBASE ? "none" : "local-api";
@@ -418,6 +422,12 @@ async function startStreaming(
     windowsHide: true,
   });
   streamProcess = child;
+  const stopObservingCaptureControl = observeCaptureControlErrors(child.stdin, (error) => {
+    if (streamProcess === child) {
+      lastStreamError = `Capture control pipe failed: ${error.message}`;
+      console.warn(`[Capture control pipe failed] ${error.message}`);
+    }
+  });
 
   const rl = readline.createInterface({
     input: child.stdout,
@@ -450,6 +460,7 @@ async function startStreaming(
         );
         lastStreamError = "Windows left the secure credential desktop; returning capture to the interactive desktop.";
       } else if (data.type === "frame") {
+        if (currentStreamMode === "auto") adaptiveCapture.observe(data.processingMs);
         streamFrameSequence += 1;
         streamFailureCount = 0;
         lastStreamFrameAt = new Date().toISOString();
@@ -489,7 +500,9 @@ async function startStreaming(
                 streamProcess === child &&
                 streamDesired
               ) {
-                streamProcess.stdin.write("request-keyframe\n");
+                writeCaptureControl(streamProcess.stdin, "request-keyframe\n", (error) => {
+                  console.warn(`[Capture keyframe request failed] ${error.message}`);
+                });
               }
             }, 250);
           }
@@ -556,6 +569,7 @@ async function startStreaming(
   });
 
   child.on("close", (code: number) => {
+    stopObservingCaptureControl();
     const finalStderr = streamStderrText;
     flushStreamLogLine(streamStderrBuffer);
     streamStderrBuffer = "";
@@ -622,7 +636,9 @@ function ensureSessionWebRtcTransport(
       keyframeRetryTimer = null;
     }
     if (!flushPendingInitialKeyframe(expectedSessionGeneration)) {
-      streamProcess.stdin.write("request-keyframe\n");
+      writeCaptureControl(streamProcess.stdin, "request-keyframe\n", (error) => {
+        console.warn(`[Capture keyframe request failed] ${error.message}`);
+      });
     }
   };
   void startAgentWebRtcTransportWithFirebase(sessionId, {
@@ -641,7 +657,9 @@ function ensureSessionWebRtcTransport(
           return;
         }
         if (action === "request-keyframe") {
-          streamProcess?.stdin.write("request-keyframe\n");
+          writeCaptureControl(streamProcess?.stdin, "request-keyframe\n", (error) => {
+            console.warn(`[Capture keyframe request failed] ${error.message}`);
+          });
           return;
         }
         await executeAgentCommand(action, "webrtc", createAgentCommandRuntime(deviceId));
@@ -650,6 +668,9 @@ function ensureSessionWebRtcTransport(
       });
     },
     onControlClosed: () => {
+      if (isCurrentWebRtcSessionGeneration(expectedSessionGeneration, sessionGeneration, sessionId, activeSessionId)) {
+        reverseFileRequest.cancel();
+      }
       void agentCommandQueue.enqueue(async () => {
         if (!isCurrentWebRtcSessionGeneration(
           expectedSessionGeneration,
@@ -768,6 +789,7 @@ function startSessionData(sessionId: string) {
 }
 
 async function stopSessionPolling(): Promise<void> {
+  reverseFileRequest.cancel();
   streamDesired = false;
   const generationTransition = endAgentSessionGeneration({
     activeSessionId,
@@ -933,7 +955,11 @@ async function main() {
 
   if (process.argv.includes("--check-update")) {
     try {
-      const result = await checkProductionUpdate();
+      const selected = process.env.WONREMOTE_SELECTED_VIEWER_UPDATE === "1";
+      const metadata = selected ? await loadSelectedViewerUpdate() : null;
+      const result = selected
+        ? metadata ? await checkProductionUpdate(undefined, async () => metadata) : { available: false, latestVersion: WONREMOTE_APP_VERSION }
+        : await checkProductionUpdate();
       console.log(`[WonRemoteUpdateCheck]${JSON.stringify(result)}`);
       return;
     } catch (error) {
@@ -1274,6 +1300,8 @@ async function checkUpdate(config: AgentLocalConfig, manual = false) {
         if (rolloutControl) {
           const decision = decideUpdateEligibility({
             id: config.registeredDeviceId,
+            version: currentVersion,
+            selectedRolloutVersion: currentVersion,
             updateCurrentVersion: currentVersion,
             updatePaused: rolloutControl.updatePaused,
             updateRing: rolloutControl.updateRing,
@@ -1490,6 +1518,32 @@ if exist "${path.join(baseDir, "WonRemote", ".update_success")}" (
   }
 }
 
+async function rollbackAgent(config: AgentLocalConfig, version: string): Promise<void> {
+  if (isUpdating) throw new Error("Another Agent update is running.");
+  isUpdating = true;
+  const retry = () => rollbackAgent(config, version);
+  try {
+    const result = await runPausedAgentRollback(version, {
+      hasSession: () => Boolean(activeSessionId),
+      isPaused: async () => {
+        if (!USE_FIREBASE || !config.registeredDeviceId) return false;
+        const policy = await loadAgentUpdateRolloutWithFirebase(config.registeredDeviceId);
+        return policy?.updatePaused === true;
+      },
+      load: target => loadProductionRollbackMetadata(target, WONREMOTE_APP_VERSION, { ...process.env, WONREMOTE_UPDATE_PRODUCT: "agent" }),
+      handoff: async (metadata, guard) => {
+        if (!isInstallerUpdateMetadata(metadata)) throw new Error("Invalid rollback installer metadata.");
+        await setUpdateTelemetry(config, { targetVersion: version, state: "downloading", progress: 0 });
+        await handoffToProductionInstallerUpdate(metadata, config, retry, guard);
+      },
+    });
+    if (result === "deferred") remoteUpdateRequest.defer(retry);
+  } catch (error) {
+    await setUpdateTelemetry(config, { targetVersion: version, state: "failed", error: error instanceof Error ? error.message : "Rollback failed" });
+    throw error;
+  } finally { isUpdating = false; }
+}
+
 async function loadUpdateCheckData(): Promise<any | null> {
   if (USE_FIREBASE) {
     return loadProductionInstallerUpdateMetadata(process.env);
@@ -1505,6 +1559,8 @@ async function loadUpdateCheckData(): Promise<any | null> {
 async function handoffToProductionInstallerUpdate(
   data: SafeInstallerUpdateMetadata,
   config: AgentLocalConfig,
+  retry: () => Promise<void> = () => checkUpdate(config, true),
+  beforeLaunch?: () => Promise<void>,
 ): Promise<void> {
   const baseDir = process.env.APPDATA ?? process.cwd();
   const download = await downloadInstallerUpdate(data, {
@@ -1521,8 +1577,14 @@ async function handoffToProductionInstallerUpdate(
     },
   });
   if (activeSessionId) {
-    remoteUpdateRequest.defer(() => checkUpdate(config, true));
+    remoteUpdateRequest.defer(retry);
     await setUpdateTelemetry(config, {state:"idle",error:"원격 세션 종료 후 업데이트 대기"});
+    isUpdating = false;
+    return;
+  }
+  await beforeLaunch?.();
+  if (activeSessionId) {
+    remoteUpdateRequest.defer(retry);
     isUpdating = false;
     return;
   }
@@ -1879,6 +1941,14 @@ async function pollCommands(config: AgentLocalConfig): Promise<void> {
 
 async function executeReceivedCommands(config: AgentLocalConfig, commands: AgentCommand[]): Promise<void> {
   for (const command of commands) {
+    if (command.action.startsWith("request-rollback ")) {
+      const request = parseAgentRollbackRequest(command.action);
+      if (request) {
+        const accepted = await remoteUpdateRequest.receive(`request-update ${request.timestamp}`, () => rollbackAgent(config, request.version));
+        if (accepted && activeSessionId) await setUpdateTelemetry(config, { state: "idle", targetVersion: request.version, error: "원격 세션 종료 후 이전 버전 복구 대기" });
+      }
+      continue;
+    }
     if (command.action.startsWith("request-update ")) {
       const accepted = await remoteUpdateRequest.receive(command.action, () => checkUpdate(config, true));
       if (accepted && activeSessionId) await setUpdateTelemetry(config, {state:"idle",error:"원격 세션 종료 후 업데이트 대기"});
@@ -1926,6 +1996,9 @@ function createAgentCommandRuntime(deviceId: string): AgentCommandRuntime {
     firebaseEnabled: USE_FIREBASE,
     pressedKeys,
     getActiveSessionId: () => activeSessionId,
+    openDownloadFolder: () => openAgentDownloadFolder(),
+    requestFileSend: transferId => { reverseFileRequest.request(transferId); },
+    cancelFileSend: () => reverseFileRequest.cancel(),
     injectAction: async (action) => {
       recordPendingPointerAction(action, pointerState);
       await persistentInputInjector.inject(action);
@@ -1973,6 +2046,7 @@ function createAgentCommandRuntime(deviceId: string): AgentCommandRuntime {
         return;
       }
       currentStreamMode = mode;
+      adaptiveCapture = new AdaptiveCapture();
       currentLoopSleepMs = profile.loopSleepMs;
       currentStreamProfile = profile;
       console.log(`Switching stream performance mode to ${mode} (sleep: ${profile.loopSleepMs}ms, quality: ${profile.jpegQuality}, merge: ${profile.maxMergeWidth}px)`);
@@ -2010,7 +2084,9 @@ function createAgentCommandRuntime(deviceId: string): AgentCommandRuntime {
     triggerPingColorChange: async () => {
       if (streamProcess) {
         console.log("Injecting color marker signal to streamer process stdin");
-        streamProcess.stdin.write("ping-color-change\n");
+        writeCaptureControl(streamProcess.stdin, "ping-color-change\n", (error) => {
+          console.warn(`[Capture color marker failed] ${error.message}`);
+        });
       }
       await persistentInputInjector.inject("ping-color-change");
       console.log("[Inject Success] ping-color-change");

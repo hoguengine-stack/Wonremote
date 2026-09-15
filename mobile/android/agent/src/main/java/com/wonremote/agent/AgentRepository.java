@@ -6,24 +6,20 @@ import android.os.Build;
 
 import com.google.android.gms.tasks.Task;
 import com.google.android.gms.tasks.Tasks;
+import com.google.android.gms.tasks.TaskExecutors;
 import com.google.firebase.auth.AuthResult;
 import com.google.firebase.auth.FirebaseAuth;
 import com.google.firebase.auth.FirebaseAuthUserCollisionException;
 import com.google.firebase.firestore.DocumentReference;
-import com.google.firebase.firestore.DocumentSnapshot;
 import com.google.firebase.firestore.FieldValue;
 import com.google.firebase.firestore.FirebaseFirestore;
 import com.google.firebase.firestore.ListenerRegistration;
 import com.google.firebase.firestore.Query;
 import com.google.firebase.firestore.SetOptions;
-import com.google.firebase.firestore.WriteBatch;
 
 import java.time.Instant;
 import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.function.Consumer;
 
 final class AgentRepository {
@@ -112,60 +108,12 @@ final class AgentRepository {
     }
 
     ListenerRegistration listenForCommands(Consumer<String> onAction, Consumer<Exception> onError) {
-        Set<String> delivering = new HashSet<>();
         Query commands = firestore.collection("devices").document(store.deviceId())
             .collection("commands")
             .whereEqualTo("state", "pending")
             .limit(50);
-        return commands.addSnapshotListener((snapshot, error) -> {
-            if (error != null) {
-                onError.accept(error);
-                return;
-            }
-            if (snapshot == null || snapshot.isEmpty()) {
-                return;
-            }
-            List<DocumentSnapshot> documents = snapshot.getDocuments();
-            documents.sort((left, right) -> {
-                com.google.firebase.Timestamp leftAt = left.getTimestamp("createdAt");
-                com.google.firebase.Timestamp rightAt = right.getTimestamp("createdAt");
-                if (leftAt == null) return rightAt == null ? 0 : -1;
-                if (rightAt == null) return 1;
-                return leftAt.compareTo(rightAt);
-            });
-            WriteBatch batch = firestore.batch();
-            List<String> actions = new java.util.ArrayList<>();
-            List<String> documentIds = new java.util.ArrayList<>();
-            for (DocumentSnapshot document : documents) {
-                if (!delivering.add(document.getId())) {
-                    continue;
-                }
-                String action = document.getString("action");
-                Map<String, Object> delivery = new HashMap<>();
-                delivery.put("deliveredAt", FieldValue.serverTimestamp());
-                delivery.put("state", action == null || action.trim().isEmpty() ? "ignored" : "delivered");
-                batch.update(document.getReference(), delivery);
-                documentIds.add(document.getId());
-                if (action != null && !action.trim().isEmpty()) {
-                    com.google.firebase.Timestamp created = document.getTimestamp("createdAt");
-                    if (!action.startsWith("refresh-status ") || (created != null
-                        && Math.abs(System.currentTimeMillis() - created.toDate().getTime()) < 60_000)) {
-                        actions.add(action.trim());
-                    }
-                }
-            }
-            if (documentIds.isEmpty()) {
-                return;
-            }
-            batch.commit().addOnCompleteListener(task -> {
-                documentIds.forEach(delivering::remove);
-                if (task.isSuccessful()) {
-                    actions.forEach(onAction);
-                } else if (task.getException() != null) {
-                    onError.accept(task.getException());
-                }
-            });
-        });
+        return new AgentCommandSubscription(firestore, commands, TaskExecutors.MAIN_THREAD,
+            onAction, onError).start();
     }
 
     private Task<AuthResult> ensureAuthenticated(String businessNumber) {

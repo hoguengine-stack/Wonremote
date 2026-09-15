@@ -8,7 +8,9 @@ export interface SessionData {
 }
 
 export interface SessionDataOptions {
+  chat?: boolean;
   clipboard?: boolean;
+  files?: boolean;
   receiptIds?: string[];
   queues?: boolean;
 }

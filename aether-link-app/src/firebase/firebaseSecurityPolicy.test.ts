@@ -250,8 +250,8 @@ describe("Firebase security deployment policy", () => {
     expect(block).toContain("update.installLocation =");
     expect(block).toContain("update.tags =");
     expect(block).toContain("update.notes =");
-    expect(block.match(/\?\? deleteField\(\)/g)).toHaveLength(4);
-    for (const field of ["contactName", "installLocation", "tags", "notes"]) {
+    expect(block.match(/\?\? deleteField\(\)/g)).toHaveLength(5);
+    for (const field of ["contactName", "contactPhone", "installLocation", "tags", "notes"]) {
       expect(rules).toContain(`"${field}"`);
     }
   });

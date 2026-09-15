@@ -2,9 +2,32 @@ import { describe, expect, it } from "vitest";
 import {
   decideUpdateEligibility,
   hashDeviceIdToPercentageBucket,
+  parseRolloutSelection,
 } from "./updateFleetPolicy";
 
 describe("update fleet policy", () => {
+  it("targets exact IDs while the legacy projection excludes every PC", () => {
+    const policy = {targetVersion:"2.0.0",stage:"general" as const,percentage:0,targetDeviceIds:["selected"]};
+    expect(decideUpdateEligibility({id:"selected",version:"1.0.0",selectedRolloutVersion:"1.0.0"},policy).eligible).toBe(true);
+    expect(decideUpdateEligibility({id:"selected",version:"1.0.0"},policy).reason).toBe("selection-support-unknown");
+    expect(decideUpdateEligibility({id:"selected",version:"1.0.0",selectedRolloutVersion:"1.1.0"},policy).reason).toBe("selection-support-unknown");
+    expect(decideUpdateEligibility({id:"other",version:"1.0.0"},policy).reason).toBe("not-selected");
+    expect(decideUpdateEligibility({id:"selected",updatePaused:true},policy).reason).toBe("paused");
+    expect(decideUpdateEligibility({id:"selected"},{...policy,percentage:100}).reason).toBe("invalid-selection-policy");
+    const {targetDeviceIds, ...legacy} = policy;
+    for (const id of ["selected","other", ...Array.from({length:100},(_,i)=>`pc-${i}`)]) {
+      expect(decideUpdateEligibility({id},legacy).eligible).toBe(false);
+    }
+  });
+  it("keeps invalid or empty selections closed and null as fleet mode", () => {
+    expect(parseRolloutSelection(null)).toEqual({});
+    expect(parseRolloutSelection(["one","one"])).toEqual({targetDeviceIds:["one"]});
+    for (const input of ["one",{},[1],[""],Array(201).fill("one"),[]]) {
+      const selection=parseRolloutSelection(input);
+      expect(selection).toEqual({targetDeviceIds:[]});
+      expect(decideUpdateEligibility({id:"one"},{targetVersion:"2",stage:"general",percentage:0,...selection}).eligible).toBe(false);
+    }
+  });
   const rollout = {
     targetVersion: "1.2.0",
     stage: "pilot" as const,

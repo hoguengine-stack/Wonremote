@@ -1,4 +1,6 @@
 export interface DeviceViewPreferences {
+  inputMode?: "screen" | "touchpad";
+  streamPerformanceMode?: "auto" | "fast" | "normal";
   clipboardSync: boolean;
   fullscreen: boolean;
   selectedDisplayIndex: number;
@@ -21,6 +23,10 @@ export function parseDeviceViewPreferences(value: string | null): DeviceViewPref
   try {
     const parsed = JSON.parse(value) as Partial<DeviceViewPreferences>;
     return {
+      ...(["screen", "touchpad"].includes(parsed.inputMode ?? "") ? {inputMode: parsed.inputMode} : {}),
+      ...(["auto", "fast", "normal"].includes(parsed.streamPerformanceMode ?? "")
+        ? { streamPerformanceMode: parsed.streamPerformanceMode }
+        : {}),
       clipboardSync: parsed.clipboardSync === true,
       fullscreen: parsed.fullscreen === true,
       selectedDisplayIndex: Number.isInteger(parsed.selectedDisplayIndex) && parsed.selectedDisplayIndex! >= 0

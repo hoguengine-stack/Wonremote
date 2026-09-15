@@ -1,6 +1,7 @@
 export type FileTransferStatus =
   | "queued"
   | "transferring"
+  | "awaiting-receipt"
   | "completed"
   | "failed"
   | "cancelled";
@@ -94,6 +95,11 @@ export function completeFileTransfer(item: FileTransferQueueItem): FileTransferQ
     status: "completed",
     error: undefined,
   };
+}
+
+export function awaitFileTransferReceipt(item: FileTransferQueueItem): FileTransferQueueItem {
+  if (isTerminal(item.status)) return item;
+  return {...item, sentBytes:item.totalBytes, status:"awaiting-receipt"};
 }
 
 export function failFileTransfer(item: FileTransferQueueItem, error: string): FileTransferQueueItem {

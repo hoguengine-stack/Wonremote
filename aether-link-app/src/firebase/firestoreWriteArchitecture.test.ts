@@ -18,6 +18,7 @@ describe("Firebase write architecture", () => {
       expect(source).not.toMatch(/\bsetDoc\s*\(/);
       expect(source).not.toMatch(/\bupdateDoc\s*\(/);
       expect(source).not.toMatch(/\bbatch\.update\s*\(/);
+      expect(source).not.toMatch(/\bbatch\.set\s*\(/);
     }
   });
 });

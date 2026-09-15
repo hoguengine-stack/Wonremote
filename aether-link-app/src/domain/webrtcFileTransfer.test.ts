@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   parseWebRtcFileAck,
+  parseWebRtcFileStatus,
+  serializeWebRtcFileStatus,
   parseWebRtcFileChunk,
   serializeWebRtcFileAck,
   serializeWebRtcFileChunk,
@@ -12,6 +14,14 @@ import { REMOTE_FILE_MAX_BYTES } from "./fileTransferPolicy";
 const checksum = "a".repeat(64);
 
 describe("WebRTC file transfer protocol", () => {
+  it("accepts only bounded fixed file states and omits arbitrary metadata", () => {
+    const status = { type: "file-status" as const, requestId: "reverse-1", state: "selection-failed" as const };
+    expect(parseWebRtcFileStatus(serializeWebRtcFileStatus(status))).toEqual(status);
+    expect(parseWebRtcFileStatus(JSON.stringify({ ...status, path: "C:\\private" }))).toEqual(status);
+    expect(parseWebRtcFileStatus(JSON.stringify({ ...status, state: "raw error" }))).toBeNull();
+    expect(parseWebRtcFileStatus(JSON.stringify({ ...status, requestId: "../bad" }))).toBeNull();
+    expect(parseWebRtcFileStatus("x".repeat(513))).toBeNull();
+  });
   it("round-trips bounded file chunks and acknowledgements", () => {
     const chunk = {
       type: "file-chunk" as const,

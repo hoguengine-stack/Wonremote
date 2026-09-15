@@ -24,6 +24,9 @@ describe("Viewer input state", () => {
     expect(isRemoteTextInputKeystroke({ key: "A", code: "KeyA", shiftKey: true })).toBe(false);
     expect(isRemoteTextInputKeystroke({ key: "\n", code: "Enter", isComposing: true, shiftKey: true })).toBe(false);
     expect(isRemoteTextInputKeystroke({ key: "F5" })).toBe(false);
+    for (const code of ["ControlLeft", "ShiftLeft", "AltRight", "MetaLeft"]) {
+      expect(isRemoteTextInputKeystroke({ key: "Process", code, isComposing: true })).toBe(false);
+    }
   });
 
   it("reserves only Ctrl+Escape for Viewer-specific handling and preserves remote Ctrl+C/V", () => {

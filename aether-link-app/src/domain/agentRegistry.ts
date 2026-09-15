@@ -16,6 +16,7 @@ import { sanitizeDeviceSystemInfo } from "./deviceSystemInfo";
 import { normalizeDevicePlatform } from "./devicePlatform";
 
 export const DEVICE_CONTACT_NAME_MAX_LENGTH = 100;
+export const DEVICE_CONTACT_PHONE_MAX_LENGTH = 40;
 export const DEVICE_INSTALL_LOCATION_MAX_LENGTH = 255;
 export const DEVICE_TAG_MAX_LENGTH = 50;
 export const DEVICE_TAG_MAX_COUNT = 20;
@@ -351,11 +352,11 @@ export function sanitizeDeviceTags(value: unknown): string[] | undefined {
 
 function sanitizeExistingDeviceOperationalMetadata(
   device: Partial<ManagedDevice> | undefined,
-): Partial<Pick<ManagedDevice, "contactName" | "installLocation" | "tags" | "notes">> {
+): Partial<Pick<ManagedDevice, "contactName" | "contactPhone" | "installLocation" | "tags" | "notes">> {
   if (!device) {
     return {};
   }
-  const metadata: Partial<Pick<ManagedDevice, "contactName" | "installLocation" | "tags" | "notes">> = {};
+  const metadata: Partial<Pick<ManagedDevice, "contactName" | "contactPhone" | "installLocation" | "tags" | "notes">> = {};
   const contactName = sanitizeDeviceOperationalMetadataText(device.contactName, DEVICE_CONTACT_NAME_MAX_LENGTH);
   const installLocation = sanitizeDeviceOperationalMetadataText(
     device.installLocation,
@@ -364,6 +365,8 @@ function sanitizeExistingDeviceOperationalMetadata(
   const tags = sanitizeDeviceTags(device.tags);
   const notes = sanitizeDeviceOperationalMetadataText(device.notes, DEVICE_NOTES_MAX_LENGTH);
   if (contactName) metadata.contactName = contactName;
+  const contactPhone = sanitizeDeviceOperationalMetadataText(device.contactPhone, DEVICE_CONTACT_PHONE_MAX_LENGTH);
+  if (contactPhone) metadata.contactPhone = contactPhone;
   if (installLocation) metadata.installLocation = installLocation;
   if (tags) metadata.tags = tags;
   if (notes) metadata.notes = notes;
@@ -372,6 +375,7 @@ function sanitizeExistingDeviceOperationalMetadata(
 
 function applyOperationalMetadataUpdate(device: ManagedDevice, input: DeviceMetadataUpdateInput): void {
   applyOptionalTextUpdate(device, "contactName", input.contactName, DEVICE_CONTACT_NAME_MAX_LENGTH);
+  applyOptionalTextUpdate(device, "contactPhone", input.contactPhone, DEVICE_CONTACT_PHONE_MAX_LENGTH);
   applyOptionalTextUpdate(device, "installLocation", input.installLocation, DEVICE_INSTALL_LOCATION_MAX_LENGTH);
   applyOptionalTextUpdate(device, "notes", input.notes, DEVICE_NOTES_MAX_LENGTH);
   if (input.tags !== undefined) {
@@ -386,7 +390,7 @@ function applyOperationalMetadataUpdate(device: ManagedDevice, input: DeviceMeta
 
 function applyOptionalTextUpdate(
   device: ManagedDevice,
-  key: "contactName" | "installLocation" | "notes",
+  key: "contactName" | "contactPhone" | "installLocation" | "notes",
   value: string | undefined,
   maxLength: number,
 ): void {

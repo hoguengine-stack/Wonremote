@@ -1,4 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import type { AgentDataChannelLike } from "./agentPeerConnection";
+import { parseWebRtcFileChunk, serializeWebRtcFileAck, WEBRTC_FILE_CHANNEL_LABEL } from "../domain/webrtcFileTransfer";
 
 const mocks = vi.hoisted(() => {
   const offerSignal = {
@@ -75,6 +80,53 @@ vi.mock("./agentPeerConnection", async (importOriginal) => ({
 }));
 
 describe("Agent WebRTC Firebase signaling", () => {
+  it("advertises reverse file capability once on the current open file channel", async () => {
+    const { startAgentWebRtcTransportWithFirebase } = await import("./agentFirebase");
+    const transport = await startAgentWebRtcTransportWithFirebase("session-1", {}, firebaseEnv());
+    const send = vi.fn();
+    const channel: AgentDataChannelLike = { label: WEBRTC_FILE_CHANNEL_LABEL, readyState: "connecting", send };
+    const peer = mocks.peer as unknown as { ondatachannel: (event: { channel: AgentDataChannelLike }) => void };
+    try {
+      peer.ondatachannel({ channel });
+      expect(send).not.toHaveBeenCalled();
+      channel.readyState = "open";
+      channel.onopen?.(); channel.onopen?.();
+      expect(send).toHaveBeenCalledExactlyOnceWith('{"type":"file-capabilities","reverseFileSend":1,"reverseFileResume":1}');
+      channel.onclose?.(); channel.onopen?.();
+      expect(send).toHaveBeenCalledOnce();
+    } finally { await transport?.close(); }
+  });
+  it("exposes reverse file sending on the negotiated channel and aborts on close", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "wonremote-rtc-reverse-"));
+    const sourcePath = path.join(root, "a.txt");
+    await writeFile(sourcePath, "abc");
+    const { startAgentWebRtcTransportWithFirebase } = await import("./agentFirebase");
+    const transport = await startAgentWebRtcTransportWithFirebase("session-1", {}, firebaseEnv());
+    const channel: AgentDataChannelLike = { label: WEBRTC_FILE_CHANNEL_LABEL, readyState: "open" };
+    try {
+      await expect(transport!.sendFile({ sourcePath, transferId: "before-channel" })).rejects.toThrow("unavailable");
+      const peer = mocks.peer as unknown as { ondatachannel: (event: { channel: AgentDataChannelLike }) => void };
+      peer.ondatachannel({ channel });
+      channel.send = payload => {
+        const chunk = parseWebRtcFileChunk(payload)!;
+        expect(Buffer.from(chunk.fileData, "base64").toString()).toBe("abc");
+        channel.onmessage?.({ data: serializeWebRtcFileAck({ type: "file-ack", transferId: chunk.transferId, status: "complete", receivedBytes: 3, receivedChunks: 1 }) });
+      };
+      await transport!.sendFile({ sourcePath, transferId: "reverse-success" });
+      let sent!: () => void;
+      const firstPacket = new Promise<void>(resolve => { sent = resolve; });
+      channel.send = () => sent();
+      const pending = transport!.sendFile({ sourcePath, transferId: "reverse-close" });
+      const assertion = expect(pending).rejects.toMatchObject({ name: "AbortError" });
+      await firstPacket;
+      channel.onclose?.();
+      await assertion;
+      await expect(transport!.sendFile({ sourcePath, transferId: "after-close" })).rejects.toThrow("unavailable");
+    } finally {
+      await transport?.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.safeAddDoc.mockResolvedValue({ id: "candidate" });

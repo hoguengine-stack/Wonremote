@@ -33,6 +33,7 @@ describe("build app stage runner", () => {
     })).toEqual([
       { command: "npx.cmd", args: ["tsc"] },
       { command: "npx.cmd", args: ["vite", "build"] },
+      { command: "C:\\node\\node.exe", args: ["scripts/prepare-desktop-assets.js"] },
       { command: "C:\\node\\node.exe", args: ["scripts/build-backend.js"] },
       { command: "npm.cmd", args: ["run", "agent:package"] },
     ]);
@@ -46,6 +47,7 @@ describe("build app stage runner", () => {
     })).toEqual([
       { command: "npx", args: ["tsc"] },
       { command: "npx", args: ["vite", "build"] },
+      { command: "/usr/bin/node", args: ["scripts/prepare-desktop-assets.js"] },
     ]);
     expect(createBuildCommands({
       platform: "linux",

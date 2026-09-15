@@ -27,9 +27,12 @@ describe("stream performance mode integration", () => {
   it("persists the Viewer mode and sends the matching Agent command", () => {
     const appSource = readFileSync(path.join(projectRoot, "src", "App.tsx"), "utf8");
     const modeEffect = readBlock(appSource, "useEffect(() => {\n    if (!sessionId", "useEffect(() => {\n    pingStateRef.current");
+    const preferenceEffect = readBlock(appSource, "useEffect(() => {\n    // A failed read", "useEffect(() => {\n    if ((window as any).__TAURI_INTERNALS__)");
     const selector = readBlock(appSource, "const selectStreamPerformanceMode", "// Recording");
 
-    expect(selector).toContain('window.localStorage.setItem("wonremote-stream-performance-mode", mode)');
+    expect(selector).toContain("setStreamPerformanceMode(mode)");
+    expect(preferenceEffect).toContain("deviceViewPreferencesKey(preferenceDeviceId)");
+    expect(preferenceEffect).toContain("streamPerformanceMode,");
     expect(modeEffect).toContain("buildSetStreamModeCommand(streamPerformanceMode)");
     expect(modeEffect).toContain("onInputEvent(buildSetStreamModeCommand(streamPerformanceMode))");
   });

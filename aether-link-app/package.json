@@ -1,6 +1,6 @@
 {
   "name": "wonremote-app",
-  "version": "0.1.91",
+  "version": "0.1.95",
   "private": true,
   "type": "module",
   "scripts": {
@@ -15,6 +15,7 @@
     "agent:package": "node scripts/package-agent.js",
     "release:keypair": "node scripts/generate-update-keypair.js",
     "release:manifest": "node scripts/create-update-manifest.js",
+    "release:viewer-policy": "tsx scripts/create-selected-viewer-policy.ts",
     "release:sign": "powershell -ExecutionPolicy Bypass -File scripts/sign-release-artifacts.ps1",
     "release:publish": "powershell -ExecutionPolicy Bypass -File scripts/publish-github-release.ps1",
     "firebase:deploy": "powershell -ExecutionPolicy Bypass -File scripts/deploy-firebase.ps1",
@@ -30,7 +31,8 @@
     "change:verify:predeploy": "node scripts/verify-recurrence-coverage.js --stage predeploy",
     "recurrence:verify": "node scripts/verify-recurrence-coverage.js",
     "build": "node scripts/build-app.js",
-    "test": "vitest run",
+    "test": "vitest run --exclude scripts/verify-*.test.mjs",
+    "test:release-boundaries": "vitest run src/agent/captureControl.test.ts src/firebase/agentCommandSubscription.test.ts src/domain/devicePresenceRefresh.test.ts src/desktopPackaging.test.ts src/agent/agentPaths.test.ts src/agentStartup.test.ts src/agent/persistentInputInjector.test.ts scripts/package-release-exes.test.js",
     "test:update-e2e": "tsx tests/e2e/test_installer_update_flow.ts"
   },
   "dependencies": {
