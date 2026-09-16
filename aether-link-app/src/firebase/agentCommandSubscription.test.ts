@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getDoc, getDocs, getDocsFromServer, onSnapshot } from "firebase/firestore";
-import { pollAgentCommandsWithFirebase, subscribeAgentCommandsWithFirebase } from "./agentFirebase";
+import {
+  fetchActiveFirebaseSessionsForAgent,
+  pollAgentCommandsWithFirebase,
+  subscribeAgentCommandsWithFirebase,
+} from "./agentFirebase";
 import { sendAgentHeartbeatWithFirebase } from "./agentFirebase";
 
 const state = vi.hoisted(() => ({
@@ -273,6 +277,31 @@ describe("Agent Firebase command subscription", () => {
     expect(result.commands.map((c) => c.id)).toEqual(["fresh"]);
     expect(getDocs).toHaveBeenCalledOnce();
     expect(writes.safeUpdateDoc).not.toHaveBeenCalled();
+  });
+
+  it("recovers only the newest recently started connected session", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-17T03:30:00.000Z"));
+    vi.mocked(getDocs).mockResolvedValueOnce({
+      docs: [
+        { id: "stale", data: () => ({ startedAt: "2026-09-16T05:03:13.448Z" }) },
+        { id: "recent", data: () => ({ startedAt: "2026-09-17T03:29:00.000Z" }) },
+      ],
+    } as any);
+
+    await expect(fetchActiveFirebaseSessionsForAgent({ deviceId: "device-1", installId: "install-1" }))
+      .resolves.toEqual([{ id: "recent", deviceId: "device-1" }]);
+  });
+
+  it("does not recover when every connected session is stale", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-17T03:30:00.000Z"));
+    vi.mocked(getDocs).mockResolvedValueOnce({
+      docs: [{ id: "stale", data: () => ({ startedAt: "2026-07-12T18:24:03.776Z" }) }],
+    } as any);
+
+    await expect(fetchActiveFirebaseSessionsForAgent({ deviceId: "device-1", installId: "install-1" }))
+      .resolves.toEqual([]);
   });
 
   it("rejects after reporting an initial device validation error", async () => {

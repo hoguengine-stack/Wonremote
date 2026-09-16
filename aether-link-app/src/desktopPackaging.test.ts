@@ -260,7 +260,7 @@ describe("desktop packaging scaffold", () => {
     expect(taskScript).toContain('[ValidateSet("Install", "Ensure", "Uninstall", "Migrate", "MonitorMigration", "RunMigrationBridge")]');
     expect(taskScript).toContain('New-ScheduledTaskPrincipal -UserId $UserId -LogonType Interactive -RunLevel Limited');
     expect(taskScript).toContain("Wait-ProtectedAgentRuntime");
-    expect(taskScript).toContain("Start-MigrationMonitor");
+    expect(taskScript).toContain("Wait-MigrationTaskCompletion");
     expect(taskScript).toContain("state -eq \"healthy\"");
     const elevatedMigration = taskScript.slice(
       taskScript.indexOf("function Start-LegacyMigration"),
@@ -271,6 +271,9 @@ describe("desktop packaging scaffold", () => {
       taskScript.indexOf("function Invoke-MigrationMonitor"),
     );
     expect(elevatedMigration).toContain('RunLevel Limited');
+    expect(elevatedMigration).not.toContain('-UpdateHandoff');
+    expect(elevatedMigration).not.toContain('-SourceNode');
+    expect(elevatedMigration).not.toContain('-BridgePath');
     expect(elevatedMigration).not.toContain('Remove-Item -LiteralPath $legacy');
     expect(elevatedMigration).not.toContain('Copy-Item -LiteralPath $Runtime.Node');
     expect(limitedMigration).toContain('Remove-LegacyRuntime $legacy');

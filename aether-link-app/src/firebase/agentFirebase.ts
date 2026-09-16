@@ -41,6 +41,7 @@ import {
   webRtcReconnectDelayMs,
 } from "../domain/webrtcStability";
 import { resolveFirebaseConfig } from "./firebaseConfig";
+import { selectRecoverableAgentSession } from "./agentSessionRecovery";
 import { buildAgentAuthEmail, buildAgentAuthPassword } from "./firebaseIdentity";
 import { buildFirestoreDevice, mapFirestoreDevice, mergeFirstRunDeviceDocument } from "./firestoreDevice";
 import { getWonRemoteFirebaseServices } from "./firebaseServices";
@@ -518,11 +519,11 @@ export async function fetchActiveFirebaseSessionsForAgent(
     where("state", "==", "connected"),
   );
   const snapshot = await getDocs(sessionsQuery);
-  return snapshot.docs
-    .map((sessionDoc) => ({ id: sessionDoc.id, data: sessionDoc.data() as Record<string, unknown> }))
-    .sort((left, right) => sessionStartedAtMs(right.data) - sessionStartedAtMs(left.data))
-    .slice(0, 1)
-    .map((session) => ({ id: session.id, deviceId: input.deviceId }));
+  const session = selectRecoverableAgentSession(snapshot.docs.map((sessionDoc) => ({
+    id: sessionDoc.id,
+    startedAtMs: sessionStartedAtMs(sessionDoc.data() as Record<string, unknown>),
+  })));
+  return session ? [{ id: session.id, deviceId: input.deviceId }] : [];
 }
 
 export async function postSessionTilesWithFirebase(

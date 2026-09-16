@@ -14,7 +14,9 @@
       "INC-20260917-101",
       "INC-20260917-102",
       "INC-20260917-103",
-      "INC-20260917-104"
+      "INC-20260917-104",
+      "INC-20260917-105",
+      "INC-20260917-106"
     ],
     "observed": "Installed v0.1.97 Agent displays Viewer identity, has no x86 tray Exit command, leaves the SYSTEM capture broker running after the shell closes, can discard an update click during startup privilege handoff, and reports installer success while the v0.1.88 LocalAppData runtime and uninstall entry remain. The live v0.1.97-to-v0.1.98 update then replaced the protected executable but its PowerShell handoff died with the scheduled-task process tree immediately after logging the installer PID, so restart, result recording and cleanup did not complete.",
     "outcomes": [
@@ -57,11 +59,23 @@
       {
         "id": "v01100-bootstrap-repair-release",
         "acceptance": "Fresh x86 Viewer and Agent v0.1.100 installers and their signed manifest are built and published through the normal release workflow; only selected Agent 82220F6D is then offered the release and must install, restart, preserve registration and return online without a manual Agent launch before any wider rollout."
+      },
+      {
+        "id": "stale-session-cannot-block-agent-update",
+        "acceptance": "An old Firestore session left in connected state is not recovered as a live remote session after Agent restart, and a session whose realtime transport is already unavailable cannot hold a delivered Agent update indefinitely. A genuinely open control session still defers replacement until normal session end."
+      },
+      {
+        "id": "legacy-cleanup-independent-of-old-handoff",
+        "acceptance": "After the new protected Agent runtime and SYSTEM secure-capture task are both proven running, the limited-user migration task removes the exact allowlisted LocalAppData Agent root and matching HKCU uninstall entry even when the already-deployed updater handoff dies after launching the installer. Cleanup failure still aborts installation and preserves diagnosable state."
+      },
+      {
+        "id": "v01101-session-and-migration-repair-release",
+        "acceptance": "Fresh x86 Viewer and Agent v0.1.101 installers and their signed manifest are built through the normal main workflow. Only selected Agent 82220F6D is offered the update for installed proof; after automatic restart it stays registered and online, does not recover stale connected sessions, and removes the allowlisted v0.1.88 LocalAppData runtime and matching HKCU uninstall entry."
       }
     ],
     "requestReview": {
       "impact": "none",
-      "reason": "The repair changes local packaging identity, startup ordering, one user-triggered tray exit path, one-time installer cleanup, Windows creation flags of the already-existing update handoff process and the owner of the expected post-update process start. It adds no cloud request, polling loop, retry, listener, subscription or persistence write. The silent installer starts the same product once; existing single-instance or scheduled-task ownership absorbs a later handoff restart.",
+      "reason": "The repair changes local packaging identity, startup ordering, one user-triggered tray exit path, one-time installer cleanup, Windows creation flags of the already-existing update handoff process, the owner of the expected post-update process start, and local interpretation of the existing active-session query and transport state. It adds no cloud request, polling loop, retry, listener, subscription or persistence write. The silent installer starts the same product once; existing single-instance or scheduled-task ownership absorbs a later handoff restart.",
       "checks": {
         "idle": "No new idle network work or timer is introduced.",
         "rerender": "No React render path is changed.",
@@ -70,8 +84,8 @@
         "cleanup": "Only known Agent install roots, matching uninstall registration and the named secure broker task are affected."
       }
     },
-    "verification": "The shared production process module passed 47 x86 Rust tests and its direct-rustc x86 probe survived a real kill-on-close Job locally. CI run 35129709364 completed the normal v0.1.99 build, Job-boundary proof, signing, publication and live alias checks. Live installed Viewer 0.1.98 authenticated and installed public 0.1.99, but the old handoff died immediately after logging the installer PID: the file became 0.1.99 while no Viewer process restarted until a manual recovery launch. RED: the focused packaging test failed because neither Viewer installer had a postinstall owner for silent restart. GREEN: all x86/x64 Viewer and Agent hooks start their installed product through RunAsUser only during silent installation, after Agent task setup; five relevant suites passed 91 tests and TypeScript passed.",
-    "remaining": "The fresh normal workflow must compile both v0.1.100 installers, exercise the existing updater E2E and Job proof, sign and publish the manifest, then the selected local 0.1.98 Agent must install and return automatically from the public path. Visual tray right-click and cross-PC latency remain physical checks."
+    "verification": "The shared production process module passed 47 x86 Rust tests and its direct-rustc x86 probe survived a real kill-on-close Job locally. CI run 35132652865 built and published v0.1.100; installed Viewer and selected Agent 82220F6D both updated and restarted automatically. RED investigation then found three stale connected sessions could be recovered and hold an update after transport failure, while legacy cleanup still depended on the old handoff result. GREEN: the v0.1.101 source rejects stale recovery, closes unavailable sessions before update, preserves deferral for genuinely live transport, and schedules exact allowlisted cleanup immediately after the protected runtime and SYSTEM broker prove healthy. Seven focused suites passed 176 tests and TypeScript passed.",
+    "remaining": "The normal main workflow must build and publish both v0.1.101 installers and signed manifest. Selected Agent 82220F6D must update, restart, return online without stale-session recovery, and remove the v0.1.88 LocalAppData runtime and matching HKCU uninstall entry. Viewer update/restart and public asset aliases must also be verified. Visual tray right-click and cross-PC latency remain physical checks."
   },
   "deviceEditor20260916": {
     "status": "published-live-verified",
@@ -457,24 +471,24 @@
   },
   "portraitGestureRequest": "2026-09-10: Portrait remote image is top-aligned. Blank black area below acts as a local pan/pinch pad, never remote mouse input. Toolbar remains unscaled; landscape retains its existing layout.",
   "androidViewerRequest": "2026-09-10: Mobile Viewer portrait/landscape controls without clipping, remote-only zoom, explicit keyboard button only, portrait viewport above actual keyboard height, left/right mouse and scroll, Windows modifiers/navigation/function keys. Preserve pending PC failures and all release blockers. No build or deployment.",
-  "latestRequest": "2026-09-17: Finish the Windows Agent repair after the selected v0.1.97-to-v0.1.98 update replaced files but lost its handoff before restart, result recording and legacy cleanup.",
-  "currentRequest": "2026-09-17: Make the verified updater handoff survive the scheduled-task Windows Job, add a real Job-boundary regression, build and publish v0.1.99, then update and verify the selected local Agent without manual process termination.",
+  "latestRequest": "2026-09-17: Continue the Windows Agent repair, build and publish it, update only the designated Agent, and verify stale sessions no longer block updates and obsolete v0.1.88 installation state is removed.",
+  "currentRequest": "2026-09-17: Publish v0.1.101 through the normal workflow, then update and verify selected Agent 82220F6D plus the installed Viewer without widening Agent rollout.",
   "clipboardFetchRepair": "2026-09-14: Replace the fixed 600ms remote-clipboard fetch with one explicit, bounded clipboard-only event subscription. Drain pre-existing queued clipboard data before sending the request, accept the first subsequent Agent response, close immediately on success/error/timeout/session change, and preserve manual-only clipboard ownership. Do not add polling, an idle listener or automatic synchronization.",
   "clipboardChange": "2026-09-08: Remote shortcuts must use only the remote clipboard. Local clipboard transfer requires an explicit toolbar action; remove automatic synchronization including saved preferences. Build/deployment deferred until this change is verified.",
-  "intent": "Release WonRemote Windows Viewer and Agent v0.1.99 with a handoff process that survives the old scheduled-task shell, completes restart/result/cleanup ownership, and preserves the v0.1.98 Agent identity and explicit-exit repairs.",
+  "intent": "Release WonRemote Windows Viewer and Agent v0.1.101 so stale session records cannot indefinitely block an Agent update and verified protected migration removes the exact obsolete LocalAppData Agent installation without depending on the old updater handoff.",
   "changeType": "fix",
   "risk": "high",
   "releaseImpact": "build-and-deploy",
-  "rollback": "If v0.1.99 publication or live verification fails, keep immutable assets and handoff logs for diagnosis and restore the latest pointer to v0.1.98 without deleting releases. Do not force-downgrade installed clients; retain protected, legacy and updater rollback copies until the selected v0.1.99 migration is healthy.",
+  "rollback": "If v0.1.101 publication or selected-device verification fails, keep immutable assets and logs for diagnosis, pause the exact-ID rollout, and restore the latest pointer to verified v0.1.100 without deleting releases. Do not force-downgrade installed clients or delete legacy state unless the protected runtime and SYSTEM broker health proof plus limited cleanup completion succeed.",
   "deploymentBlockers": [],
   "firestoreVerification": "2026-09-14: npm run firebase:rules:test passed with a temporary Microsoft OpenJDK 21 runtime and the local Firestore emulator. Agent session access, central and managed Viewer device access, unauthorized Viewer denial, central deletion, manual presence and stale legacy denial all returned the expected result. The emulator-gated command deletion recovery integration also passed 1/1 with the real Firebase SDK and repository rules. No production database traffic.",
   "authenticodeStatus": "No code-signing certificate in CurrentUser/LocalMachine My stores or configured Process/User/Machine PFX variables. Public-trust issuance requires user identity/account setup. Existing release policy makes Authenticode optional; unsigned status alone is not a deployment blocker. Installers remain unsigned.",
-  "incident": "INC-20260917-097",
+  "incident": "INC-20260917-105",
   "requestReview": {
     "androidViewportReview": "2026-09-12: Android-only layout, pointer overlay and local focus/gesture handling. No request, listener, timer, retry, persistence read or write changes.",
     "nativeCaptureReview": "2026-09-12: Local synchronous duplex pipe IO changed to overlapped operations and directional worker stdio. No new timers, retries, subscriptions, disk persistence, cloud reads or writes; event waits are demand-driven and exist only during an active pipe connection. Peer EOF closes bridge input; tests cover three connections with control and close. Existing changed cloud ACK budget below is retained and is not a whole-product certification.",
     "impact": "none",
-    "reason": "The v0.1.99 repair changes only Windows process-creation flags for the already-existing verified updater handoff and adds a release-time local Job-boundary test. It adds no cloud request, polling, retry, listener, subscription or persistence write.",
+    "reason": "The v0.1.101 repair changes only local interpretation of the existing active-session result and transport state plus one-time installer cleanup ordering after existing protected-runtime and broker health checks. It adds no cloud request, polling, retry, listener, subscription or persistence write.",
     "clipboardBudgetEvidence": "For C<=50 explicit clipboard-request clicks per client/day, each click opens one clipboard-only listener after user action, sends the existing command, receives at most one Agent response, and closes. A conservative upper bound is seven reads and two writes per click: initial empty query plus rule lookup, one reconnect allowance, response document plus rule lookup, delete-rule lookup, Agent response write and Viewer deletion. The changed path therefore adds <=350 reads and <=100 writes to the existing command-reader scenario; it is not an idle or fleet-wide budget.",
     "androidBudgetEvidence": "The existing per-client ceiling of 408 reads/50 successful ACK writes also bounds this Android command-consumer slice under the same N<=50, one startup plus one clean empty remount, at most one deletion race/day assumptions. Android command subscription itself has no device-validation get: two starts use two query minima plus dependent-rule reads (<=4), event/rule and recovery terms remain conservatively <=8*N; 404<=408. This is a billing upper estimate, not measured production billing. Fresh Android boundary tests measure one listener/start, zero explicit gets/writes over 24h main-looper idle, two starts on remount, and a 50-doc race with exactly one SERVER query, two commits/99 attempted updates and 49 dispatches. Initial connect/auth/heartbeat, service retries after terminal errors, other Viewer collections, WebRTC and updates are outside this bounded command-consumer budget; existing FirebaseQuota tests verify unchanged retry-delay policy. Do not multiply a fleet or unbounded reconnections into this single-client estimate without new assumptions.",
     "assumptions": "Budget scope combines the repaired Agent command reader/acknowledger and the changed explicit clipboard receive path, not all existing Agent/Viewer/cloud traffic. Command-reader scenario: one Agent, one startup plus one clean remount with an empty queue per 24h, at most N=50 distinct command arrivals and one deletion race; its previously measured ceiling is 408 reads and 50 successful ACK writes. Clipboard scenario: one connected Viewer with at most C=50 deliberate receive-button clicks/day; each opens one clipboard-only listener for at most 10 seconds, permits one reconnect allowance, sends one existing command, receives at most one response and deletes that response. Conservative clipboard ceiling is 7*C=350 reads and 2*C=100 writes including query minima and dependent-rule lookups. Combined ceiling is 758 reads and 150 writes for the stated single-client scenarios. There is no idle clipboard listener, polling or automatic retry. Additional reconnects, sessions, user clicks and unrelated product traffic require separate assumptions. Emulator and local estimates are not production billing measurements.",
@@ -604,22 +618,30 @@
   ],
   "outcomes": [
     {
-      "id": "agent-lifecycle-repair-20260916",
-      "acceptance": "The shipped Agent has Agent identity and an independent WebView profile; x86 tray Exit fully stops the Agent-owned runtime and secure broker; startup privilege handoff cannot discard a visible update action; updater handoff survives the scheduled-task Job and completes restart/result/cleanup; verified migration removes the allowlisted legacy runtime and matching uninstall entry or reports failure; remote latency is measured rather than inferred.",
-      "boundaries": ["x86 release packaging", "Tauri product identity", "Agent startup handoff", "scheduled-task outer Job", "verified PowerShell update broker", "native x86 tray", "owned child job", "SYSTEM secure broker task", "protected installer migration", "legacy LocalAppData runtime", "remote session latency"],
-      "proofLevel": "physical-required",
+      "id": "stale-session-and-migration-guards-20260917",
+      "acceptance": "Agent startup recovers only a recent connected session; an unavailable realtime transport cannot hold a delivered update indefinitely while a genuinely live session still defers replacement. After the protected Agent runtime and SYSTEM broker prove healthy, migration runs the exact allowlisted limited-user cleanup to completion without relying on the old updater handoff result.",
+      "boundaries": ["Firestore connected-session query", "Agent startup recovery age", "local realtime transport state", "remote update session gate", "normal live-session deferral", "protected Program Files Agent runtime", "SYSTEM secure broker task", "limited-user migration task", "legacy LocalAppData Agent root", "matching HKCU uninstall registration"],
+      "proofLevel": "automated-runtime",
       "contractTests": [
-        "aether-link-app/scripts/package-release-exes.test.js",
-        "aether-link-app/scripts/verify-recurrence-coverage.test.js",
-        "aether-link-app/src/desktopPackaging.test.ts",
-        "aether-link-app/src/agent/productionInstallerUpdate.test.ts",
+        "aether-link-app/src/firebase/agentSessionRecovery.test.ts",
+        "aether-link-app/src/firebase/agentCommandSubscription.test.ts",
+        "aether-link-app/src/agent/agentSessionLifecycle.test.ts",
         "aether-link-app/src/agentStartup.test.ts",
-        "aether-link-app/src/domain/installerHookIsolation.test.ts",
-        "aether-link-app/src-tauri/src/lib.rs",
-        "aether-link-app/tests/e2e/test_update_handoff_broker.ts"
+        "aether-link-app/src/desktopPackaging.test.ts"
       ],
-      "verification": "Existing v0.1.98 lifecycle and packaging tests remain. LIVE RED: selected v0.1.97-to-v0.1.98 updated the protected Agent bytes but its handoff log stopped immediately after Installer PID, wrote no result and did not restart the Agent; LocalAppData v0.1.88 remained. JOB RED: the old x86 Tauri broker timed out inside a kill-on-close Job. GREEN: the broker uses CREATE_NO_WINDOW plus CREATE_BREAKAWAY_FROM_JOB. GitHub run 35123739450 safely blocked because the first fixture referenced stale expanded release resources; run 35125329394 then blocked because the full GUI Agent could not reach Tauri setup on the headless runner. Production and a non-shipped direct-rustc probe now compile the same dependency-free process module, and the neutral probe filename avoids Windows installer detection. Fresh local evidence is 47 x86 Rust tests, 83 packaging/recurrence tests, TypeScript and the real x86 Job test passing while the installed Agent remains running. Installed v0.1.98 explicit exit request previously stopped the shell, Node and secure broker. No cross-PC latency recovery is claimed.",
-      "physicalGap": "Build and publish signed-manifest v0.1.99, then prove the selected public update reaches a healthy result, restarts automatically, removes only the allowlisted legacy install and uses the Agent WebView profile. The visual tray right-click menu and cross-PC connection/control latency remain physical checks."
+      "verification": "RED live diagnosis found three stale connected sessions recovered on 82220F6D and a delivered update deferred after transport became unavailable; v0.1.100 also left the complete v0.1.88 LocalAppData install because cleanup waited for a result from the dead old handoff. GREEN: seven focused behavior suites passed 176 tests, the eight-file release boundary command passed 129 tests, the seven-file release contract passed 107 tests, and TypeScript passed. Tests cover recent/stale recovery, live/unavailable transport, normal stop before update, protected runtime plus SYSTEM broker proof, decoded limited cleanup action without handoff/source/bridge dependency, completion result and unchanged exact cleanup guards."
+    },
+    {
+      "id": "v01101-windows-release-selected-install-20260917",
+      "acceptance": "The normal main workflow publishes fresh x86 Viewer and Agent v0.1.101 plus a trusted signed manifest and matching public aliases. Installed Viewer updates and restarts. Only selected Agent 82220F6D is offered the Agent update; it restarts registered and online without stale-session recovery, and the obsolete v0.1.88 LocalAppData root plus matching HKCU uninstall entry are absent afterward.",
+      "boundaries": ["aligned v0.1.101 metadata", "exact main preparation commit", "GitHub Actions Windows x86 build", "Viewer and Agent installers", "manifest signatures and hashes", "GitHub latest release", "Firebase download aliases", "installed Viewer updater", "exact-ID Agent rollout", "scheduled Agent restart", "registration and heartbeat", "legacy install cleanup"],
+      "proofLevel": "deployment-required",
+      "contractTests": [
+        "aether-link-app/src/desktopPackaging.test.ts",
+        "aether-link-app/src/agentStartup.test.ts",
+        "aether-link-app/src/firebase/agentCommandSubscription.test.ts"
+      ],
+      "verification": "Pending"
     }
   ],
   "historicalOutcomes": [

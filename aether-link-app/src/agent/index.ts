@@ -33,6 +33,8 @@ import {
   beginAgentCaptureGeneration,
   currentSessionId,
   endAgentSessionGeneration,
+  prepareAgentUpdateSession,
+  shouldDeferAgentUpdateForSession,
   shouldStartStreamForCommand,
 } from "./agentSessionLifecycle";
 import {
@@ -1214,7 +1216,11 @@ async function main() {
 }
 
 let isUpdating = false;
-const remoteUpdateRequest = createRemoteUpdateRequest(() => Boolean(activeSessionId));
+const remoteUpdateRequest = createRemoteUpdateRequest(() => shouldDeferAgentUpdateForSession({
+  activeSessionId,
+  firebaseEnabled: USE_FIREBASE,
+  rtcState,
+}));
 let lastUpdateCheckAttemptAtMs: number | null = null;
 let currentUpdateTelemetry: AgentUpdateTelemetry = {
   currentVersion: WONREMOTE_APP_VERSION,
@@ -1291,7 +1297,11 @@ async function checkUpdate(config: AgentLocalConfig, manual = false) {
     }
 
     if (data.latestVersion && (data.forceUpdate || isHigherVersion(data.latestVersion, currentVersion))) {
-      if (activeSessionId) {
+      const sessionUpdateState = await prepareAgentUpdateSession(
+        { activeSessionId, firebaseEnabled: USE_FIREBASE, rtcState },
+        stopSessionPolling,
+      );
+      if (sessionUpdateState === "defer") {
         remoteUpdateRequest.defer(() => checkUpdate(config, true));
         await setUpdateTelemetry(config, {state:"idle",error:"원격 세션 종료 후 업데이트 대기"});
         isUpdating = false;
@@ -1524,7 +1534,7 @@ async function rollbackAgent(config: AgentLocalConfig, version: string): Promise
   const retry = () => rollbackAgent(config, version);
   try {
     const result = await runPausedAgentRollback(version, {
-      hasSession: () => Boolean(activeSessionId),
+      hasSession: () => shouldDeferAgentUpdateForSession({ activeSessionId, firebaseEnabled: USE_FIREBASE, rtcState }),
       isPaused: async () => {
         if (!USE_FIREBASE || !config.registeredDeviceId) return false;
         const policy = await loadAgentUpdateRolloutWithFirebase(config.registeredDeviceId);
@@ -1576,14 +1586,22 @@ async function handoffToProductionInstallerUpdate(
       };
     },
   });
-  if (activeSessionId) {
+  const handoffSessionState = await prepareAgentUpdateSession(
+    { activeSessionId, firebaseEnabled: USE_FIREBASE, rtcState },
+    stopSessionPolling,
+  );
+  if (handoffSessionState === "defer") {
     remoteUpdateRequest.defer(retry);
     await setUpdateTelemetry(config, {state:"idle",error:"원격 세션 종료 후 업데이트 대기"});
     isUpdating = false;
     return;
   }
   await beforeLaunch?.();
-  if (activeSessionId) {
+  const launchSessionState = await prepareAgentUpdateSession(
+    { activeSessionId, firebaseEnabled: USE_FIREBASE, rtcState },
+    stopSessionPolling,
+  );
+  if (launchSessionState === "defer") {
     remoteUpdateRequest.defer(retry);
     isUpdating = false;
     return;

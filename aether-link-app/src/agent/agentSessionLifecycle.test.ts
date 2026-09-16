@@ -1,9 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   beginAgentCaptureGeneration,
   currentSessionId,
   endAgentSessionGeneration,
+  prepareAgentUpdateSession,
   sessionIdFromStartStreamCommand,
+  shouldDeferAgentUpdateForSession,
   shouldStartStreamForCommand,
   shouldStopActiveSession,
   stopStreamTargetFromCommand,
@@ -91,6 +93,36 @@ describe("Agent session lifecycle commands", () => {
     expect(shouldStartStreamForCommand({ ...active, streamDesired: false, rtcState: "ready" })).toBe(true);
     expect(shouldStartStreamForCommand({ ...active, captureActive: false, rtcState: "ready" })).toBe(true);
     expect(shouldStartStreamForCommand({ ...active, rtcState: "unavailable" })).toBe(true);
+  });
+
+  it("defers replacement only while the active session transport can still be used", () => {
+    const active = { activeSessionId: "session-1", firebaseEnabled: true };
+
+    expect(shouldDeferAgentUpdateForSession({ ...active, rtcState: "starting" })).toBe(true);
+    expect(shouldDeferAgentUpdateForSession({ ...active, rtcState: "ready" })).toBe(true);
+    expect(shouldDeferAgentUpdateForSession({ ...active, rtcState: "unavailable" })).toBe(false);
+    expect(shouldDeferAgentUpdateForSession({ ...active, rtcState: "none" })).toBe(false);
+    expect(shouldDeferAgentUpdateForSession({ ...active, activeSessionId: null, rtcState: "ready" })).toBe(false);
+    expect(shouldDeferAgentUpdateForSession({ ...active, firebaseEnabled: false, rtcState: "none" })).toBe(true);
+  });
+
+  it("closes an unavailable Firebase session before replacement but preserves a live one", async () => {
+    const stopSession = vi.fn(async () => undefined);
+
+    await expect(prepareAgentUpdateSession({
+      activeSessionId: "stale-session",
+      firebaseEnabled: true,
+      rtcState: "unavailable",
+    }, stopSession)).resolves.toBe("ready");
+    expect(stopSession).toHaveBeenCalledOnce();
+
+    stopSession.mockClear();
+    await expect(prepareAgentUpdateSession({
+      activeSessionId: "live-session",
+      firebaseEnabled: true,
+      rtcState: "ready",
+    }, stopSession)).resolves.toBe("defer");
+    expect(stopSession).not.toHaveBeenCalled();
   });
 
   it("invalidates session transport only on a session switch or stop", () => {

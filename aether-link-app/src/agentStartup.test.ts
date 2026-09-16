@@ -189,7 +189,7 @@ describe.skipIf(process.platform !== "win32")("Agent first-run Windows boundarie
     expect(output).not.toContain("STOPPED_PID=205");
   });
 
-  it("starts the real protected runtime before exposing the one-time legacy updater bridge", () => {
+  it("proves the protected runtime and broker before scheduling limited legacy cleanup", () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "wonremote-agent-migration-"));
     const appData = path.join(root, "Roaming");
     const localAppData = path.join(root, "Local");
@@ -197,7 +197,6 @@ describe.skipIf(process.platform !== "win32")("Agent first-run Windows boundarie
     const legacyRoot = path.join(localAppData, "WonRemote", "Agent");
     const protectedRoot = path.join(process.env.ProgramFiles!, "WonRemote Agent");
     const helper = path.resolve("src-tauri/windows/manage-agent-login-task.ps1").replace(/'/g, "''");
-    const bridge = path.join(protectedRoot, "legacy-agent-update-bridge.mjs").replace(/'/g, "''");
     mkdirSync(updateRoot, { recursive: true });
     mkdirSync(legacyRoot, { recursive: true });
 
@@ -218,7 +217,18 @@ describe.skipIf(process.platform !== "win32")("Agent first-run Windows boundarie
       function New-ScheduledTaskSettingsSet { param([switch]$AllowStartIfOnBatteries,[switch]$DontStopIfGoingOnBatteries,$ExecutionTimeLimit,$MultipleInstances,$RestartCount,$RestartInterval); return @{} }
       function Register-ScheduledTask { param($TaskName,$Action,$Trigger,$Principal,$Settings,[switch]$Force); $global:registered[$TaskName]=[pscustomobject]@{Principal=$Principal;Actions=$Action;State='Ready'}; $global:events.Add("REGISTER:$($TaskName):$($Principal.RunLevel)") }
       function Get-ScheduledTask { param($TaskName,$ErrorAction); return $global:registered[$TaskName] }
-      function Start-ScheduledTask { param($TaskName,$ErrorAction); $global:events.Add("START:$TaskName"); if ($TaskName -eq 'WonRemote Agent') { $global:protectedStarted=$true }; if ($TaskName -eq 'WonRemote Secure Capture') { $global:registered[$TaskName].State='Running' }; if ($TaskName -eq 'WonRemote Agent Migration') { $global:bridgeStarted=$true } }
+      function Get-ScheduledTaskInfo { param($TaskName,$ErrorAction); return [pscustomobject]@{LastRunTime=[datetime]::UtcNow;LastTaskResult=0} }
+      function Start-ScheduledTask {
+        param($TaskName,$ErrorAction)
+        $global:events.Add("START:$TaskName")
+        if ($TaskName -eq 'WonRemote Agent') { $global:protectedStarted=$true }
+        if ($TaskName -eq 'WonRemote Secure Capture') { $global:registered[$TaskName].State='Running' }
+        if ($TaskName -eq 'WonRemote Agent Migration') {
+          $encoded = ($global:registered[$TaskName].Actions.Arguments -split ' ')[-1]
+          $command = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($encoded))
+          $global:events.Add("MIGRATION_COMMAND:$command")
+        }
+      }
       function Stop-ScheduledTask { param($TaskName,$ErrorAction); $global:events.Add("STOP:$TaskName") }
       function Unregister-ScheduledTask { param($TaskName,[switch]$Confirm,$ErrorAction); $global:registered.Remove($TaskName); $global:events.Add("UNREGISTER:$TaskName") }
       function Get-CimInstance {
@@ -233,13 +243,9 @@ describe.skipIf(process.platform !== "win32")("Agent first-run Windows boundarie
       function Copy-Item { param($LiteralPath,$Destination,[switch]$Force); $global:events.Add("COPY:$LiteralPath=>$Destination") }
       function Start-Process { param($FilePath,$ArgumentList,$WindowStyle,[switch]$PassThru); $global:events.Add('MONITOR'); return [pscustomobject]@{Id=203;HasExited=$false} }
       function Start-Sleep {}
-      $lockPath = Join-Path $env:APPDATA 'WonRemote\\updates\\update-handoff.lock'
-      $lock = [IO.File]::Open($lockPath,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
-      try {
-        $source = [IO.File]::ReadAllText('${helper}')
-        $source = $source.Replace('$isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)', '$isAdmin = $true')
-        & ([scriptblock]::Create($source)) -Mode Migrate -AgentPath (Join-Path $protectedRoot 'wonremote-viewer.exe') -LegacyRoot $legacyRoot -BridgePath '${bridge}' -UserId 'S-1-5-21-test'
-      } finally { $lock.Dispose() }
+      $source = [IO.File]::ReadAllText('${helper}')
+      $source = $source.Replace('$isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)', '$isAdmin = $true')
+      & ([scriptblock]::Create($source)) -Mode Migrate -AgentPath (Join-Path $protectedRoot 'wonremote-viewer.exe') -LegacyRoot $legacyRoot -UserId 'S-1-5-21-test'
       $global:events -join '|'
     `;
     try {
@@ -250,7 +256,12 @@ describe.skipIf(process.platform !== "win32")("Agent first-run Windows boundarie
       );
       expect(output).toContain("REGISTER:WonRemote Agent Migration:Limited");
       expect(output).toContain("START:WonRemote Agent Migration");
-      expect(output).toContain("MONITOR");
+      expect(output).toContain("MIGRATION_COMMAND:");
+      expect(output).toContain("-Mode RunMigrationBridge");
+      expect(output).not.toContain("-UpdateHandoff");
+      expect(output).not.toContain("-SourceNode");
+      expect(output).not.toContain("-BridgePath");
+      expect(output).not.toContain("MONITOR");
       expect(output.indexOf("START:WonRemote Agent|")).toBeLessThan(output.indexOf("START:WonRemote Agent Migration"));
       expect(output).not.toContain(`REMOVE:${legacyRoot}`);
       expect(output).not.toContain("COPY:");

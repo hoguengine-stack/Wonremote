@@ -1,19 +1,49 @@
 # WonRemote Incident Registry
 
+## INC-20260917-106: Legacy cleanup depended on a result the old updater could no longer publish
+
+- Detected: 2026-09-17 after the selected 82220F6D v0.1.100 update returned online.
+- Severity: Medium; the protected replacement works, but the obsolete writable 0.1.88 runtime and matching uninstall entry remain installed.
+- Affected: Agent installer migration from `%LOCALAPPDATA%\WonRemote\Agent` to the protected Program Files runtime.
+- Status: Source repaired and focused migration regression passed; v0.1.101 installed proof pending.
+- User-visible symptom: Agent reports 0.1.100 and runs from Program Files, while Apps/registry still exposes WonRemote Agent 0.1.88 and its complete LocalAppData payload remains.
+- Minimal trigger: Start the v0.1.100 silent Agent installer from deployed 0.1.98, whose handoff process dies immediately after logging the installer PID, with a legacy LocalAppData installation present.
+- Root cause and contributors: Migration waited for a fresh `last-update-result.json` written only by the old handoff after installer exit. The silent installer now owns replacement restart, but migration still depended on that dead process even after independently proving the new protected Node runtime and SYSTEM broker were running.
+- Fix commit(s): Pending v0.1.101 preparation commit.
+- Permanent guard: Make the allowlisted limited-user cleanup depend on the installer-owned protected runtime and secure broker health checks, not the caller-owned handoff result. Keep exact-path and matching-registry guards, completion checks, and installer abort on cleanup failure.
+- Regression proof: The production migration script now starts the protected Agent and verifies its Node runtime plus SYSTEM broker before scheduling the existing limited-user cleanup. The focused PowerShell boundary decodes the real scheduled action, proves it contains no updater-handoff, source-node or bridge dependency, waits for result 0, and passed with the six adjacent release suites: 176 tests total. TypeScript also passed.
+- Release proof: Public v0.1.100 selected update proved protected Agent 0.1.100, preserved `123-45-67890:AGENT-82220F6D`, running task/child and accepted heartbeat; it also proved the old result-dependent cleanup did not run.
+- Remaining blocker: Publish v0.1.101, then verify the legacy directory and exact HKCU entry disappear after the selected 82220F6D update.
+
+## INC-20260917-105: Stale connected session indefinitely deferred a delivered Agent update
+
+- Detected: 2026-09-17 during the selected 82220F6D public v0.1.100 update proof.
+- Severity: High; an online Agent receives the update command but never installs while a dead session remains marked connected.
+- Affected: Firebase active-session recovery and the Agent remote-update session gate.
+- Status: Source repaired and focused stale/live transport regressions passed; v0.1.101 installed proof pending.
+- User-visible symptom: Viewer reports that the update request was transmitted, Firestore marks it delivered, but the Agent stays on 0.1.98 with `원격 세션 종료 후 업데이트 대기` until a new session is connected and closed.
+- Minimal trigger: Leave an old session document in `connected`, restart the Agent so it recovers that session, wait for its WebRTC channels to become unavailable, then deliver `request-update`.
+- Root cause and contributors: Startup recovery treated every connected session as live regardless of age, and update deferral used only `activeSessionId` even after the realtime transport was closed or unavailable. Three stale connected sessions from July and September were present on 82220F6D.
+- Fix commit(s): Pending v0.1.101 preparation commit.
+- Permanent guard: Bound startup recovery to a recent session and let the existing update path close a locally active session whose realtime transport is no longer usable. Keep deferral unchanged while the control channel is genuinely open. Add focused stale/recent recovery and live/dead transport update regressions without adding polling or cloud requests.
+- Regression proof: Recovery accepts only the newest connected session within 30 minutes and rejects stale or malformed timestamps. Update handling defers for a local live session or Firebase session whose transport is starting/ready, but closes an unavailable stale session before replacement. Seven focused suites passed 176 tests and TypeScript passed.
+- Release proof: Public v0.1.100 successfully installed and self-restarted on 82220F6D only after a fresh Viewer session was opened and normally closed, proving the stale-session gate was the blocker but not yet preventing recurrence.
+- Remaining blocker: Publish v0.1.101 through the normal workflow, verify selected update/restart and no stale-session recovery on 82220F6D, then keep wider rollout paused.
+
 ## INC-20260917-104: Fixed updater cannot repair the already-deployed broken launcher by itself
 
 - Detected: 2026-09-17 during the installed Viewer 0.1.98-to-0.1.99 public update.
 - Severity: High; the replacement file installs, but the product remains closed and an Agent can appear offline until manually started.
 - Affected: Silent NSIS update compatibility for already-deployed Viewer and Agent handoff launchers.
-- Status: Source repaired and focused tests passed; fresh build, release and installed old-Agent proof pending.
+- Status: Source repaired, v0.1.100 released, and installed Viewer plus selected old-Agent automatic restart proved.
 - User-visible symptom: The update confirms and replaces Viewer 0.1.98 with 0.1.99, then no Viewer window returns. The handoff log ends immediately after the installer PID and has no installer exit, restart, health, result or cleanup records.
 - Minimal trigger: Start the public 0.1.99 installer update from installed 0.1.98, whose update handoff still belongs to the enclosing kill-on-close Windows Job.
 - Root cause and contributors: The v0.1.99 breakaway fix exists only in the newly installed executable. The update is launched by the old 0.1.98 executable, so that old broker can still die before restart. The silent installer successfully replaces files but does not independently start the installed product unless the caller supplies Tauri's optional restart flag, which deployed clients do not supply.
-- Fix commit(s): Pending v0.1.100 preparation commit.
+- Fix commit(s): `44693040202bc64390d5bf5b09a06bf6d955ccc8` (`Prepare WonRemote v0.1.100`).
 - Permanent guard: Silent Viewer and Agent installers must start their own newly installed product through the existing unelevated RunAsUser boundary. Keep the normal handoff restart and single-instance/task ownership as a second bounded recovery path. Test both product hooks and prove an actual selected 0.1.98 Agent returns without a manual launch.
 - Regression proof: The new focused packaging case failed before implementation because the Viewer hooks had no silent postinstall start. It now verifies both x86/x64 Viewer and Agent hooks, silent-only RunAsUser arguments and Agent task-setup ordering. Five related suites passed 91 tests and TypeScript passed.
-- Release proof: Public v0.1.99 itself is valid and remains immutable; it exposed this bootstrap gap on the installed Viewer. A fresh version is required.
-- Remaining blocker: Build and publish v0.1.100, update only 82220F6D from 0.1.98, and verify protected-path version, task/process recovery, result recording, legacy cleanup and device presence.
+- Release proof: Normal CI run 35132652865 published v0.1.100. Installed Viewer 0.1.99 updated and restarted itself. Selected Agent 82220F6D updated from 0.1.98 to protected-path 0.1.100, preserved registration, restarted its task/Node child and resumed accepted heartbeat without a manual Agent launch.
+- Remaining blocker: None for bootstrap restart. Stale-session update deferral and legacy cleanup are tracked separately in INC-20260917-105 and INC-20260917-106.
 
 ## INC-20260917-103: Passing Job-boundary proof failed during Windows fixture cleanup
 

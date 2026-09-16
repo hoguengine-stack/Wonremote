@@ -68,6 +68,33 @@ export function shouldStartStreamForCommand(input: {
   return input.rtcState !== "starting" && input.rtcState !== "ready";
 }
 
+export function shouldDeferAgentUpdateForSession(input: {
+  activeSessionId: string | null;
+  firebaseEnabled: boolean;
+  rtcState: "none" | "starting" | "ready" | "unavailable" | undefined;
+}): boolean {
+  if (!input.activeSessionId) {
+    return false;
+  }
+  if (!input.firebaseEnabled) {
+    return true;
+  }
+  return input.rtcState === "starting" || input.rtcState === "ready";
+}
+
+export async function prepareAgentUpdateSession(
+  input: Parameters<typeof shouldDeferAgentUpdateForSession>[0],
+  stopSession: () => Promise<void>,
+): Promise<"defer" | "ready"> {
+  if (shouldDeferAgentUpdateForSession(input)) {
+    return "defer";
+  }
+  if (input.activeSessionId) {
+    await stopSession();
+  }
+  return "ready";
+}
+
 export function beginAgentCaptureGeneration(
   state: AgentStreamGenerationState,
   sessionId: string,

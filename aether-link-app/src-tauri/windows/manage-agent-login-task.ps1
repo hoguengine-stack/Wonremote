@@ -317,27 +317,17 @@ function Start-MigrationMonitor([string]$Path, [datetime]$StartedUtc) {
   }
 }
 
-function Start-LegacyMigration($Runtime, [string]$Path, [string]$SourceBridge) {
+function Start-LegacyMigration($Runtime, [string]$Path) {
   $legacy = Resolve-LegacyRoot $Path
-  $protectedBridge = Resolve-ProtectedFile $SourceBridge
-  if (-not $protectedBridge) {
-    throw "The WonRemote Agent migration bridge is missing."
-  }
-
   Start-ScheduledTask -TaskName $taskName
   Wait-ProtectedAgentRuntime $Runtime
   Wait-SecureBrokerTask
 
-  $updatePaths = Get-UpdatePaths
-  $waitForHandoff = Test-UpdateLockHeld $updatePaths.Lock
   $started = [datetime]::UtcNow
   $escapedScript = $PSCommandPath.Replace("'", "''")
   $escapedLegacy = $legacy.Replace("'", "''")
-  $escapedNode = $Runtime.Node.Replace("'", "''")
-  $escapedBridge = $protectedBridge.Replace("'", "''")
   $startedText = $started.ToString("o")
-  $handoffArgument = if ($waitForHandoff) { " -UpdateHandoff" } else { "" }
-  $command = "& '$escapedScript' -Mode RunMigrationBridge -LegacyRoot '$escapedLegacy' -SourceNode '$escapedNode' -BridgePath '$escapedBridge' -MigrationStartedUtc ([datetime]'$startedText')$handoffArgument"
+  $command = "& '$escapedScript' -Mode RunMigrationBridge -LegacyRoot '$escapedLegacy' -MigrationStartedUtc ([datetime]'$startedText')"
   $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
   Stop-MigrationTasks
   $action = New-ScheduledTaskAction -Execute "$PSHOME\powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -EncodedCommand $encoded" -WorkingDirectory $Runtime.Root
@@ -345,22 +335,8 @@ function Start-LegacyMigration($Runtime, [string]$Path, [string]$SourceBridge) {
   $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
   Register-ScheduledTask -TaskName $migrationTaskName -Action $action -Principal $principal -Settings $settings -Force | Out-Null
   Start-ScheduledTask -TaskName $migrationTaskName
-
-  if (-not $waitForHandoff) {
-    Wait-MigrationTaskCompletion $started
-    Stop-MigrationTasks
-    return
-  }
-
-  $deadline = (Get-Date).AddSeconds(5)
-  do {
-    if (Test-AgentNodeRuntime $Runtime $legacy) {
-      Start-MigrationMonitor $legacy $started
-      return
-    }
-    Start-Sleep -Milliseconds 100
-  } while ((Get-Date) -lt $deadline)
-  throw "The one-time WonRemote Agent updater bridge did not start."
+  Wait-MigrationTaskCompletion $started
+  Stop-MigrationTasks
 }
 
 $brokerArguments = "--mode secure-broker"
@@ -474,7 +450,7 @@ try {
   }
 
   if ($Mode -eq "Migrate") {
-    Start-LegacyMigration $runtime $LegacyRoot $BridgePath
+    Start-LegacyMigration $runtime $LegacyRoot
   }
 } catch {
   if ($Mode -eq "Migrate") {
