@@ -51,6 +51,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x01000000;
+const UPDATE_HANDOFF_CREATION_FLAGS: u32 = CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB;
 const STARTUP_REGISTRY_PATH: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const STARTUP_REGISTRY_VALUE: &str = "WonRemoteViewer";
 const AGENT_REGISTRY_VALUE: &str = "WonRemoteAgent";
@@ -1263,7 +1265,8 @@ fn launch_brokered_update_handoff(script_path: PathBuf) -> Result<bool, String> 
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    add_no_window(&mut command);
+    use std::os::windows::process::CommandExt;
+    command.creation_flags(UPDATE_HANDOFF_CREATION_FLAGS);
     command
         .spawn()
         .map_err(|error| format!("Agent update broker failed to start PowerShell: {error}"))?;
@@ -2730,6 +2733,11 @@ pub fn run() {
 #[cfg(test)]
 mod registry_tests {
     use super::*;
+
+    #[test]
+    fn update_handoff_breaks_away_from_enclosing_windows_job() {
+        assert_eq!(UPDATE_HANDOFF_CREATION_FLAGS, 0x09000000);
+    }
 
     #[test]
     fn test_registry_toggle_uses_isolated_test_key() {

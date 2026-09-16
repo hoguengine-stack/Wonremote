@@ -134,6 +134,11 @@ jobs:
       - name: Build two x86 installers
         run: npm run release:exes
 
+      - name: Verify updater handoff survives the scheduled-task Job
+        run: |
+          $env:WONREMOTE_BROKER_E2E_ARCH = "x86"
+          npx tsx tests/e2e/test_update_handoff_broker.ts
+
       - name: Apply and verify Authenticode signatures
         run: npm run release:sign
 

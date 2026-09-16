@@ -1056,6 +1056,11 @@ describe("desktop packaging scaffold", () => {
     expect(releaseWorkflow).toContain("src/agent/productionUpdateMetadata.test.ts");
     expect(releaseWorkflow).toContain("src/domain/updateManifestScript.test.ts");
     expect(releaseWorkflow).toContain("test_agent_update_handoff_requires_dedicated_exit_code");
+    expect(releaseWorkflow).toContain('WONREMOTE_BROKER_E2E_ARCH = "x86"');
+    expect(releaseWorkflow).toContain("npx tsx tests/e2e/test_update_handoff_broker.ts");
+    expect(releaseWorkflow.indexOf("npx tsx tests/e2e/test_update_handoff_broker.ts")).toBeGreaterThan(
+      releaseWorkflow.indexOf("run: npm run release:exes"),
+    );
     expect(releaseWorkflow).toContain("actions/cache/restore@v4");
     expect(releaseWorkflow).toContain("actions/cache/save@v4");
     expect(releaseWorkflow).toContain("build-release:");
@@ -1126,6 +1131,8 @@ describe("desktop packaging scaffold", () => {
     expect(tauriLib).toContain('.env("WONREMOTE_UPDATE_PRODUCT", restart_mode)');
     expect(tauriLib).toContain('.env("WONREMOTE_TAURI_UPDATE_BROKER", "1")');
     expect(tauriLib).toContain("launch_brokered_update_handoff");
+    expect(tauriLib).toContain("CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB");
+    expect(tauriLib).toContain("command.creation_flags(UPDATE_HANDOFF_CREATION_FLAGS)");
     expect(tauriLib).toContain("fn check_installer_update");
     expect(tauriLib).toContain("fn check_agent_installer_update");
     expect(tauriLib).toContain("check_installer_update,");

@@ -1,5 +1,20 @@
 # WonRemote Incident Registry
 
+## INC-20260917-097: Update handoff died with the scheduled-task Job after installer launch
+
+- Detected: 2026-09-17 during the selected `AGENT-82220F6D` public v0.1.97-to-v0.1.98 update.
+- Severity: Critical; the installer can replace files successfully while the updater loses result recording, restart, rollback ownership and legacy cleanup, leaving the Agent offline until manually started.
+- Affected: Tauri `launch_brokered_update_handoff`, installed Agent and Viewer updater handoff launched from a Windows scheduled-task Job.
+- Status: Source repaired for v0.1.99; public v0.1.98 files installed on the test PC but that handoff did not complete.
+- User-visible symptom: Update reaches 100% and appears to stop. The new executable is present, but the Agent does not reopen, the legacy install remains, and no healthy/rollback result is written.
+- Minimal trigger: Launch the installed Agent through its scheduled task, request an installer update, let the old Agent exit after the `.accepted` marker, then inspect the handoff log and running processes.
+- Root cause and contributors: The TypeScript handoff descriptor declared `CREATE_BREAKAWAY_FROM_JOB`, but the actual Tauri broker ignored those flags and launched PowerShell with only `CREATE_NO_WINDOW`. When the scheduled-task process tree ended, Windows terminated the handoff immediately after it launched the installer. The existing broker E2E launched the shell outside an enclosing kill-on-close Job, so it could pass while the deployed path still failed.
+- Fix commit(s): Pending v0.1.99 preparation commit.
+- Permanent guard: Launch the verified broker PowerShell with both `CREATE_NO_WINDOW` and `CREATE_BREAKAWAY_FROM_JOB`. Run the real x86/x64 Tauri broker under an enclosing Windows Job configured for kill-on-close and breakaway, then require the handoff proof to be written after the parent shell and Job owner exit.
+- Regression proof: RED: the v0.1.98 x86 host timed out in the enclosing kill-on-close Job. GREEN: the same compiled x86 host with explicit breakaway survives shell/Job-owner exit and writes proof; 47 x86 Rust tests, 98 focused updater/packaging tests and TypeScript pass. The release workflow now reruns this boundary after building both shipped x86 installers.
+- Release proof: Pending v0.1.99 build, publication and selected-device installed update.
+- Remaining blocker: Prove one selected public update completes its handoff log, healthy result, restart and allowlisted legacy cleanup without manually starting the Agent.
+
 ## INC-20260916-096: Agent migration returned success while the legacy installation remained
 
 - Detected: 2026-09-16 from the installed v0.1.97 Program Files and v0.1.88 LocalAppData Agent state.
