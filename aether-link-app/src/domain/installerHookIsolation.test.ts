@@ -37,6 +37,11 @@ describe("NSIS installer process isolation", () => {
     expect(source).toContain("WonRemote");
     expect(source).toContain("Get-CimInstance Win32_Process");
     expect(source).toContain("ExecutablePath");
+    expect(source).toContain("CommandLine");
+    expect(source).toContain("msedgewebview2.exe");
+    expect(source).toContain("com.wonremote.viewer");
+    expect(source).toContain("com.wonremote.agent");
+    expect(source).toContain("EBWebView");
     expect(source).toContain("GetFullPath");
     expect(source).toMatch(/StartsWith\([^\r\n]*OrdinalIgnoreCase/);
     expect(source).toContain("ParentProcessId");

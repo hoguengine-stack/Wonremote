@@ -1,5 +1,35 @@
 # WonRemote Incident Registry
 
+## INC-20260916-092: Viewer process cleanup followed a reused parent PID into an unrelated process
+
+- Detected: 2026-09-16 during the local v0.1.97 packaged-installer cleanup proof.
+- Severity: High; update cleanup could terminate an unrelated process whose recorded parent PID had been reused by a newer Viewer/WebView process.
+- Affected: `stop-wonremote-processes.ps1` descendant traversal for Viewer and Agent installation/uninstallation.
+- Status: Source and packaged-install verified; public release pending.
+- User-visible symptom: The cleanup correctly stopped Viewer and its product WebView2 tree but also stopped Visual Studio `VCTIP.exe`, which was outside every WonRemote path and profile.
+- Minimal trigger: A long-lived unrelated process retains a parent PID equal to a newer targeted process ID; ID-only traversal treats it as a current child.
+- Root cause and contributors: Descendant ownership used only `ParentProcessId` and did not compare process creation times, so Windows PID reuse could create a false parent-child relationship.
+- Fix commit(s): Pending.
+- Permanent guard: Follow a target parent only when the child creation time is not earlier than the current parent creation time. Keep direct install-root and product-`EBWebView` ownership checks, and test an older unrelated process with a reused parent PID.
+- Regression proof: RED local cleanup output included `VCTIP.exe`, and the focused PowerShell simulation reproduced `STOPPED_PID=205` for an older unrelated process whose recorded parent PID had been reused. GREEN compares child and parent creation times: it still stops the genuine newer Viewer WebView child and excludes the older unrelated process.
+- Release proof: Local rebuilt v0.1.97 Viewer installer exited 0 after stopping the active Viewer and six product WebViews; zero product processes remained and unrelated Visual Studio `VCTIP.exe` retained PID 7904. No v0.1.97 public release has been published yet.
+- Remaining blocker: Publish through the normal CI release and verify the public assets and signed manifest.
+
+## INC-20260916-091: Installed Viewer device editor ignores ordinary left-click input
+
+- Detected: 2026-09-16 from the user's installed v0.1.96 screenshots and direct report immediately after publication.
+- Severity: High; operators cannot edit registered-device metadata through the normal pointer and keyboard path.
+- Affected: Windows installed Viewer device-edit modal, ordinary left-click focus, text entry and the device-type select picker.
+- Status: Source and installed v0.1.97 repair verified; public release pending.
+- User-visible symptom: Text fields do not accept editing. Left-clicking `장비 종류` does not open its list, while right-clicking shows the list together with the WebView context menu.
+- Minimal trigger: Open `등록 장비 수정`, left-click an editable field or `장비 종류`, then type or attempt to choose an option.
+- Root cause and contributors: The Viewer installer stopped only processes whose executable lived under the Viewer install root. An orphaned `msedgewebview2.exe` tree using `com.wonremote.viewer\EBWebView` survived host replacement and was reused after updates; on this PC its browser root still reported `webview-exe-version=0.1.88` while the installed host was v0.1.97. The prior regression also used programmatic fill instead of the installed ordinary-pointer boundary, and the modal relied on default focus/picker behavior without making the background inert.
+- Fix commit(s): Pending.
+- Permanent guard: Exercise real coordinates for left-pointer focus/type/select, contain focus in the modal, keep the background inert, and make the installer stop only WebView2 processes whose command line owns the product-specific `EBWebView` directory. A passing programmatic fill or host-only process stop is not accepted as proof.
+- Regression proof: RED evidence includes the supplied installed screenshots, the local v0.1.96 pointer failure and a live orphan browser root reporting v0.1.88. GREEN source includes the real-coordinate Viewer regression and process-isolation coverage for product ownership and reused-PID creation times. In the rebuilt installed v0.1.97 Viewer, one ordinary left click opened all four device-type options with no context menu; a physical click and OS keyboard entered `VERIFY197`, Save persisted it, reopening retained it, and a second Save/reopen restored and confirmed the original blank value. The five affected suites passed 140 tests and TypeScript passed.
+- Release proof: None for the repair. Public v0.1.96 contains the defect; local v0.1.97 is not public.
+- Remaining blocker: Publish and live-verify v0.1.97 through the normal release channel.
+
 ## INC-20260916-090: Late remote connection steals focus from device editor
 
 - Detected: 2026-09-16 during focused reproduction of the installed v0.1.95 right-click editor report.
@@ -13,7 +43,7 @@
 - Permanent guard: Explicitly suspend remote input, keyboard recovery and automatic panel focus while the device editor is open; resume after close. Propagate save failure into the dialog, preserve input and close only after both save stages succeed.
 - Regression proof: Real App Chromium RED lost editor focus after delayed readiness. GREEN retains typing/deletion with zero remote sends, restores remote ArrowRight after close, preserves text on save failure and retries successfully. Related six files passed 150 tests, TypeScript passed and x86 handoff exit test passed.
 - Release proof: GitHub Actions run 35074655547 built both x86 installers, generated the signed update manifest and published public latest v0.1.96. Public asset hashes match the manifest and all three latest URLs resolve to v0.1.96. Authenticode remains unconfigured and is not claimed.
-- Remaining blocker: Installed v0.1.96 Viewer must confirm right-click typing and saving against live persistence; installed Agent update/restart and remote input remain post-publication physical checks.
+- Remaining blocker: INC-20260916-091 now has installed v0.1.97 pointer, typing and Save/reopen proof; public v0.1.97 publication plus Agent update/restart and cross-PC remote input remain separate checks.
 
 ## INC-20260916-089: Device editor hides save failures and closes before all saves finish
 

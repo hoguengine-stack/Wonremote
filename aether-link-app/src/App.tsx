@@ -1255,7 +1255,7 @@ function ViewerApp() {
 
   return (
     <div className={`app-shell${isMobileViewer ? " mobile-viewer" : ""}${isRemoteFocusMode ? " remote-focus-mode" : ""}`}>
-      <aside className="sidebar">
+      <aside className="sidebar" inert={editTarget !== null}>
         <div className="brand-row" data-testid="viewer-brand">
           <div className="brand-mark">W</div>
           <div>
@@ -1335,7 +1335,7 @@ function ViewerApp() {
         </button>
       </aside>
 
-      <main className="workspace">
+      <main className="workspace" inert={editTarget !== null}>
         <header className="topbar viewer-command-header" data-testid="viewer-command-header">
           <div className="workspace-title">
             <span className="eyebrow">DEVICE OPERATIONS</span>
@@ -1709,9 +1709,51 @@ function DeviceEditDialog({
     }
   }
 
+  function focusEditorControl(event: React.PointerEvent<HTMLFormElement>) {
+    if (event.button !== 0) {
+      return;
+    }
+    const control = event.target;
+    if (
+      (control instanceof HTMLInputElement
+        || control instanceof HTMLSelectElement
+        || control instanceof HTMLTextAreaElement)
+      && !control.disabled
+    ) {
+      control.focus({ preventScroll: true });
+    }
+  }
+
+  function openSelectFromPrimaryPointer(event: React.PointerEvent<HTMLSelectElement>) {
+    if (event.button !== 0) {
+      return;
+    }
+    event.currentTarget.focus({ preventScroll: true });
+    if (typeof event.currentTarget.showPicker !== "function") {
+      return;
+    }
+    try {
+      event.currentTarget.showPicker();
+      event.preventDefault();
+    } catch {
+      // Keep the browser's normal click behavior when the native picker is unavailable.
+    }
+  }
+
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <form className="modal-panel" role="dialog" aria-modal="true" aria-label="등록 장비 수정" onMouseDown={(event) => event.stopPropagation()} onSubmit={handleSubmit}>
+    <div className="modal-backdrop device-editor-backdrop" role="presentation" onMouseDown={onClose}>
+      <form
+        className="modal-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-label="등록 장비 수정"
+        onKeyDown={(event) => event.stopPropagation()}
+        onKeyUp={(event) => event.stopPropagation()}
+        onMouseDown={(event) => event.stopPropagation()}
+        onPointerDown={(event) => event.stopPropagation()}
+        onPointerDownCapture={focusEditorControl}
+        onSubmit={handleSubmit}
+      >
         <div className="section-heading">
           <h2>{isGroupEdit ? "장비 그룹 수정" : "등록 장비 수정"}</h2>
           <span>{isGroupEdit ? `${target.devices.length}대 적용` : primaryDevice.deviceNumber}</span>
@@ -1740,6 +1782,7 @@ function DeviceEditDialog({
                 장비 종류
                 <select
                   value={deviceTypeChoice}
+                  onPointerDown={openSelectFromPrimaryPointer}
                   onChange={(event) => {
                     const choice = event.target.value as DeviceTypeChoice;
                     setDeviceTypeChoice(choice);
@@ -1819,7 +1862,7 @@ function DeviceEditDialog({
             <>
               <label>
                 업데이트 그룹
-                <select value={updateRing} onChange={(event) => setUpdateRing(event.target.value as DeviceUpdateRing)}>
+                <select value={updateRing} onPointerDown={openSelectFromPrimaryPointer} onChange={(event) => setUpdateRing(event.target.value as DeviceUpdateRing)}>
                   <option value="canary">Canary</option>
                   <option value="pilot">Pilot</option>
                   <option value="general">General</option>

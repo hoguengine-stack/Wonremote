@@ -37,12 +37,21 @@ if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
 $roots = @($roots | Select-Object -Unique)
 if ($roots.Count -eq 0) { exit 0 }
 $prefixes = @($roots | ForEach-Object { $_ + [System.IO.Path]::DirectorySeparatorChar })
+$webViewDataRoots = @()
+if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+  $webViewIdentifier = if ($Product -eq "Viewer") { "com.wonremote.viewer" } else { "com.wonremote.agent" }
+  $webViewDataRoots += Convert-ExtendedPath (Join-Path $env:LOCALAPPDATA "$webViewIdentifier\EBWebView")
+}
 # An update handoff writes readiness after the installer process starts. Give the
 # Agent child time to observe it and exit with the dedicated handoff code.
 Start-Sleep -Milliseconds 500
 $self = Get-CimInstance Win32_Process -Filter ("ProcessId = " + $PID) -ErrorAction SilentlyContinue
 $installerPid = if ($null -ne $self) { [int] $self.ParentProcessId } else { -1 }
 $processes = @(Get-CimInstance Win32_Process)
+$processById = @{}
+foreach ($process in $processes) {
+  $processById[[int] $process.ProcessId] = $process
+}
 $targetIds = New-Object "System.Collections.Generic.HashSet[int]"
 
 foreach ($process in $processes) {
@@ -50,9 +59,21 @@ foreach ($process in $processes) {
   if (
     $id -eq 0 -or
     $id -eq $PID -or
-    $id -eq $installerPid -or
-    [string]::IsNullOrWhiteSpace($process.ExecutablePath)
+    $id -eq $installerPid
   ) {
+    continue
+  }
+  $ownedWebView =
+    $process.Name -ieq "msedgewebview2.exe" -and
+    -not [string]::IsNullOrWhiteSpace($process.CommandLine) -and
+    @($webViewDataRoots | Where-Object {
+      $process.CommandLine.IndexOf($_, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+    }).Count -gt 0
+  if ($ownedWebView) {
+    [void] $targetIds.Add($id)
+    continue
+  }
+  if ([string]::IsNullOrWhiteSpace($process.ExecutablePath)) {
     continue
   }
   try {
@@ -81,7 +102,16 @@ do {
     ) {
       continue
     }
-    if ($targetIds.Contains($parentId)) {
+    $parentProcess = $processById[$parentId]
+    $isCurrentChild = $null -ne $parentProcess
+    if (
+      $isCurrentChild -and
+      $null -ne $process.CreationDate -and
+      $null -ne $parentProcess.CreationDate
+    ) {
+      $isCurrentChild = [datetime] $process.CreationDate -ge [datetime] $parentProcess.CreationDate
+    }
+    if ($targetIds.Contains($parentId) -and $isCurrentChild) {
       [void] $targetIds.Add($id)
       $added = $true
     }

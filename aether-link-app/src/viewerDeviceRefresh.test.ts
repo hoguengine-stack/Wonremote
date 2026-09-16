@@ -149,6 +149,44 @@ const counts = (page: Page) => page.evaluate(() => {
 const refresh = (page: Page) => page.getByRole("button", { name: "장비 목록 새로고침", exact: true });
 
 describe("manual Viewer device list in a real browser", () => {
+  it("edits device fields and opens device type with an ordinary left pointer", async () => {
+    const page = await openViewer({ desktop: true });
+    try {
+      await page.evaluate(() => {
+        const w = window as any;
+        w.deviceTypePickerCalls = 0;
+        Object.defineProperty(HTMLSelectElement.prototype, "showPicker", {
+          configurable: true,
+          value() { w.deviceTypePickerCalls += 1; },
+        });
+      });
+      await page.locator('.table-row').filter({ hasText: 'PC-0' }).getByRole('button', { name: '장비 정보 수정', exact: true }).click();
+
+      const dialog = page.getByRole('dialog', { name: '등록 장비 수정', exact: true });
+      const contact = dialog.getByLabel('담당자', { exact: true });
+      const contactBox = await contact.boundingBox();
+      expect(contactBox).not.toBeNull();
+      await page.mouse.click(contactBox!.x + contactBox!.width / 2, contactBox!.y + contactBox!.height / 2);
+      await page.keyboard.type('좌클릭 입력');
+      expect(await contact.inputValue()).toBe('좌클릭 입력');
+      expect(await contact.evaluate((element) => document.activeElement === element)).toBe(true);
+
+      const deviceType = dialog.locator('select').first();
+      const deviceTypeBox = await deviceType.boundingBox();
+      expect(deviceTypeBox).not.toBeNull();
+      await page.mouse.click(deviceTypeBox!.x + deviceTypeBox!.width / 2, deviceTypeBox!.y + deviceTypeBox!.height / 2);
+      expect(await page.evaluate(() => (window as any).deviceTypePickerCalls)).toBe(1);
+      expect(await deviceType.evaluate((element) => document.activeElement === element)).toBe(true);
+      expect(await page.locator('aside.sidebar').evaluate((element) => (element as HTMLElement).inert)).toBe(true);
+      expect(await page.locator('main.workspace').evaluate((element) => (element as HTMLElement).inert)).toBe(true);
+      expect(await dialog.locator('..').evaluate((element) => Number(getComputedStyle(element).zIndex))).toBeGreaterThan(104);
+
+      await dialog.getByRole('button', { name: '취소', exact: true }).click();
+      expect(await page.locator('aside.sidebar').evaluate((element) => (element as HTMLElement).inert)).toBe(false);
+      expect(await page.locator('main.workspace').evaluate((element) => (element as HTMLElement).inert)).toBe(false);
+    } finally { await page.close(); }
+  });
+
   it("keeps editor keyboard focus when the remote transport becomes ready", async () => {
     const page = await openViewer({ desktop: true, connected: true });
     try {

@@ -997,6 +997,10 @@ input:focus {
   z-index: 50;
 }
 
+.device-editor-backdrop {
+  z-index: 200;
+}
+
 .modal-panel {
   background: #ffffff;
   border: 1px solid #d8dee7;

@@ -151,6 +151,44 @@ describe.skipIf(process.platform !== "win32")("Agent first-run Windows boundarie
     expect(output).not.toContain("STOPPED_PID=104");
   });
 
+  it("stops an orphaned Viewer WebView2 tree without touching another app", () => {
+    const helper = path.resolve("src-tauri/windows/stop-wonremote-processes.ps1").replace(/'/g, "''");
+    const script = [
+      "$env:LOCALAPPDATA = 'C:\\Users\\Test\\AppData\\Local'",
+      "$global:stopped = [Collections.Generic.HashSet[int]]::new()",
+      "$global:processes = @(",
+      "  [pscustomobject]@{ProcessId=201;ParentProcessId=1;CreationDate=[datetime]'2026-09-16T12:00:00';Name='msedgewebview2.exe';ExecutablePath='C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\msedgewebview2.exe';CommandLine='--user-data-dir=\"C:\\Users\\Test\\AppData\\Local\\com.wonremote.viewer\\EBWebView\" --webview-exe-name=wonremote-viewer.exe'},",
+      "  [pscustomobject]@{ProcessId=202;ParentProcessId=201;CreationDate=[datetime]'2026-09-16T12:00:01';Name='msedgewebview2.exe';ExecutablePath=$null;CommandLine='--type=renderer'},",
+      "  [pscustomobject]@{ProcessId=203;ParentProcessId=1;CreationDate=[datetime]'2026-09-16T12:00:00';Name='msedgewebview2.exe';ExecutablePath='C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\msedgewebview2.exe';CommandLine='--user-data-dir=\"C:\\Users\\Test\\AppData\\Local\\Codex\\EBWebView\"'},",
+      "  [pscustomobject]@{ProcessId=204;ParentProcessId=1;CreationDate=[datetime]'2026-09-16T12:00:00';Name='notepad.exe';ExecutablePath='C:\\Windows\\System32\\notepad.exe';CommandLine='notepad.exe'},",
+      "  [pscustomobject]@{ProcessId=205;ParentProcessId=201;CreationDate=[datetime]'2026-09-16T11:59:59';Name='VCTIP.exe';ExecutablePath='C:\\Program Files\\Microsoft Visual Studio\\VCTIP.exe';CommandLine='VCTIP.exe'}",
+      ")",
+      "function Get-CimInstance {",
+      "  param($ClassName,$Filter,$ErrorAction)",
+      "  if ($Filter) { return [pscustomobject]@{ParentProcessId=9000} }",
+      "  return @($global:processes | Where-Object { -not $global:stopped.Contains([int]$_.ProcessId) })",
+      "}",
+      "function Stop-Process {",
+      "  param($Id,[switch]$Force,$ErrorAction)",
+      "  [void]$global:stopped.Add([int]$Id)",
+      "  Write-Output ('STOPPED_PID=' + $Id)",
+      "}",
+      "function Start-Sleep {}",
+      "$source = [IO.File]::ReadAllText('" + helper + "')",
+      "& ([scriptblock]::Create($source)) -Product Viewer",
+    ].join("\n");
+    const output = execFileSync(
+      "powershell.exe",
+      ["-NoProfile", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
+      { windowsHide: true, timeout: 15000, encoding: "utf8" },
+    );
+    expect(output).toContain("STOPPED_PID=201");
+    expect(output).toContain("STOPPED_PID=202");
+    expect(output).not.toContain("STOPPED_PID=203");
+    expect(output).not.toContain("STOPPED_PID=204");
+    expect(output).not.toContain("STOPPED_PID=205");
+  });
+
   it("starts the real protected runtime before exposing the one-time legacy updater bridge", () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "wonremote-agent-migration-"));
     const appData = path.join(root, "Roaming");
