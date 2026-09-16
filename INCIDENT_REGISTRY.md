@@ -1,5 +1,20 @@
 # WonRemote Incident Registry
 
+## INC-20260917-109: Per-machine installer looked for the legacy Agent in the wrong shell context
+
+- Detected: 2026-09-17 after the approved public v0.1.102 bootstrap on Agent 82220F6D.
+- Severity: Medium; the protected v0.1.102 Agent is registered, online and usable, but the obsolete writable v0.1.88 runtime and duplicate uninstall entry remain.
+- Affected: Agent per-machine NSIS migration from `%LOCALAPPDATA%\WonRemote\Agent` to `C:\Program Files (x86)\WonRemote Agent`.
+- Status: Source verified and ready for restricted deployment; wider Agent rollout remains restricted to the exact selected test device.
+- User-visible symptom: Agent reports v0.1.102 from Program Files and sends accepted heartbeats, while Apps/registry still lists WonRemote Agent v0.1.88 and its complete LocalAppData payload remains.
+- Minimal trigger: Install a protected per-machine Agent over a same-user legacy installation while the NSIS process uses machine shell context.
+- Root cause and contributors: Legacy detection was performed in NSIS with `$LOCALAPPDATA`. A per-machine installer can resolve that shell constant outside the intended interactive user's profile, so the migration branch was skipped even though the later PowerShell cleanup already had exact-path validation.
+- Fix commit(s): Pending v0.1.103 preparation commit.
+- Permanent guard: Derive the intended user's profile from its SID-backed Windows `ProfileList`, allow only `AppData\Local\WonRemote\Agent` and `AppData\Local\WonRemote Agent`, and make the protected installer helper decide whether migration is needed. Do not trust NSIS machine shell context for user-owned legacy state.
+- Regression proof: The actual helper now resolves `ProfileList` for the intended SID, accepts only its two known legacy roots, and the per-machine hooks always delegate the migration decision to that helper. Focused PowerShell/NSIS tests passed 83 cases including a deliberately different machine shell context, release boundaries passed 130 cases, TypeScript passed, and installer update E2E passed upgrade, two rollback paths and the backup-required gate.
+- Release proof: Public v0.1.102 bootstrap exited 0, installed product 0.1.102, preserved `123-45-67890:AGENT-82220F6D`, registered the protected updater task and resumed accepted heartbeat. Exact legacy directory and HKCU entry remained, proving the cleanup acceptance condition was not met.
+- Remaining blocker: Repair discovery, publish fresh v0.1.103 through normal CI, and prove automatic selected update removes both exact legacy artifacts while the protected Agent returns online without another UAC prompt.
+
 ## INC-20260917-108: Real Task Scheduler Job rejects the Agent updater's direct breakaway
 
 - Detected: 2026-09-17 while installing selected public v0.1.101 on Agent 82220F6D.

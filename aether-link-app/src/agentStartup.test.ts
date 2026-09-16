@@ -230,7 +230,9 @@ exit 0
   it("proves the protected runtime and broker before scheduling limited legacy cleanup", () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "wonremote-agent-migration-"));
     const appData = path.join(root, "Roaming");
-    const localAppData = path.join(root, "Local");
+    const profileRoot = path.join(root, "InteractiveUser");
+    const localAppData = path.join(profileRoot, "AppData", "Local");
+    const machineLocalAppData = path.join(root, "MachineShell", "Local");
     const updateRoot = path.join(appData, "WonRemote", "updates");
     const legacyRoot = path.join(localAppData, "WonRemote", "Agent");
     const protectedRoot = path.join(process.env.ProgramFiles!, "WonRemote Agent");
@@ -240,15 +242,17 @@ exit 0
 
     const script = `
       $env:APPDATA = '${appData.replace(/'/g, "''")}'
-      $env:LOCALAPPDATA = '${localAppData.replace(/'/g, "''")}'
+      $env:LOCALAPPDATA = '${machineLocalAppData.replace(/'/g, "''")}'
       $protectedRoot = '${protectedRoot.replace(/'/g, "''")}'
       $legacyRoot = '${legacyRoot.replace(/'/g, "''")}'
+      $profileRoot = '${profileRoot.replace(/'/g, "''")}'
       $global:events = [Collections.Generic.List[string]]::new()
       $global:registered = @{}
       $global:protectedStarted = $false
       $global:bridgeStarted = $false
       function Test-Path { param($LiteralPath,$PathType); return $true }
       function Resolve-Path { param($LiteralPath); return [pscustomobject]@{Path=$LiteralPath} }
+      function Get-ItemProperty { param($LiteralPath,$ErrorAction); if ($LiteralPath -like '*ProfileList*') { return [pscustomobject]@{ProfileImagePath=$profileRoot} } }
       function New-ScheduledTaskAction { param($Execute,$Argument,$WorkingDirectory); return [pscustomobject]@{Execute=$Execute;Arguments=$Argument;WorkingDirectory=$WorkingDirectory} }
       function New-ScheduledTaskTrigger { param([switch]$AtLogOn,[switch]$AtStartup,$User); return @{} }
       function New-ScheduledTaskPrincipal { param($UserId,$LogonType,$RunLevel); return [pscustomobject]@{UserId=$UserId;RunLevel=$RunLevel} }
@@ -283,7 +287,7 @@ exit 0
       function Start-Sleep {}
       $source = [IO.File]::ReadAllText('${helper}')
       $source = $source.Replace('$isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)', '$isAdmin = $true')
-      & ([scriptblock]::Create($source)) -Mode Migrate -AgentPath (Join-Path $protectedRoot 'wonremote-viewer.exe') -LegacyRoot $legacyRoot -UserId 'S-1-5-21-test'
+      & ([scriptblock]::Create($source)) -Mode Migrate -AgentPath (Join-Path $protectedRoot 'wonremote-viewer.exe') -UserId 'S-1-5-21-1-2-3-1001'
       $global:events -join '|'
     `;
     try {
@@ -295,6 +299,8 @@ exit 0
       expect(output).toContain("REGISTER:WonRemote Agent Migration:Limited");
       expect(output).toContain("START:WonRemote Agent Migration");
       expect(output).toContain("MIGRATION_COMMAND:");
+      expect(output).toContain(legacyRoot);
+      expect(output).not.toContain(path.join(machineLocalAppData, "WonRemote", "Agent"));
       expect(output).toContain("-Mode RunMigrationBridge");
       expect(output).not.toContain("-UpdateHandoff");
       expect(output).not.toContain("-SourceNode");
@@ -347,7 +353,8 @@ exit 0
   it.each(["healthy", "rollback"])("finalizes a %s legacy migration without accepting stale state", (state) => {
     const root = mkdtempSync(path.join(os.tmpdir(), `wonremote-agent-monitor-${state}-`));
     const appData = path.join(root, "Roaming");
-    const localAppData = path.join(root, "Local");
+    const profileRoot = path.join(root, "InteractiveUser");
+    const localAppData = path.join(profileRoot, "AppData", "Local");
     const updateRoot = path.join(appData, "WonRemote", "updates");
     const legacyRoot = path.join(localAppData, "WonRemote", "Agent");
     const resultPath = path.join(updateRoot, "last-update-result.json");
@@ -358,7 +365,9 @@ exit 0
     const script = `
       $env:APPDATA='${appData.replace(/'/g, "''")}'
       $env:LOCALAPPDATA='${localAppData.replace(/'/g, "''")}'
+      $profileRoot='${profileRoot.replace(/'/g, "''")}'
       $global:events=[Collections.Generic.List[string]]::new()
+      function Get-ItemProperty { param($LiteralPath,$ErrorAction); if ($LiteralPath -like '*ProfileList*') { return [pscustomobject]@{ProfileImagePath=$profileRoot} } }
       function Get-ScheduledTask { param($TaskName,$ErrorAction); return [pscustomobject]@{State='Ready'} }
       function Stop-ScheduledTask { param($TaskName,$ErrorAction); $global:events.Add("STOP:$TaskName") }
       function Unregister-ScheduledTask { param($TaskName,[switch]$Confirm,$ErrorAction); $global:events.Add("UNREGISTER:$TaskName") }
@@ -368,7 +377,7 @@ exit 0
       $source=$source.Replace('$isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)', '$isAdmin = $true')
       $failed=$false
       try {
-        & ([scriptblock]::Create($source)) -Mode MonitorMigration -LegacyRoot '${legacyRoot.replace(/'/g, "''")}' -MigrationStartedUtc ([datetime]'2000-01-01T00:00:00Z')
+        & ([scriptblock]::Create($source)) -Mode MonitorMigration -LegacyRoot '${legacyRoot.replace(/'/g, "''")}' -UserId 'S-1-5-21-1-2-3-1002' -MigrationStartedUtc ([datetime]'2000-01-01T00:00:00Z')
       } catch {
         $failed=$true
         Write-Output "MIGRATION_ERROR:$($_.Exception.Message)"
@@ -407,15 +416,18 @@ exit 0
 
   it("cleans a legacy root through the limited migration task rather than the elevated installer", () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "wonremote-agent-limited-cleanup-"));
-    const localAppData = path.join(root, "Local");
+    const profileRoot = path.join(root, "InteractiveUser");
+    const localAppData = path.join(profileRoot, "AppData", "Local");
     const legacyRoot = path.join(localAppData, "WonRemote", "Agent");
     const helper = path.resolve("src-tauri/windows/manage-agent-login-task.ps1").replace(/'/g, "''");
     mkdirSync(legacyRoot, { recursive: true });
     writeFileSync(path.join(legacyRoot, "stale.txt"), "legacy");
     const script = `
       $env:LOCALAPPDATA='${localAppData.replace(/'/g, "''")}'
+      $profileRoot='${profileRoot.replace(/'/g, "''")}'
+      function Get-ItemProperty { param($LiteralPath,$ErrorAction); if ($LiteralPath -like '*ProfileList*') { return [pscustomobject]@{ProfileImagePath=$profileRoot} } }
       $source=[IO.File]::ReadAllText('${helper}')
-      & ([scriptblock]::Create($source)) -Mode RunMigrationBridge -LegacyRoot '${legacyRoot.replace(/'/g, "''")}' -MigrationStartedUtc ([datetime]::UtcNow)
+      & ([scriptblock]::Create($source)) -Mode RunMigrationBridge -LegacyRoot '${legacyRoot.replace(/'/g, "''")}' -UserId 'S-1-5-21-1-2-3-1003' -MigrationStartedUtc ([datetime]::UtcNow)
     `;
     try {
       execFileSync(

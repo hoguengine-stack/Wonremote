@@ -36,7 +36,6 @@
 
 !macro NSIS_HOOK_PREINSTALL
   !insertmacro WONREMOTE_REQUIRE_X64_WINDOWS
-  !insertmacro WONREMOTE_DETECT_LEGACY_AGENT
   !insertmacro WONREMOTE_STOP_RUNNING_PROCESSES
   CreateDirectory "$INSTDIR"
   SetOutPath $INSTDIR
@@ -45,11 +44,7 @@
 !macro NSIS_HOOK_POSTINSTALL
   File /oname=$INSTDIR\manage-agent-login-task.ps1 "${WONREMOTE_AGENT_TASK_HOOK_DIR}\manage-agent-login-task.ps1"
   File /oname=$INSTDIR\update-handoff-broker.ps1 "${WONREMOTE_AGENT_TASK_HOOK_DIR}\update-handoff-broker.ps1"
-  ${If} $WonRemoteLegacyAgentRoot != ""
-    !insertmacro WONREMOTE_MIGRATE_LEGACY_AGENT
-  ${Else}
-    !insertmacro WONREMOTE_MANAGE_AGENT_LOGIN_TASK Install
-  ${EndIf}
+  !insertmacro WONREMOTE_MIGRATE_LEGACY_AGENT
   CreateDirectory "$SMPROGRAMS\WonRemote"
   CreateShortCut "$DESKTOP\WonRemote Agent.lnk" "$INSTDIR\wonremote-viewer.exe" "--agent --show-window"
   CreateShortCut "$SMPROGRAMS\WonRemote\WonRemote Agent.lnk" "$INSTDIR\wonremote-viewer.exe" "--agent --show-window"

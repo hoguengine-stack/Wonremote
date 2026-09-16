@@ -36,15 +36,49 @@ function Test-PathUnder([string]$Candidate, [string]$Root) {
     $candidatePath.StartsWith($rootPath + [System.IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)
 }
 
+function Get-UserLocalAppData([string]$IdentityValue) {
+  $sid = $null
+  if (-not [string]::IsNullOrWhiteSpace($IdentityValue)) {
+    try {
+      if ($IdentityValue -match '^S-\d(?:-\d+)+$') {
+        $sid = [Security.Principal.SecurityIdentifier]::new($IdentityValue)
+      } else {
+        $sid = ([Security.Principal.NTAccount]::new($IdentityValue)).Translate([Security.Principal.SecurityIdentifier])
+      }
+    } catch {
+      $sid = $null
+    }
+  }
+  if ($sid) {
+    $profileKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$($sid.Value)"
+    $profile = Get-ItemProperty -LiteralPath $profileKey -ErrorAction SilentlyContinue
+    if ($profile -and -not [string]::IsNullOrWhiteSpace([string]$profile.ProfileImagePath)) {
+      $profileRoot = [Environment]::ExpandEnvironmentVariables([string]$profile.ProfileImagePath)
+      return Convert-ComparablePath (Join-Path $profileRoot "AppData\Local")
+    }
+  }
+  if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+    return Convert-ComparablePath $env:LOCALAPPDATA
+  }
+  throw "The intended user's LocalAppData directory is unavailable."
+}
+
+function Get-LegacyAgentRoots {
+  $localAppData = Get-UserLocalAppData $UserId
+  return @(
+    Convert-ComparablePath (Join-Path $localAppData "WonRemote\Agent")
+    Convert-ComparablePath (Join-Path $localAppData "WonRemote Agent")
+  )
+}
+
 function Resolve-LegacyRoot([string]$Path) {
-  if ([string]::IsNullOrWhiteSpace($Path) -or [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
-    throw "The legacy Agent root is unavailable."
+  $expected = @(Get-LegacyAgentRoots)
+  if ([string]::IsNullOrWhiteSpace($Path)) {
+    return $expected | Where-Object {
+      Test-Path -LiteralPath (Join-Path $_ "wonremote-viewer.exe") -PathType Leaf
+    } | Select-Object -First 1
   }
   $resolved = Convert-ComparablePath $Path
-  $expected = @(
-    Convert-ComparablePath (Join-Path $env:LOCALAPPDATA "WonRemote\Agent")
-    Convert-ComparablePath (Join-Path $env:LOCALAPPDATA "WonRemote Agent")
-  )
   if (-not ($expected | Where-Object { $resolved.Equals($_, [StringComparison]::OrdinalIgnoreCase) })) {
     throw "Refusing to change an unexpected legacy Agent path: $resolved"
   }
@@ -487,7 +521,10 @@ try {
   }
 
   if ($Mode -eq "Migrate") {
-    Start-LegacyMigration $runtime $LegacyRoot
+    $resolvedLegacyRoot = Resolve-LegacyRoot $LegacyRoot
+    if ($resolvedLegacyRoot) {
+      Start-LegacyMigration $runtime $resolvedLegacyRoot
+    }
   }
 } catch {
   if ($Mode -eq "Migrate") {

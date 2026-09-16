@@ -227,24 +227,16 @@ describe("desktop packaging scaffold", () => {
     for (const hookName of ["agent-install-hooks.nsh", "agent-install-hooks-x86.nsh"]) {
       const hook = readFileSync(path.join(projectRoot, "src-tauri", "windows", hookName), "utf8");
       expect(hook).toContain('!include "${__FILEDIR__}\\agent-login-task.nsh"');
-      expect(hook).toContain("!insertmacro WONREMOTE_MANAGE_AGENT_LOGIN_TASK Install");
-      expect(hook).toContain("!insertmacro WONREMOTE_DETECT_LEGACY_AGENT");
       expect(hook).toContain("!insertmacro WONREMOTE_MIGRATE_LEGACY_AGENT");
-      expect(hook).toContain('${If} $WonRemoteLegacyAgentRoot != ""');
-      expect(hook.indexOf("!insertmacro WONREMOTE_MIGRATE_LEGACY_AGENT")).toBeLessThan(
-        hook.indexOf("!insertmacro WONREMOTE_MANAGE_AGENT_LOGIN_TASK Install"),
-      );
-      expect(hook.indexOf("!insertmacro WONREMOTE_DETECT_LEGACY_AGENT")).toBeLessThan(
-        hook.indexOf("!insertmacro WONREMOTE_STOP_RUNNING_PROCESSES"),
-      );
+      expect(hook).not.toContain("WONREMOTE_DETECT_LEGACY_AGENT");
+      expect(hook).not.toContain("$WonRemoteLegacyAgentRoot");
       expect(hook).toContain('File /oname=$INSTDIR\\manage-agent-login-task.ps1');
       expect(hook).toContain('File /oname=$INSTDIR\\update-handoff-broker.ps1');
       expect(hook).toContain("!insertmacro WONREMOTE_MANAGE_AGENT_LOGIN_TASK Uninstall");
     }
 
     expect(taskHook).toContain("manage-agent-login-task.ps1");
-    expect(taskHook).toContain('IfFileExists "$LOCALAPPDATA\\WonRemote\\Agent\\wonremote-viewer.exe"');
-    expect(taskHook).not.toContain('IfFileExists "$LOCALAPPDATA\\WonRemote\\Agent\\runtime\\node.exe"');
+    expect(taskHook).not.toContain("$LOCALAPPDATA");
     expect(taskHook).toContain('!define WONREMOTE_AGENT_TASK_HOOK_DIR "${__FILEDIR__}"');
     expect(taskHook).toContain('"${WONREMOTE_AGENT_TASK_HOOK_DIR}\\manage-agent-login-task.ps1"');
     expect(taskHook).toContain("-AgentPath \"$INSTDIR\\wonremote-viewer.exe\"");
@@ -255,6 +247,9 @@ describe("desktop packaging scaffold", () => {
     expect(taskScript.indexOf("MessageBox]::Show")).toBeLessThan(taskScript.indexOf("Start-Process powershell.exe -Verb RunAs"));
     expect(taskScript).toContain('Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden');
     expect(taskScript).toContain('New-ScheduledTaskPrincipal -UserId $UserId -LogonType Interactive -RunLevel Highest');
+    expect(taskScript).toContain('CurrentVersion\\ProfileList\\$($sid.Value)');
+    expect(taskScript).toContain('Join-Path $profileRoot "AppData\\Local"');
+    expect(taskScript).toContain('Test-Path -LiteralPath (Join-Path $_ "wonremote-viewer.exe") -PathType Leaf');
     expect(taskScript).toContain('New-ScheduledTaskTrigger -AtLogOn -User $UserId');
     expect(taskScript).toContain('New-ScheduledTaskAction -Execute $runtime.Agent -Argument "--agent"');
     expect(taskScript.indexOf("Start-ScheduledTask -TaskName $taskName")).toBeGreaterThan(

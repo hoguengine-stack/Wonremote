@@ -6,10 +6,5 @@ OutFile "${TESTOUTPUT}"
 RequestExecutionLevel admin
 Section
   StrCpy $INSTDIR "$TEMP\WonRemote Agent"
-  !insertmacro WONREMOTE_DETECT_LEGACY_AGENT
-  ${If} $WonRemoteLegacyAgentRoot != ""
-    !insertmacro WONREMOTE_MIGRATE_LEGACY_AGENT
-  ${Else}
-    !insertmacro WONREMOTE_MANAGE_AGENT_LOGIN_TASK Install
-  ${EndIf}
+  !insertmacro WONREMOTE_MIGRATE_LEGACY_AGENT
 SectionEnd
