@@ -16,7 +16,8 @@
       "INC-20260917-103",
       "INC-20260917-104",
       "INC-20260917-105",
-      "INC-20260917-106"
+      "INC-20260917-106",
+      "INC-20260917-107"
     ],
     "observed": "Installed v0.1.97 Agent displays Viewer identity, has no x86 tray Exit command, leaves the SYSTEM capture broker running after the shell closes, can discard an update click during startup privilege handoff, and reports installer success while the v0.1.88 LocalAppData runtime and uninstall entry remain. The live v0.1.97-to-v0.1.98 update then replaced the protected executable but its PowerShell handoff died with the scheduled-task process tree immediately after logging the installer PID, so restart, result recording and cleanup did not complete.",
     "outcomes": [
@@ -483,7 +484,7 @@
   "deploymentBlockers": [],
   "firestoreVerification": "2026-09-14: npm run firebase:rules:test passed with a temporary Microsoft OpenJDK 21 runtime and the local Firestore emulator. Agent session access, central and managed Viewer device access, unauthorized Viewer denial, central deletion, manual presence and stale legacy denial all returned the expected result. The emulator-gated command deletion recovery integration also passed 1/1 with the real Firebase SDK and repository rules. No production database traffic.",
   "authenticodeStatus": "No code-signing certificate in CurrentUser/LocalMachine My stores or configured Process/User/Machine PFX variables. Public-trust issuance requires user identity/account setup. Existing release policy makes Authenticode optional; unsigned status alone is not a deployment blocker. Installers remain unsigned.",
-  "incident": "INC-20260917-105",
+  "incident": "INC-20260917-107",
   "requestReview": {
     "androidViewportReview": "2026-09-12: Android-only layout, pointer overlay and local focus/gesture handling. No request, listener, timer, retry, persistence read or write changes.",
     "nativeCaptureReview": "2026-09-12: Local synchronous duplex pipe IO changed to overlapped operations and directional worker stdio. No new timers, retries, subscriptions, disk persistence, cloud reads or writes; event waits are demand-driven and exist only during an active pipe connection. Peer EOF closes bridge input; tests cover three connections with control and close. Existing changed cloud ACK budget below is retained and is not a whole-product certification.",
@@ -642,6 +643,17 @@
         "aether-link-app/src/firebase/agentCommandSubscription.test.ts"
       ],
       "verification": "Pending"
+    },
+    {
+      "id": "job-boundary-proof-cold-start-budget-20260917",
+      "acceptance": "The mandatory Windows Job-boundary proof keeps the same real kill-on-close behavior and failure diagnostics, but allows a bounded 30 seconds for cold PowerShell Add-Type, CIM and process startup on the release runner instead of intermittently failing at 10 seconds.",
+      "boundaries": ["GitHub Actions Windows runner", "x86 direct-rustc probe", "PowerShell Add-Type cold start", "CIM probe discovery", "kill-on-close Job", "breakaway update broker", "proof file", "bounded timeout diagnostics"],
+      "proofLevel": "automated-runtime",
+      "contractTests": [
+        "aether-link-app/tests/e2e/test_update_handoff_broker.ts",
+        "aether-link-app/src/desktopPackaging.test.ts"
+      ],
+      "verification": "GitHub run 35137944488 built both v0.1.101 installers and passed change guard, release-contract tests and installer-update E2E, then RED timed out at the fixed 10-second proof wait with no launcher or probe error file. The immediately preceding successful v0.1.100 step used 12 seconds overall. GREEN keeps the same real kill-on-close Job and x86 probe, raises only the proof-file wait to bounded 30 seconds, and pins it in the release contract. Local actual x86 Job execution passed in 4.6 seconds and desktopPackaging passed 67 tests. Fresh release-runner proof remains deployment-required."
     }
   ],
   "historicalOutcomes": [

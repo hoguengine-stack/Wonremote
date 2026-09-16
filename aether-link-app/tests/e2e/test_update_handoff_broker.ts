@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 const appRoot = path.resolve(import.meta.dirname, "..", "..");
 const fixtureRoot = path.join(os.tmpdir(), `wonremote-update-broker-e2e-${process.pid}`);
 const fixtureCleanup = { recursive: true, force: true, maxRetries: 20, retryDelay: 250 } as const;
+const BROKER_PROOF_TIMEOUT_MS = 30_000;
 
 type BrokerScenario = {
   arch: "x64" | "x86";
@@ -110,7 +111,7 @@ async function runScenario(scenario: BrokerScenario): Promise<void> {
   });
   try {
     try {
-      await waitForFile(proofPath, 10_000);
+      await waitForFile(proofPath, BROKER_PROOF_TIMEOUT_MS);
     } catch (error) {
       let launcherError = "";
       let probeError = "";

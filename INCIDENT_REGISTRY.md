@@ -1,5 +1,20 @@
 # WonRemote Incident Registry
 
+## INC-20260917-107: Job-boundary release proof used a cold-start budget below observed runner time
+
+- Detected: 2026-09-17 in GitHub Actions run 35137944488 after both v0.1.101 installers built.
+- Severity: Medium; publication was safely blocked, but valid release artifacts could not reach signing or publication.
+- Affected: `test_update_handoff_broker.ts` release-time x86 Windows Job-boundary proof.
+- Status: Bounded timeout repaired and local real-Job regression passed; fresh release-runner proof pending.
+- User-visible symptom: v0.1.101 build reaches the mandatory Job-boundary step, waits 10 seconds for `broker-proof.txt`, then aborts the release before signing and publication even though no launcher or probe error was recorded.
+- Minimal trigger: Run the real x86 Job-boundary fixture on a Windows release runner where cold PowerShell Add-Type, CIM startup and the broker sequence exceed the fixed 10-second proof-file wait.
+- Root cause and contributors: The proof used a 10-second inner wait. The immediately preceding successful v0.1.100 run consumed 12 seconds for the complete step, leaving effectively no cold-run margin; v0.1.101 failed at 12.45 seconds with neither diagnostic error file present. The product process flags and probe were unchanged.
+- Fix commit(s): Pending v0.1.101 release follow-up commit.
+- Permanent guard: Keep the same real kill-on-close Job, probe, proof contents, process cleanup and error-file diagnostics, but raise only the cold-start proof-file budget to a bounded 30 seconds and pin that value in the release-boundary contract test.
+- Regression proof: The actual x86 probe survived the local enclosing kill-on-close Job and wrote proof in 4.6 seconds. `desktopPackaging.test.ts` passed 67 tests and pins the 30-second budget plus its use at the proof-file boundary.
+- Release proof: Run 35137944488 built both installers and passed change guard, 107 release-contract tests and installer-update E2E before this gate safely blocked signing/upload/publication.
+- Remaining blocker: Pass the unchanged real Job behavior within the bounded budget on the release runner, then continue normal signing, publication and live verification without reusing failed-run artifacts.
+
 ## INC-20260917-106: Legacy cleanup depended on a result the old updater could no longer publish
 
 - Detected: 2026-09-17 after the selected 82220F6D v0.1.100 update returned online.

@@ -1083,6 +1083,8 @@ describe("desktop packaging scaffold", () => {
     expect(brokerE2e).toContain('"wonremote-job-probe.exe"');
     expect(brokerE2e).not.toMatch(/(?:update|install|setup)[^"']*job-probe\.exe/i);
     expect(brokerE2e).not.toContain('"WonRemote Agent.exe"');
+    expect(brokerE2e).toContain("const BROKER_PROOF_TIMEOUT_MS = 30_000");
+    expect(brokerE2e).toContain("await waitForFile(proofPath, BROKER_PROOF_TIMEOUT_MS)");
     expect(brokerProbe).toContain("update_handoff_process::spawn_brokered_update_handoff");
     expect(tauriSource).toContain("spawn_brokered_update_handoff(&script_path)");
     expect(brokerProcess).toContain("command.creation_flags(UPDATE_HANDOFF_CREATION_FLAGS)");
