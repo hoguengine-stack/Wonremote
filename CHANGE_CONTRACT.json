@@ -11,7 +11,8 @@
       "INC-20260917-098",
       "INC-20260917-099",
       "INC-20260917-100",
-      "INC-20260917-101"
+      "INC-20260917-101",
+      "INC-20260917-102"
     ],
     "observed": "Installed v0.1.97 Agent displays Viewer identity, has no x86 tray Exit command, leaves the SYSTEM capture broker running after the shell closes, can discard an update click during startup privilege handoff, and reports installer success while the v0.1.88 LocalAppData runtime and uninstall entry remain. The live v0.1.97-to-v0.1.98 update then replaced the protected executable but its PowerShell handoff died with the scheduled-task process tree immediately after logging the installer PID, so restart, result recording and cleanup did not complete.",
     "outcomes": [
@@ -59,6 +60,7 @@
         "cleanup": "Only known Agent install roots, matching uninstall registration and the named secure broker task are affected."
       }
     },
+    "verification": "The shared production process module passed 47 x86 Rust tests and its direct-rustc x86 probe survived a real kill-on-close Job locally. The complete seven-file release contract group passed 107 tests after preserving the PowerShell behavior assertions and raising only the bounded cold-start budget; the timeout now reports its process error explicitly.",
     "remaining": "A fresh normal workflow must compile and pass the shared-function x86 Job probe before v0.1.99 publication. Selected-device installed upgrade/migration remains deployment-required. Visual tray right-click and cross-PC latency proof remain physical checks."
   },
   "deviceEditor20260916": {
@@ -600,6 +602,7 @@
         "aether-link-app/scripts/package-release-exes.test.js",
         "aether-link-app/scripts/verify-recurrence-coverage.test.js",
         "aether-link-app/src/desktopPackaging.test.ts",
+        "aether-link-app/src/agent/productionInstallerUpdate.test.ts",
         "aether-link-app/src/agentStartup.test.ts",
         "aether-link-app/src/domain/installerHookIsolation.test.ts",
         "aether-link-app/src-tauri/src/lib.rs",

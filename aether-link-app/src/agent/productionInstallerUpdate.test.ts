@@ -13,6 +13,9 @@ import {
   isInstallerUpdateMetadata,
 } from "./productionInstallerUpdate";
 
+const POWERSHELL_HARNESS_TIMEOUT_MS = 60_000;
+const POWERSHELL_CASE_TIMEOUT_MS = 75_000;
+
 describe("production installer update", () => {
   it.runIf(process.platform === "win32").each(["launch", "installer", "runtime"])(
     "preserves or restores the runtime at the %s failure boundary",
@@ -52,8 +55,9 @@ function Close-UpdateLock { Record 'unlock' }
 ${script.slice(start)}
 `);
         const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", harness], {
-          env: { ...process.env, WR_EVENTS: events, WR_FAILURE: failure }, encoding: "utf8", timeout: 20_000, windowsHide: true,
+          env: { ...process.env, WR_EVENTS: events, WR_FAILURE: failure }, encoding: "utf8", timeout: POWERSHELL_HARNESS_TIMEOUT_MS, windowsHide: true,
         });
+        expect(result.error, result.stderr).toBeUndefined();
         expect(result.status, result.stderr).toBe(failure === "installer" ? 5 : 1);
         const recorded = (await readFile(events, "utf8")).trim().split(/\r?\n/);
         if (failure === "launch") {
@@ -67,7 +71,7 @@ ${script.slice(start)}
         }
       } finally { await rm(baseDir, { recursive: true, force: true }); }
     },
-    30_000,
+    POWERSHELL_CASE_TIMEOUT_MS,
   );
   it.runIf(process.platform === "win32")("executes successful handoff cleanup without deleting failure evidence or identity", async () => {
     const baseDir = path.join(os.tmpdir(), `wonremote-cleanup-${process.pid}-${Date.now()}`);

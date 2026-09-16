@@ -1,5 +1,20 @@
 # WonRemote Incident Registry
 
+## INC-20260917-102: Release PowerShell contract timeout was below observed CI startup time
+
+- Detected: 2026-09-17 in GitHub Actions run 35127627515 before the v0.1.99 build started.
+- Severity: Medium; publication was safely blocked, but a valid updater repair could not reach packaging.
+- Affected: The generated installer-handoff failure-boundary contract in `productionInstallerUpdate.test.ts`.
+- Status: Test harness repaired and locally verified; no v0.1.99 asset was built or published by the failed run.
+- User-visible symptom: The release contract reports `expected null to be 1` after 20.1 seconds even though the same failure path exits with code 1 locally.
+- Minimal trigger: Run the release contract suite on a fresh Windows CI runner while its first Windows PowerShell process is cold and other test files are active.
+- Root cause and contributors: The harness imposed a 20-second child-process timeout and then asserted only `status`. The CI log shows that exact timeout duration and a null status; later PowerShell cases took up to 8.9 seconds, while five local runs passed. The timeout was too close to observed cold-run variance and hid its own timeout error.
+- Fix commit(s): Pending v0.1.99 preparation follow-up commit.
+- Permanent guard: Keep the executable PowerShell boundary and all exit/event assertions, but give a bounded 60-second process budget, a larger per-case test budget and an explicit child-process error assertion so a future timeout is diagnosed rather than mistaken for an updater exit-code regression.
+- Regression proof: The exact seven-file release contract command passed all 107 tests locally, including the unchanged launch, installer and replacement-runtime failure event sequences. The child timeout now fails first with its explicit process error instead of an ambiguous null status.
+- Release proof: Not applicable until the normal v0.1.99 workflow completes.
+- Remaining blocker: Pass the unchanged behavioral assertions on the release runner, then continue normal packaging and Job-boundary proof.
+
 ## INC-20260917-101: Broker probe filename triggered Windows installer detection
 
 - Detected: 2026-09-17 during the local pre-release Job-boundary proof.
