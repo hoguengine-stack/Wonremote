@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  AGENT_UPDATE_HANDOFF_EXIT_CODE,
   encodeUpdateHandoffScriptPath,
   formatUpdateHandoffBrokerRequest,
   isUpdateHandoffBrokerEnabled,
@@ -8,6 +9,11 @@ import {
 } from "./agentUpdateHandoffBroker";
 
 describe("agent update handoff broker", () => {
+  it("reserves a dedicated successful handoff exit code", () => {
+    expect(AGENT_UPDATE_HANDOFF_EXIT_CODE).toBe(42);
+    expect(AGENT_UPDATE_HANDOFF_EXIT_CODE).not.toBe(0);
+  });
+
   it.each(["1", " 1 ", "TRUE", " yes "])('enables broker for %j', (value) => {
     expect(isUpdateHandoffBrokerEnabled(value)).toBe(true);
   });

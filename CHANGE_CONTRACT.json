@@ -1,5 +1,126 @@
 {
-  "status": "verified",
+  "status": "ready-to-deploy",
+  "deviceEditor20260916": {
+    "status": "source-verified-installed-reproduction-pending",
+    "inputInvestigation": { "outcome": "Device editor retains keyboard focus when a remote connection becomes ready; editor text never goes to the remote session.", "scope": "Suspend remote keyboard capture and automatic focus only while the device editor is open. No authentication, native privilege, field configuration or persistence change. Installed Viewer accessibility inspection returned no descendants; no live metadata changed.", "verification": "RED: real right-click editor lost focus after a delayed session and transport became ready. GREEN: keyboard typing/deletion stays in editor with zero remote control sends; closing restores remote focus and ArrowRight down/up. Five focused Chromium tests and TypeScript passed. Native installed reproduction remains pending." },
+    "outcomes": [{ "id": "right-click-edit", "acceptance": "In Viewer 0.1.96 device list, right-click opens editor; typed text remains editable and a successful save updates the device row." }],
+    "requestReview": {
+      "impact": "changed",
+      "reason": "Stop subsequent rollout write after metadata failure; preserve existing successful save calls, with no automatic retries. While editing, remote input is suspended so local keystrokes produce zero remote control sends; idle requests and save budget are unchanged.",
+      "assumptions": "User-triggered editor only. Budget unit is one device save per client per day; group editing scales by selected device count. Metadata uses two document reads and one write; rollout uses one write.",
+      "dailyBudget": { "clients": 1, "readsPerClient": 2, "writesPerClient": 2, "maxReads": 2, "maxWrites": 2 },
+      "checks": { "idle": "No editor timers or polling added.", "rerender": "Save is submit-triggered, not effect-triggered.", "concurrency": "Existing isSaving guard and disabled submit retained.", "failure": "Browser regression confirms one metadata call and zero rollout calls on metadata failure. Explicit retry after rollout failure records metadata, rollout, metadata, rollout.", "cleanup": "No background retry or listener added; dialog closes only after saves settle." },
+      "contractTests": ["aether-link-app/src/viewerDeviceRefresh.test.ts"]
+    },
+    "verification": "Two focused actual-App Chromium tests RED then GREEN: editable text, inline metadata/rollout errors, preserved values, explicit retry and updated row; npx tsc --noEmit passed. Persistence is mocked.",
+    "remaining": "User confirms typing itself was blocked in installed 0.1.95. A delayed-connection focus race was reproduced and fixed in source; whether it explains the user's exact installed case remains unverified. No build, installation or deployment."
+  },
+  "fieldOutageRecurrence20260916": {
+    "status": "source-verified-installed-recovery-pending",
+    "outcomes": [
+      { "id": "preserve-running-agent-on-launch-failure", "acceptance": "A failed installer launch leaves the existing Agent and installation untouched, releases the update lock and records failure." },
+      { "id": "retain-post-launch-rollback", "acceptance": "Installer failure or replacement runtime failure after launch still restores the previous installation and starts its runtime." },
+      { "id": "field-release-proof", "acceptance": "Field rollout remains paused until the installed replacement survives update, restart and remote screen/input tests on the designated test devices; source checks alone do not close this outcome." }
+    ],
+    "requestReview": { "impact": "none", "reason": "Changes a branch in the existing local handoff failure handler only; adds no request, timer, service, listener or new persistence operation. Existing failure-result writing is reused." },
+    "userEvidence": "User tested the optional-update 0.1.88 Viewer and still could not connect; user will reinstall at the store. This does not establish target process state or exact failure cause.",
+    "verification": "RED: actual generated PowerShell failure handler incorrectly invoked restore-and-restart after simulated Start-Process rejection. GREEN: pre-launch failure writes failed, cleans its backup and unlocks without restoration or readiness acknowledgement; post-launch installer nonzero exit and runtime-health failure still invoke restoration. Four focused suites passed 43 tests; TypeScript passed. Tests stub process/restore actions and do not prove real installed recovery. Existing startup tests also passed. No new build, installation or deployment in this turn.",
+    "remaining": "Installed recovery, reboot and remote input proof required before expanding field rollout."
+  },
+  "viewer0188ComparisonBuild": {
+    "status": "comparison-failed-user-reported",
+    "fieldResult": "User reports 0.1.88 comparison Viewer also cannot connect and will reinstall onsite. Original field cause remains unconfirmed without target logs.",
+    "outcomes": [
+      { "id": "optional-update", "acceptance": "Viewer built from v0.1.88 offers Yes and No; No and Escape dismiss the update and retain the current Viewer." },
+      { "id": "comparison-installer", "acceptance": "Deliver an x86 0.1.88 Viewer test installer without publishing or changing field Agents; real field connection comparison remains user testing." }
+    ],
+    "requestReview": { "impact": "none", "reason": "Only existing modal dismissal and labels change. Existing version-check requests, native signature verification and connection protocol remain unchanged." },
+    "source": ".codex-tmp/v88 at v0.1.88 (04cb833)",
+    "verification": "Actual App.tsx dialog and Escape hook rendered in Chromium: No/Escape dismiss with zero confirm callbacks; Yes confirms once. Screenshot inspected. Full x86 Tauri build passed; executable and installer PE machine 0x014c and ProductVersion 0.1.88. Delivery SHA256 3853D760F1906F46EA3D4C85FD27591E01F9D82A285E86CD538FC87E3B278B18 matches source installer. Authenticode unsigned. No installation or public deployment performed; real device connection comparison pending.",
+    "artifact": "test-builds/viewer-0.1.88-optional-update/WonRemote-Viewer-0.1.88-OptionalUpdate-Setup.exe",
+    "buildNote": "Long MSBuild intermediate paths required a short CARGO_TARGET_DIR and a build-script change to locate that output. Runtime connection source remains the original v0.1.88 tag.",
+    "correction": "Stale server telemetry does not prove a terminated Agent process. Target process state and version-specific reachability are unconfirmed."
+  },
+  "fieldAgentUpdateOutage20260916": {
+    "status": "contained-source-verified-field-recovery-pending",
+    "incident": "INC-20260916-087",
+    "outcomes": [
+      {
+        "id": "contain-unattended-update-outage",
+        "acceptance": "The production Agent rollout is paused while the incident is unresolved so another unattended legacy Agent cannot enter the same installation handoff."
+      },
+      {
+        "id": "fail-closed-without-rollout-policy",
+        "acceptance": "A newer manifest alone never starts an Agent installation when rollout configuration is missing, paused, mismatched or excludes the device."
+      },
+      {
+        "id": "preserve-agent-before-installer-acceptance",
+        "acceptance": "The legacy Agent remains available until the handoff script proves the verified installer process has actually started. Merely spawning PowerShell is not readiness; the Agent exits only after the script-level acknowledgement, and the Tauri watchdog suppresses restart only for the dedicated acknowledged-handoff exit. Process shutdown belongs to the accepted installer, so a pending, rejected or pre-launch failure does not take the existing remote channel down first."
+      },
+      {
+        "id": "restore-field-devices",
+        "acceptance": "AGENT-8E97376F and AGENT-A8BCF987 produce fresh presence and complete a real remote session after recovery; A8BCF987 recovery is tracked separately from the still-unconfirmed cause of 8E97376F's earlier stop."
+      }
+    ],
+    "requestReview": {
+      "impact": "none",
+      "reason": "The source repair changes only an existing eligibility decision and local installer handoff order. It adds no request, timer, retry, listener, subscription or persistence write; the existing one rollout lookup for a newer manifest remains unchanged. Emergency containment was one explicit production configuration write, not a repeating runtime path."
+    },
+    "boundaries": "Production Firebase Agent rollout configuration, Agent update eligibility, generated Windows installer/portable handoffs, the Tauri handoff broker/watchdog and the shared installer process stopper. Remote protocol compatibility is unchanged, no public release asset is replaced, and no cause is assigned to 8E97376F without target evidence.",
+    "contractTests": [
+      "aether-link-app/src/domain/updateFleetPolicy.test.ts",
+      "aether-link-app/src/agent/productionInstallerUpdate.test.ts",
+      "aether-link-app/src/agent/portableUpdate.test.ts",
+      "aether-link-app/src/agent/agentUpdateHandoffBroker.test.ts",
+      "aether-link-app/src/desktopPackaging.test.ts",
+      "aether-link-app/src-tauri/src/lib.rs"
+    ],
+    "verification": "2026-09-16: Live read-only device evidence shows both affected Agents advertise protocolVersion 2 and last reported High integrity. AGENT-A8BCF987 last reported updateState restarting, target 0.1.94 and progress 100 before losing presence; AGENT-8E97376F last reported healthy 0.1.88 and did not enter the same update handoff. High integrity means a UAC wait is not established as A8BCF987's exact post-launch failure. The previously absent production configuration/updateRollout document was created as paused=true, percentage=0, targetVersion=0.1.95 and read back successfully. Missing policy now produces an ineligible decision, and the Agent applies that decision even when the configuration loader returns null. The broker no longer writes readiness merely after spawning PowerShell: the generated handoff writes it only after the installer process starts, the Agent waits for that signal and exits with dedicated code 42, and the Tauri watchdog suppresses restart only for that requested code. The installer stopper allows the acknowledgement to be observed before terminating product processes. Seven related TypeScript/PowerShell suites passed 114 tests, the focused Tauri Rust test passed, TypeScript and git diff checks passed, and an executable generated-script probe confirmed backup, installer launch, then readiness order. Full cargo fmt --check still reports broad pre-existing formatting drift outside this change and was not applied.",
+    "remaining": "Both businesses contain only the affected Agent, so no same-business wake relay exists. The stopped field Agents cannot consume a cloud recovery command; fresh heartbeat and remote-session proof require target reboot/logon or starting the existing Agent through an authorized alternate path. The currently deployed 0.1.88/0.1.90 binaries do not contain these source guards, so production rollout remains paused until field recovery and a separately verified legacy-to-fixed migration path. A new version has not been built or published in this request."
+  },
+  "deviceRefreshStatusBaseline20260915": {
+    "status": "source-verified-physical-confirmation-pending",
+    "outcomes": [
+      {
+        "id": "preserve-visible-status-during-refresh",
+        "acceptance": "When the Viewer device-list refresh button is pressed, each device keeps its immediately pre-click online/offline state while fresh presence replies are pending; after completion only responding devices are online and nonresponding devices are offline, without an intermediate all-online display."
+      }
+    ],
+    "requestReview": {
+      "impact": "none",
+      "reason": "The change only stops rendering an unconfirmed intermediate callback. The existing one list read, one presence command per manual device, one bounded listener and five-second timeout remain unchanged, with no new request, retry, timer, listener or persistence write."
+    },
+    "boundaries": "Shared PC and Android Viewer device-list refresh rendering. Agent heartbeat, presence command delivery, Firestore status persistence, timeout and request counts remain unchanged.",
+    "contractTests": [
+      "aether-link-app/src/viewerDeviceRefresh.test.ts",
+      "aether-link-app/src/domain/devicePresenceRefresh.test.ts"
+    ],
+    "verification": "2026-09-15: The real Viewer Chromium path reproduced the defect: while a mixed 1-online/9-offline list was refreshing, an unconfirmed all-online progress snapshot changed the visible count to 10 online. After removing only that intermediate render, the same browser test keeps 1 online/9 offline throughout the pending interval and applies the confirmed final result when the request completes. The complete Viewer browser file passed 46 tests, the presence-domain suite passed 6 tests, and TypeScript passed. Request, listener, timeout and persistence behavior are unchanged.",
+    "remaining": "Physically confirm the five-second refresh window against a mixed online/offline installed Viewer list."
+  },
+  "viewerHeaderAndLegacyUpdateDiagnosis20260915": {
+    "status": "source-verified-physical-confirmation-pending",
+    "outcomes": [
+      {
+        "id": "explain-v0188-update-boundary",
+        "acceptance": "The v0.1.88-to-current diagnosis distinguishes successful signed-manifest discovery from session deferral, update-policy deferral and the one-time LocalAppData-to-Program-Files elevation/migration boundary, using current release and deployed v0.1.88 source evidence rather than guessing."
+      },
+      {
+        "id": "prevent-viewer-command-header-overlap",
+        "acceptance": "On narrow and normal PC Viewer windows, the device heading, online status, search/tools, update result notice and following dashboard occupy separate readable layout space without overlap or clipped status text."
+      }
+    ],
+    "requestReview": {
+      "impact": "none",
+      "reason": "The product change is limited to Viewer markup/CSS layout and a read-only update-path diagnosis. It adds no requests, timers, retries, listeners, subscriptions or persistence writes."
+    },
+    "boundaries": "PC Viewer dashboard header and notice layout; deployed v0.1.88 Agent update discovery, session deferral and protected-path migration diagnosis. No update policy, installer behavior, release asset or production data write is changed.",
+    "contractTests": [
+      "aether-link-app/src/viewerDeviceRefresh.test.ts"
+    ],
+    "verification": "2026-09-15: The real Viewer Chromium path first failed because the long Agent-update result remained inside viewer-command-header. After separating notices into their own flow row, 1024px, 1366px and 1920px cases passed with the long Korean store name and full account-management tool set; heading, tools, notice and dashboard do not intersect and the notice does not overflow. The complete Viewer browser file passed 45 tests and TypeScript passed. Read-only v0.1.88 source comparison confirms signed-manifest discovery, higher-version selection and request-update support; it also confirms active-session deferral. The deployed v0.1.88 per-user install and current v0.1.95 per-machine install create a one-time protected-path migration/elevation boundary. Current public v0.1.95 is latest and the live rollout configuration was absent, so rollout exclusion is not the cause observed here. Exact target telemetry was not available, so target-specific session-wait versus installer/elevation failure is not claimed.",
+    "remaining": "Resize the installed Viewer for physical confirmation. Read the affected v0.1.88 device update telemetry or its local update log before assigning its exact target-specific blocker."
+  },
   "viewerDisconnectInputRelease20260915": {
     "status": "published-live-verified-physical-confirmation-pending",
     "incident": "INC-20260915-082",
@@ -267,15 +388,15 @@
   "currentRequest": "2026-09-14: Audit the current Viewer, Agent and Android functional paths using source tracing plus the broadest applicable automated suites, while keeping installed-device, cross-PC, secure-desktop and external-network proof explicitly separate.",
   "clipboardFetchRepair": "2026-09-14: Replace the fixed 600ms remote-clipboard fetch with one explicit, bounded clipboard-only event subscription. Drain pre-existing queued clipboard data before sending the request, accept the first subsequent Agent response, close immediately on success/error/timeout/session change, and preserve manual-only clipboard ownership. Do not add polling, an idle listener or automatic synchronization.",
   "clipboardChange": "2026-09-08: Remote shortcuts must use only the remote clipboard. Local clipboard transfer requires an explicit toolbar action; remove automatic synchronization including saved preferences. Build/deployment deferred until this change is verified.",
-  "intent": "Release WonRemote Windows Viewer and Agent v0.1.95 through the normal reproducible signed-manifest workflow after repairing ordinary remote input and Viewer input release on transport loss, while retaining explicit physical gaps.",
+  "intent": "Release WonRemote Windows Viewer and Agent v0.1.96 through the normal reproducible signed-manifest workflow with the device-editor focus repair, stable presence refresh and safer Agent update handoff.",
   "changeType": "fix",
   "risk": "high",
   "releaseImpact": "build-and-deploy",
-  "rollback": "If v0.1.95 publication or live verification fails, keep immutable assets for diagnosis and restore the latest pointer to verified v0.1.94 without deleting releases. Installed clients are not force-downgraded; use the retained local backup or the existing signed rollback path only with explicit approval.",
+  "rollback": "If v0.1.96 publication or live verification fails, keep immutable assets for diagnosis and restore the latest pointer to verified v0.1.95 without deleting releases. Installed clients are not force-downgraded; use the retained local backup or the existing signed rollback path only with explicit approval.",
   "deploymentBlockers": ["Signed update-manifest creation, CI publication and public download/hash checks are deployment-stage proof. Cross-PC Viewer control plus protected UAC/PIN capture and input remain explicit post-deployment physical checks and are not reported as verified."],
   "firestoreVerification": "2026-09-14: npm run firebase:rules:test passed with a temporary Microsoft OpenJDK 21 runtime and the local Firestore emulator. Agent session access, central and managed Viewer device access, unauthorized Viewer denial, central deletion, manual presence and stale legacy denial all returned the expected result. The emulator-gated command deletion recovery integration also passed 1/1 with the real Firebase SDK and repository rules. No production database traffic.",
   "authenticodeStatus": "No code-signing certificate in CurrentUser/LocalMachine My stores or configured Process/User/Machine PFX variables. Public-trust issuance requires user identity/account setup. Existing release policy makes Authenticode optional; unsigned status alone is not a deployment blocker. Installers remain unsigned.",
-  "incident": "INC-20260915-082",
+  "incident": "INC-20260916-090",
   "requestReview": {
     "androidViewportReview": "2026-09-12: Android-only layout, pointer overlay and local focus/gesture handling. No request, listener, timer, retry, persistence read or write changes.",
     "nativeCaptureReview": "2026-09-12: Local synchronous duplex pipe IO changed to overlapped operations and directional worker stdio. No new timers, retries, subscriptions, disk persistence, cloud reads or writes; event waits are demand-driven and exist only during an active pipe connection. Peer EOF closes bridge input; tests cover three connections with control and close. Existing changed cloud ACK budget below is retained and is not a whole-product certification.",
@@ -409,6 +530,9 @@
     }
   ],
   "outcomes": [
+    {"id":"v0196-windows-release-20260916","acceptance":"The normal release channel publishes fresh Windows x86 Viewer and Agent v0.1.96 plus a trusted signed manifest; installed v0.1.95 clients can detect v0.1.96 and v0.1.96 does not offer itself.","boundaries":["aligned version metadata","exact main preparation commit","GitHub Actions Windows x86 build","Viewer and Agent installers","manifest signature and hashes","GitHub latest release","Firebase download aliases","0.1.95 to 0.1.96 version comparison"],"proofLevel":"deployment-required","contractTests":["aether-link-app/src/viewerDeviceRefresh.test.ts","aether-link-app/src/agent/productionInstallerUpdate.test.ts","aether-link-app/src/desktopPackaging.test.ts"],"verification":"pending"},
+    {"id":"device-editor-local-input-20260916","acceptance":"Right-click device editing keeps keyboard focus and local text while a pending remote session becomes ready, sends no editor keystrokes remotely, reports save errors inline and resumes remote input after closing.","boundaries":["device row context menu","edit dialog inputs","delayed session and WebRTC readiness","hidden remote IME","metadata and rollout save","dialog close and remote input recovery"],"proofLevel":"automated-runtime","contractTests":["aether-link-app/src/viewerDeviceRefresh.test.ts"],"verification":"2026-09-16: Real App Chromium RED lost editor focus after delayed session/transport readiness. GREEN retains typing and deletion with zero remote sends, displays metadata/rollout failures inline, supports retry and restores remote ArrowRight down/up after close. Focused Viewer regressions passed."},
+    {"id":"agent-update-handoff-preservation-20260916","acceptance":"Agent remains available until the verified replacement installer or portable updater accepts ownership; pre-launch failure preserves the running installation and watchdog suppression requires the dedicated accepted handoff exit code.","boundaries":["signed update eligibility","rollout policy availability","Agent input release","Tauri broker","installer readiness acknowledgement","watchdog exit classification","rollback and lock cleanup"],"proofLevel":"automated-runtime","contractTests":["aether-link-app/src/agent/productionInstallerUpdate.test.ts","aether-link-app/src/agent/portableUpdate.test.ts","aether-link-app/src/agent/agentUpdateHandoffBroker.test.ts","aether-link-app/src/domain/updateFleetPolicy.test.ts","aether-link-app/src/desktopPackaging.test.ts"],"verification":"2026-09-16: Six focused files passed 150 tests; x86 release-profile dedicated exit-code test passed; TypeScript passed. Installed update and remote input after replacement remain physical post-deployment checks."},
     {"id":"viewer-input-release-on-transport-loss-20260915","acceptance":"When a remote transport drops while the Viewer remains open, it immediately releases local keyboard, IME, pointer and wheel ownership; the retained picture shows the existing disconnect modal and input resumes only after explicit reconnection establishes a live transport.","boundaries":["PC Viewer active session","Firebase WebRTC error","held key and pointer state","hidden IME focus","pointer capture","local keyboard pointer and wheel events","explicit reconnect modal"],"proofLevel":"automated-runtime","contractTests":["aether-link-app/src/domain/sessionConnectionStatus.test.ts","aether-link-app/src/viewerDeviceRefresh.test.ts","aether-link-app/src/remoteSessionLayout.test.ts"],"verification":"2026-09-15: Focused predicate/static suites passed27 tests. Complete actual Viewer Chromium file passed42 tests, including Ctrl and pointer held at WebRTC error, released pointer capture, blurred/read-only hidden IME, uncancelled subsequent local key/wheel events and no additional remote control command. Full repository suite passed1036 tests and TypeScript passed. No automatic reconnect loop was added.","physicalGap":"Another-PC Viewer and real Agent restart/UAC transition remain a post-deployment confirmation."},
     {"id":"v0195-windows-release-20260915","acceptance":"The normal release channel publishes reproducible Windows x86 Viewer and Agent v0.1.95 plus a trusted signed manifest so an installed v0.1.94 Viewer is offered v0.1.95 and v0.1.95 is not offered itself.","boundaries":["aligned version metadata","exact main commit","GitHub Actions Windows build","x86 installer payloads","update-manifest signature","GitHub latest release","public download aliases","0.1.94 to0.1.95 version comparison"],"proofLevel":"deployment-required","contractTests":["aether-link-app/src/agent/productionUpdateCheck.test.ts","aether-link-app/src/desktopPackaging.test.ts","aether-link-app/scripts/package-release-exes.test.js"],"verification":"2026-09-15: Local fresh x86 Viewer and Agent payload checks, full repository1036 tests, release-boundary125 tests, TypeScript, warnings-denied native Clippy and installer upgrade/two rollback E2E passed. CI run34932456429 built and published from exact tag commit6a644a305c2790e06fa4aeac5774430efc8b9f8c. v0.1.95 is public latest with exactly two installers and trusted signed manifest. Anonymous downloads returned HTTP200 and exact manifest hashes: Viewer0aa798b2339bca4d29cba303586d5dc0cabe3fb61122ad60c6e3a26a344878e8, Agentf0b4b00061e7f723164938d886e7f217bf37bdaf1f7fd7698539d41665142ae9. Signature verification passed, forceUpdate=false, runtime comparison offers0.1.95 to0.1.94 only, and all four Firebase aliases return302 to canonical latest assets. Authenticode is explicitly NotSigned.","physicalGap":"Installed other-PC update and real remote keyboard/mouse remain physical confirmation after publication."},
     {"id":"publication-gate-evidence-20260915","acceptance":"Changed documentation-only acceptance is reviewed as documentation while functional outcomes still require changed boundary tests; missing evidence and pending reviews remain rejected.","boundaries":["change contract","tracked changed files","predeploy validation"],"proofLevel":"automated-runtime","contractTests":["aether-link-app/scripts/verify-recurrence-coverage.test.js"],"verification":"2026-09-15 RED documentation false rejection reproduced. GREEN npx vitest run scripts/verify-recurrence-coverage.test.js:15 passed; separately five related startup/package/update/adaptive suites93 passed. No physical-gap or readiness waiver.","physicalGap":"none"},

@@ -398,10 +398,12 @@ try {
   $restartViewer = [bool]$runState.Viewer -or $PrimaryRestartMode -eq 'viewer'
   $restartAgent = [bool]$runState.Agent -or $PrimaryRestartMode -eq 'agent'
   if ($ExpectedPackageKind -eq 'portable-agent') { $restartViewer = $false }
-  Stop-PortableProcesses
-  $processesStopped = $true
   Copy-OwnedEntries $PortableRoot $BackupDir
   $backupReady = $true
+  Set-Content -LiteralPath ($PSCommandPath + '.accepted') -Encoding ASCII -Value 'portable-ready'
+  Start-Sleep -Milliseconds 250
+  $processesStopped = $true
+  Stop-PortableProcesses
   Remove-OwnedEntries $PortableRoot
   Copy-OwnedEntries $StagingDir $PortableRoot
   $startedProcesses = @(Start-PortableRuntimes $restartViewer $restartAgent)

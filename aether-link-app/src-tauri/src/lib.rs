@@ -77,6 +77,7 @@ const PUBLIC_FIREBASE_STORAGE_BUCKET: &str = "wonremote-a7fd3.appspot.com";
 const PUBLIC_FIREBASE_MESSAGING_SENDER_ID: &str = "52940136204";
 const PORTABLE_MARKER_FILENAME: &str = "wonremote-portable.json";
 const UPDATE_HANDOFF_PREFIX: &str = "[WonRemoteUpdateHandoff]";
+const AGENT_UPDATE_HANDOFF_EXIT_CODE: i32 = 42;
 const UPDATE_CHECK_PREFIX: &str = "[WonRemoteUpdateCheck]";
 #[cfg(target_arch = "x86")]
 const WIN32_AGENT_TRAY_ID: u32 = 37;
@@ -987,8 +988,10 @@ fn start_agent_watchdog(
             };
             let Some(status) = exit_status else { continue };
             append_runtime_log("agent-watchdog", &format!("Agent child exited: {status}"));
-            if update_handoff_started.load(Ordering::Acquire)
-                || unregistered_detected.load(Ordering::Acquire)
+            if is_expected_agent_update_exit(
+                update_handoff_started.load(Ordering::Acquire),
+                status.code(),
+            ) || unregistered_detected.load(Ordering::Acquire)
             {
                 append_runtime_log("agent-watchdog", "expected Agent exit; restart suppressed");
                 return;
@@ -1100,7 +1103,6 @@ fn validate_update_handoff_script_path_in_root(
 
 fn launch_brokered_update_handoff(script_path: PathBuf) -> Result<bool, String> {
     let script_path = validate_update_handoff_script_path(&script_path)?;
-    let acknowledgement_path = update_handoff_acknowledgement_path(&script_path);
     let mut command = Command::new("powershell.exe");
     command
         .args(brokered_update_powershell_args())
@@ -1112,8 +1114,6 @@ fn launch_brokered_update_handoff(script_path: PathBuf) -> Result<bool, String> 
     command
         .spawn()
         .map_err(|error| format!("Agent update broker failed to start PowerShell: {error}"))?;
-    std::fs::write(&acknowledgement_path, b"accepted")
-        .map_err(|error| format!("Agent update broker failed to acknowledge handoff: {error}"))?;
     append_runtime_log(
         "updater-broker",
         &format!("started verified handoff script={}", script_path.display()),
@@ -1121,8 +1121,8 @@ fn launch_brokered_update_handoff(script_path: PathBuf) -> Result<bool, String> 
     Ok(true)
 }
 
-fn update_handoff_acknowledgement_path(script_path: &Path) -> PathBuf {
-    PathBuf::from(format!("{}.accepted", script_path.display()))
+fn is_expected_agent_update_exit(handoff_requested: bool, exit_code: Option<i32>) -> bool {
+    handoff_requested && exit_code == Some(AGENT_UPDATE_HANDOFF_EXIT_CODE)
 }
 
 fn brokered_update_powershell_args() -> [&'static str; 7] {
@@ -2671,12 +2671,17 @@ mod registry_tests {
     }
 
     #[test]
-    fn test_update_handoff_acknowledgement_path_is_adjacent_to_the_owned_script() {
-        let script = Path::new(r"C:\Users\Tester\AppData\Roaming\WonRemote\updates\run-installer-update-123.ps1");
-        assert_eq!(
-            update_handoff_acknowledgement_path(script),
-            PathBuf::from(r"C:\Users\Tester\AppData\Roaming\WonRemote\updates\run-installer-update-123.ps1.accepted"),
-        );
+    fn test_agent_update_handoff_requires_dedicated_exit_code() {
+        assert!(is_expected_agent_update_exit(
+            true,
+            Some(AGENT_UPDATE_HANDOFF_EXIT_CODE)
+        ));
+        assert!(!is_expected_agent_update_exit(true, Some(0)));
+        assert!(!is_expected_agent_update_exit(
+            false,
+            Some(AGENT_UPDATE_HANDOFF_EXIT_CODE)
+        ));
+        assert!(!is_expected_agent_update_exit(true, None));
     }
 
     #[test]

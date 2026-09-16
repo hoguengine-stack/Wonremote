@@ -14,6 +14,60 @@ import {
 } from "./productionInstallerUpdate";
 
 describe("production installer update", () => {
+  it.runIf(process.platform === "win32").each(["launch", "installer", "runtime"])(
+    "preserves or restores the runtime at the %s failure boundary",
+    async (failure) => {
+      const baseDir = path.join(os.tmpdir(), `wonremote-failure-${process.pid}-${failure}-${Date.now()}`);
+      try {
+        await mkdir(baseDir, { recursive: true });
+        const handoff = await prepareInstallerHandoff({
+          installerPath: path.join(baseDir, "installer.exe"), installerArgs: ["/S"],
+        }, { baseDir });
+        const script = await readFile(handoff.scriptPath, "utf8");
+        const start = script.lastIndexOf("\ntry {\n  Backup-WonRemoteInstall");
+        expect(start).toBeGreaterThan(0);
+        const events = path.join(baseDir, "events.txt");
+        const harness = path.join(baseDir, "failure.ps1");
+        await writeFile(harness, `
+$ErrorActionPreference = 'Stop'
+$FailureExitCode = 1
+$InstallerStarted = $false
+$RestartMode = 'agent'
+function Record([string]$Event) { Add-Content -LiteralPath $env:WR_EVENTS -Value $Event }
+function Backup-WonRemoteInstall { $script:RollbackEntries = @('backup'); Record 'backup' }
+function Write-HandoffLog([string]$Message) {}
+function Start-Process {
+  Record 'launch'
+  if ($env:WR_FAILURE -eq 'launch') { throw 'installer launch rejected' }
+  $p = [pscustomobject]@{ Id = 1; ExitCode = $(if ($env:WR_FAILURE -eq 'installer') { 5 } else { 0 }) }
+  $p | Add-Member ScriptMethod WaitForExit { }
+  return $p
+}
+function Start-WonRemoteAgent { Record 'start' }
+function Wait-WonRemoteAgentRuntime { Record 'health'; throw 'replacement runtime unavailable' }
+function Restore-WonRemoteInstall { Record 'restore-and-restart' }
+function Remove-WonRemoteRollback { Record 'cleanup-backup' }
+function Write-UpdateResult([string]$State, [string]$Message) { Record $State }
+function Close-UpdateLock { Record 'unlock' }
+${script.slice(start)}
+`);
+        const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", harness], {
+          env: { ...process.env, WR_EVENTS: events, WR_FAILURE: failure }, encoding: "utf8", timeout: 10_000, windowsHide: true,
+        });
+        expect(result.status, result.stderr).toBe(failure === "installer" ? 5 : 1);
+        const recorded = (await readFile(events, "utf8")).trim().split(/\r?\n/);
+        if (failure === "launch") {
+          expect(recorded).toEqual(["backup", "launch", "failed", "cleanup-backup", "unlock"]);
+          await expect(stat(`${harness}.accepted`)).rejects.toThrow();
+        } else {
+          expect(recorded).toEqual([
+            "backup", "launch", ...(failure === "runtime" ? ["start", "health"] : []),
+            "restore-and-restart", "rollback", "cleanup-backup", "unlock",
+          ]);
+        }
+      } finally { await rm(baseDir, { recursive: true, force: true }); }
+    },
+  );
   it.runIf(process.platform === "win32")("executes successful handoff cleanup without deleting failure evidence or identity", async () => {
     const baseDir = path.join(os.tmpdir(), `wonremote-cleanup-${process.pid}-${Date.now()}`);
     const updates = path.join(baseDir, "WonRemote", "updates");
@@ -227,7 +281,42 @@ describe("production installer update", () => {
       expect(script).not.toContain("taskkill");
       expect(script).toContain("Another WonRemote update is already in progress");
       expect(script).toContain("[System.IO.FileShare]::None");
-      expect(script).toContain("Backup-WonRemoteInstall\n  Stop-WonRemoteProcesses\n  Write-HandoffLog");
+      const handoffStart = script.lastIndexOf("\ntry {\n  Backup-WonRemoteInstall");
+      const installerLaunch = script.indexOf("$process = Start-Process", handoffStart);
+      expect(handoffStart).toBeGreaterThanOrEqual(0);
+      expect(installerLaunch).toBeGreaterThan(handoffStart);
+      expect(script.slice(handoffStart, installerLaunch)).not.toContain("Stop-WonRemoteProcesses");
+      expect(script.slice(handoffStart, installerLaunch)).toContain("Keep the current Agent alive while Windows approval is pending.");
+      if (process.platform === "win32") {
+        const launchEnd = script.indexOf("\n  Write-HandoffLog \"Installer PID", installerLaunch);
+        const executablePrefix = script.slice(
+          script.indexOf("  Backup-WonRemoteInstall", handoffStart),
+          launchEnd,
+        );
+        const sequenceProbe = [
+          "$events = [Collections.Generic.List[string]]::new()",
+          "function Backup-WonRemoteInstall { [void]$events.Add('backup') }",
+          "function Stop-WonRemoteProcesses { [void]$events.Add('stop') }",
+          "function Write-HandoffLog { param([string]$Message) }",
+          "function Start-Process { param($FilePath,$ArgumentList,$WindowStyle,[switch]$PassThru); [void]$events.Add('launch'); return [pscustomobject]@{Id=4321} }",
+          "function Set-Content { param($LiteralPath,$Encoding,$Value); [void]$events.Add('ready') }",
+          "$InstallerPath = 'installer.exe'",
+          "$InstallerArgs = @('/S')",
+          executablePrefix,
+          "Write-Output ($events -join ',')",
+        ].join("\n");
+        const sequence = spawnSync("powershell.exe", [
+          "-NoProfile",
+          "-NonInteractive",
+          "-EncodedCommand",
+          Buffer.from(sequenceProbe, "utf16le").toString("base64"),
+        ], { encoding: "utf8", timeout: 10_000, windowsHide: true });
+        expect(sequence.status, sequence.stderr).toBe(0);
+        expect(sequence.stdout.trim()).toBe("backup,launch,ready");
+      }
+      const readinessSignal = script.indexOf("Set-Content -LiteralPath ($PSCommandPath + '.accepted')", installerLaunch);
+      expect(readinessSignal).toBeGreaterThan(installerLaunch);
+      expect(readinessSignal).toBeLessThan(script.indexOf("$process.WaitForExit()", installerLaunch));
       expect(script).toContain("throw 'No previous WonRemote installation was available to back up.'");
       expect(script).toContain("Rollback backup retained for manual recovery");
       expect(script).toContain("ROLLBACK_FAILED");

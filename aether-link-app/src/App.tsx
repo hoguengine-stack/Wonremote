@@ -708,12 +708,7 @@ function ViewerApp() {
 
     let cancelled = false;
     const abort = new AbortController();
-    const request = fetchDevices(true, abort.signal, (nextDevices) => {
-      if (!cancelled) {
-        setDevices(nextDevices);
-        setApiError("");
-      }
-    });
+    const request = fetchDevices(true, abort.signal);
     deviceListRequestRef.current = request;
     setIsRefreshingDevices(true);
     void request
@@ -1200,10 +1195,10 @@ function ViewerApp() {
       if (firstUpdated && selectedStore === previousStore) {
         setSelectedStore(firstUpdated.storeName);
       }
-      setEditTarget(null);
       setApiError("");
     } catch (error) {
       setApiError(error instanceof Error ? error.message : "장비 정보 수정 실패");
+      throw error;
     }
   }
 
@@ -1352,8 +1347,6 @@ function ViewerApp() {
               </span>
             </div>
             <p>{devices.length}대 등록 · {groups.length}개 매장</p>
-            {apiError && <p className="topbar-error">{apiError}</p>}
-            {selectedUpdateInstalling && <p role="status">지정된 뷰어 업데이트 적용 중 · 완료 후 다시 실행됩니다</p>}
           </div>
           <div className="topbar-tools">
           <label className="search-box">
@@ -1386,6 +1379,12 @@ function ViewerApp() {
           </button>}
           </div>
         </header>
+        {(apiError || selectedUpdateInstalling) && (
+          <div className="workspace-notices" aria-live="polite">
+            {apiError && <p className="workspace-notice topbar-error">{apiError}</p>}
+            {selectedUpdateInstalling && <p className="workspace-notice">지정된 뷰어 업데이트 적용 중 · 완료 후 다시 실행됩니다</p>}
+          </div>
+        )}
 
         <section
           className={`${session && activeDevice ? "content-grid" : "content-grid content-grid-dashboard"}${activeSplitSessionIds ? " content-grid-split" : ""}`}
@@ -1497,6 +1496,7 @@ function ViewerApp() {
             return (
               <RemoteSessionPanel
                 activeSessionId={activeSessionId}
+                inputSuspended={editTarget !== null}
                 device={devices.find((device) => device.id === openSession.deviceId) ?? null}
                 isActive={openSession.id === activeSessionId}
                 isSplit={splitIndex >= 0}
@@ -1636,6 +1636,7 @@ function DeviceEditDialog({
   });
   const [deviceTypeChoice, setDeviceTypeChoice] = useState<DeviceTypeChoice>(initialDeviceType.choice);
   const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const [isDeleting, setIsDeleting] = useState(false);
   const [isDeleteArmed, setIsDeleteArmed] = useState(false);
   const [updateRing, setUpdateRing] = useState<DeviceUpdateRing>(primaryDevice.updateRing ?? "general");
@@ -1655,6 +1656,7 @@ function DeviceEditDialog({
       tagText: primaryDevice.tags?.join(", ") ?? "",
     });
     setDeviceTypeChoice(nextDeviceType.choice);
+    setSaveError("");
     setIsDeleteArmed(false);
     setUpdateRing(primaryDevice.updateRing ?? "general");
     setUpdatePaused(primaryDevice.updatePaused ?? false);
@@ -1665,6 +1667,7 @@ function DeviceEditDialog({
       return;
     }
     setIsSaving(true);
+    setSaveError("");
     try {
       const { tagText, ...metadata } = form;
       await onSave({
@@ -1674,6 +1677,9 @@ function DeviceEditDialog({
       if (isViewerFirebaseEnabled()) {
         await Promise.all(target.devices.map((device) => onSaveRollout(device.id, updateRing, updatePaused)));
       }
+      onClose();
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "장비 정보 수정 실패");
     } finally {
       setIsSaving(false);
     }
@@ -1832,6 +1838,7 @@ function DeviceEditDialog({
             </>
           )}
         </div>
+        {saveError && <p className="error-text" role="alert">{saveError}</p>}
         {!isGroupEdit && (
           <p className="modal-help">
             삭제하면 이 Agent의 등록이 해제됩니다. 같은 PC에서 다시 등록하면 장비가 다시 생성됩니다.
@@ -1932,6 +1939,7 @@ function RolloutDialog({
   const unlistedTargetIds = draft.targetDeviceIds?.filter(id => !visibleDeviceIds.has(id)) ?? [];
   const reasonLabels = {
     eligible: "업데이트 대상",
+    "missing-rollout-policy": "업데이트 정책 없음",
     paused: "업데이트 중지",
     "missing-device-id": "장비 ID 없음",
     "missing-target-version": "대상 버전 없음",
@@ -2911,6 +2919,7 @@ async function sha256Hex(buffer: ArrayBuffer): Promise<string | undefined> {
 
 function RemoteSessionPanel({
   activeSessionId,
+  inputSuspended,
   device,
   isActive,
   isSplit,
@@ -2929,6 +2938,7 @@ function RemoteSessionPanel({
   onReconnect,
 }: {
   activeSessionId: string | null;
+  inputSuspended: boolean;
   device: ManagedDevice | null;
   isActive: boolean;
   isSplit: boolean;
@@ -3140,7 +3150,7 @@ function RemoteSessionPanel({
     receiveError,
   });
   const remoteInputAvailable = isRemoteInputAvailable({
-    active: isActive,
+    active: isActive && !inputSuspended,
     visible: isVisible,
     sessionConnected: session?.state === "connected",
     disconnected: needsManualReconnect,
@@ -3332,10 +3342,10 @@ function RemoteSessionPanel({
   }, [isWebRtcConnectionReady, onInputEvent, selectedDisplayIndex]);
 
   useEffect(() => {
-    if (isActive && session?.state === "connected") {
+    if (isActive && !inputSuspended && session?.state === "connected") {
       panelRef.current?.focus({ preventScroll: true });
     }
-  }, [isActive, session?.id, session?.state]);
+  }, [isActive, inputSuspended, session?.id, session?.state]);
 
   useEffect(() => {
     if (!sessionId || session?.state !== "connected") {

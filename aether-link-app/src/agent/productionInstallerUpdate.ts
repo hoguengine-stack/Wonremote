@@ -251,6 +251,7 @@ $explicitInstallRoots = @(${quotedExplicitInstallRoots})
 $RollbackRoot = Join-Path (Split-Path -Parent $InstallerPath) ('rollback-' + [guid]::NewGuid().ToString())
 $script:RollbackEntries = @()
 $FailureExitCode = 1
+$InstallerStarted = $false
 function Write-HandoffLog([string]$Message) {
   $stamp = Get-Date -Format o
   Add-Content -LiteralPath $LogPath -Encoding UTF8 -Value "[$stamp] $Message"
@@ -525,9 +526,11 @@ function Wait-WonRemoteViewer {
 
 try {
   Backup-WonRemoteInstall
-  Stop-WonRemoteProcesses
+  # The accepted installer owns process shutdown. Keep the current Agent alive while Windows approval is pending.
   Write-HandoffLog "Starting installer update: $InstallerPath $($InstallerArgs -join ' ')"
   $process = Start-Process -FilePath $InstallerPath -ArgumentList $InstallerArgs -WindowStyle Hidden -PassThru
+  $InstallerStarted = $true
+  Set-Content -LiteralPath ($PSCommandPath + '.accepted') -Encoding ASCII -Value 'installer-started'
   Write-HandoffLog "Installer PID: $($process.Id)"
   $process.WaitForExit()
   Write-HandoffLog "Installer exit code: $($process.ExitCode)"
@@ -551,6 +554,13 @@ try {
   exit 0
 } catch {
   Write-HandoffLog "Installer handoff failed: $($_.Exception.Message)"
+  if (-not $InstallerStarted) {
+    # No installer changed the installation; rollback would needlessly stop the working runtime.
+    Write-UpdateResult 'failed' ('Installer did not start; existing runtime preserved. ' + $_.Exception.Message)
+    Remove-WonRemoteRollback
+    Close-UpdateLock
+    exit $FailureExitCode
+  }
   $rollbackCompleted = $false
   if ($script:RollbackEntries.Count -gt 0) {
     try {

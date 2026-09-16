@@ -6,6 +6,17 @@ import {
 } from "./updateFleetPolicy";
 
 describe("update fleet policy", () => {
+  it("fails closed when rollout policy is unavailable", () => {
+    expect(decideUpdateEligibility({ id: "field-agent", version: "1.0.0" }, null)).toMatchObject({
+      eligible: false,
+      reason: "missing-rollout-policy",
+    });
+    expect(decideUpdateEligibility({ id: "field-agent", version: "1.0.0" }, undefined)).toMatchObject({
+      eligible: false,
+      reason: "missing-rollout-policy",
+    });
+  });
+
   it("targets exact IDs while the legacy projection excludes every PC", () => {
     const policy = {targetVersion:"2.0.0",stage:"general" as const,percentage:0,targetDeviceIds:["selected"]};
     expect(decideUpdateEligibility({id:"selected",version:"1.0.0",selectedRolloutVersion:"1.0.0"},policy).eligible).toBe(true);

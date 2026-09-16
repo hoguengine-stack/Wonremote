@@ -37,6 +37,9 @@ if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
 $roots = @($roots | Select-Object -Unique)
 if ($roots.Count -eq 0) { exit 0 }
 $prefixes = @($roots | ForEach-Object { $_ + [System.IO.Path]::DirectorySeparatorChar })
+# An update handoff writes readiness after the installer process starts. Give the
+# Agent child time to observe it and exit with the dedicated handoff code.
+Start-Sleep -Milliseconds 500
 $self = Get-CimInstance Win32_Process -Filter ("ProcessId = " + $PID) -ErrorAction SilentlyContinue
 $installerPid = if ($null -ne $self) { [int] $self.ParentProcessId } else { -1 }
 $processes = @(Get-CimInstance Win32_Process)

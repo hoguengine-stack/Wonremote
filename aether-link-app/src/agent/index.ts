@@ -88,6 +88,7 @@ import { sendWakeOnLanMagicPacket } from "./wakeOnLan";
 import { parseAgentDisplayInventory } from "./agentDisplayInventory";
 import { PersistentInputInjector } from "./persistentInputInjector";
 import {
+  AGENT_UPDATE_HANDOFF_EXIT_CODE,
   formatUpdateHandoffBrokerRequest,
   isUpdateHandoffBrokerEnabled,
   updateHandoffAcknowledgementPath,
@@ -193,16 +194,17 @@ async function releaseInputAndCompleteUpdateHandoff(scriptPath: string, reason: 
     { pointer: pointerState, pressedKeys },
     reason,
   ));
-  if (isUpdateHandoffBrokerEnabled(process.env.WONREMOTE_TAURI_UPDATE_BROKER)) {
+  const brokered = isUpdateHandoffBrokerEnabled(process.env.WONREMOTE_TAURI_UPDATE_BROKER);
+  if (brokered) {
     await new Promise<void>((resolve, reject) => {
       process.stdout.write(`${formatUpdateHandoffBrokerRequest(scriptPath)}\n`, (error) => {
         if (error) reject(error);
         else resolve();
       });
     });
-    await waitForUpdateHandoffAcknowledgement(updateHandoffAcknowledgementPath(scriptPath));
   }
-  process.exit(0);
+  await waitForUpdateHandoffAcknowledgement(updateHandoffAcknowledgementPath(scriptPath));
+  process.exit(brokered ? AGENT_UPDATE_HANDOFF_EXIT_CODE : 0);
   throw new Error("process.exit returned unexpectedly");
 }
 
@@ -216,7 +218,7 @@ async function waitForUpdateHandoffAcknowledgement(acknowledgementPath: string):
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
   }
-  throw new Error("Tauri update broker did not acknowledge the handoff; Agent remains running.");
+  throw new Error("Update handoff did not prove replacement launch; Agent remains running.");
 }
 
 let streamProcess: any = null;
@@ -1297,26 +1299,24 @@ async function checkUpdate(config: AgentLocalConfig, manual = false) {
       }
       if (USE_FIREBASE && config.registeredDeviceId) {
         const rolloutControl = await loadAgentUpdateRolloutWithFirebase(config.registeredDeviceId);
-        if (rolloutControl) {
-          const decision = decideUpdateEligibility({
-            id: config.registeredDeviceId,
-            version: currentVersion,
-            selectedRolloutVersion: currentVersion,
-            updateCurrentVersion: currentVersion,
-            updatePaused: rolloutControl.updatePaused,
-            updateRing: rolloutControl.updateRing,
-          }, rolloutControl.rollout);
-          if (rolloutControl.rollout.targetVersion !== data.latestVersion || !decision.eligible) {
-            await setUpdateTelemetry(config, {
-              error: undefined,
-              progress: 0,
-              state: "idle",
-              targetVersion: data.latestVersion,
-            });
-            console.log(`[WonRemote Agent] Update ${data.latestVersion} deferred by rollout policy: ${decision.reason}`);
-            isUpdating = false;
-            return;
-          }
+        const decision = decideUpdateEligibility({
+          id: config.registeredDeviceId,
+          version: currentVersion,
+          selectedRolloutVersion: currentVersion,
+          updateCurrentVersion: currentVersion,
+          updatePaused: rolloutControl?.updatePaused,
+          updateRing: rolloutControl?.updateRing,
+        }, rolloutControl?.rollout);
+        if (rolloutControl?.rollout.targetVersion !== data.latestVersion || !decision.eligible) {
+          await setUpdateTelemetry(config, {
+            error: undefined,
+            progress: 0,
+            state: "idle",
+            targetVersion: data.latestVersion,
+          });
+          console.log(`[WonRemote Agent] Update ${data.latestVersion} deferred by rollout policy: ${decision.reason}`);
+          isUpdating = false;
+          return;
         }
       }
       await setUpdateTelemetry(config, {

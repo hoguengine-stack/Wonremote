@@ -105,6 +105,12 @@ describe("portable release updater", () => {
     expect(script).toContain("Portable update could not remove owned entry");
     expect(script).toContain("Start-PortableRuntimes $restartViewer $restartAgent");
     expect(script).toContain("-ArgumentList @('--agent')");
+    const backupReady = script.indexOf("$backupReady = $true");
+    const readinessSignal = script.indexOf("Set-Content -LiteralPath ($PSCommandPath + '.accepted')");
+    const processStop = script.indexOf("Stop-PortableProcesses", readinessSignal);
+    expect(backupReady).toBeGreaterThan(0);
+    expect(readinessSignal).toBeGreaterThan(backupReady);
+    expect(processStop).toBeGreaterThan(readinessSignal);
     const secondHandoff = await preparePortableHandoff({
       archivePath,
       latestVersion: "0.1.40",

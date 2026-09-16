@@ -31,8 +31,8 @@ beforeAll(async () => {
 }, 30_000);
 afterAll(async () => { await browser?.close(); });
 
-async function openViewer(options: { slow?: boolean; fail?: boolean; local?: boolean; connected?: boolean; mobile?: boolean; emulateMobile?: boolean; rolloutSupported?: boolean; nativeAndroid?: boolean; desktop?: boolean } = {}) {
-  const page = await browser.newPage({ viewport: options.mobile ? { width: 390, height: 844 } : { width: 1440, height: 900 }, ...(options.emulateMobile ? { isMobile: true, hasTouch: true } : {}), ...(options.nativeAndroid ? { userAgent: "Android WonRemoteViewer/1" } : {}) });
+async function openViewer(options: { slow?: boolean; fail?: boolean; local?: boolean; connected?: boolean; mobile?: boolean; emulateMobile?: boolean; rolloutSupported?: boolean; nativeAndroid?: boolean; desktop?: boolean; accountManager?: boolean; viewport?: { width: number; height: number }; storeName?: string } = {}) {
+  const page = await browser.newPage({ viewport: options.viewport ?? (options.mobile ? { width: 390, height: 844 } : { width: 1440, height: 900 }), ...(options.emulateMobile ? { isMobile: true, hasTouch: true } : {}), ...(options.nativeAndroid ? { userAgent: "Android WonRemoteViewer/1" } : {}) });
   const origin = options.nativeAndroid ? "https://wonremote-a7fd3.web.app" : "http://viewer.test";
   page.setDefaultTimeout(3_000);
   await page.route("**/*", async (route) => {
@@ -82,7 +82,7 @@ async function openViewer(options: { slow?: boolean; fail?: boolean; local?: boo
       historyReads: 0, historySubscriptions: 0, rtcStarts: 0, controls: [] as unknown[],
       devices: Array.from({ length: 10 }, (_, i) => ({
         id: `device-${i}`, deviceNumber: `AGENT-${i}`, businessNumber: "123-45-67890",
-        desktopName: `PC-${i}`, deviceName: "POS", storeName: "Store", status: i === 9 ? "online" : "offline", protocolVersion: 1,
+        desktopName: `PC-${i}`, deviceName: "POS", storeName: opts.storeName ?? "Store", status: i === 9 ? "online" : "offline", protocolVersion: 1,
         lastSeenAt: new Date().toISOString(),
         ...(opts.rolloutSupported ? {version:"0.1.93",selectedRolloutVersion:"0.1.93",rollbackSupportVersion:"0.1.93"} : {}),
       })),
@@ -97,10 +97,15 @@ async function openViewer(options: { slow?: boolean; fail?: boolean; local?: boo
       },
       subscribeFirebaseConnectionHistory: (next: (history: unknown[]) => void) => { state.historySubscriptions++; next([]); return () => {}; },
       fetchFirebaseConnectionHistory: async () => { state.historyReads++; return w.historyFixture ?? []; },
-      isCurrentViewerAccountManager: async () => false,
-      fetchFirebaseDevices: async () => {
+      isCurrentViewerAccountManager: async () => Boolean(opts.accountManager),
+      fetchFirebaseDevices: async (_env?: unknown, refreshPresence = false, _signal?: AbortSignal, onProgress?: (devices: unknown[]) => void) => {
         state.reads++;
         const devices = structuredClone(state.devices);
+        if (refreshPresence && w.refreshProgressAllOnline) {
+          onProgress?.(devices.map((device: any) => ({ ...device, status: "online" })));
+          await new Promise<void>((resolve) => { w.finishPresenceRefresh = resolve; });
+          delete w.finishPresenceRefresh;
+        }
         if (state.slow) await new Promise<void>((resolve) => { w.finishRead = resolve; });
         if (state.fail) throw new Error("Quota exceeded.");
         return devices;
@@ -144,6 +149,159 @@ const counts = (page: Page) => page.evaluate(() => {
 const refresh = (page: Page) => page.getByRole("button", { name: "장비 목록 새로고침", exact: true });
 
 describe("manual Viewer device list in a real browser", () => {
+  it("keeps editor keyboard focus when the remote transport becomes ready", async () => {
+    const page = await openViewer({ desktop: true, connected: true });
+    try {
+      await page.evaluate(() => {
+        const w = window as any;
+        const open = w.testApi.openFirebaseSession;
+        w.testApi.openFirebaseSession = (id: string) => new Promise(resolve => {
+          w.releaseEditorSession = async () => resolve(await open(id));
+        });
+        const start = w.testApi.startFirebaseViewerWebRtcTransport;
+        w.testApi.startFirebaseViewerWebRtcTransport = (id: string, callbacks: any) => {
+          w.releaseEditorTransport = () => callbacks.onState('webrtc-open');
+          return start(id, { ...callbacks, onState: () => {} });
+        };
+      });
+      await page.locator('.table-row').filter({ hasText: 'PC-0' }).getByRole('button', { name: '접속', exact: true }).click();
+      await page.waitForFunction(() => !!(window as any).releaseEditorSession);
+      await page.locator('.table-row').filter({ hasText: 'PC-0' }).click({ button: 'right' });
+      const dialog = page.getByRole('dialog', { name: '등록 장비 수정', exact: true });
+      const input = dialog.getByLabel('가맹점 상호명');
+      await input.click();
+      await page.keyboard.press('Control+a');
+      await page.keyboard.type('Local');
+      expect(await input.inputValue()).toBe('Local');
+      await page.evaluate(() => (window as any).releaseEditorSession());
+      await page.waitForFunction(() => !!(window as any).releaseEditorTransport);
+      await page.evaluate(() => (window as any).releaseEditorTransport());
+      await page.clock.runFor(50);
+      expect(await input.evaluate(element => document.activeElement === element)).toBe(true);
+      await page.evaluate(() => { (window as any).testState.controls = []; });
+      await page.keyboard.type(' edit');
+      await page.keyboard.press('Backspace');
+      expect(await input.inputValue()).toBe('Local edi');
+      expect(await page.evaluate(() => (window as any).testState.controls)).toEqual([]);
+      await dialog.getByRole('button', { name: '취소', exact: true }).click();
+      await expect.poll(() => page.locator('.remote-ime-input').evaluate(element => document.activeElement === element)).toBe(true);
+      await page.keyboard.press('ArrowRight');
+      expect(await page.evaluate(() => (window as any).testState.controls)).toEqual(['key-down Right', 'key-up Right']);
+    } finally { await page.close(); }
+  });
+  it("keeps typed text in the right-click device editor and saves it", async () => {
+    const page = await openViewer({ desktop: true });
+    try {
+      await page.evaluate(() => {
+        const w = window as any;
+        w.editorWrites = [];
+        w.testApi.updateFirebaseDeviceMetadata = async (id: string, input: any) => {
+          w.editorWrites.push('metadata');
+          const device = w.testState.devices.find((item: any) => item.id === id);
+          Object.assign(device, input);
+          return { ...device };
+        };
+        w.testApi.updateFirebaseDeviceRollout = async () => {
+          w.editorWrites.push('rollout');
+          throw new Error('업데이트 설정 저장 실패');
+        };
+      });
+      await page.locator('.table-row').filter({hasText:'PC-0'}).click({button:'right'});
+      const dialog = page.getByRole('dialog', {name:'등록 장비 수정', exact:true});
+      const store = dialog.getByLabel('가맹점 상호명');
+      await store.fill('수정 매장');
+      await expect.poll(() => store.inputValue()).toBe('수정 매장');
+      await store.press('End');
+      await store.pressSequentially(' ABC');
+      await expect.poll(() => store.inputValue()).toBe('수정 매장 ABC');
+      const desktop = dialog.getByLabel('데스크탑명');
+      await desktop.fill('수정 PC');
+      await expect.poll(() => desktop.inputValue()).toBe('수정 PC');
+      await dialog.getByRole('button', { name: '저장', exact: true }).click();
+      await expect.poll(() => dialog.getByRole('alert').textContent()).toContain('업데이트 설정 저장 실패');
+      expect(await desktop.inputValue()).toBe('수정 PC');
+      await page.evaluate(() => {
+        const w = window as any;
+        w.testApi.updateFirebaseDeviceRollout = async () => { w.editorWrites.push('rollout'); };
+      });
+      await dialog.getByRole('button', { name: '저장', exact: true }).click();
+      await expect.poll(() => dialog.count()).toBe(0);
+      await expect.poll(() => page.locator('.table-row').filter({ hasText: '수정 PC' }).count()).toBe(1);
+      expect(await page.evaluate(() => (window as any).editorWrites)).toEqual(['metadata', 'rollout', 'metadata', 'rollout']);
+    } finally { await page.close(); }
+  });
+  it("shows metadata failure in the device editor without losing text or writing rollout", async () => {
+    const page = await openViewer({ desktop: true });
+    try {
+      await page.evaluate(() => {
+        const w = window as any;
+        w.editorWrites = [];
+        w.testApi.updateFirebaseDeviceMetadata = async () => {
+          w.editorWrites.push('metadata');
+          throw new Error('장비 정보 저장 권한 없음');
+        };
+        w.testApi.updateFirebaseDeviceRollout = async () => { w.editorWrites.push('rollout'); };
+      });
+      await page.locator('.table-row').filter({ hasText: 'PC-0' }).click({ button: 'right' });
+      const dialog = page.getByRole('dialog', { name: '등록 장비 수정', exact: true });
+      await dialog.getByLabel('담당자', { exact: true }).fill('수정 담당자');
+      await dialog.getByRole('button', { name: '저장', exact: true }).click();
+      await expect.poll(() => dialog.getByRole('alert').textContent()).toContain('장비 정보 저장 권한 없음');
+      expect(await dialog.getByLabel('담당자', { exact: true }).inputValue()).toBe('수정 담당자');
+      expect(await page.evaluate(() => (window as any).editorWrites)).toEqual(['metadata']);
+      expect(await dialog.getByRole('button', { name: '저장', exact: true }).isEnabled()).toBe(true);
+    } finally { await page.close(); }
+  });
+  it("keeps the pre-click mixed statuses visible until presence refresh completes", async () => {
+    const page = await openViewer();
+    const online = page.locator(".table-row .status-pill.online");
+    const offline = page.locator(".table-row .status-pill.offline");
+    try {
+      await expect.poll(() => online.count()).toBe(1);
+      expect(await offline.count()).toBe(9);
+      await page.evaluate(() => { (window as any).refreshProgressAllOnline = true; });
+      await refresh(page).click();
+      await page.waitForFunction(() => typeof (window as any).finishPresenceRefresh === "function");
+      expect(await online.count()).toBe(1);
+      expect(await offline.count()).toBe(9);
+      await page.evaluate(() => (window as any).finishPresenceRefresh());
+      await expect.poll(() => refresh(page).isEnabled()).toBe(true);
+      expect(await online.count()).toBe(1);
+      expect(await offline.count()).toBe(9);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it.each([1024, 1366, 1920])("keeps a long Agent update result clear of the heading, tools and dashboard at %ipx", async (width) => {
+    const page = await openViewer({ desktop: true, accountManager: true, viewport: { width, height: 768 }, storeName: "김미자 본오(방구석)" });
+    try {
+      await page.getByText("PC-0", { exact: true }).waitFor();
+      await page.getByRole("button", { name: /김미자 본오/ }).first().click();
+      await page.getByRole("button", { name: "에이전트 업데이트 요청", exact: true }).first().click();
+      const notice = page.getByText(/업데이트 요청을 전송했습니다/, { exact: false });
+      await notice.waitFor();
+      expect(await notice.evaluate((element) => element.closest(".viewer-command-header") === null)).toBe(true);
+
+      const boxes = await Promise.all([
+        page.locator(".workspace-heading-line").boundingBox(),
+        page.locator(".viewer-command-header .topbar-tools").boundingBox(),
+        notice.boundingBox(),
+        page.locator('[data-testid="device-workspace"]').boundingBox(),
+      ]);
+      expect(boxes.every(Boolean)).toBe(true);
+      const [heading, tools, status, dashboard] = boxes as NonNullable<(typeof boxes)[number]>[];
+      const overlaps = (a: typeof heading, b: typeof heading) =>
+        a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
+      expect(overlaps(heading, tools)).toBe(false);
+      expect(overlaps(status, tools)).toBe(false);
+      expect(overlaps(status, dashboard)).toBe(false);
+      expect(await notice.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+    } finally {
+      await page.close();
+    }
+  });
+
   it("retries failed selected Viewer installation only after cooldown", async () => {
     const page=await openViewer({desktop:true,connected:true});
     try {

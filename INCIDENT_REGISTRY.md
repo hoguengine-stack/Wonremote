@@ -1,5 +1,90 @@
 # WonRemote Incident Registry
 
+## INC-20260916-090: Late remote connection steals focus from device editor
+
+- Detected: 2026-09-16 during focused reproduction of the installed v0.1.95 right-click editor report.
+- Severity: High; local metadata could not be typed reliably and unintended remote keyboard ownership remained possible behind the editor.
+- Affected: Windows Viewer device editor when a requested session or WebRTC transport becomes ready after the editor opens; save-error visibility in the same dialog.
+- Status: Source repaired and automated runtime verified; v0.1.96 build, publication and installed confirmation pending.
+- User-visible symptom: Right-clicking a registered device opens the editor, but text input itself can stop working; save failure was also hidden behind the dialog.
+- Minimal trigger: Request a connection, right-click a device before the request completes, focus a metadata input, then allow session and transport readiness to complete.
+- Root cause and contributors: Session activation and transport-ready effects focused the remote panel and hidden IME without checking the open editor. Keyboard recovery remained enabled behind the dialog. The metadata handler also swallowed save rejection and closed before rollout persistence finished.
+- Fix commit(s): Pending v0.1.96 preparation commit.
+- Permanent guard: Explicitly suspend remote input, keyboard recovery and automatic panel focus while the device editor is open; resume after close. Propagate save failure into the dialog, preserve input and close only after both save stages succeed.
+- Regression proof: Real App Chromium RED lost editor focus after delayed readiness. GREEN retains typing/deletion with zero remote sends, restores remote ArrowRight after close, preserves text on save failure and retries successfully. Related six files passed 150 tests, TypeScript passed and x86 handoff exit test passed.
+- Release proof: Pending the v0.1.96 GitHub Actions build, signed-manifest publication, live alias/hash checks and installed Viewer confirmation.
+- Remaining blocker: Installed v0.1.96 Viewer must confirm right-click typing and saving against live persistence; installed Agent update/restart and remote input remain post-publication physical checks.
+
+## INC-20260916-089: Device editor hides save failures and closes before all saves finish
+
+- Cause: Parent metadata handler swallowed errors into a notice behind the dialog and closed the dialog before rollout persistence completed. The dialog continued rollout writes after metadata failure and did not catch rollout rejection.
+- Guard: Propagate metadata failure to the dialog, preserve entered values, display an inline alert, and close only after both existing save stages succeed. No automatic retry added.
+- Proof: Two actual-App Chromium tests failed before the change (missing in-dialog error) and passed afterwards. They verify typing, preserved text, no rollout call after metadata failure, rollout failure, explicit retry, and updated list display. TypeScript passed.
+- Boundary: Persistence is mocked; this does not prove live Firestore authorization or installed 0.1.95 keyboard behavior. User clarification of input-versus-save symptom remains pending. No build or deployment.
+
+## INC-20260916-088: Failed installer launch unnecessarily stops the existing runtime during rollback
+
+- Evidence: The generated handoff catches Start-Process failure and calls Restore-WonRemoteInstall whenever a backup exists. Restore stops the Agent and replaces its files even though no installer ran.
+- Guard: Track actual installer launch. Pre-launch failure preserves the runtime/files and reports failure; post-launch installer/runtime failure retains rollback.
+- Verification: Generated PowerShell launch-failure regression failed before the fix and passed after it. Post-launch installer and runtime-health failures retained rollback. Four focused suites passed 43 tests and TypeScript passed. Process/restore actions are test doubles; actual Windows installation and field recovery remain unverified.
+- User result: The comparison 0.1.88 Viewer also failed to connect. The user will reinstall onsite. Process termination and the exact field cause remain unconfirmed.
+
+## 2026-09-16 correction to INC-20260916-087
+
+- Stale Firestore presence and unanswered requests establish lack of response, not a terminated target process. Neither target's process state was inspected. Matching protocol numbers do not exclude Viewer discovery/session regressions across versions.
+- The user requested an original v0.1.88 Viewer comparison build with optional updates. Keep both target process state and version-specific connectivity unconfirmed until that comparison or target inspection supplies evidence.
+- Prior timestamps labelled KST were UTC: 8E97376F last seen 2026-09-09 09:42 KST; A8BCF987 2026-09-15 10:12 KST. ZOOK log proximity alone does not identify either target.
+- The source handoff flaw remains a confirmed code defect, while its causal role in each field outage remains subject to target logs.
+
+## INC-20260916-087: Unattended update handoff stopped field Agent before installer acceptance
+
+- Detected: 2026-09-16 from the user's report that deployed devices `AGENT-8E97376F` and `AGENT-A8BCF987` were offline, inaccessible and not updating.
+- Severity: P0 field remote-management outage.
+- Affected: Legacy per-user Windows Agents offered a newer per-machine installer that requires Windows elevation; confirmed interrupted handoff on `AGENT-A8BCF987`. `AGENT-8E97376F` is also unreachable but has a separate, still-unconfirmed cause.
+- Status: Fleet rollout contained and permanent source repair verified; field recovery pending.
+- Direct evidence: Both devices advertise remote protocol version 2, so Viewer/Agent version skew is not the connection blocker. Both last reported High integrity. `AGENT-A8BCF987` last reported version 0.1.90 at 2026-09-15 01:12 KST with update state `restarting`, target 0.1.94 and progress 100, then stopped answering commands. `AGENT-8E97376F` last reported healthy version 0.1.88 at 2026-09-09 00:42 KST and has no matching update-handoff evidence. A UAC wait is therefore not claimed as A8BCF987's exact post-launch failure.
+- Root cause and contributors: When rollout configuration was absent, the Agent treated the update as eligible for every device. The legacy handoff stopped the running Agent before launching the installer, while the Tauri broker's readiness file proved only that PowerShell had spawned, not that the installer or replacement Agent had started. Any handoff-script, installer or migration failure after that premature acknowledgement could remove the only cloud control path. The unavailable target-local handoff log prevents assigning A8BCF987's exact later failing instruction.
+- Immediate containment: Created and read back production `configuration/updateRollout` with target 0.1.95, paused true and percentage 0. Existing compatible Agents will defer further automatic installation attempts.
+- Permanent guard: Fail closed when rollout configuration is absent or mismatched. The handoff script, rather than the broker, acknowledges readiness only after the installer process starts; the Agent then exits with dedicated code 42, and the Tauri watchdog suppresses restart only for that requested code. The installer owns process shutdown and allows the acknowledgement to be observed first. Seven related suites passed 114 tests, including an executable generated-script order probe; the focused Tauri Rust test and TypeScript passed.
+- Recovery boundary: A stopped Agent cannot receive a Firebase command, and neither affected business has another registered Agent available as a wake relay. Recover `A8BCF987` by rebooting/logging on or starting its existing Agent through an authorized alternate path; then verify a fresh heartbeat and real session before any migration. Investigate `8E97376F` independently instead of attributing it to this handoff without evidence. Keep rollout paused because deployed 0.1.88/0.1.90 do not yet contain the repaired handoff.
+
+## INC-20260915-086: Refresh regression initially used an unavailable assertion matcher
+
+- Detected: 2026-09-15 during the focused Viewer refresh regression run.
+- Severity: P3 test-authoring failure; no product impact.
+- Affected: New Chromium refresh regression only.
+- Status: Repaired and verified in the same change.
+- Root cause and contributors: The test imported Vitest assertions but initially used Playwright Test's `toBeEnabled` matcher, which is not installed in this harness.
+- Permanent guard: Use the repository's established `expect.poll(() => locator.isEnabled())` form and include TypeScript in focused verification.
+- Regression proof: The corrected focused browser test passed, TypeScript passed, and the complete Viewer browser file passed 46 tests.
+- Remaining physical verification: None for the test harness; installed product confirmation remains under INC-20260915-085.
+
+## INC-20260915-085: Device refresh temporarily displayed every device as online
+
+- Detected: 2026-09-15 from the user's Viewer device-list report.
+- Severity: P1 operational status accuracy.
+- Affected: Shared PC and Android Viewer device-list refresh rendering for manual-presence Agents.
+- Status: Source repaired and focused browser regression verified; installed Viewer confirmation pending.
+- User-visible symptom: Pressing device-list refresh changes every row to online before the actual presence refresh finishes.
+- Minimal trigger: Begin a manual presence refresh while the visible list contains both online and offline devices and the server snapshot still stores online for manual-presence records.
+- Root cause and contributors: The Viewer publishes the fetched Firestore snapshot as progress before matching heartbeat replies arrive. Manual-presence records intentionally bypass timestamp aging, so their persisted online field is not a fresh presence confirmation.
+- Permanent guard: In the real Viewer browser path, hold a refresh after publishing an all-online intermediate snapshot and assert that the pre-click mixed statuses remain visible until the confirmed final result is applied.
+- Regression proof: Chromium reproduced 1 online/9 offline changing incorrectly to 10 online during a held refresh. After repair, the same mixed statuses remain visible until completion. The complete Viewer browser file passed 46 tests, the presence-domain suite passed 6 tests, and TypeScript passed.
+- Remaining physical verification: Refresh a mixed online/offline installed Viewer list and observe the full five-second confirmation window.
+
+## INC-20260915-084: Viewer command header overlapped update status and search controls
+
+- Detected: 2026-09-15 from the user's cropped PC Viewer screenshot.
+- Severity: P2 dashboard readability and operation feedback.
+- Affected: PC Viewer device dashboard at constrained workspace widths and after an Agent update request.
+- Status: Source repaired and focused browser regression verified; installed Viewer confirmation pending.
+- User-visible symptom: The selected store heading, online badge, search field and long update-result text occupy the same pixels; the notice also runs into the following dashboard content.
+- Minimal trigger: Constrain the Viewer workspace, then request an Agent update so the long result text is rendered inside the title block.
+- Root cause and contributors: The PC Viewer keeps a fixed device-group sidebar, leaving a constrained command workspace. The long operation result was also nested inside the title/tool header instead of owning a separate layout row, while the full management tool set could consume the remaining width.
+- Permanent guard: Render the real Viewer dashboard at constrained and desktop widths, trigger the production update-result path, and assert nonintersection plus readable wrapping for the heading, tools, notice and following content.
+- Regression proof: The production Viewer path first failed the structural browser guard. After repair, Chromium passed at 1024px, 1366px and 1920px with a long Korean store name, the full account-management tool set and a long Agent-update result. Geometry checks prove no heading/tool/notice/dashboard intersection and no notice overflow. The complete Viewer browser file passed 45 tests and TypeScript passed.
+- Remaining physical verification: Resize the installed Viewer and repeat the update request against an actual device after the next build.
+
 ## INC-20260915-082: Viewer retained remote input ownership after transport loss
 
 - Detected: 2026-09-15 during the local0.1.95 Agent replacement while a PC Viewer session was open.

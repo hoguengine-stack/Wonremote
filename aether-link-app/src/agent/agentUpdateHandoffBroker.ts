@@ -1,4 +1,5 @@
 export const UPDATE_HANDOFF_BROKER_PREFIX = "[WonRemoteUpdateHandoff]";
+export const AGENT_UPDATE_HANDOFF_EXIT_CODE = 42;
 
 export function isUpdateHandoffBrokerEnabled(value: string | undefined): boolean {
   const normalized = value?.trim().toLowerCase();

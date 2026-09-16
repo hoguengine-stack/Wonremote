@@ -1044,7 +1044,7 @@ describe("desktop packaging scaffold", () => {
     expect(releaseWorkflow).toContain("src/agent/agentUpdateOnce.test.ts");
     expect(releaseWorkflow).toContain("src/agent/productionUpdateMetadata.test.ts");
     expect(releaseWorkflow).toContain("src/domain/updateManifestScript.test.ts");
-    expect(releaseWorkflow).toContain("test_update_handoff_acknowledgement_path_is_adjacent_to_the_owned_script");
+    expect(releaseWorkflow).toContain("test_agent_update_handoff_requires_dedicated_exit_code");
     expect(releaseWorkflow).toContain("actions/cache/restore@v4");
     expect(releaseWorkflow).toContain("actions/cache/save@v4");
     expect(releaseWorkflow).toContain("build-release:");

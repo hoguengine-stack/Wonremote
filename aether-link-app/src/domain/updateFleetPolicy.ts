@@ -10,6 +10,7 @@ export interface UpdateFleetRollout {
 
 export type UpdateEligibilityReason =
   | "eligible"
+  | "missing-rollout-policy"
   | "paused"
   | "missing-device-id"
   | "missing-target-version"
@@ -51,9 +52,12 @@ export function hashDeviceIdToPercentageBucket(deviceId: string): number {
 
 export function decideUpdateEligibility(
   device: Pick<ManagedDevice, "id" | "version" | "updateCurrentVersion" | "updatePaused" | "updateRing" | "selectedRolloutVersion">,
-  rollout: UpdateFleetRollout,
+  rollout: UpdateFleetRollout | null | undefined,
 ): UpdateEligibilityDecision {
   const bucket = hashDeviceIdToPercentageBucket(device.id);
+  if (!rollout) {
+    return { eligible: false, reason: "missing-rollout-policy", bucket };
+  }
   if (rollout.paused || device.updatePaused) {
     return { eligible: false, reason: "paused", bucket };
   }

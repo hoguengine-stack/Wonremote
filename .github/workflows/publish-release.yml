@@ -143,8 +143,8 @@ jobs:
       - name: Verify Tauri resource paths
         run: cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc --release --lib test_node_resource_paths
 
-      - name: Verify updater acknowledgement ownership
-        run: cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc --release --lib test_update_handoff_acknowledgement_path_is_adjacent_to_the_owned_script
+      - name: Verify acknowledged updater exit contract
+        run: cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc --release --lib test_agent_update_handoff_requires_dedicated_exit_code
 
       - name: Save Rust and downloaded tool caches
         if: always() && steps.release-cache.outputs.cache-hit != 'true' && hashFiles('aether-link-app/src-tauri/target/**', 'aether-link-poc/target/**') != ''
