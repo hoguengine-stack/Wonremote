@@ -5,30 +5,30 @@
 - Detected: 2026-09-17 after the approved public v0.1.102 bootstrap on Agent 82220F6D.
 - Severity: Medium; the protected v0.1.102 Agent is registered, online and usable, but the obsolete writable v0.1.88 runtime and duplicate uninstall entry remain.
 - Affected: Agent per-machine NSIS migration from `%LOCALAPPDATA%\WonRemote\Agent` to `C:\Program Files (x86)\WonRemote Agent`.
-- Status: Source verified and ready for restricted deployment; wider Agent rollout remains restricted to the exact selected test device.
+- Status: Resolved in public v0.1.103 and verified on the exact selected test device; wider rollout remains paused.
 - User-visible symptom: Agent reports v0.1.102 from Program Files and sends accepted heartbeats, while Apps/registry still lists WonRemote Agent v0.1.88 and its complete LocalAppData payload remains.
 - Minimal trigger: Install a protected per-machine Agent over a same-user legacy installation while the NSIS process uses machine shell context.
 - Root cause and contributors: Legacy detection was performed in NSIS with `$LOCALAPPDATA`. A per-machine installer can resolve that shell constant outside the intended interactive user's profile, so the migration branch was skipped even though the later PowerShell cleanup already had exact-path validation.
-- Fix commit(s): Pending v0.1.103 preparation commit.
+- Fix commit(s): `3dbb196252e0cc2003211e6faf4ac4f016408145`.
 - Permanent guard: Derive the intended user's profile from its SID-backed Windows `ProfileList`, allow only `AppData\Local\WonRemote\Agent` and `AppData\Local\WonRemote Agent`, and make the protected installer helper decide whether migration is needed. Do not trust NSIS machine shell context for user-owned legacy state.
 - Regression proof: The actual helper now resolves `ProfileList` for the intended SID, accepts only its two known legacy roots, and the per-machine hooks always delegate the migration decision to that helper. Focused PowerShell/NSIS tests passed 83 cases including a deliberately different machine shell context, release boundaries passed 130 cases, TypeScript passed, and installer update E2E passed upgrade, two rollback paths and the backup-required gate.
-- Release proof: Public v0.1.102 bootstrap exited 0, installed product 0.1.102, preserved `123-45-67890:AGENT-82220F6D`, registered the protected updater task and resumed accepted heartbeat. Exact legacy directory and HKCU entry remained, proving the cleanup acceptance condition was not met.
-- Remaining blocker: Repair discovery, publish fresh v0.1.103 through normal CI, and prove automatic selected update removes both exact legacy artifacts while the protected Agent returns online without another UAC prompt.
+- Release proof: Normal main CI run 35151295705 published v0.1.103 from the exact fix commit after the release contract, installer E2E, real scheduled-task Job, manifest, resource, updater-exit and alias gates passed. On 82220F6D the exact-ID command was delivered, the public Agent installer was verified and installed automatically, the protected Agent restarted as 0.1.103 with accepted heartbeat and healthy result, and the obsolete LocalAppData root plus exact HKCU uninstall entry were both absent. No operator approval was requested. The rollout was paused after readback.
+- Remaining blocker: None for this incident. Cross-PC control/latency, tray visuals and secure lock/PIN capture remain separate physical product checks.
 
 ## INC-20260917-108: Real Task Scheduler Job rejects the Agent updater's direct breakaway
 
 - Detected: 2026-09-17 while installing selected public v0.1.101 on Agent 82220F6D.
 - Severity: High; the working Agent remains online, but an installed protected Agent cannot advance to a newer release from its normal scheduled-task runtime.
 - Affected: Agent-only verified installer handoff from the `WonRemote Agent` highest-privilege scheduled task. Viewer direct update is unaffected.
-- Status: Source verified and ready for restricted deployment; wider Agent rollout remains restricted to the exact selected test device.
+- Status: Resolved in public v0.1.102/v0.1.103 and verified on the exact selected test device; wider rollout remains paused.
 - User-visible symptom: Viewer confirms that the update request was sent. After the live session ends, Agent downloads and verifies the installer, but stays on the old version and reports update failure instead of installing.
 - Minimal trigger: Run Agent from the real Task Scheduler task, deliver an eligible update, close the active session and let the Tauri broker create PowerShell with `CREATE_BREAKAWAY_FROM_JOB`.
 - Root cause and contributors: Windows permits explicit breakaway only when every enclosing Job allows it. The product regression and release gate created a synthetic Job with `JOB_OBJECT_LIMIT_BREAKAWAY_OK`, while the real Task Scheduler Job returned access denied. The passing test therefore proved the flag under an allowed Job, not the deployed ownership boundary.
-- Fix commit(s): Pending next preparation commit.
+- Fix commit(s): `0045e2c9a6ad513d1afac09dd0310c0d0c7771fd`, with live completion recorded after `3dbb196252e0cc2003211e6faf4ac4f016408145`.
 - Permanent guard: Do not launch the Agent installer handoff as a direct child of the main Agent task. Verify the trusted handoff inputs, copy them under the protected Program Files installation, and invoke a separately registered on-demand updater task whose PowerShell owner remains alive while the installer replaces the main task. Fail closed on hash/path/task/concurrency errors and keep the working Agent alive until installer-start acknowledgement.
 - Regression proof: RED installed log records the v0.1.101 checksum-derived installer, exact session stop, `Agent update broker failed to start PowerShell: ... os error 5`, no accepted marker, and `Agent remains running`. GREEN passes 120 focused TypeScript/PowerShell tests, 130 release-boundary tests, installer upgrade plus two rollback E2E paths, all 51 x86 Rust library tests, eight focused x64 native handoff tests and a real x86 kill-on-close Job E2E. It also permits a fresh request after a broker failure instead of suppressing every later update for that Agent process.
-- Release proof: Public v0.1.101 remains immutable and Viewer v0.1.101 installed successfully. Agent 82220F6D remains healthy on v0.1.100; no wider Agent was targeted.
-- Remaining blocker: Focused protected-staging/task tests, fresh x86 build and release, one approved bootstrap install on 82220F6D, then a subsequent selected automatic update proving the new task boundary, restart, registration, heartbeat and legacy cleanup.
+- Release proof: Normal CI run 35147697444 published v0.1.102 and its protected updater task; approved bootstrap installed it on 82220F6D only. Normal CI run 35151295705 then passed the unchanged real scheduled-task Job handoff gate and published v0.1.103. The installed v0.1.102 scheduled Agent staged the hash-matched public installer under Program Files, invoked the independent highest update task, received installer-start acceptance, exited as expected, and restarted registered on v0.1.103. The task result was 0, `last-update-result.json` was healthy, heartbeat was accepted and the Agent stayed online without another operator approval.
+- Remaining blocker: None for this incident. Wider rollout remains paused pending the separate cross-PC product test list.
 
 ## INC-20260917-107: Job-boundary release proof used a cold-start budget below observed runner time
 
