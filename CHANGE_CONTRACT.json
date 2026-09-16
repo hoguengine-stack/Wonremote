@@ -13,7 +13,8 @@
       "INC-20260917-100",
       "INC-20260917-101",
       "INC-20260917-102",
-      "INC-20260917-103"
+      "INC-20260917-103",
+      "INC-20260917-104"
     ],
     "observed": "Installed v0.1.97 Agent displays Viewer identity, has no x86 tray Exit command, leaves the SYSTEM capture broker running after the shell closes, can discard an update click during startup privilege handoff, and reports installer success while the v0.1.88 LocalAppData runtime and uninstall entry remain. The live v0.1.97-to-v0.1.98 update then replaced the protected executable but its PowerShell handoff died with the scheduled-task process tree immediately after logging the installer PID, so restart, result recording and cleanup did not complete.",
     "outcomes": [
@@ -46,23 +47,31 @@
         "acceptance": "When an installed Agent or Viewer update starts inside a Windows Job with kill-on-close, the verified handoff PowerShell explicitly breaks away, survives the old shell and task lifetime, records the installer exit, restarts the correct product and reaches a healthy or rollback result without manual process termination."
       },
       {
-        "id": "v0199-handoff-repair-release",
-        "acceptance": "A fresh v0.1.99 Viewer and Agent release is built and published only after the scheduled-task Job-boundary regression, focused updater tests and all existing release gates pass; the selected 82220F6D Agent is then updated and verified from the public path."
+        "id": "v0199-handoff-repair-release-gap",
+        "acceptance": "The fresh v0.1.99 Viewer and Agent release is retained as immutable evidence: its new handoff passes the scheduled-task Job boundary, while installed old-client bootstrap remains explicitly failed rather than being reported as selected-device completion."
+      },
+      {
+        "id": "legacy-silent-installer-self-restarts",
+        "acceptance": "A signed update started by an already-deployed Viewer or Agent whose old handoff process dies after launching the installer still restarts the newly installed product from the silent installer itself; Viewer returns with its UI and Agent returns through the protected scheduled-task path without a manual launch."
+      },
+      {
+        "id": "v01100-bootstrap-repair-release",
+        "acceptance": "Fresh x86 Viewer and Agent v0.1.100 installers and their signed manifest are built and published through the normal release workflow; only selected Agent 82220F6D is then offered the release and must install, restart, preserve registration and return online without a manual Agent launch before any wider rollout."
       }
     ],
     "requestReview": {
       "impact": "none",
-      "reason": "The repair changes local packaging identity, startup ordering, one user-triggered tray exit path, one-time installer cleanup and the Windows creation flags of the already-existing update handoff process. It adds no cloud request, polling loop, retry, listener, subscription or persistence write. The existing local 500 ms show/exit request-file watcher is shared rather than duplicated.",
+      "reason": "The repair changes local packaging identity, startup ordering, one user-triggered tray exit path, one-time installer cleanup, Windows creation flags of the already-existing update handoff process and the owner of the expected post-update process start. It adds no cloud request, polling loop, retry, listener, subscription or persistence write. The silent installer starts the same product once; existing single-instance or scheduled-task ownership absorbs a later handoff restart.",
       "checks": {
         "idle": "No new idle network work or timer is introduced.",
         "rerender": "No React render path is changed.",
-      "concurrency": "The existing single-instance mutex, installer lock and one startup helper remain the owners. The handoff process is detached only from the enclosing Windows Job and still has exactly one verified script and lock owner.",
+      "concurrency": "The existing single-instance mutex, installer lock and scheduled-task MultipleInstances IgnoreNew policy remain the owners. The silent installer can start the replacement before the surviving handoff reaches its fallback restart, but both converge on one Viewer instance or one Agent task rather than two runtime owners.",
       "failure": "Migration without fresh healthy proof must return nonzero and preserve diagnosable state; startup helper failure shows the current window instead of silently exiting; updater handoff must survive parent Job closure and record a healthy, rollback or failed result.",
         "cleanup": "Only known Agent install roots, matching uninstall registration and the named secure broker task are affected."
       }
     },
-    "verification": "The shared production process module passed 47 x86 Rust tests and its direct-rustc x86 probe survived a real kill-on-close Job locally. The complete seven-file release contract group passed 107 tests after preserving the PowerShell behavior assertions and raising only the bounded cold-start budget; the timeout now reports its process error explicitly. CI run 35128534014 built both v0.1.99 installers and proved the x86 broker survived the Job, then exposed a transient EBUSY only in fixture cleanup. Bounded standard-library cleanup retry passed with the same real local x86 Job proof.",
-    "remaining": "A fresh normal workflow must compile and pass the shared-function x86 Job probe before v0.1.99 publication. Selected-device installed upgrade/migration remains deployment-required. Visual tray right-click and cross-PC latency proof remain physical checks."
+    "verification": "The shared production process module passed 47 x86 Rust tests and its direct-rustc x86 probe survived a real kill-on-close Job locally. CI run 35129709364 completed the normal v0.1.99 build, Job-boundary proof, signing, publication and live alias checks. Live installed Viewer 0.1.98 authenticated and installed public 0.1.99, but the old handoff died immediately after logging the installer PID: the file became 0.1.99 while no Viewer process restarted until a manual recovery launch. RED: the focused packaging test failed because neither Viewer installer had a postinstall owner for silent restart. GREEN: all x86/x64 Viewer and Agent hooks start their installed product through RunAsUser only during silent installation, after Agent task setup; five relevant suites passed 91 tests and TypeScript passed.",
+    "remaining": "The fresh normal workflow must compile both v0.1.100 installers, exercise the existing updater E2E and Job proof, sign and publish the manifest, then the selected local 0.1.98 Agent must install and return automatically from the public path. Visual tray right-click and cross-PC latency remain physical checks."
   },
   "deviceEditor20260916": {
     "status": "published-live-verified",

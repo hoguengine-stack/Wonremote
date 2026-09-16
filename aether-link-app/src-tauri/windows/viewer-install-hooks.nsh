@@ -41,6 +41,13 @@
   SetOutPath $INSTDIR
 !macroend
 
+!macro NSIS_HOOK_POSTINSTALL
+  ${If} ${Silent}
+    DetailPrint "Starting the installed WonRemote Viewer after silent update..."
+    nsis_tauri_utils::RunAsUser "$INSTDIR\wonremote-viewer.exe" ""
+  ${EndIf}
+!macroend
+
 !macro NSIS_HOOK_PREUNINSTALL
   !insertmacro WONREMOTE_STOP_RUNNING_PROCESSES
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "WonRemoteViewer"

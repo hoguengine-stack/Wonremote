@@ -1,5 +1,20 @@
 # WonRemote Incident Registry
 
+## INC-20260917-104: Fixed updater cannot repair the already-deployed broken launcher by itself
+
+- Detected: 2026-09-17 during the installed Viewer 0.1.98-to-0.1.99 public update.
+- Severity: High; the replacement file installs, but the product remains closed and an Agent can appear offline until manually started.
+- Affected: Silent NSIS update compatibility for already-deployed Viewer and Agent handoff launchers.
+- Status: Source repaired and focused tests passed; fresh build, release and installed old-Agent proof pending.
+- User-visible symptom: The update confirms and replaces Viewer 0.1.98 with 0.1.99, then no Viewer window returns. The handoff log ends immediately after the installer PID and has no installer exit, restart, health, result or cleanup records.
+- Minimal trigger: Start the public 0.1.99 installer update from installed 0.1.98, whose update handoff still belongs to the enclosing kill-on-close Windows Job.
+- Root cause and contributors: The v0.1.99 breakaway fix exists only in the newly installed executable. The update is launched by the old 0.1.98 executable, so that old broker can still die before restart. The silent installer successfully replaces files but does not independently start the installed product unless the caller supplies Tauri's optional restart flag, which deployed clients do not supply.
+- Fix commit(s): Pending v0.1.100 preparation commit.
+- Permanent guard: Silent Viewer and Agent installers must start their own newly installed product through the existing unelevated RunAsUser boundary. Keep the normal handoff restart and single-instance/task ownership as a second bounded recovery path. Test both product hooks and prove an actual selected 0.1.98 Agent returns without a manual launch.
+- Regression proof: The new focused packaging case failed before implementation because the Viewer hooks had no silent postinstall start. It now verifies both x86/x64 Viewer and Agent hooks, silent-only RunAsUser arguments and Agent task-setup ordering. Five related suites passed 91 tests and TypeScript passed.
+- Release proof: Public v0.1.99 itself is valid and remains immutable; it exposed this bootstrap gap on the installed Viewer. A fresh version is required.
+- Remaining blocker: Build and publish v0.1.100, update only 82220F6D from 0.1.98, and verify protected-path version, task/process recovery, result recording, legacy cleanup and device presence.
+
 ## INC-20260917-103: Passing Job-boundary proof failed during Windows fixture cleanup
 
 - Detected: 2026-09-17 in GitHub Actions run 35128534014 after both v0.1.99 installers built.

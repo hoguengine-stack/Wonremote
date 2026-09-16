@@ -43,6 +43,10 @@
   CreateDirectory "$SMPROGRAMS\WonRemote"
   CreateShortCut "$DESKTOP\WonRemote Agent.lnk" "$INSTDIR\wonremote-viewer.exe" "--agent --show-window"
   CreateShortCut "$SMPROGRAMS\WonRemote\WonRemote Agent.lnk" "$INSTDIR\wonremote-viewer.exe" "--agent --show-window"
+  ${If} ${Silent}
+    DetailPrint "Starting the installed WonRemote Agent after silent update..."
+    nsis_tauri_utils::RunAsUser "$INSTDIR\wonremote-viewer.exe" "--agent"
+  ${EndIf}
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
