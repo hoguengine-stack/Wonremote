@@ -9,29 +9,23 @@ const fixtureRoot = path.join(os.tmpdir(), `wonremote-update-broker-e2e-${proces
 
 type BrokerScenario = {
   arch: "x64" | "x86";
-  nodeSource: string;
-  pocSource: string;
-  shellSource: string;
+  probeSource: string;
 };
 
 const allScenarios: BrokerScenario[] = [
   {
     arch: "x64",
-    nodeSource: path.join(appRoot, "release-exe", "runtime", "node.exe"),
-    pocSource: path.join(appRoot, "release-exe", "bin", "wonremote-poc.exe"),
-    shellSource: path.join(appRoot, "src-tauri", "target", "release", "wonremote-viewer.exe"),
+    probeSource: path.join(appRoot, "src-tauri", "target", "release", "wonremote-job-probe.exe"),
   },
   {
     arch: "x86",
-    nodeSource: path.join(appRoot, "dist-runtime", "node.exe"),
-    pocSource: path.join(appRoot, "dist-poc", "wonremote-poc.exe"),
-    shellSource: path.join(
+    probeSource: path.join(
       appRoot,
       "src-tauri",
       "target",
       "i686-pc-windows-msvc",
       "release",
-      "wonremote-viewer.exe",
+      "wonremote-job-probe.exe",
     ),
   },
 ];
@@ -49,78 +43,42 @@ async function main(): Promise<void> {
     for (const scenario of scenarios) {
       await runScenario(scenario);
     }
-    console.log(`Tauri update handoff broker E2E passed for ${scenarios.map((scenario) => scenario.arch).join(" and ")}.`);
+    console.log(`Shared update handoff broker E2E passed for ${scenarios.map((scenario) => scenario.arch).join(" and ")}.`);
   } finally {
     await rm(fixtureRoot, { recursive: true, force: true });
   }
 }
 
 async function runScenario(scenario: BrokerScenario): Promise<void> {
-  await Promise.all([scenario.nodeSource, scenario.pocSource, scenario.shellSource].map(assertFileExists));
+  await assertFileExists(scenario.probeSource);
 
   const root = path.join(fixtureRoot, scenario.arch);
   const appData = path.join(root, "AppData", "Roaming");
   const localAppData = path.join(root, "AppData", "Local");
-  const resourceRoot = path.join(root, "portable-agent");
   const updateRoot = path.join(appData, "WonRemote", "updates");
-  const shellPath = path.join(resourceRoot, "WonRemote Agent.exe");
-  const nodePath = path.join(resourceRoot, "runtime", "node.exe");
-  const pocPath = path.join(resourceRoot, "bin", "wonremote-poc.exe");
-  const agentPath = path.join(resourceRoot, "agent", "index.mjs");
+  const probePath = path.join(root, "wonremote-job-probe.exe");
   const handoffPath = path.join(updateRoot, `run-portable-update-broker-e2e-${scenario.arch}.ps1`);
   const proofPath = path.join(root, "broker-proof.txt");
   const launcherPath = path.join(root, "launch-in-job.ps1");
   const launcherErrorPath = path.join(root, "launcher-error.txt");
-  const runtimeLogPath = path.join(appData, "WonRemote", "logs", "wonremote-tauri.log");
+  const probeErrorPath = path.join(root, "probe-error.txt");
 
   await Promise.all([
-    mkdir(path.dirname(nodePath), { recursive: true }),
-    mkdir(path.dirname(pocPath), { recursive: true }),
-    mkdir(path.dirname(agentPath), { recursive: true }),
     mkdir(updateRoot, { recursive: true }),
     mkdir(localAppData, { recursive: true }),
   ]);
   await Promise.all([
-    copyFile(scenario.shellSource, shellPath),
-    copyFile(scenario.nodeSource, nodePath),
-    copyFile(scenario.pocSource, pocPath),
-    writeFile(
-      path.join(appData, "WonRemote", "agent-config.json"),
-      JSON.stringify({
-        apiUrl: "http://127.0.0.1:8787",
-        businessNumber: "123-45-67890",
-        installId: `broker-e2e-${scenario.arch}`,
-        registeredDeviceId: `123-45-67890:BROKER-E2E-${scenario.arch}`,
-        version: "0.1.40",
-      }),
-      "utf8",
-    ),
-    writeFile(
-      path.join(resourceRoot, "wonremote-portable.json"),
-      JSON.stringify({ packageKind: "portable-agent", schemaVersion: 1, version: "0.1.41" }),
-      "utf8",
-    ),
+    copyFile(scenario.probeSource, probePath),
     writeFile(
       handoffPath,
       [
         "$ErrorActionPreference = 'Stop'",
-        `$ShellPath = '${escapePowerShell(shellPath)}'`,
-        "$Target = Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -ieq $ShellPath } | Select-Object -First 1",
-        "if ($null -eq $Target) { throw 'Fixture Tauri shell was not found.' }",
+        `$ProbePath = '${escapePowerShell(probePath)}'`,
+        "$Target = Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -ieq $ProbePath } | Select-Object -First 1",
+        "if ($null -eq $Target) { throw 'Fixture update broker probe was not found.' }",
         "Stop-Process -Id $Target.ProcessId -Force",
         "Start-Sleep -Milliseconds 750",
         `Set-Content -LiteralPath '${escapePowerShell(proofPath)}' -Value 'broker-ok' -Encoding UTF8`,
-      ].join("\n"),
-      "utf8",
-    ),
-    writeFile(
-      agentPath,
-      [
-        "const scriptPath = process.env.WONREMOTE_BROKER_E2E_SCRIPT;",
-        "if (!scriptPath) process.exit(2);",
-        "console.log('[Status] Online');",
-        "console.log('[WonRemoteUpdateHandoff]' + Buffer.from(scriptPath, 'utf8').toString('base64url'));",
-        "setInterval(() => {}, 1000);",
       ].join("\n"),
       "utf8",
     ),
@@ -131,7 +89,8 @@ async function runScenario(scenario: BrokerScenario): Promise<void> {
         handoffPath,
         launcherErrorPath,
         localAppData,
-        shellPath,
+        probeErrorPath,
+        probePath,
       }),
       "utf8",
     ),
@@ -153,19 +112,19 @@ async function runScenario(scenario: BrokerScenario): Promise<void> {
       await waitForFile(proofPath, 10_000);
     } catch (error) {
       let launcherError = "";
-      let runtimeLog = "";
+      let probeError = "";
       try {
         launcherError = await readFile(launcherErrorPath, "utf8");
       } catch {}
       try {
-        runtimeLog = (await readFile(runtimeLogPath, "utf8")).slice(-8_000);
+        probeError = await readFile(probeErrorPath, "utf8");
       } catch {}
       throw new Error(
-        `${String(error)}${launcherError ? `\nJob launcher: ${launcherError}` : ""}${runtimeLog ? `\nRuntime log:\n${runtimeLog}` : ""}`,
+        `${String(error)}${launcherError ? `\nJob launcher: ${launcherError}` : ""}${probeError ? `\nBroker probe: ${probeError}` : ""}`,
       );
     }
     await waitForProcessExit(child, 5_000);
-    console.log(`${scenario.arch} broker survived the enclosing kill-on-close Job after the fixture Tauri shell exited.`);
+    console.log(`${scenario.arch} broker survived the enclosing kill-on-close Job after the fixture probe exited.`);
   } finally {
     if (child.pid && isProcessRunning(child.pid)) {
       execFileSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" });
@@ -178,7 +137,8 @@ function windowsJobLauncherScript(options: {
   handoffPath: string;
   launcherErrorPath: string;
   localAppData: string;
-  shellPath: string;
+  probeErrorPath: string;
+  probePath: string;
 }): string {
   return `
 $ErrorActionPreference = 'Stop'
@@ -264,7 +224,7 @@ try {
   $env:APPDATA = '${escapePowerShell(options.appData)}'
   $env:LOCALAPPDATA = '${escapePowerShell(options.localAppData)}'
   $env:WONREMOTE_BROKER_E2E_SCRIPT = '${escapePowerShell(options.handoffPath)}'
-  $process = Start-Process -FilePath '${escapePowerShell(options.shellPath)}' -ArgumentList @('--agent') -WindowStyle Hidden -PassThru
+  $process = Start-Process -FilePath '${escapePowerShell(options.probePath)}' -WindowStyle Hidden -RedirectStandardError '${escapePowerShell(options.probeErrorPath)}' -PassThru
   $process.WaitForExit()
   [void][WonRemoteJobBoundary]::CloseHandle($job)
 } catch {

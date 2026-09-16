@@ -136,6 +136,7 @@ jobs:
 
       - name: Verify updater handoff survives the scheduled-task Job
         run: |
+          rustc --edition 2021 --target i686-pc-windows-msvc -C opt-level=s tests/e2e/update_handoff_job_probe.rs -o src-tauri/target/i686-pc-windows-msvc/release/wonremote-job-probe.exe
           $env:WONREMOTE_BROKER_E2E_ARCH = "x86"
           npx tsx tests/e2e/test_update_handoff_broker.ts
 

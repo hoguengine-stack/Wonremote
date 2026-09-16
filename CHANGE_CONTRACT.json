@@ -9,7 +9,9 @@
       "INC-20260916-096",
       "INC-20260917-097",
       "INC-20260917-098",
-      "INC-20260917-099"
+      "INC-20260917-099",
+      "INC-20260917-100",
+      "INC-20260917-101"
     ],
     "observed": "Installed v0.1.97 Agent displays Viewer identity, has no x86 tray Exit command, leaves the SYSTEM capture broker running after the shell closes, can discard an update click during startup privilege handoff, and reports installer success while the v0.1.88 LocalAppData runtime and uninstall entry remain. The live v0.1.97-to-v0.1.98 update then replaced the protected executable but its PowerShell handoff died with the scheduled-task process tree immediately after logging the installer PID, so restart, result recording and cleanup did not complete.",
     "outcomes": [
@@ -57,7 +59,7 @@
         "cleanup": "Only known Agent install roots, matching uninstall registration and the named secure broker task are affected."
       }
     },
-    "remaining": "A fresh normal workflow must prove the clean-CI x86 Job boundary before v0.1.99 publication. Selected-device installed upgrade/migration then remains deployment-required. Visual tray right-click and cross-PC latency proof remain physical checks."
+    "remaining": "A fresh normal workflow must compile and pass the shared-function x86 Job probe before v0.1.99 publication. Selected-device installed upgrade/migration remains deployment-required. Visual tray right-click and cross-PC latency proof remain physical checks."
   },
   "deviceEditor20260916": {
     "status": "published-live-verified",
@@ -603,7 +605,7 @@
         "aether-link-app/src-tauri/src/lib.rs",
         "aether-link-app/tests/e2e/test_update_handoff_broker.ts"
       ],
-      "verification": "Existing v0.1.98 lifecycle and packaging tests remain. LIVE RED: selected v0.1.97-to-v0.1.98 updated the protected Agent bytes but its handoff log stopped immediately after Installer PID, wrote no result and did not restart the Agent; LocalAppData v0.1.88 remained. JOB RED: the old x86 Tauri broker timed out inside a kill-on-close Job. GREEN: the broker uses CREATE_NO_WINDOW plus CREATE_BREAKAWAY_FROM_JOB; 47 x86 Rust tests, 98 focused updater/packaging tests and TypeScript pass; the same x86 Job test survives parent shell and Job-owner exit. GitHub run 35123739450 safely blocked before publication because the new test referenced a stale local expanded release path absent from clean CI. The fixture now uses current-build dist-runtime and dist-poc inputs; 67 packaging checks, 16 recurrence checks, TypeScript and the real x86 Job test pass locally after an explicit installed-Agent exit, and the scheduled task restored the Agent afterward. Installed v0.1.98 explicit exit request also stopped the shell, Node and secure broker. No cross-PC latency recovery is claimed.",
+      "verification": "Existing v0.1.98 lifecycle and packaging tests remain. LIVE RED: selected v0.1.97-to-v0.1.98 updated the protected Agent bytes but its handoff log stopped immediately after Installer PID, wrote no result and did not restart the Agent; LocalAppData v0.1.88 remained. JOB RED: the old x86 Tauri broker timed out inside a kill-on-close Job. GREEN: the broker uses CREATE_NO_WINDOW plus CREATE_BREAKAWAY_FROM_JOB. GitHub run 35123739450 safely blocked because the first fixture referenced stale expanded release resources; run 35125329394 then blocked because the full GUI Agent could not reach Tauri setup on the headless runner. Production and a non-shipped direct-rustc probe now compile the same dependency-free process module, and the neutral probe filename avoids Windows installer detection. Fresh local evidence is 47 x86 Rust tests, 83 packaging/recurrence tests, TypeScript and the real x86 Job test passing while the installed Agent remains running. Installed v0.1.98 explicit exit request previously stopped the shell, Node and secure broker. No cross-PC latency recovery is claimed.",
       "physicalGap": "Build and publish signed-manifest v0.1.99, then prove the selected public update reaches a healthy result, restarts automatically, removes only the allowlisted legacy install and uses the Agent WebView profile. The visual tray right-click menu and cross-PC connection/control latency remain physical checks."
     }
   ],

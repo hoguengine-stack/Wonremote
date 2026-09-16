@@ -1041,6 +1041,9 @@ describe("desktop packaging scaffold", () => {
   it("builds releases from gated main commits so release caches remain reusable", () => {
     const releaseWorkflow = readFileSync(path.join(projectRoot, "..", ".github", "workflows", "publish-release.yml"), "utf8");
     const brokerE2e = readFileSync(path.join(projectRoot, "tests", "e2e", "test_update_handoff_broker.ts"), "utf8");
+    const brokerProbe = readFileSync(path.join(projectRoot, "tests", "e2e", "update_handoff_job_probe.rs"), "utf8");
+    const brokerProcess = readFileSync(path.join(projectRoot, "src-tauri", "src", "update_handoff_process.rs"), "utf8");
+    const tauriSource = readFileSync(path.join(projectRoot, "src-tauri", "src", "lib.rs"), "utf8");
 
     expect(releaseWorkflow).toContain('branches: ["main"]');
     expect(releaseWorkflow).not.toContain('tags: ["v*"]');
@@ -1058,13 +1061,17 @@ describe("desktop packaging scaffold", () => {
     expect(releaseWorkflow).toContain("src/domain/updateManifestScript.test.ts");
     expect(releaseWorkflow).toContain("test_agent_update_handoff_requires_dedicated_exit_code");
     expect(releaseWorkflow).toContain('WONREMOTE_BROKER_E2E_ARCH = "x86"');
+    expect(releaseWorkflow).toContain("rustc --edition 2021 --target i686-pc-windows-msvc");
     expect(releaseWorkflow).toContain("npx tsx tests/e2e/test_update_handoff_broker.ts");
     expect(releaseWorkflow.indexOf("npx tsx tests/e2e/test_update_handoff_broker.ts")).toBeGreaterThan(
       releaseWorkflow.indexOf("run: npm run release:exes"),
     );
-    expect(brokerE2e).toContain('path.join(appRoot, "dist-runtime", "node.exe")');
-    expect(brokerE2e).toContain('path.join(appRoot, "dist-poc", "wonremote-poc.exe")');
-    expect(brokerE2e).not.toContain('path.join(appRoot, "release-exe", "x86", "runtime"');
+    expect(brokerE2e).toContain('"wonremote-job-probe.exe"');
+    expect(brokerE2e).not.toMatch(/(?:update|install|setup)[^"']*job-probe\.exe/i);
+    expect(brokerE2e).not.toContain('"WonRemote Agent.exe"');
+    expect(brokerProbe).toContain("update_handoff_process::spawn_brokered_update_handoff");
+    expect(tauriSource).toContain("spawn_brokered_update_handoff(&script_path)");
+    expect(brokerProcess).toContain("command.creation_flags(UPDATE_HANDOFF_CREATION_FLAGS)");
     expect(releaseWorkflow).toContain("actions/cache/restore@v4");
     expect(releaseWorkflow).toContain("actions/cache/save@v4");
     expect(releaseWorkflow).toContain("build-release:");
@@ -1118,6 +1125,7 @@ describe("desktop packaging scaffold", () => {
 
   it("checks installed Viewer updates natively but installs only after WebView confirmation", () => {
     const tauriLib = readFileSync(path.join(projectRoot, "src-tauri", "src", "lib.rs"), "utf8");
+    const brokerProcess = readFileSync(path.join(projectRoot, "src-tauri", "src", "update_handoff_process.rs"), "utf8");
     const appTsx = readFileSync(path.join(projectRoot, "src", "App.tsx"), "utf8");
     const viewerModeSetup = tauriLib.slice(
       tauriLib.indexOf("// Viewer Mode Setup"),
@@ -1135,8 +1143,8 @@ describe("desktop packaging scaffold", () => {
     expect(tauriLib).toContain('.env("WONREMOTE_UPDATE_PRODUCT", restart_mode)');
     expect(tauriLib).toContain('.env("WONREMOTE_TAURI_UPDATE_BROKER", "1")');
     expect(tauriLib).toContain("launch_brokered_update_handoff");
-    expect(tauriLib).toContain("CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB");
-    expect(tauriLib).toContain("command.creation_flags(UPDATE_HANDOFF_CREATION_FLAGS)");
+    expect(brokerProcess).toContain("CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB");
+    expect(brokerProcess).toContain("command.creation_flags(UPDATE_HANDOFF_CREATION_FLAGS)");
     expect(tauriLib).toContain("fn check_installer_update");
     expect(tauriLib).toContain("fn check_agent_installer_update");
     expect(tauriLib).toContain("check_installer_update,");

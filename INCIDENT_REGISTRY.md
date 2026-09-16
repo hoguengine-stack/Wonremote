@@ -1,17 +1,47 @@
 # WonRemote Incident Registry
 
+## INC-20260917-101: Broker probe filename triggered Windows installer detection
+
+- Detected: 2026-09-17 during the local pre-release Job-boundary proof.
+- Severity: Low; no release was published and the installed Agent remained running.
+- Affected: The first non-UI updater probe executable name.
+- Status: Source repaired and locally verified.
+- User-visible symptom: Starting the test probe fails with `The requested operation requires elevation` instead of exercising the Job boundary.
+- Minimal trigger: Compile a manifest-free probe whose executable filename contains `update`, then start it from a non-elevated test launcher.
+- Root cause and contributors: Windows installer detection heuristics treated `update-handoff-job-probe.exe` as an installer and requested elevation. Direct `rustc` compilation reproduced the same behavior, disproving the initial Tauri-manifest hypothesis.
+- Fix commit(s): Pending v0.1.99 preparation follow-up commit.
+- Permanent guard: Move process creation into a dependency-free shared Rust module used by production and a non-shipped probe, compile it directly with `rustc`, and give the output a neutral filename that the packaging test rejects if installer-detection keywords return.
+- Regression proof: The neutral-name x86 probe compiled directly with `rustc`, started without elevation while the installed Agent remained active, called the shared production process function and survived probe/Job-owner exit. The packaging test rejects installer-detection keywords in the probe filename.
+- Release proof: Not applicable until the fresh normal v0.1.99 workflow passes.
+- Remaining blocker: Pass the same direct probe in the fresh normal release workflow.
+
+## INC-20260917-100: Job-boundary release proof depended on interactive Tauri startup
+
+- Detected: 2026-09-17 in GitHub Actions run 35125329394 after the x86 v0.1.99 installers built.
+- Severity: Medium; publication was safely blocked, but the process-boundary proof could not reach the broker on the headless release runner.
+- Affected: `tests/e2e/test_update_handoff_broker.ts` fixture entrypoint.
+- Status: Source repaired and locally verified; no v0.1.99 asset was published by the failed run.
+- User-visible symptom: The release test records only the Tauri Agent startup line and times out before the handoff proof, despite the same test passing on an interactive local desktop.
+- Minimal trigger: Start the complete shipped Tauri Agent host in a GitHub Windows runner Job and wait for its WebView-driven setup to spawn the fixture Agent child.
+- Root cause and contributors: The test used the full GUI application as an indirect route to one process-creation function. A headless CI runner can stall before Tauri setup reaches that function, so desktop availability became an unrelated prerequisite for the critical updater boundary.
+- Fix commit(s): Pending v0.1.99 preparation follow-up commit.
+- Permanent guard: Keep process creation in one dependency-free Rust module shared by production and a non-shipped direct-rustc probe. Run the probe inside the kill-on-close Job and require its PowerShell child to survive after the probe and Job owner exit without initializing Tauri or WebView.
+- Regression proof: The shared-function x86 probe passed the real Job boundary while the full installed Agent remained running; 47 product Rust tests, 83 focused packaging/recurrence tests and TypeScript passed.
+- Release proof: Pending; do not publish or bypass the failed run.
+- Remaining blocker: Pass the shared-function probe in a fresh normal release workflow.
+
 ## INC-20260917-099: Updater Job regression test depended on stale local release resources
 
 - Detected: 2026-09-17 in GitHub Actions run 35123739450 after both v0.1.99 installers built.
 - Severity: Medium; publication was safely blocked, but the release spent a full build before the required runtime fixture failed to start.
 - Affected: `tests/e2e/test_update_handoff_broker.ts` x86 fixture resource selection.
-- Status: Source repaired and locally verified; no v0.1.99 asset was published by the failed run.
+- Status: Resolved by removing runtime-resource fixtures from the Job proof; no v0.1.99 asset was published by the failed run.
 - User-visible symptom: Release stops at `Required broker E2E artifact is missing: release-exe\\x86\\runtime\\node.exe`.
 - Minimal trigger: Run `npm run release:exes` in a clean checkout, which intentionally leaves only the two stable installers in `release-exe`, then execute the x86 broker E2E.
 - Root cause and contributors: The E2E copied Node and PoC from a historical expanded `release-exe/x86` layout that existed only as stale local output. The current packager resets that directory and writes exactly two installers. The locally executed test therefore passed against an artifact the clean release workflow never creates.
 - Fix commit(s): Pending v0.1.99 preparation follow-up commit.
-- Permanent guard: Source the fixture from `dist-runtime/node.exe` and `dist-poc/wonremote-poc.exe`, which the same release build creates, and assert those exact paths while rejecting the obsolete x86 release-resource path.
-- Regression proof: The packaging contract requires `dist-runtime/node.exe` and `dist-poc/wonremote-poc.exe` and rejects the obsolete x86 expanded-release path; 67 packaging tests and the real x86 Job-boundary E2E passed. The installed Agent was stopped through its explicit exit path for the local E2E and its existing scheduled task restored it afterward.
+- Permanent guard: The Job proof now compiles the exact production process module into a standalone probe and has no Node, PoC, expanded installer or stale release-directory dependency.
+- Regression proof: The shared-function probe passed with only its generated executable and handoff script; the packaging contract asserts that no full Agent executable is used by this proof.
 - Release proof: Pending; do not publish or bypass the failed run.
 - Remaining blocker: Pass the x86 Job-boundary test and complete publication in a fresh normal release workflow.
 

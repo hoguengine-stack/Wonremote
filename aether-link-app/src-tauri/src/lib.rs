@@ -1,7 +1,9 @@
 use std::ffi::OsStr;
 mod runtime_storage;
 mod agent_startup;
+mod update_handoff_process;
 mod viewer_downloads;
+use update_handoff_process::{spawn_brokered_update_handoff, CREATE_NO_WINDOW};
 use std::os::windows::{ffi::OsStrExt, io::AsRawHandle};
 use std::{
     env, io, mem,
@@ -50,9 +52,6 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WM_RBUTTONUP, WNDCLASSW, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
 };
 
-const CREATE_NO_WINDOW: u32 = 0x08000000;
-const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x01000000;
-const UPDATE_HANDOFF_CREATION_FLAGS: u32 = CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB;
 const STARTUP_REGISTRY_PATH: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const STARTUP_REGISTRY_VALUE: &str = "WonRemoteViewer";
 const AGENT_REGISTRY_VALUE: &str = "WonRemoteAgent";
@@ -1258,18 +1257,7 @@ fn validate_update_handoff_script_path_in_root(
 
 fn launch_brokered_update_handoff(script_path: PathBuf) -> Result<bool, String> {
     let script_path = validate_update_handoff_script_path(&script_path)?;
-    let mut command = Command::new("powershell.exe");
-    command
-        .args(brokered_update_powershell_args())
-        .arg(&script_path)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    use std::os::windows::process::CommandExt;
-    command.creation_flags(UPDATE_HANDOFF_CREATION_FLAGS);
-    command
-        .spawn()
-        .map_err(|error| format!("Agent update broker failed to start PowerShell: {error}"))?;
+    spawn_brokered_update_handoff(&script_path)?;
     append_runtime_log(
         "updater-broker",
         &format!("started verified handoff script={}", script_path.display()),
@@ -1279,18 +1267,6 @@ fn launch_brokered_update_handoff(script_path: PathBuf) -> Result<bool, String> 
 
 fn is_expected_agent_update_exit(handoff_requested: bool, exit_code: Option<i32>) -> bool {
     handoff_requested && exit_code == Some(AGENT_UPDATE_HANDOFF_EXIT_CODE)
-}
-
-fn brokered_update_powershell_args() -> [&'static str; 7] {
-    [
-        "-NoProfile",
-        "-NonInteractive",
-        "-WindowStyle",
-        "Hidden",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-    ]
 }
 
 #[tauri::command]
@@ -2736,7 +2712,7 @@ mod registry_tests {
 
     #[test]
     fn update_handoff_breaks_away_from_enclosing_windows_job() {
-        assert_eq!(UPDATE_HANDOFF_CREATION_FLAGS, 0x09000000);
+        assert_eq!(update_handoff_process::UPDATE_HANDOFF_CREATION_FLAGS, 0x09000000);
     }
 
     #[test]
@@ -2885,7 +2861,7 @@ mod registry_tests {
     #[test]
     fn test_brokered_update_handoff_uses_a_hidden_noninteractive_powershell_window() {
         assert_eq!(
-            brokered_update_powershell_args(),
+            update_handoff_process::brokered_update_powershell_args(),
             [
                 "-NoProfile",
                 "-NonInteractive",
