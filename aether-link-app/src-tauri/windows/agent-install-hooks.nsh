@@ -44,6 +44,7 @@
 
 !macro NSIS_HOOK_POSTINSTALL
   File /oname=$INSTDIR\manage-agent-login-task.ps1 "${WONREMOTE_AGENT_TASK_HOOK_DIR}\manage-agent-login-task.ps1"
+  File /oname=$INSTDIR\update-handoff-broker.ps1 "${WONREMOTE_AGENT_TASK_HOOK_DIR}\update-handoff-broker.ps1"
   ${If} $WonRemoteLegacyAgentRoot != ""
     !insertmacro WONREMOTE_MIGRATE_LEGACY_AGENT
   ${Else}
@@ -62,6 +63,8 @@
   !insertmacro WONREMOTE_MANAGE_AGENT_LOGIN_TASK Uninstall
   !insertmacro WONREMOTE_STOP_RUNNING_PROCESSES
   Delete "$INSTDIR\manage-agent-login-task.ps1"
+  Delete "$INSTDIR\update-handoff-broker.ps1"
+  RMDir /r "$INSTDIR\.update-handoff"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "WonRemoteAgent"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "WonRemoteAgentCLI"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "AetherLinkAgent"

@@ -91,8 +91,10 @@ import { parseAgentDisplayInventory } from "./agentDisplayInventory";
 import { PersistentInputInjector } from "./persistentInputInjector";
 import {
   AGENT_UPDATE_HANDOFF_EXIT_CODE,
+  formatInstallerUpdateHandoffBrokerRequest,
   formatUpdateHandoffBrokerRequest,
   isUpdateHandoffBrokerEnabled,
+  UPDATE_HANDOFF_ACKNOWLEDGEMENT_TIMEOUT_MS,
   updateHandoffAcknowledgementPath,
 } from "./agentUpdateHandoffBroker";
 import {
@@ -190,7 +192,17 @@ const AGENT_SYSTEM_INFO = discoverAgentSystemInfo();
 const FIRESTORE_TILE_FALLBACK_POLICY = resolveFirestoreTileFallbackPolicy(process.env);
 const persistentInputInjector = new PersistentInputInjector(POC_PATH);
 
-async function releaseInputAndCompleteUpdateHandoff(scriptPath: string, reason: string): Promise<never> {
+async function releaseInputAndCompleteUpdateHandoff(
+  scriptPath: string,
+  reason: string,
+  installerHandoff?: {
+    installerPath: string;
+    installerSha256: string;
+    protectedAcknowledgementPath?: string;
+    requestId: string;
+    scriptSha256: string;
+  },
+): Promise<never> {
   await agentCommandQueue.enqueue(() => releasePressedInputAndClose(
     persistentInputInjector,
     { pointer: pointerState, pressedKeys },
@@ -198,20 +210,36 @@ async function releaseInputAndCompleteUpdateHandoff(scriptPath: string, reason: 
   ));
   const brokered = isUpdateHandoffBrokerEnabled(process.env.WONREMOTE_TAURI_UPDATE_BROKER);
   if (brokered) {
+    if (installerHandoff && !installerHandoff.protectedAcknowledgementPath) {
+      throw new Error("Protected Agent update acknowledgement path is unavailable.");
+    }
+    const request = installerHandoff
+      ? formatInstallerUpdateHandoffBrokerRequest({
+          acknowledgementPath: installerHandoff.protectedAcknowledgementPath!,
+          installerPath: installerHandoff.installerPath,
+          installerSha256: installerHandoff.installerSha256,
+          requestId: installerHandoff.requestId,
+          scriptPath,
+          scriptSha256: installerHandoff.scriptSha256,
+        })
+      : formatUpdateHandoffBrokerRequest(scriptPath);
     await new Promise<void>((resolve, reject) => {
-      process.stdout.write(`${formatUpdateHandoffBrokerRequest(scriptPath)}\n`, (error) => {
+      process.stdout.write(`${request}\n`, (error) => {
         if (error) reject(error);
         else resolve();
       });
     });
   }
-  await waitForUpdateHandoffAcknowledgement(updateHandoffAcknowledgementPath(scriptPath));
+  const acknowledgementPath = brokered && installerHandoff
+    ? installerHandoff.protectedAcknowledgementPath!
+    : updateHandoffAcknowledgementPath(scriptPath);
+  await waitForUpdateHandoffAcknowledgement(acknowledgementPath);
   process.exit(brokered ? AGENT_UPDATE_HANDOFF_EXIT_CODE : 0);
   throw new Error("process.exit returned unexpectedly");
 }
 
 async function waitForUpdateHandoffAcknowledgement(acknowledgementPath: string): Promise<void> {
-  const deadline = Date.now() + 5_000;
+  const deadline = Date.now() + UPDATE_HANDOFF_ACKNOWLEDGEMENT_TIMEOUT_MS;
   while (Date.now() < deadline) {
     try {
       await access(acknowledgementPath);
@@ -1637,7 +1665,17 @@ async function handoffToProductionInstallerUpdate(
   console.log("[WonRemote Agent] Handed off to production installer and exiting current Agent.");
   await setUpdateTelemetry(config, { progress: 100, state: "restarting" });
   await new Promise((resolve) => setTimeout(resolve, 500));
-  await releaseInputAndCompleteUpdateHandoff(handoff.scriptPath, "Agent update handoff started.");
+  await releaseInputAndCompleteUpdateHandoff(
+    handoff.scriptPath,
+    "Agent update handoff started.",
+    {
+      installerPath: download.installerPath,
+      installerSha256: handoff.installerSha256,
+      protectedAcknowledgementPath: handoff.protectedAcknowledgementPath,
+      requestId: handoff.requestId,
+      scriptSha256: handoff.scriptSha256,
+    },
+  );
 }
 
 async function handoffToPortableUpdate(data: SafePortableUpdateMetadata): Promise<void> {

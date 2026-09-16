@@ -3,7 +3,9 @@ mod runtime_storage;
 mod agent_startup;
 mod update_handoff_process;
 mod viewer_downloads;
-use update_handoff_process::{spawn_brokered_update_handoff, CREATE_NO_WINDOW};
+use update_handoff_process::{
+    run_agent_update_handoff_task, spawn_brokered_update_handoff, CREATE_NO_WINDOW,
+};
 use std::os::windows::{ffi::OsStrExt, io::AsRawHandle};
 use std::{
     env, io, mem,
@@ -21,6 +23,7 @@ use std::sync::{
 };
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use sha2::{Digest, Sha256};
 use tauri::{
     menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -79,6 +82,7 @@ const PUBLIC_FIREBASE_STORAGE_BUCKET: &str = "wonremote-a7fd3.appspot.com";
 const PUBLIC_FIREBASE_MESSAGING_SENDER_ID: &str = "52940136204";
 const PORTABLE_MARKER_FILENAME: &str = "wonremote-portable.json";
 const UPDATE_HANDOFF_PREFIX: &str = "[WonRemoteUpdateHandoff]";
+const INSTALLER_UPDATE_HANDOFF_PREFIX: &str = "[WonRemoteUpdateHandoffV2]";
 const AGENT_UPDATE_HANDOFF_EXIT_CODE: i32 = 42;
 const UPDATE_CHECK_PREFIX: &str = "[WonRemoteUpdateCheck]";
 #[cfg(target_arch = "x86")]
@@ -92,6 +96,35 @@ const WIN32_AGENT_TRAY_COMMAND_EXIT: u32 = 2;
 static PANIC_LOGGER: Once = Once::new();
 static VIEWER_UPDATE_CHECK_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 static AGENT_PROCESS_EXITING: AtomicBool = AtomicBool::new(false);
+
+#[derive(Debug, PartialEq, Eq)]
+enum UpdateHandoffRequest {
+    Legacy(PathBuf),
+    InstallerV2(InstallerUpdateHandoffRequest),
+}
+
+#[derive(Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InstallerUpdateHandoffRequest {
+    acknowledgement_path: String,
+    installer_path: String,
+    installer_sha256: String,
+    request_id: String,
+    script_path: String,
+    script_sha256: String,
+    version: u8,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingAgentUpdateHandoff {
+    request_id: String,
+}
+
+struct StagedAgentUpdateHandoff {
+    pending_path: PathBuf,
+    stage_root: PathBuf,
+}
 
 #[cfg(target_arch = "x86")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1052,14 +1085,22 @@ fn spawn_agent_only_process(
                 };
                 println!("[Agent Output] {}", line_str);
                 append_runtime_log("agent-stdout", &line_str);
-                if !update_handoff_started_clone.load(Ordering::Acquire) {
-                    match parse_update_handoff_request(&line_str).and_then(|request| {
-                        request.map_or(Ok(false), launch_brokered_update_handoff)
-                    }) {
-                        Ok(true) => update_handoff_started_clone.store(true, Ordering::Release),
-                        Ok(false) => {}
-                        Err(error) => append_runtime_log("updater-broker", &error),
-                    }
+                match parse_update_handoff_request(&line_str).and_then(|request| {
+                    request.map_or(Ok(false), |request| {
+                        if should_attempt_update_handoff(
+                            &request,
+                            update_handoff_started_clone.load(Ordering::Acquire),
+                            true,
+                        ) {
+                            launch_brokered_update_handoff(request, true)
+                        } else {
+                            Ok(false)
+                        }
+                    })
+                }) {
+                    Ok(true) => update_handoff_started_clone.store(true, Ordering::Release),
+                    Ok(false) => {}
+                    Err(error) => append_runtime_log("updater-broker", &error),
                 }
                 if line_str.contains("[Error] Agent unregistered") {
                     unregistered_detected_clone.store(true, Ordering::Release);
@@ -1195,7 +1236,22 @@ fn agent_watchdog_restart_delay(attempt: u32) -> Duration {
     Duration::from_millis(DELAYS_MS[attempt.saturating_sub(1).min(4) as usize])
 }
 
-fn parse_update_handoff_request(line: &str) -> Result<Option<PathBuf>, String> {
+fn parse_update_handoff_request(line: &str) -> Result<Option<UpdateHandoffRequest>, String> {
+    if let Some(encoded) = line.strip_prefix(INSTALLER_UPDATE_HANDOFF_PREFIX) {
+        if encoded.is_empty() || encoded.len() > 32_768 {
+            return Err("Rejected malformed Agent installer handoff request.".to_string());
+        }
+        let decoded = URL_SAFE_NO_PAD
+            .decode(encoded)
+            .map_err(|_| "Rejected invalid Agent installer handoff encoding.".to_string())?;
+        let request: InstallerUpdateHandoffRequest = serde_json::from_slice(&decoded)
+            .map_err(|_| "Rejected invalid Agent installer handoff payload.".to_string())?;
+        if request.version != 2 {
+            return Err("Rejected unsupported Agent installer handoff version.".to_string());
+        }
+        return Ok(Some(UpdateHandoffRequest::InstallerV2(request)));
+    }
+
     let Some(encoded) = line.strip_prefix(UPDATE_HANDOFF_PREFIX) else {
         return Ok(None);
     };
@@ -1210,7 +1266,7 @@ fn parse_update_handoff_request(line: &str) -> Result<Option<PathBuf>, String> {
     if script_path.contains('\0') {
         return Err("Rejected Agent update handoff path containing NUL.".to_string());
     }
-    Ok(Some(PathBuf::from(script_path)))
+    Ok(Some(UpdateHandoffRequest::Legacy(PathBuf::from(script_path))))
 }
 
 fn validate_update_handoff_script_path(script_path: &Path) -> Result<PathBuf, String> {
@@ -1255,14 +1311,267 @@ fn validate_update_handoff_script_path_in_root(
     Ok(canonical_script)
 }
 
-fn launch_brokered_update_handoff(script_path: PathBuf) -> Result<bool, String> {
-    let script_path = validate_update_handoff_script_path(&script_path)?;
-    spawn_brokered_update_handoff(&script_path)?;
-    append_runtime_log(
-        "updater-broker",
-        &format!("started verified handoff script={}", script_path.display()),
-    );
+fn launch_brokered_update_handoff(
+    request: UpdateHandoffRequest,
+    allow_agent_update_task: bool,
+) -> Result<bool, String> {
+    match request {
+        UpdateHandoffRequest::Legacy(script_path) => {
+            let script_path = validate_update_handoff_script_path(&script_path)?;
+            spawn_brokered_update_handoff(&script_path)?;
+            append_runtime_log(
+                "updater-broker",
+                &format!("started verified handoff script={}", script_path.display()),
+            );
+        }
+        UpdateHandoffRequest::InstallerV2(request) => {
+            if !allow_agent_update_task {
+                return Err(
+                    "Rejected Agent installer handoff outside the Agent runtime.".to_string(),
+                );
+            }
+            let staged = stage_agent_installer_handoff(&request)?;
+            let schtasks_path = env::var_os("SystemRoot")
+                .map(PathBuf::from)
+                .map(|root| root.join("System32").join("schtasks.exe"))
+                .ok_or_else(|| "The Windows system directory is unavailable.".to_string())?;
+            if let Err(error) = run_agent_update_handoff_task(&schtasks_path) {
+                let _ = std::fs::remove_file(&staged.pending_path);
+                let _ = std::fs::remove_dir_all(&staged.stage_root);
+                return Err(error);
+            }
+            append_runtime_log(
+                "updater-broker",
+                &format!(
+                    "started protected Agent installer handoff request={}",
+                    request.request_id
+                ),
+            );
+        }
+    }
     Ok(true)
+}
+
+fn should_attempt_update_handoff(
+    request: &UpdateHandoffRequest,
+    already_started: bool,
+    allow_agent_update_task: bool,
+) -> bool {
+    !already_started
+        || (allow_agent_update_task && matches!(request, UpdateHandoffRequest::InstallerV2(_)))
+}
+
+fn stage_agent_installer_handoff(
+    request: &InstallerUpdateHandoffRequest,
+) -> Result<StagedAgentUpdateHandoff, String> {
+    let updates_root = default_agent_config_path()
+        .and_then(|path| path.parent().map(|parent| parent.join("updates")))
+        .ok_or_else(|| "Agent update directory is unavailable.".to_string())?;
+    let install_root = env::current_exe()
+        .map_err(|error| format!("Agent executable path is unavailable: {error}"))?
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| "Agent installation directory is unavailable.".to_string())?;
+    let program_roots = ["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"]
+        .into_iter()
+        .filter_map(env::var_os)
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    stage_agent_installer_handoff_in_roots(
+        request,
+        &updates_root,
+        &install_root,
+        &program_roots,
+    )
+}
+
+fn stage_agent_installer_handoff_in_roots(
+    request: &InstallerUpdateHandoffRequest,
+    updates_root: &Path,
+    install_root: &Path,
+    program_roots: &[PathBuf],
+) -> Result<StagedAgentUpdateHandoff, String> {
+    if !is_update_request_id(&request.request_id) {
+        return Err("Rejected invalid Agent installer handoff request ID.".to_string());
+    }
+    validate_sha256(&request.script_sha256)?;
+    validate_sha256(&request.installer_sha256)?;
+
+    let canonical_install_root = std::fs::canonicalize(install_root)
+        .map_err(|error| format!("Agent installation directory is unavailable: {error}"))?;
+    let protected_root = program_roots.iter().any(|root| {
+        std::fs::canonicalize(root)
+            .map(|root| windows_path_is_under(&canonical_install_root, &root))
+            .unwrap_or(false)
+    });
+    if !protected_root {
+        return Err(
+            "Rejected Agent installer handoff outside a protected Program Files directory."
+                .to_string(),
+        );
+    }
+    let broker_path = canonical_install_root.join("update-handoff-broker.ps1");
+    if !broker_path.is_file() {
+        return Err("The protected Agent update broker is unavailable.".to_string());
+    }
+
+    let script_path = validate_installer_handoff_source_path(
+        Path::new(&request.script_path),
+        updates_root,
+        Some(&format!("run-installer-update-{}.ps1", request.request_id)),
+        "ps1",
+    )?;
+    let installer_path = validate_installer_handoff_source_path(
+        Path::new(&request.installer_path),
+        updates_root,
+        None,
+        "exe",
+    )?;
+
+    let handoff_root = canonical_install_root.join(".update-handoff");
+    let stage_root = handoff_root.join(&request.request_id);
+    let expected_acknowledgement = node_compatible_path(&stage_root)
+        .join("installer-started.accepted");
+    if !windows_paths_equal(
+        Path::new(&request.acknowledgement_path),
+        &expected_acknowledgement,
+    ) {
+        return Err("Rejected mismatched Agent installer acknowledgement path.".to_string());
+    }
+
+    std::fs::create_dir_all(&handoff_root)
+        .map_err(|error| format!("Protected Agent update directory could not be created: {error}"))?;
+    std::fs::create_dir(&stage_root)
+        .map_err(|error| format!("Protected Agent update request already exists: {error}"))?;
+
+    let staged_script = stage_root.join("handoff.ps1");
+    let staged_installer = stage_root.join("installer.exe");
+    let pending_path = handoff_root.join("pending.json");
+    let stage_result = (|| -> Result<(), String> {
+        std::fs::copy(&script_path, &staged_script)
+            .map_err(|error| format!("Agent update script could not be protected: {error}"))?;
+        std::fs::copy(&installer_path, &staged_installer)
+            .map_err(|error| format!("Agent installer could not be protected: {error}"))?;
+        verify_file_sha256(&staged_script, &request.script_sha256)?;
+        verify_file_sha256(&staged_installer, &request.installer_sha256)?;
+
+        let pending = serde_json::to_vec(&PendingAgentUpdateHandoff {
+            request_id: request.request_id.clone(),
+        })
+        .map_err(|error| format!("Agent update request could not be serialized: {error}"))?;
+        let pending_candidate = stage_root.join("pending.json");
+        let mut file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&pending_candidate)
+            .map_err(|error| format!("Agent update request could not be created: {error}"))?;
+        file.write_all(&pending)
+            .and_then(|_| file.sync_all())
+            .map_err(|error| format!("Agent update request could not be committed: {error}"))?;
+        drop(file);
+        std::fs::rename(&pending_candidate, &pending_path)
+            .map_err(|error| format!("Another protected Agent update is pending: {error}"))?;
+        Ok(())
+    })();
+    if let Err(error) = stage_result {
+        let _ = std::fs::remove_dir_all(&stage_root);
+        return Err(error);
+    }
+
+    Ok(StagedAgentUpdateHandoff {
+        pending_path,
+        stage_root,
+    })
+}
+
+fn validate_installer_handoff_source_path(
+    candidate: &Path,
+    updates_root: &Path,
+    expected_name: Option<&str>,
+    expected_extension: &str,
+) -> Result<PathBuf, String> {
+    if !candidate.is_absolute()
+        || candidate.extension().and_then(OsStr::to_str) != Some(expected_extension)
+    {
+        return Err("Rejected invalid Agent installer handoff source path.".to_string());
+    }
+    if let Some(expected_name) = expected_name {
+        if candidate.file_name().and_then(OsStr::to_str) != Some(expected_name) {
+            return Err("Rejected mismatched Agent installer handoff filename.".to_string());
+        }
+    }
+    let canonical_root = std::fs::canonicalize(updates_root)
+        .map_err(|error| format!("Agent update directory is unavailable: {error}"))?;
+    let canonical_candidate = std::fs::canonicalize(candidate)
+        .map_err(|error| format!("Agent update handoff source is unavailable: {error}"))?;
+    if canonical_candidate.parent() != Some(canonical_root.as_path()) {
+        return Err("Rejected Agent installer handoff source outside the update directory.".to_string());
+    }
+    Ok(canonical_candidate)
+}
+
+fn verify_file_sha256(path: &Path, expected: &str) -> Result<(), String> {
+    let mut file = std::fs::File::open(path)
+        .map_err(|error| format!("Protected Agent update file is unavailable: {error}"))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|error| format!("Protected Agent update file could not be read: {error}"))?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    let actual = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    if actual.eq_ignore_ascii_case(expected) {
+        Ok(())
+    } else {
+        Err("Protected Agent update file checksum mismatch.".to_string())
+    }
+}
+
+fn validate_sha256(value: &str) -> Result<(), String> {
+    if value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Ok(())
+    } else {
+        Err("Rejected malformed Agent installer checksum.".to_string())
+    }
+}
+
+fn is_update_request_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 36
+        && [8, 13, 18, 23].iter().all(|index| bytes[*index] == b'-')
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| [8, 13, 18, 23].contains(&index) || byte.is_ascii_hexdigit())
+        && bytes[14] == b'4'
+        && matches!(bytes[19].to_ascii_lowercase(), b'8' | b'9' | b'a' | b'b')
+}
+
+fn windows_path_is_under(candidate: &Path, root: &Path) -> bool {
+    let candidate = windows_path_key(candidate);
+    let root = windows_path_key(root);
+    candidate == root || candidate.starts_with(&(root + "\\"))
+}
+
+fn windows_paths_equal(left: &Path, right: &Path) -> bool {
+    windows_path_key(left) == windows_path_key(right)
+}
+
+fn windows_path_key(path: &Path) -> String {
+    node_compatible_path(path)
+        .to_string_lossy()
+        .replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_ascii_lowercase()
 }
 
 fn is_expected_agent_update_exit(handoff_requested: bool, exit_code: Option<i32>) -> bool {
@@ -1801,14 +2110,22 @@ fn start_installer_update(
                 match line {
                     Ok(line) => {
                         append_runtime_log("updater-stdout", &line);
-                        if !update_handoff_started.load(Ordering::Acquire) {
-                            match parse_update_handoff_request(&line).and_then(|request| {
-                                request.map_or(Ok(false), launch_brokered_update_handoff)
-                            }) {
-                                Ok(true) => update_handoff_started.store(true, Ordering::Release),
-                                Ok(false) => {}
-                                Err(error) => append_runtime_log("updater-broker", &error),
-                            }
+                        match parse_update_handoff_request(&line).and_then(|request| {
+                            request.map_or(Ok(false), |request| {
+                                if should_attempt_update_handoff(
+                                    &request,
+                                    update_handoff_started.load(Ordering::Acquire),
+                                    false,
+                                ) {
+                                    launch_brokered_update_handoff(request, false)
+                                } else {
+                                    Ok(false)
+                                }
+                            })
+                        }) {
+                            Ok(true) => update_handoff_started.store(true, Ordering::Release),
+                            Ok(false) => {}
+                            Err(error) => append_runtime_log("updater-broker", &error),
                         }
                     }
                     Err(error) => {
@@ -2838,10 +3155,49 @@ mod registry_tests {
         let encoded = URL_SAFE_NO_PAD.encode(script_path.as_bytes());
         assert_eq!(
             parse_update_handoff_request(&format!("{UPDATE_HANDOFF_PREFIX}{encoded}")),
-            Ok(Some(PathBuf::from(script_path)))
+            Ok(Some(UpdateHandoffRequest::Legacy(PathBuf::from(script_path))))
         );
         assert!(parse_update_handoff_request(UPDATE_HANDOFF_PREFIX).is_err());
         assert!(parse_update_handoff_request(&format!("{UPDATE_HANDOFF_PREFIX}%%%")).is_err());
+    }
+
+    #[test]
+    fn test_installer_update_handoff_request_requires_v2_json() {
+        let request = InstallerUpdateHandoffRequest {
+            acknowledgement_path: r"C:\Program Files (x86)\WonRemote Agent\.update-handoff\123e4567-e89b-42d3-a456-426614174000\installer-started.accepted".to_string(),
+            installer_path: r"C:\Users\Tester\AppData\Roaming\WonRemote\updates\installer.exe".to_string(),
+            installer_sha256: "a".repeat(64),
+            request_id: "123e4567-e89b-42d3-a456-426614174000".to_string(),
+            script_path: r"C:\Users\Tester\AppData\Roaming\WonRemote\updates\run-installer-update-123e4567-e89b-42d3-a456-426614174000.ps1".to_string(),
+            script_sha256: "b".repeat(64),
+            version: 2,
+        };
+        let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&request).unwrap());
+        assert_eq!(
+            parse_update_handoff_request(&format!("{INSTALLER_UPDATE_HANDOFF_PREFIX}{encoded}")),
+            Ok(Some(UpdateHandoffRequest::InstallerV2(request)))
+        );
+        assert!(parse_update_handoff_request(INSTALLER_UPDATE_HANDOFF_PREFIX).is_err());
+    }
+
+    #[test]
+    fn test_installer_update_handoff_allows_a_fresh_retry_after_task_failure() {
+        let installer = UpdateHandoffRequest::InstallerV2(InstallerUpdateHandoffRequest {
+            acknowledgement_path: r"C:\Program Files (x86)\WonRemote Agent\.update-handoff\123e4567-e89b-42d3-a456-426614174000\installer-started.accepted".to_string(),
+            installer_path: r"C:\Users\Tester\AppData\Roaming\WonRemote\updates\installer.exe".to_string(),
+            installer_sha256: "a".repeat(64),
+            request_id: "123e4567-e89b-42d3-a456-426614174000".to_string(),
+            script_path: r"C:\Users\Tester\AppData\Roaming\WonRemote\updates\run-installer-update-123e4567-e89b-42d3-a456-426614174000.ps1".to_string(),
+            script_sha256: "b".repeat(64),
+            version: 2,
+        });
+        let legacy = UpdateHandoffRequest::Legacy(PathBuf::from(
+            r"C:\Users\Tester\AppData\Roaming\WonRemote\updates\run-portable-update-test.ps1",
+        ));
+
+        assert!(should_attempt_update_handoff(&installer, true, true));
+        assert!(!should_attempt_update_handoff(&installer, true, false));
+        assert!(!should_attempt_update_handoff(&legacy, true, true));
     }
 
     #[test]
@@ -2902,6 +3258,76 @@ mod registry_tests {
         assert!(validate_update_handoff_script_path_in_root(&outside, &updates_root).is_err());
 
         let _ = std::fs::remove_dir_all(fixture_root);
+    }
+
+    #[test]
+    fn test_installer_handoff_is_hash_pinned_and_staged_under_protected_root() {
+        let fixture_root = std::env::temp_dir().join(format!(
+            "wonremote-protected-update-test-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let program_root = fixture_root.join("Program Files");
+        let install_root = program_root.join("WonRemote Agent");
+        let updates_root = fixture_root.join("Roaming").join("WonRemote").join("updates");
+        std::fs::create_dir_all(&install_root).unwrap();
+        std::fs::create_dir_all(&updates_root).unwrap();
+        std::fs::write(install_root.join("update-handoff-broker.ps1"), b"exit 0").unwrap();
+
+        let request_id = "123e4567-e89b-42d3-a456-426614174000";
+        let script_path = updates_root.join(format!("run-installer-update-{request_id}.ps1"));
+        let installer_path = updates_root.join("WonRemote-Agent-Setup.exe");
+        let script = b"Write-Output 'verified'";
+        let installer = b"verified-installer";
+        std::fs::write(&script_path, script).unwrap();
+        std::fs::write(&installer_path, installer).unwrap();
+        let digest = |bytes: &[u8]| {
+            Sha256::digest(bytes)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        let acknowledgement_path = node_compatible_path(
+            &std::fs::canonicalize(&install_root).unwrap().join(".update-handoff").join(request_id),
+        )
+        .join("installer-started.accepted");
+        let request = InstallerUpdateHandoffRequest {
+            acknowledgement_path: acknowledgement_path.to_string_lossy().into_owned(),
+            installer_path: installer_path.to_string_lossy().into_owned(),
+            installer_sha256: digest(installer),
+            request_id: request_id.to_string(),
+            script_path: script_path.to_string_lossy().into_owned(),
+            script_sha256: digest(script),
+            version: 2,
+        };
+
+        let staged = stage_agent_installer_handoff_in_roots(
+            &request,
+            &updates_root,
+            &install_root,
+            std::slice::from_ref(&program_root),
+        )
+        .expect("verified update should be staged");
+        assert_eq!(std::fs::read(staged.stage_root.join("handoff.ps1")).unwrap(), script);
+        assert_eq!(std::fs::read(staged.stage_root.join("installer.exe")).unwrap(), installer);
+        assert_eq!(
+            std::fs::read_to_string(&staged.pending_path).unwrap(),
+            format!(r#"{{"requestId":"{request_id}"}}"#)
+        );
+
+        let _ = std::fs::remove_file(&staged.pending_path);
+        let _ = std::fs::remove_dir_all(&fixture_root);
+    }
+
+    #[test]
+    fn test_installer_handoff_rejects_checksum_or_acknowledgement_changes() {
+        assert!(validate_sha256("not-a-checksum").is_err());
+        assert!(is_update_request_id("123e4567-e89b-42d3-a456-426614174000"));
+        assert!(!is_update_request_id("123e4567-e89b-12d3-a456-426614174000"));
+        assert!(windows_paths_equal(
+            Path::new(r"C:\Program Files\WonRemote Agent\file"),
+            Path::new(r"c:\program files\wonremote agent\file"),
+        ));
     }
 
     #[test]

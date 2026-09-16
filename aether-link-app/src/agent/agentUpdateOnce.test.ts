@@ -25,6 +25,7 @@ function updateDeps(overrides: Record<string, unknown> = {}) {
     downloadInstaller: vi.fn(async () => ({
       installerArgs: ["/S"],
       installerPath: "C:\\Temp\\WonRemote-Viewer-Agent-Setup.exe",
+      installerSha256: "a".repeat(64),
     })),
     downloadPortable: vi.fn(async () => ({
       archivePath: "C:\\Temp\\WonRemote-Viewer-Agent-Portable.zip",
@@ -35,7 +36,10 @@ function updateDeps(overrides: Record<string, unknown> = {}) {
       args: ["-File", "handoff.ps1"],
       command: "powershell.exe",
       creationFlags: 1,
+      installerSha256: "a".repeat(64),
       logPath: "handoff.log",
+      requestId: "123e4567-e89b-42d3-a456-426614174000",
+      scriptSha256: "b".repeat(64),
       scriptPath: "handoff.ps1",
     })),
     preparePortableHandoff: vi.fn(async () => ({
@@ -82,7 +86,10 @@ describe("non-interactive bundled updater", () => {
       args: ["-File", "C:\\Data\\WonRemote\\updates\\run-installer-update-test.ps1"],
       command: "powershell.exe",
       creationFlags: 1,
+      installerSha256: "a".repeat(64),
       logPath: "C:\\Data\\WonRemote\\updates\\handoff.log",
+      requestId: "123e4567-e89b-42d3-a456-426614174000",
+      scriptSha256: "b".repeat(64),
       scriptPath: "C:\\Data\\WonRemote\\updates\\run-installer-update-test.ps1",
     }, { WONREMOTE_TAURI_UPDATE_BROKER: "1" }, writeBrokerRequest);
 

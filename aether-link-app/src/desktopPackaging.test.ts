@@ -159,15 +159,23 @@ describe("desktop packaging scaffold", () => {
     expect(packageReleaseScript).not.toContain("createUniversalProductInstaller");
   });
 
-  it("allows installer update handoff to break away from the tray process job object", () => {
+  it("uses the protected scheduled task for installed Agent handoff", () => {
     const tauriLib = readFileSync(path.join(projectRoot, "src-tauri", "src", "lib.rs"), "utf8");
+    const brokerProcess = readFileSync(path.join(projectRoot, "src-tauri", "src", "update_handoff_process.rs"), "utf8");
     const agentIndex = readFileSync(path.join(projectRoot, "src", "agent", "index.ts"), "utf8");
 
     expect(tauriLib).toContain("JOB_OBJECT_LIMIT_BREAKAWAY_OK");
     expect(tauriLib).toContain("JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK");
+    expect(tauriLib).toContain("stage_agent_installer_handoff");
+    expect(tauriLib).toContain("run_agent_update_handoff_task");
     expect(agentIndex).toContain("prepareInstallerHandoff");
+    expect(agentIndex).toContain("formatInstallerUpdateHandoffBrokerRequest");
     expect(agentIndex).toContain("creationFlags: handoff.creationFlags");
     expect(agentIndex).not.toContain("spawn(installerPath, installerArgs");
+    const taskLaunch = brokerProcess.slice(brokerProcess.indexOf("pub(crate) fn run_agent_update_handoff_task"));
+    expect(taskLaunch).toContain("AGENT_UPDATE_HANDOFF_TASK_NAME");
+    expect(taskLaunch).toContain(".creation_flags(CREATE_NO_WINDOW)");
+    expect(taskLaunch).not.toContain("CREATE_BREAKAWAY_FROM_JOB");
   });
 
   it("starts silent Viewer and Agent replacements without depending on the old updater", () => {
@@ -211,6 +219,10 @@ describe("desktop packaging scaffold", () => {
       path.join(projectRoot, "src-tauri", "windows", "manage-agent-login-task.ps1"),
       "utf8",
     );
+    const updateBroker = readFileSync(
+      path.join(projectRoot, "src-tauri", "windows", "update-handoff-broker.ps1"),
+      "utf8",
+    );
 
     for (const hookName of ["agent-install-hooks.nsh", "agent-install-hooks-x86.nsh"]) {
       const hook = readFileSync(path.join(projectRoot, "src-tauri", "windows", hookName), "utf8");
@@ -226,6 +238,7 @@ describe("desktop packaging scaffold", () => {
         hook.indexOf("!insertmacro WONREMOTE_STOP_RUNNING_PROCESSES"),
       );
       expect(hook).toContain('File /oname=$INSTDIR\\manage-agent-login-task.ps1');
+      expect(hook).toContain('File /oname=$INSTDIR\\update-handoff-broker.ps1');
       expect(hook).toContain("!insertmacro WONREMOTE_MANAGE_AGENT_LOGIN_TASK Uninstall");
     }
 
@@ -248,7 +261,14 @@ describe("desktop packaging scaffold", () => {
       taskScript.indexOf('function Start-LegacyMigration'),
     );
     expect(taskScript).toContain('$secureTaskName = "WonRemote Secure Capture"');
+    expect(taskScript).toContain('$updateTaskName = "WonRemote Agent Update Handoff"');
+    expect(taskScript).toContain('New-ScheduledTaskAction -Execute $updateSpec.PowerShell');
+    expect(taskScript).toContain('New-ScheduledTaskPrincipal -UserId $UserId -LogonType Interactive -RunLevel Highest');
     expect(taskScript).toContain('New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest');
+    expect(updateBroker).toContain('Join-Path $PSScriptRoot ".update-handoff"');
+    expect(updateBroker).toContain('$env:WONREMOTE_HANDOFF_INSTALLER_PATH = $installerPath');
+    expect(updateBroker).toContain('$env:WONREMOTE_HANDOFF_ACCEPTED_PATH = $acceptedPath');
+    expect(updateBroker).not.toContain("$env:APPDATA");
     expect(taskScript).toContain('$brokerArguments = "--mode secure-broker"');
     const config = JSON.parse(readFileSync(path.join(projectRoot, "src-tauri", "tauri.conf.json"), "utf8"));
     const captureResource = config.bundle.resources["../dist-poc/wonremote-poc.exe"].replaceAll("/", "\\");
@@ -1161,6 +1181,7 @@ describe("desktop packaging scaffold", () => {
     expect(tauriLib).toContain("launch_brokered_update_handoff");
     expect(brokerProcess).toContain("CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB");
     expect(brokerProcess).toContain("command.creation_flags(UPDATE_HANDOFF_CREATION_FLAGS)");
+    expect(brokerProcess).toContain("run_agent_update_handoff_task");
     expect(tauriLib).toContain("fn check_installer_update");
     expect(tauriLib).toContain("fn check_agent_installer_update");
     expect(tauriLib).toContain("check_installer_update,");

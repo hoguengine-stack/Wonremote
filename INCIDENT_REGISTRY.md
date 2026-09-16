@@ -1,5 +1,20 @@
 # WonRemote Incident Registry
 
+## INC-20260917-108: Real Task Scheduler Job rejects the Agent updater's direct breakaway
+
+- Detected: 2026-09-17 while installing selected public v0.1.101 on Agent 82220F6D.
+- Severity: High; the working Agent remains online, but an installed protected Agent cannot advance to a newer release from its normal scheduled-task runtime.
+- Affected: Agent-only verified installer handoff from the `WonRemote Agent` highest-privilege scheduled task. Viewer direct update is unaffected.
+- Status: Source verified and ready for restricted deployment; wider Agent rollout remains restricted to the exact selected test device.
+- User-visible symptom: Viewer confirms that the update request was sent. After the live session ends, Agent downloads and verifies the installer, but stays on the old version and reports update failure instead of installing.
+- Minimal trigger: Run Agent from the real Task Scheduler task, deliver an eligible update, close the active session and let the Tauri broker create PowerShell with `CREATE_BREAKAWAY_FROM_JOB`.
+- Root cause and contributors: Windows permits explicit breakaway only when every enclosing Job allows it. The product regression and release gate created a synthetic Job with `JOB_OBJECT_LIMIT_BREAKAWAY_OK`, while the real Task Scheduler Job returned access denied. The passing test therefore proved the flag under an allowed Job, not the deployed ownership boundary.
+- Fix commit(s): Pending next preparation commit.
+- Permanent guard: Do not launch the Agent installer handoff as a direct child of the main Agent task. Verify the trusted handoff inputs, copy them under the protected Program Files installation, and invoke a separately registered on-demand updater task whose PowerShell owner remains alive while the installer replaces the main task. Fail closed on hash/path/task/concurrency errors and keep the working Agent alive until installer-start acknowledgement.
+- Regression proof: RED installed log records the v0.1.101 checksum-derived installer, exact session stop, `Agent update broker failed to start PowerShell: ... os error 5`, no accepted marker, and `Agent remains running`. GREEN passes 120 focused TypeScript/PowerShell tests, 130 release-boundary tests, installer upgrade plus two rollback E2E paths, all 51 x86 Rust library tests, eight focused x64 native handoff tests and a real x86 kill-on-close Job E2E. It also permits a fresh request after a broker failure instead of suppressing every later update for that Agent process.
+- Release proof: Public v0.1.101 remains immutable and Viewer v0.1.101 installed successfully. Agent 82220F6D remains healthy on v0.1.100; no wider Agent was targeted.
+- Remaining blocker: Focused protected-staging/task tests, fresh x86 build and release, one approved bootstrap install on 82220F6D, then a subsequent selected automatic update proving the new task boundary, restart, registration, heartbeat and legacy cleanup.
+
 ## INC-20260917-107: Job-boundary release proof used a cold-start budget below observed runner time
 
 - Detected: 2026-09-17 in GitHub Actions run 35137944488 after both v0.1.101 installers built.

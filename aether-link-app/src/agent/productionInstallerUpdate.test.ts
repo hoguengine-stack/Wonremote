@@ -23,8 +23,11 @@ describe("production installer update", () => {
       const baseDir = path.join(os.tmpdir(), `wonremote-failure-${process.pid}-${failure}-${Date.now()}`);
       try {
         await mkdir(baseDir, { recursive: true });
+        await writeFile(path.join(baseDir, "installer.exe"), "installer");
         const handoff = await prepareInstallerHandoff({
-          installerPath: path.join(baseDir, "installer.exe"), installerArgs: ["/S"],
+          installerPath: path.join(baseDir, "installer.exe"),
+          installerArgs: ["/S"],
+          installerSha256: createHash("sha256").update("installer").digest("hex"),
         }, { baseDir });
         const script = await readFile(handoff.scriptPath, "utf8");
         const start = script.lastIndexOf("\ntry {\n  Backup-WonRemoteInstall");
@@ -35,6 +38,7 @@ describe("production installer update", () => {
 $ErrorActionPreference = 'Stop'
 $FailureExitCode = 1
 $InstallerStarted = $false
+$AcceptedPath = '${harness.replace(/'/g, "''")}.accepted'
 $RestartMode = 'agent'
 function Record([string]$Event) { Add-Content -LiteralPath $env:WR_EVENTS -Value $Event }
 function Backup-WonRemoteInstall { $script:RollbackEntries = @('backup'); Record 'backup' }
@@ -79,7 +83,12 @@ ${script.slice(start)}
     await mkdir(updates, { recursive: true });
     const installer = path.join(updates, "current.exe");
     try {
-      const handoff = await prepareInstallerHandoff({ installerPath: installer, installerArgs: ["/S"] }, { baseDir });
+      await writeFile(installer, "temporary");
+      const handoff = await prepareInstallerHandoff({
+        installerPath: installer,
+        installerArgs: ["/S"],
+        installerSha256: createHash("sha256").update("temporary").digest("hex"),
+      }, { baseDir });
       const script = await readFile(handoff.scriptPath, "utf8");
       const start = script.indexOf("  Remove-Item", script.indexOf("Write-UpdateResult 'healthy' ''"));
       const end = script.indexOf("  Close-UpdateLock", start);
@@ -92,7 +101,7 @@ ${script.slice(start)}
       await writeFile(retained, "failure evidence");
       await writeFile(identity, "identity");
       const harness = path.join(baseDir, "cleanup-test.ps1");
-      await writeFile(harness, "$InstallerPath=$env:WR_TEST_INSTALLER\n$PSCommandPath=$env:WR_TEST_HANDOFF\n" + script.slice(start, end));
+      await writeFile(harness, "$InstallerPath=$env:WR_TEST_INSTALLER\n$OriginalInstallerPath=$InstallerPath\n$AcceptedPath=$env:WR_TEST_HANDOFF + '.accepted'\n$PSCommandPath=$env:WR_TEST_HANDOFF\n" + script.slice(start, end));
       const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", harness], {
         env: { ...process.env, WR_TEST_INSTALLER: installer, WR_TEST_HANDOFF: handoff.scriptPath }, encoding: "utf8", timeout: 10_000, windowsHide: true,
       });
@@ -132,6 +141,22 @@ ${script.slice(start)}
       );
       expect(await readFile(result.installerPath)).toEqual(body);
       expect(result.installerArgs).toEqual(["/S"]);
+    } finally {
+      await rm(baseDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an installer changed after signed checksum verification", async () => {
+    const baseDir = path.join(os.tmpdir(), `wonremote-installer-tamper-${process.pid}-${Date.now()}`);
+    const installerPath = path.join(baseDir, "WonRemote", "updates", "installer.exe");
+    try {
+      await mkdir(path.dirname(installerPath), { recursive: true });
+      await writeFile(installerPath, "tampered");
+      await expect(prepareInstallerHandoff({
+        installerArgs: ["/S"],
+        installerPath,
+        installerSha256: createHash("sha256").update("signed").digest("hex"),
+      }, { baseDir })).rejects.toThrow("Installer changed after checksum verification");
     } finally {
       await rm(baseDir, { recursive: true, force: true });
     }
@@ -240,7 +265,7 @@ ${script.slice(start)}
     expect(installerArgsForUpdate({ installerArgs: ["", 12, "/S"] })).toEqual(["/S"]);
   });
 
-  it("prepares a detached PowerShell handoff script that can break away from the Tauri job object", async () => {
+  it("prepares a hash-pinned PowerShell installer handoff", async () => {
     const baseDir = path.join(os.tmpdir(), `wonremote-installer-handoff-${process.pid}-${Date.now()}`);
     const installerPath = path.join(baseDir, "WonRemote", "updates", "WonRemote-Viewer-Agent-Setup.exe");
 
@@ -252,6 +277,7 @@ ${script.slice(start)}
         {
           installerArgs: ["/S", "/D=C:\\Users\\Tester\\WonRemote Agent"],
           installerPath,
+          installerSha256: createHash("sha256").update("installer").digest("hex"),
         },
         { baseDir },
       );
@@ -260,6 +286,9 @@ ${script.slice(start)}
       expect(result.command).toBe("powershell.exe");
       expect(result.args).toEqual(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", result.scriptPath]);
       expect(result.creationFlags).toBe(INSTALLER_HANDOFF_CREATION_FLAGS);
+      expect(result.requestId).toMatch(/^[0-9a-f-]{36}$/);
+      expect(result.installerSha256).toBe(createHash("sha256").update("installer").digest("hex"));
+      expect(result.scriptSha256).toMatch(/^[0-9a-f]{64}$/);
       expect(path.dirname(result.logPath)).toBe(path.join(baseDir, "WonRemote", "updates"));
       expect(path.basename(result.logPath)).toMatch(/^installer-handoff-[0-9a-f-]{36}\.log$/);
       expect(script).toContain("Start-Process -FilePath");
@@ -286,6 +315,8 @@ ${script.slice(start)}
       expect(script).not.toContain("taskkill");
       expect(script).toContain("Another WonRemote update is already in progress");
       expect(script).toContain("[System.IO.FileShare]::None");
+      expect(script).toContain("WONREMOTE_HANDOFF_INSTALLER_PATH");
+      expect(script).toContain("WONREMOTE_HANDOFF_ACCEPTED_PATH");
       const handoffStart = script.lastIndexOf("\ntry {\n  Backup-WonRemoteInstall");
       const installerLaunch = script.indexOf("$process = Start-Process", handoffStart);
       expect(handoffStart).toBeGreaterThanOrEqual(0);
@@ -319,7 +350,7 @@ ${script.slice(start)}
         expect(sequence.status, sequence.stderr).toBe(0);
         expect(sequence.stdout.trim()).toBe("backup,launch,ready");
       }
-      const readinessSignal = script.indexOf("Set-Content -LiteralPath ($PSCommandPath + '.accepted')", installerLaunch);
+      const readinessSignal = script.indexOf("Set-Content -LiteralPath $AcceptedPath", installerLaunch);
       expect(readinessSignal).toBeGreaterThan(installerLaunch);
       expect(readinessSignal).toBeLessThan(script.indexOf("$process.WaitForExit()", installerLaunch));
       expect(script).toContain("throw 'No previous WonRemote installation was available to back up.'");
@@ -354,7 +385,11 @@ ${script.slice(start)}
       expect(script).toContain("catch {\n  Write-HandoffLog \"Installer handoff failed");
       expect(script).toContain("Restore-WonRemoteInstall");
       const second = await prepareInstallerHandoff(
-        { installerArgs: ["/S"], installerPath },
+        {
+          installerArgs: ["/S"],
+          installerPath,
+          installerSha256: createHash("sha256").update("installer").digest("hex"),
+        },
         { baseDir },
       );
       expect(second.scriptPath).not.toBe(result.scriptPath);
@@ -372,7 +407,11 @@ ${script.slice(start)}
       await mkdir(path.dirname(installerPath), { recursive: true });
       await writeFile(installerPath, "installer");
       const result = await prepareInstallerHandoff(
-        { installerArgs: ["/S"], installerPath },
+        {
+          installerArgs: ["/S"],
+          installerPath,
+          installerSha256: createHash("sha256").update("installer").digest("hex"),
+        },
         { baseDir, restartMode: "viewer" },
       );
       const script = await readFile(result.scriptPath, "utf8");
@@ -394,12 +433,22 @@ ${script.slice(start)}
       await mkdir(path.dirname(installerPath), { recursive: true });
       await writeFile(installerPath, "installer");
       const result = await prepareInstallerHandoff(
-        { installerArgs: ["/S"], installerPath },
-        { baseDir, restartMode: "viewer", restartExecutablePath } as any,
+        {
+          installerArgs: ["/S"],
+          installerPath,
+          installerSha256: createHash("sha256").update("installer").digest("hex"),
+        },
+        { baseDir, restartMode: "agent", restartExecutablePath },
       );
       const script = await readFile(result.scriptPath, "utf8");
       expect(script).toContain(restartExecutablePath);
       expect(script).toContain("Start-Process -FilePath $RestartExecutablePath");
+      expect(result.protectedAcknowledgementPath).toBe(path.join(
+        path.dirname(restartExecutablePath),
+        ".update-handoff",
+        result.requestId,
+        "installer-started.accepted",
+      ));
     } finally {
       await rm(baseDir, { recursive: true, force: true });
     }

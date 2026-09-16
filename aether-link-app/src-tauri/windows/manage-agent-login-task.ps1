@@ -14,6 +14,7 @@
 $ErrorActionPreference = "Stop"
 $taskName = "WonRemote Agent"
 $secureTaskName = "WonRemote Secure Capture"
+$updateTaskName = "WonRemote Agent Update Handoff"
 $migrationTaskName = "WonRemote Agent Migration"
 $legacyUninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\WonRemote Agent"
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -65,9 +66,11 @@ function Resolve-AgentRuntime([string]$Path) {
   $capture = Join-Path $root "bin\wonremote-poc.exe"
   $node = Join-Path $root "runtime\node.exe"
   $agentScript = Join-Path $root "agent\index.mjs"
+  $updateBroker = Join-Path $root "update-handoff-broker.ps1"
   if (-not (Test-Path -LiteralPath $capture -PathType Leaf) -or
       -not (Test-Path -LiteralPath $node -PathType Leaf) -or
-      -not (Test-Path -LiteralPath $agentScript -PathType Leaf)) {
+      -not (Test-Path -LiteralPath $agentScript -PathType Leaf) -or
+      -not (Test-Path -LiteralPath $updateBroker -PathType Leaf)) {
     return $null
   }
   return @{
@@ -76,7 +79,26 @@ function Resolve-AgentRuntime([string]$Path) {
     Capture = (Resolve-Path -LiteralPath $capture).Path
     Node = (Resolve-Path -LiteralPath $node).Path
     AgentScript = (Resolve-Path -LiteralPath $agentScript).Path
+    UpdateBroker = (Resolve-Path -LiteralPath $updateBroker).Path
   }
+}
+
+function Get-UpdateTaskSpec($Runtime) {
+  $powershell = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+  $arguments = "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$($Runtime.UpdateBroker)`""
+  return @{
+    Arguments = $arguments
+    PowerShell = $powershell
+  }
+}
+
+function Test-UpdateTaskReady($Task, $Runtime) {
+  if (-not $Task -or -not $Runtime) { return $false }
+  $spec = Get-UpdateTaskSpec $Runtime
+  return $Task.Principal.RunLevel -eq "Highest" -and
+    $Task.Actions.Execute -eq $spec.PowerShell -and
+    $Task.Actions.Arguments -eq $spec.Arguments -and
+    $Task.State -ne "Disabled"
 }
 
 function Resolve-ProtectedFile([string]$Path) {
@@ -368,11 +390,13 @@ if ($Mode -eq "Ensure") {
       $existingAgent.Actions.Execute -eq $runtime.Agent -and
       $existingAgent.Actions.Arguments -eq "--agent" -and
       $existingAgent.State -ne "Disabled"
+  $existingUpdate = Get-ScheduledTask -TaskName $updateTaskName -ErrorAction SilentlyContinue
+  $updateReady = Test-UpdateTaskReady $existingUpdate $runtime
   # The SYSTEM task may be unreadable to this caller. Its approved Agent task
   # performs broker validation after elevation; no new privilege is granted here.
-  if ($agentReady -and -not $isAdmin) { exit 10 }
+  if ($agentReady -and $updateReady -and -not $isAdmin) { exit 10 }
   $existingBroker = Get-ScheduledTask -TaskName $secureTaskName -ErrorAction SilentlyContinue
-  if ($agentReady -and
+  if ($agentReady -and $updateReady -and
       $existingBroker -and $existingBroker.Principal.UserId -eq "SYSTEM" -and
       $existingBroker.Actions.Execute -eq $runtime.Capture -and
       $existingBroker.Actions.Arguments -eq $brokerArguments -and
@@ -418,9 +442,11 @@ if ($Mode -eq "Uninstall") {
   Stop-ScheduledTask -TaskName $migrationTaskName -ErrorAction SilentlyContinue
   Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
   Stop-ScheduledTask -TaskName $secureTaskName -ErrorAction SilentlyContinue
+  Stop-ScheduledTask -TaskName $updateTaskName -ErrorAction SilentlyContinue
   Unregister-ScheduledTask -TaskName $migrationTaskName -Confirm:$false -ErrorAction SilentlyContinue
   Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
   Unregister-ScheduledTask -TaskName $secureTaskName -Confirm:$false -ErrorAction SilentlyContinue
+  Unregister-ScheduledTask -TaskName $updateTaskName -Confirm:$false -ErrorAction SilentlyContinue
   exit 0
 }
 
@@ -442,10 +468,21 @@ try {
   Register-ScheduledTask -TaskName $secureTaskName -Action $brokerAction -Trigger $brokerTrigger -Principal $brokerPrincipal -Settings $brokerSettings -Force | Out-Null
   Start-ScheduledTask -TaskName $secureTaskName
 
+  $updateSpec = Get-UpdateTaskSpec $runtime
+  $existingUpdate = Get-ScheduledTask -TaskName $updateTaskName -ErrorAction SilentlyContinue
+  if (-not (Test-UpdateTaskReady $existingUpdate $runtime)) {
+    $updateAction = New-ScheduledTaskAction -Execute $updateSpec.PowerShell -Argument $updateSpec.Arguments -WorkingDirectory $runtime.Root
+    $updatePrincipal = New-ScheduledTaskPrincipal -UserId $UserId -LogonType Interactive -RunLevel Highest
+    $updateSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+    Register-ScheduledTask -TaskName $updateTaskName -Action $updateAction -Principal $updatePrincipal -Settings $updateSettings -Force | Out-Null
+  }
+
   $task = Get-ScheduledTask -TaskName $taskName
   $brokerTask = Get-ScheduledTask -TaskName $secureTaskName
+  $updateTask = Get-ScheduledTask -TaskName $updateTaskName
   if ($task.Principal.RunLevel -ne "Highest" -or $task.Actions.Execute -ne $runtime.Agent -or $task.Actions.Arguments -ne "--agent" -or
-      $brokerTask.Principal.UserId -ne "SYSTEM" -or $brokerTask.Actions.Execute -ne $runtime.Capture -or $brokerTask.Actions.Arguments -ne $brokerArguments) {
+      $brokerTask.Principal.UserId -ne "SYSTEM" -or $brokerTask.Actions.Execute -ne $runtime.Capture -or $brokerTask.Actions.Arguments -ne $brokerArguments -or
+      -not (Test-UpdateTaskReady $updateTask $runtime)) {
     throw "WonRemote Agent scheduled task verification failed."
   }
 

@@ -1,10 +1,47 @@
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, rmdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, rmdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it, expect } from "vitest";
 
 describe.skipIf(process.platform !== "win32")("Agent first-run Windows boundaries", () => {
+  it("runs the protected updater broker from its fixed install-relative request", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "wonremote-protected-broker-"));
+    const requestId = "123e4567-e89b-42d3-a456-426614174000";
+    const handoffRoot = path.join(root, ".update-handoff");
+    const stageRoot = path.join(handoffRoot, requestId);
+    const proofPath = path.join(root, "proof.txt");
+    const brokerPath = path.join(root, "update-handoff-broker.ps1");
+    try {
+      mkdirSync(stageRoot, { recursive: true });
+      copyFileSync(path.resolve("src-tauri/windows/update-handoff-broker.ps1"), brokerPath);
+      writeFileSync(path.join(stageRoot, "installer.exe"), "fixture");
+      writeFileSync(path.join(stageRoot, "handoff.ps1"), `
+$expectedInstaller = Join-Path $PSScriptRoot 'installer.exe'
+$expectedAccepted = Join-Path $PSScriptRoot 'installer-started.accepted'
+if ($env:WONREMOTE_HANDOFF_INSTALLER_PATH -ne $expectedInstaller) { exit 31 }
+if ($env:WONREMOTE_HANDOFF_ACCEPTED_PATH -ne $expectedAccepted) { exit 32 }
+Set-Content -LiteralPath $env:WONREMOTE_HANDOFF_ACCEPTED_PATH -Value 'accepted' -Encoding ASCII
+Set-Content -LiteralPath '${proofPath.replace(/'/g, "''")}' -Value 'broker-ok' -Encoding ASCII
+exit 0
+`);
+      writeFileSync(path.join(handoffRoot, "pending.json"), JSON.stringify({ requestId }));
+      execFileSync("powershell.exe", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        brokerPath,
+      ], { windowsHide: true, timeout: 15_000 });
+      expect(readFileSync(proofPath, "utf8").trim()).toBe("broker-ok");
+      expect(existsSync(stageRoot)).toBe(false);
+      expect(existsSync(path.join(handoffRoot, "pending.json"))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("retains the requested handoff code independently of the event-loop return value", () => {
     // Installed RED: Wry translated request_exit(10) to ControlFlow::Exit (return0).
     // This structural guard complements installed handoff verification, not UI runtime proof.
@@ -47,7 +84,7 @@ describe.skipIf(process.platform !== "win32")("Agent first-run Windows boundarie
       const script = `
         function Test-Path { return $true }
         function Resolve-Path { param($LiteralPath); return [pscustomobject]@{Path=$LiteralPath} }
-        function Get-ScheduledTask { param($TaskName); if ($TaskName -eq 'WonRemote Agent') { return [pscustomobject]@{ Principal=@{RunLevel='Highest'}; Actions=@{Execute='C:\\Program Files\\WonRemote Agent\\wonremote-viewer.exe';Arguments='--agent'};State='Ready' } }; if ($${!admin}) { throw 'Secure broker task access denied for ordinary user' }; return [pscustomobject]@{ Principal=@{UserId='SYSTEM'}; Actions=@{Execute='C:\\Program Files\\WonRemote Agent\\bin\\wonremote-poc.exe';Arguments='--mode secure-broker'};State='Running' } }
+        function Get-ScheduledTask { param($TaskName); if ($TaskName -eq 'WonRemote Agent') { return [pscustomobject]@{ Principal=@{RunLevel='Highest'}; Actions=@{Execute='C:\\Program Files\\WonRemote Agent\\wonremote-viewer.exe';Arguments='--agent'};State='Ready' } }; if ($TaskName -eq 'WonRemote Agent Update Handoff') { return [pscustomobject]@{ Principal=@{RunLevel='Highest'}; Actions=@{Execute=(Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\powershell.exe');Arguments='-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\\Program Files\\WonRemote Agent\\update-handoff-broker.ps1"'};State='Ready' } }; if ($${!admin}) { throw 'Secure broker task access denied for ordinary user' }; return [pscustomobject]@{ Principal=@{UserId='SYSTEM'}; Actions=@{Execute='C:\\Program Files\\WonRemote Agent\\bin\\wonremote-poc.exe';Arguments='--mode secure-broker'};State='Running' } }
         function Register-ScheduledTask { throw 'Unexpected registration' }
         function Start-ScheduledTask { throw 'Unexpected launch' }
         function Start-Process { throw 'Unexpected elevation' }
@@ -74,6 +111,7 @@ describe.skipIf(process.platform !== "win32")("Agent first-run Windows boundarie
       "function Get-ScheduledTask {",
       "  param($TaskName)",
       "  if ($TaskName -eq 'WonRemote Agent') { return [pscustomobject]@{Principal=@{RunLevel='Highest'};Actions=@{Execute='C:\\Program Files\\WonRemote Agent\\wonremote-viewer.exe';Arguments='--agent'};State='Ready'} }",
+      "  if ($TaskName -eq 'WonRemote Agent Update Handoff') { return [pscustomobject]@{Principal=@{RunLevel='Highest'};Actions=@{Execute=(Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\powershell.exe');Arguments='-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File \"C:\\Program Files\\WonRemote Agent\\update-handoff-broker.ps1\"'};State='Ready'} }",
       "  return [pscustomobject]@{Principal=@{UserId='SYSTEM'};Actions=@{Execute='C:\\Program Files\\WonRemote Agent\\bin\\wonremote-poc.exe';Arguments='--mode secure-broker'};State='Ready'}",
       "}",
       "function Register-ScheduledTask { throw 'Unexpected registration' }",
@@ -110,7 +148,7 @@ describe.skipIf(process.platform !== "win32")("Agent first-run Windows boundarie
       & ([scriptblock]::Create($source)) -Mode Ensure -AgentPath 'C:\\Program Files\\WonRemote Agent\\wonremote-viewer.exe'
       Write-Output "registered=$($global:registered.Count);started=$global:started"
     `;
-    expect(execFileSync("powershell.exe", ["-NoProfile", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { windowsHide: true, timeout: 15000, encoding: "utf8" })).toContain("registered=2;started=1");
+    expect(execFileSync("powershell.exe", ["-NoProfile", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { windowsHide: true, timeout: 15000, encoding: "utf8" })).toContain("registered=3;started=1");
   });
 
   it("stops the SYSTEM broker and both protected and legacy Agent process trees before overwrite", () => {

@@ -17,13 +17,18 @@ export type InstallerUpdateMetadata = {
 export type InstallerDownloadResult = {
   installerArgs: string[];
   installerPath: string;
+  installerSha256: string;
 };
 
 export type InstallerHandoffResult = {
   args: string[];
   command: string;
   creationFlags: number;
+  installerSha256: string;
   logPath: string;
+  protectedAcknowledgementPath?: string;
+  requestId: string;
+  scriptSha256: string;
   scriptPath: string;
 };
 
@@ -87,7 +92,11 @@ export async function downloadInstallerUpdate(
   const partialPath = `${installerPath}.part`;
 
   if (await fileMatchesChecksum(installerPath, expectedChecksum)) {
-    return { installerArgs: installerArgsForUpdate(metadata), installerPath };
+    return {
+      installerArgs: installerArgsForUpdate(metadata),
+      installerPath,
+      installerSha256: expectedChecksum,
+    };
   }
   await rm(installerPath, { force: true });
 
@@ -103,6 +112,7 @@ export async function downloadInstallerUpdate(
   return {
     installerArgs: installerArgsForUpdate(metadata),
     installerPath,
+    installerSha256: expectedChecksum,
   };
 }
 
@@ -192,25 +202,40 @@ export async function prepareInstallerHandoff(
   const updateId = randomUUID();
   const logPath = path.join(updatesDir, `installer-handoff-${updateId}.log`);
   const scriptPath = path.join(updatesDir, `run-installer-update-${updateId}.ps1`);
-  await writeFile(
-    scriptPath,
-    buildInstallerHandoffScript({
-      installerArgs: download.installerArgs,
-      installerPath: download.installerPath,
-      lockPath: path.join(updatesDir, "update-handoff.lock"),
-      logPath,
-      restartExecutablePath: options.restartExecutablePath,
-      restartMode: options.restartMode ?? "agent",
-      targetVersion: options.targetVersion,
-    }),
-    "utf8",
-  );
+  const installerSha256 = await sha256File(download.installerPath);
+  if (installerSha256 !== download.installerSha256.toLowerCase()) {
+    throw new Error("Installer changed after checksum verification.");
+  }
+  const script = buildInstallerHandoffScript({
+    installerArgs: download.installerArgs,
+    installerPath: download.installerPath,
+    lockPath: path.join(updatesDir, "update-handoff.lock"),
+    logPath,
+    restartExecutablePath: options.restartExecutablePath,
+    restartMode: options.restartMode ?? "agent",
+    targetVersion: options.targetVersion,
+  });
+  const scriptSha256 = createHash("sha256").update(script, "utf8").digest("hex");
+  await writeFile(scriptPath, script, "utf8");
+
+  const protectedAcknowledgementPath = options.restartMode !== "viewer" && options.restartExecutablePath
+    ? path.join(
+        path.dirname(options.restartExecutablePath),
+        ".update-handoff",
+        updateId,
+        "installer-started.accepted",
+      )
+    : undefined;
 
   return {
     args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath],
     command: "powershell.exe",
     creationFlags: INSTALLER_HANDOFF_CREATION_FLAGS,
+    installerSha256,
     logPath,
+    ...(protectedAcknowledgementPath ? { protectedAcknowledgementPath } : {}),
+    requestId: updateId,
+    scriptSha256,
     scriptPath,
   };
 }
@@ -240,15 +265,17 @@ function buildInstallerHandoffScript(input: {
 
   return `$ErrorActionPreference = 'Stop'
 $LogPath = '${escapePowerShellSingleQuoted(input.logPath)}'
-$InstallerPath = '${escapePowerShellSingleQuoted(input.installerPath)}'
+$OriginalInstallerPath = '${escapePowerShellSingleQuoted(input.installerPath)}'
+$InstallerPath = if ([string]::IsNullOrWhiteSpace($env:WONREMOTE_HANDOFF_INSTALLER_PATH)) { $OriginalInstallerPath } else { $env:WONREMOTE_HANDOFF_INSTALLER_PATH }
+$AcceptedPath = if ([string]::IsNullOrWhiteSpace($env:WONREMOTE_HANDOFF_ACCEPTED_PATH)) { $PSCommandPath + '.accepted' } else { $env:WONREMOTE_HANDOFF_ACCEPTED_PATH }
 $InstallerArgs = @(${quotedArgs})
 $LockPath = '${escapePowerShellSingleQuoted(input.lockPath)}'
 $RestartMode = '${escapePowerShellSingleQuoted(input.restartMode)}'
 $RestartExecutablePath = '${escapePowerShellSingleQuoted(input.restartExecutablePath ?? "")}'
 $TargetVersion = '${escapePowerShellSingleQuoted(input.targetVersion ?? "")}'
-$ResultPath = Join-Path (Split-Path -Parent $InstallerPath) 'last-update-result.json'
+$ResultPath = Join-Path (Split-Path -Parent $OriginalInstallerPath) 'last-update-result.json'
 $explicitInstallRoots = @(${quotedExplicitInstallRoots})
-$RollbackRoot = Join-Path (Split-Path -Parent $InstallerPath) ('rollback-' + [guid]::NewGuid().ToString())
+$RollbackRoot = Join-Path (Split-Path -Parent $OriginalInstallerPath) ('rollback-' + [guid]::NewGuid().ToString())
 $script:RollbackEntries = @()
 $FailureExitCode = 1
 $InstallerStarted = $false
@@ -530,7 +557,7 @@ try {
   Write-HandoffLog "Starting installer update: $InstallerPath $($InstallerArgs -join ' ')"
   $process = Start-Process -FilePath $InstallerPath -ArgumentList $InstallerArgs -WindowStyle Hidden -PassThru
   $InstallerStarted = $true
-  Set-Content -LiteralPath ($PSCommandPath + '.accepted') -Encoding ASCII -Value 'installer-started'
+  Set-Content -LiteralPath $AcceptedPath -Encoding ASCII -Value 'installer-started'
   Write-HandoffLog "Installer PID: $($process.Id)"
   $process.WaitForExit()
   Write-HandoffLog "Installer exit code: $($process.ExitCode)"
@@ -547,8 +574,11 @@ try {
   Remove-WonRemoteRollback
   Write-UpdateResult 'healthy' ''
   Remove-Item -LiteralPath $InstallerPath -Force -ErrorAction SilentlyContinue
+  if (-not $InstallerPath.Equals($OriginalInstallerPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+    Remove-Item -LiteralPath $OriginalInstallerPath -Force -ErrorAction SilentlyContinue
+  }
   Remove-Item -LiteralPath ($InstallerPath + '.part') -Force -ErrorAction SilentlyContinue
-  Remove-Item -LiteralPath ($PSCommandPath + '.accepted') -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $AcceptedPath -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
   Close-UpdateLock
   exit 0
