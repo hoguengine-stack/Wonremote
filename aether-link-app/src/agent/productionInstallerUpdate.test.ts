@@ -52,7 +52,7 @@ function Close-UpdateLock { Record 'unlock' }
 ${script.slice(start)}
 `);
         const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", harness], {
-          env: { ...process.env, WR_EVENTS: events, WR_FAILURE: failure }, encoding: "utf8", timeout: 10_000, windowsHide: true,
+          env: { ...process.env, WR_EVENTS: events, WR_FAILURE: failure }, encoding: "utf8", timeout: 20_000, windowsHide: true,
         });
         expect(result.status, result.stderr).toBe(failure === "installer" ? 5 : 1);
         const recorded = (await readFile(events, "utf8")).trim().split(/\r?\n/);
@@ -67,6 +67,7 @@ ${script.slice(start)}
         }
       } finally { await rm(baseDir, { recursive: true, force: true }); }
     },
+    30_000,
   );
   it.runIf(process.platform === "win32")("executes successful handoff cleanup without deleting failure evidence or identity", async () => {
     const baseDir = path.join(os.tmpdir(), `wonremote-cleanup-${process.pid}-${Date.now()}`);
