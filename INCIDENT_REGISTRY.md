@@ -1,5 +1,20 @@
 # WonRemote Incident Registry
 
+## INC-20260917-099: Updater Job regression test depended on stale local release resources
+
+- Detected: 2026-09-17 in GitHub Actions run 35123739450 after both v0.1.99 installers built.
+- Severity: Medium; publication was safely blocked, but the release spent a full build before the required runtime fixture failed to start.
+- Affected: `tests/e2e/test_update_handoff_broker.ts` x86 fixture resource selection.
+- Status: Source repaired and locally verified; no v0.1.99 asset was published by the failed run.
+- User-visible symptom: Release stops at `Required broker E2E artifact is missing: release-exe\\x86\\runtime\\node.exe`.
+- Minimal trigger: Run `npm run release:exes` in a clean checkout, which intentionally leaves only the two stable installers in `release-exe`, then execute the x86 broker E2E.
+- Root cause and contributors: The E2E copied Node and PoC from a historical expanded `release-exe/x86` layout that existed only as stale local output. The current packager resets that directory and writes exactly two installers. The locally executed test therefore passed against an artifact the clean release workflow never creates.
+- Fix commit(s): Pending v0.1.99 preparation follow-up commit.
+- Permanent guard: Source the fixture from `dist-runtime/node.exe` and `dist-poc/wonremote-poc.exe`, which the same release build creates, and assert those exact paths while rejecting the obsolete x86 release-resource path.
+- Regression proof: The packaging contract requires `dist-runtime/node.exe` and `dist-poc/wonremote-poc.exe` and rejects the obsolete x86 expanded-release path; 67 packaging tests and the real x86 Job-boundary E2E passed. The installed Agent was stopped through its explicit exit path for the local E2E and its existing scheduled task restored it afterward.
+- Release proof: Pending; do not publish or bypass the failed run.
+- Remaining blocker: Pass the x86 Job-boundary test and complete publication in a fresh normal release workflow.
+
 ## INC-20260917-098: Release gate rejected the executable E2E contract path
 
 - Detected: 2026-09-17 in GitHub Actions run 35123341054 before v0.1.99 build started.

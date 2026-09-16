@@ -1040,6 +1040,7 @@ describe("desktop packaging scaffold", () => {
 
   it("builds releases from gated main commits so release caches remain reusable", () => {
     const releaseWorkflow = readFileSync(path.join(projectRoot, "..", ".github", "workflows", "publish-release.yml"), "utf8");
+    const brokerE2e = readFileSync(path.join(projectRoot, "tests", "e2e", "test_update_handoff_broker.ts"), "utf8");
 
     expect(releaseWorkflow).toContain('branches: ["main"]');
     expect(releaseWorkflow).not.toContain('tags: ["v*"]');
@@ -1061,6 +1062,9 @@ describe("desktop packaging scaffold", () => {
     expect(releaseWorkflow.indexOf("npx tsx tests/e2e/test_update_handoff_broker.ts")).toBeGreaterThan(
       releaseWorkflow.indexOf("run: npm run release:exes"),
     );
+    expect(brokerE2e).toContain('path.join(appRoot, "dist-runtime", "node.exe")');
+    expect(brokerE2e).toContain('path.join(appRoot, "dist-poc", "wonremote-poc.exe")');
+    expect(brokerE2e).not.toContain('path.join(appRoot, "release-exe", "x86", "runtime"');
     expect(releaseWorkflow).toContain("actions/cache/restore@v4");
     expect(releaseWorkflow).toContain("actions/cache/save@v4");
     expect(releaseWorkflow).toContain("build-release:");

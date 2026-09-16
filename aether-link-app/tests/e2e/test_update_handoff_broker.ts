@@ -23,8 +23,8 @@ const allScenarios: BrokerScenario[] = [
   },
   {
     arch: "x86",
-    nodeSource: path.join(appRoot, "release-exe", "x86", "runtime", "node.exe"),
-    pocSource: path.join(appRoot, "release-exe", "x86", "bin", "wonremote-poc.exe"),
+    nodeSource: path.join(appRoot, "dist-runtime", "node.exe"),
+    pocSource: path.join(appRoot, "dist-poc", "wonremote-poc.exe"),
     shellSource: path.join(
       appRoot,
       "src-tauri",
