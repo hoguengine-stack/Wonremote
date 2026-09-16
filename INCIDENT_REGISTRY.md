@@ -5,14 +5,14 @@
 - Detected: 2026-09-16 during focused reproduction of the installed v0.1.95 right-click editor report.
 - Severity: High; local metadata could not be typed reliably and unintended remote keyboard ownership remained possible behind the editor.
 - Affected: Windows Viewer device editor when a requested session or WebRTC transport becomes ready after the editor opens; save-error visibility in the same dialog.
-- Status: Source repaired and automated runtime verified; v0.1.96 build, publication and installed confirmation pending.
+- Status: Source repaired, automated runtime verified and published in v0.1.96; installed confirmation pending.
 - User-visible symptom: Right-clicking a registered device opens the editor, but text input itself can stop working; save failure was also hidden behind the dialog.
 - Minimal trigger: Request a connection, right-click a device before the request completes, focus a metadata input, then allow session and transport readiness to complete.
 - Root cause and contributors: Session activation and transport-ready effects focused the remote panel and hidden IME without checking the open editor. Keyboard recovery remained enabled behind the dialog. The metadata handler also swallowed save rejection and closed before rollout persistence finished.
-- Fix commit(s): Pending v0.1.96 preparation commit.
+- Fix commit(s): 3733b90, e495359 and c52009a.
 - Permanent guard: Explicitly suspend remote input, keyboard recovery and automatic panel focus while the device editor is open; resume after close. Propagate save failure into the dialog, preserve input and close only after both save stages succeed.
 - Regression proof: Real App Chromium RED lost editor focus after delayed readiness. GREEN retains typing/deletion with zero remote sends, restores remote ArrowRight after close, preserves text on save failure and retries successfully. Related six files passed 150 tests, TypeScript passed and x86 handoff exit test passed.
-- Release proof: Pending the v0.1.96 GitHub Actions build, signed-manifest publication, live alias/hash checks and installed Viewer confirmation.
+- Release proof: GitHub Actions run 35074655547 built both x86 installers, generated the signed update manifest and published public latest v0.1.96. Public asset hashes match the manifest and all three latest URLs resolve to v0.1.96. Authenticode remains unconfigured and is not claimed.
 - Remaining blocker: Installed v0.1.96 Viewer must confirm right-click typing and saving against live persistence; installed Agent update/restart and remote input remain post-publication physical checks.
 
 ## INC-20260916-089: Device editor hides save failures and closes before all saves finish
@@ -27,15 +27,15 @@
 - Detected: 2026-09-16 while tracing field update handoff and release-gate failure behavior.
 - Severity: Critical; an unaccepted update handoff could stop or replace the existing Agent before a replacement was proven available.
 - Affected: Windows installed Agent installer handoff, portable update handoff, Tauri watchdog restart suppression and missing-rollout-policy eligibility.
-- Status: Source repaired; focused runtime and Windows E2E verified. Installed v0.1.96 update remains pending.
+- Status: Source repaired, focused runtime and Windows E2E verified, and published in v0.1.96. Installed update confirmation remains pending.
 - User-visible symptom: A failed or unaccepted update could leave the Agent unavailable, causing offline status and loss of remote screen/input.
 - Minimal trigger: Prepare an update with a backup, fail before installer process start, or let the broker spawn PowerShell without the installer producing the readiness acknowledgement.
 - Root cause and contributors: The broker acknowledged after spawning PowerShell instead of after installer acceptance; the watchdog suppressed restart from request state alone; pre-launch catch invoked restore and stopped the still-working runtime. Missing rollout policy also previously allowed update progression.
-- Fix commit(s): 3733b90 and pending E2E correction commit.
+- Fix commit(s): 3733b90, e495359 and c52009a.
 - Permanent guard: Installer/portable scripts write readiness only after replacement ownership is established; Agent waits for that marker and exits with dedicated code 42; watchdog suppresses restart only for that code; pre-launch failure preserves runtime and fail-closed policy rejects missing rollout configuration.
 - Regression proof: Six focused files passed 150 tests, TypeScript passed, and x86 release-profile exit-code test passed. Corrected Windows E2E proves successful upgrade, two post-launch rollback paths, and backup-unavailable refusal with no installer-start log or accepted marker.
-- Release proof: First v0.1.96 CI run 35073780671 stopped before build/publication because the E2E still expected the obsolete message. Replacement run and live release checks remain pending.
-- Remaining blocker: Publish fresh v0.1.96 installers and signed manifest, then verify installed update/restart, settings retention and remote input on designated test devices.
+- Release proof: First v0.1.96 CI run 35073780671 stopped before build/publication because the E2E still expected the obsolete message; second run 35074287567 exposed a bounded CI timeout. Both recurrence gaps were corrected. Run 35074655547 then passed the release contract, four Windows installer-update E2E scenarios, fresh x86 builds, updater acknowledgement checks, signed-manifest publication and live latest-alias verification. Public v0.1.96 hashes match its manifest. Authenticode remains unconfigured and is not claimed.
+- Remaining blocker: Verify installed update/restart, settings retention and remote input on designated test devices.
 
 ## 2026-09-16 correction to INC-20260916-087
 
