@@ -1,5 +1,20 @@
 # WonRemote Incident Registry
 
+## INC-20260917-098: Release gate rejected the executable E2E contract path
+
+- Detected: 2026-09-17 in GitHub Actions run 35123341054 before v0.1.99 build started.
+- Severity: Medium; the release is safely blocked, but a verified repair cannot enter the build job until the gate recognizes its real contract test.
+- Affected: `verify-recurrence-coverage.js` functional-change `Contract` path classification for `tests/e2e/test_*.ts` programs.
+- Status: Source repaired; no v0.1.99 asset was built or published by the failed run.
+- User-visible symptom: Deployment stops at change-guard with `functional change Contract must name a test file` even though the named changed file executes the Windows Job boundary.
+- Minimal trigger: Commit a functional change whose `Contract` trailer names `aether-link-app/tests/e2e/test_update_handoff_broker.ts`.
+- Root cause and contributors: The gate recognized Vitest/Jest/spec, Java `Test` and Rust `_test` names, but omitted the repository's executable TypeScript E2E `test_*.ts` convention. The local worktree check used the top-level contract's additional changed Vitest file, so it did not expose the commit-trailer mismatch before push.
+- Fix commit(s): Pending v0.1.99 preparation follow-up commit.
+- Permanent guard: Recognize only `tests/e2e/test_*.ts`-style executable paths in addition to existing test conventions, and add a gate self-test using the exact failed path and changed-file set.
+- Regression proof: The exact `aether-link-app/tests/e2e/test_update_handoff_broker.ts` trailer path is accepted only when that same executable E2E file is in the commit. The focused recurrence gate passed 16 tests; predeploy rerun remains before commit.
+- Release proof: Pending a fresh normal v0.1.99 workflow; do not rerun or bypass the failed workflow.
+- Remaining blocker: Commit the gate correction with its changed self-test, pass predeploy locally and let a new main push run the complete release workflow.
+
 ## INC-20260917-097: Update handoff died with the scheduled-task Job after installer launch
 
 - Detected: 2026-09-17 during the selected `AGENT-82220F6D` public v0.1.97-to-v0.1.98 update.

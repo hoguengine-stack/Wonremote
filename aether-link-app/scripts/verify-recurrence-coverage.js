@@ -27,7 +27,7 @@ const PROOF_LEVELS = new Set([
   "automated-runtime", "deployment-required", "physical-completed", "physical-required", "not-applicable",
 ]);
 const FUNCTIONAL_CHANGE_TYPES = new Set(["feature", "fix", "refactor", "test", "build"]);
-const TEST_PATH_PATTERN = /(?:\.test\.[cm]?[jt]sx?|\.spec\.[cm]?[jt]sx?|Test\.java|_test\.rs)$/i;
+const TEST_PATH_PATTERN = /(?:\.test\.[cm]?[jt]sx?|\.spec\.[cm]?[jt]sx?|Test\.java|_test\.rs|tests\/e2e\/test_[^/]+\.[cm]?[jt]sx?)$/i;
 
 export function parseIncidentTrailer(body) {
   return body.match(/^Incident:\s*(INC-\d{8}-\d{3})\s*$/im)?.[1] ?? null;

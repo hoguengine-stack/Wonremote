@@ -75,6 +75,24 @@ describe("recurrence coverage gate", () => {
       .toContain("missing Intent trailer");
   });
 
+  it("accepts an executable TypeScript E2E file as the changed contract test", () => {
+    const testPath = "aether-link-app/tests/e2e/test_update_handoff_broker.ts";
+    const body = [
+      "Intent: Prove the installed Windows process boundary",
+      "Change-Type: test",
+      "Risk: low",
+      "Acceptance: The executable E2E reproduces and guards the process boundary",
+      `Contract: ${testPath}`,
+      "Proof-Level: automated-runtime",
+      "Verification: npx tsx tests/e2e/test_update_handoff_broker.ts -> passed",
+      "Release-Impact: build",
+      "Rollback: revert this commit",
+      "Request-Review: none - executable local test only; no request behavior changed",
+    ].join("\n");
+
+    expect(changeValidationErrors({ subject: "Add Windows E2E", body, files: [testPath] }, registry)).toEqual([]);
+  });
+
   it("requires every fix to resolve to a complete incident", () => {
     const body = [
       "Intent: Restore the broken behavior",
