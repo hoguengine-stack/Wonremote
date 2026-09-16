@@ -24,10 +24,18 @@
 
 ## INC-20260916-088: Failed installer launch unnecessarily stops the existing runtime during rollback
 
-- Evidence: The generated handoff catches Start-Process failure and calls Restore-WonRemoteInstall whenever a backup exists. Restore stops the Agent and replaces its files even though no installer ran.
-- Guard: Track actual installer launch. Pre-launch failure preserves the runtime/files and reports failure; post-launch installer/runtime failure retains rollback.
-- Verification: Generated PowerShell launch-failure regression failed before the fix and passed after it. Post-launch installer and runtime-health failures retained rollback. Four focused suites passed 43 tests and TypeScript passed. Process/restore actions are test doubles; actual Windows installation and field recovery remain unverified.
-- User result: The comparison 0.1.88 Viewer also failed to connect. The user will reinstall onsite. Process termination and the exact field cause remain unconfirmed.
+- Detected: 2026-09-16 while tracing field update handoff and release-gate failure behavior.
+- Severity: Critical; an unaccepted update handoff could stop or replace the existing Agent before a replacement was proven available.
+- Affected: Windows installed Agent installer handoff, portable update handoff, Tauri watchdog restart suppression and missing-rollout-policy eligibility.
+- Status: Source repaired; focused runtime and Windows E2E verified. Installed v0.1.96 update remains pending.
+- User-visible symptom: A failed or unaccepted update could leave the Agent unavailable, causing offline status and loss of remote screen/input.
+- Minimal trigger: Prepare an update with a backup, fail before installer process start, or let the broker spawn PowerShell without the installer producing the readiness acknowledgement.
+- Root cause and contributors: The broker acknowledged after spawning PowerShell instead of after installer acceptance; the watchdog suppressed restart from request state alone; pre-launch catch invoked restore and stopped the still-working runtime. Missing rollout policy also previously allowed update progression.
+- Fix commit(s): 3733b90 and pending E2E correction commit.
+- Permanent guard: Installer/portable scripts write readiness only after replacement ownership is established; Agent waits for that marker and exits with dedicated code 42; watchdog suppresses restart only for that code; pre-launch failure preserves runtime and fail-closed policy rejects missing rollout configuration.
+- Regression proof: Six focused files passed 150 tests, TypeScript passed, and x86 release-profile exit-code test passed. Corrected Windows E2E proves successful upgrade, two post-launch rollback paths, and backup-unavailable refusal with no installer-start log or accepted marker.
+- Release proof: First v0.1.96 CI run 35073780671 stopped before build/publication because the E2E still expected the obsolete message. Replacement run and live release checks remain pending.
+- Remaining blocker: Publish fresh v0.1.96 installers and signed manifest, then verify installed update/restart, settings retention and remote input on designated test devices.
 
 ## 2026-09-16 correction to INC-20260916-087
 

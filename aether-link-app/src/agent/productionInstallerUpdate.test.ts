@@ -318,6 +318,15 @@ ${script.slice(start)}
       expect(readinessSignal).toBeGreaterThan(installerLaunch);
       expect(readinessSignal).toBeLessThan(script.indexOf("$process.WaitForExit()", installerLaunch));
       expect(script).toContain("throw 'No previous WonRemote installation was available to back up.'");
+      const prelaunchFailure = script.indexOf("if (-not $InstallerStarted)", readinessSignal);
+      expect(prelaunchFailure).toBeGreaterThan(readinessSignal);
+      const prelaunchFailureEnd = script.indexOf("$rollbackCompleted = $false", prelaunchFailure);
+      const prelaunchFailureBranch = script.slice(prelaunchFailure, prelaunchFailureEnd);
+      expect(prelaunchFailureBranch).toContain("existing runtime preserved");
+      expect(prelaunchFailureBranch).toContain("Remove-WonRemoteRollback");
+      expect(prelaunchFailureBranch).toContain("Close-UpdateLock");
+      expect(prelaunchFailureBranch).not.toContain("Restore-WonRemoteInstall");
+      expect(prelaunchFailureBranch).not.toContain(".accepted");
       expect(script).toContain("Rollback backup retained for manual recovery");
       expect(script).toContain("ROLLBACK_FAILED");
       expect(script).toContain("last-update-result.json");

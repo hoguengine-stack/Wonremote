@@ -26,7 +26,7 @@ async function main(): Promise<void> {
   await runScenario("installer-failure");
   await runScenario("health-failure");
   await runScenario("backup-unavailable");
-  console.log("Installer update E2E passed: upgrade, two rollback paths, and backup-required gate.");
+  console.log("Installer update E2E passed: upgrade, two rollback paths, and pre-launch backup-required gate.");
 }
 
 async function runScenario(scenario: Scenario): Promise<void> {
@@ -86,7 +86,9 @@ async function runScenario(scenario: Scenario): Promise<void> {
     const handoffLog = await readFile(handoff.logPath, "utf8");
     if (scenario === "backup-unavailable") {
       await assert.rejects(readFile(versionPath, "utf8"));
-      assert.match(handoffLog, /no complete rollback backup was available/);
+      await assert.rejects(readFile(`${handoff.scriptPath}.accepted`, "utf8"));
+      assert.match(handoffLog, /No previous WonRemote installation was available to back up/);
+      assert.doesNotMatch(handoffLog, /Starting installer update/);
     } else {
       const expectedVersion = scenario === "success" ? NEW_VERSION : OLD_VERSION;
       assert.equal((await readFile(versionPath, "utf8")).trim(), expectedVersion);
