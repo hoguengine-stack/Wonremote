@@ -5,14 +5,10 @@ Var WonRemoteLegacyAgentRoot
 !macro WONREMOTE_DETECT_LEGACY_AGENT
   StrCpy $WonRemoteLegacyAgentRoot ""
   IfFileExists "$LOCALAPPDATA\WonRemote\Agent\wonremote-viewer.exe" 0 wonremote_check_flat_legacy
-  IfFileExists "$LOCALAPPDATA\WonRemote\Agent\runtime\node.exe" 0 wonremote_check_flat_legacy
-  IfFileExists "$LOCALAPPDATA\WonRemote\Agent\agent\index.mjs" 0 wonremote_check_flat_legacy
   StrCpy $WonRemoteLegacyAgentRoot "$LOCALAPPDATA\WonRemote\Agent"
   Goto wonremote_legacy_check_done
 wonremote_check_flat_legacy:
   IfFileExists "$LOCALAPPDATA\WonRemote Agent\wonremote-viewer.exe" 0 wonremote_legacy_check_done
-  IfFileExists "$LOCALAPPDATA\WonRemote Agent\runtime\node.exe" 0 wonremote_legacy_check_done
-  IfFileExists "$LOCALAPPDATA\WonRemote Agent\agent\index.mjs" 0 wonremote_legacy_check_done
   StrCpy $WonRemoteLegacyAgentRoot "$LOCALAPPDATA\WonRemote Agent"
 wonremote_legacy_check_done:
   ${If} $WonRemoteLegacyAgentRoot != ""

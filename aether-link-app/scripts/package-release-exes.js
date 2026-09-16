@@ -139,6 +139,41 @@ function viewerBinaryPath(target) {
   return path.join(releaseTargetFor(target), "wonremote-viewer.exe");
 }
 
+function readWindowsProductName(binaryPath) {
+  if (process.platform !== "win32") {
+    throw new Error("Release executable identity verification requires Windows.");
+  }
+  return execFileSync(
+    "powershell.exe",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "& { param([string]$p) (Get-Item -LiteralPath $p).VersionInfo.ProductName }",
+      binaryPath,
+    ],
+    {
+      cwd: appRoot,
+      encoding: "utf8",
+      windowsHide: true,
+    },
+  ).trim();
+}
+
+export function assertBuiltProductIdentity(actualProductName, expectedProductName, binaryPath) {
+  if (actualProductName !== expectedProductName) {
+    throw new Error(
+      `Release host identity mismatch: expected ${expectedProductName}, got ${actualProductName || "missing"} (${binaryPath}).`,
+    );
+  }
+}
+
+function verifyBuiltProductIdentity(target, expectedProductName) {
+  const binaryPath = viewerBinaryPath(target);
+  ensureExists(binaryPath, `${target.key} ${expectedProductName} host`);
+  assertBuiltProductIdentity(readWindowsProductName(binaryPath), expectedProductName, binaryPath);
+}
+
 export function canReuseViewerBinary(target, fingerprint, stampPath = viewerBuildStampPath(target), binaryPath = viewerBinaryPath(target)) {
   if (process.env.WONREMOTE_FORCE_FULL_BUILD === "1" || !fs.existsSync(binaryPath)) {
     return false;
@@ -163,7 +198,7 @@ function buildEnvFor(target, extra = {}) {
   };
 }
 
-function buildTauriCommand(target, configPath) {
+export function buildTauriCommand(target, configPath) {
   return [
     "npx tauri build",
     target.rustTarget ? `--target ${target.rustTarget}` : "",
@@ -202,6 +237,7 @@ export function buildViewerInstaller(target, dependencies = {}) {
     buildTauriCommand(target, target.viewerConfig),
     buildEnvFor(target, { WONREMOTE_BUILD_STAGE: "full" }),
   ));
+  const verifyIdentity = dependencies.verifyIdentity ?? (() => verifyBuiltProductIdentity(target, "WonRemote Viewer"));
   const writeStamp = dependencies.writeStamp ?? (() => writeViewerBuildStamp(target, fingerprint));
 
   console.log(`Building ${target.key} Viewer NSIS installer...`);
@@ -209,6 +245,7 @@ export function buildViewerInstaller(target, dependencies = {}) {
     console.log(`Reusing ${target.key} Viewer Rust binary; rebuilding web and Agent resources only.`);
     buildResources();
     cleanResources();
+    verifyIdentity();
     bundleViewer();
     return;
   }
@@ -216,12 +253,20 @@ export function buildViewerInstaller(target, dependencies = {}) {
   console.log(`Rebuilding ${target.key} Viewer Rust binary because its verified input stamp is missing or stale.`);
   cleanResources();
   buildViewer();
+  verifyIdentity();
   writeStamp();
 }
 
 function buildAgentDefaultInstaller(target) {
   console.log(`Building ${target.key} Agent-default NSIS installer...`);
-  runShell(buildTauriBundleCommand(target, target.agentConfig), buildEnvFor(target));
+  // The Agent build overwrites the shared target host with Agent identity.
+  // Invalidate Viewer reuse first so a later packaging run cannot bundle it as Viewer.
+  fs.rmSync(viewerBuildStampPath(target), { force: true });
+  runShell(
+    buildTauriCommand(target, target.agentConfig),
+    buildEnvFor(target, { WONREMOTE_BUILD_STAGE: "full" }),
+  );
+  verifyBuiltProductIdentity(target, "WonRemote Agent");
 }
 
 export function verifyAgentRuntimeBundle(

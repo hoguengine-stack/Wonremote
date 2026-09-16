@@ -219,6 +219,8 @@ describe("desktop packaging scaffold", () => {
     }
 
     expect(taskHook).toContain("manage-agent-login-task.ps1");
+    expect(taskHook).toContain('IfFileExists "$LOCALAPPDATA\\WonRemote\\Agent\\wonremote-viewer.exe"');
+    expect(taskHook).not.toContain('IfFileExists "$LOCALAPPDATA\\WonRemote\\Agent\\runtime\\node.exe"');
     expect(taskHook).toContain('!define WONREMOTE_AGENT_TASK_HOOK_DIR "${__FILEDIR__}"');
     expect(taskHook).toContain('"${WONREMOTE_AGENT_TASK_HOOK_DIR}\\manage-agent-login-task.ps1"');
     expect(taskHook).toContain("-AgentPath \"$INSTDIR\\wonremote-viewer.exe\"");
@@ -263,6 +265,7 @@ describe("desktop packaging scaffold", () => {
     expect(limitedMigration).toContain('Remove-LegacyRuntime $legacy');
     expect(limitedMigration).toContain('Remove-LegacyUninstallRegistration $legacy');
     expect(limitedMigration).toContain('& $legacyNode $legacyScript --watch');
+    expect(limitedMigration).toContain('throw "The protected replacement Agent did not publish fresh healthy update evidence."');
     expect(taskScript).toContain('Get-ScheduledTaskInfo -TaskName $migrationTaskName');
     expect(taskScript).toContain('must be installed under Program Files');
     expect(taskScript).not.toContain("secure-capture.token");
@@ -344,10 +347,11 @@ describe("desktop packaging scaffold", () => {
     const tauriLib = readFileSync(path.join(projectRoot, "src-tauri", "src", "lib.rs"), "utf8");
 
     const x86OnlyPatterns = [
-      /#\[cfg\(target_arch = "x86"\)\]\s+use windows_sys::Win32::Foundation::\{HWND, LPARAM, LRESULT, WPARAM\};/,
+      /#\[cfg\(target_arch = "x86"\)\]\s+use windows_sys::Win32::Foundation::\{HWND, LPARAM, LRESULT, POINT, WPARAM\};/,
       /#\[cfg\(target_arch = "x86"\)\]\s+use windows_sys::Win32::UI::Shell::\{[\s\S]*?Shell_NotifyIconW[\s\S]*?NOTIFYICONDATAW[\s\S]*?\};/,
       /#\[cfg\(target_arch = "x86"\)\]\s+use windows_sys::Win32::UI::WindowsAndMessaging::\{[\s\S]*?CreateWindowExW[\s\S]*?WNDCLASSW[\s\S]*?\};/,
       /#\[cfg\(target_arch = "x86"\)\]\s+const WIN32_AGENT_TRAY_ID: u32 = 37;/,
+      /#\[cfg\(target_arch = "x86"\)\]\s+const WIN32_AGENT_TRAY_COMMAND_EXIT: u32 = 2;/,
       /#\[cfg\(target_arch = "x86"\)\]\s+const WM_WONREMOTE_AGENT_TRAY: u32 = WM_APP \+ 37;/,
       /#\[cfg\(target_arch = "x86"\)\]\s+pub struct Win32AgentTray/,
       /#\[cfg\(target_arch = "x86"\)\]\s+unsafe impl Send for Win32AgentTray/,
@@ -357,6 +361,7 @@ describe("desktop packaging scaffold", () => {
       /#\[cfg\(target_arch = "x86"\)\]\s+win32_tray: Arc::new\(Mutex::new\(None\)\),/,
       /#\[cfg\(target_arch = "x86"\)\]\s+fn tray_tooltip/,
       /#\[cfg\(target_arch = "x86"\)\]\s+fn win32_agent_tray_class_name/,
+      /#\[cfg\(target_arch = "x86"\)\]\s+unsafe fn show_win32_agent_tray_menu/,
       /#\[cfg\(target_arch = "x86"\)\]\s+fn start_win32_agent_tray/,
       /#\[cfg\(target_arch = "x86"\)\]\s+unsafe extern "system" fn win32_agent_tray_proc/,
       /#\[cfg\(target_arch = "x86"\)\]\s+fn start_arch_specific_agent_tray/,
@@ -372,6 +377,11 @@ describe("desktop packaging scaffold", () => {
     expect(tauriLib).not.toContain('cfg!(target_arch = "x86")');
     expect(tauriLib).not.toContain("agent_win32_tray_enabled");
     expect(tauriLib).not.toContain("agent_tray_backend");
+    expect(tauriLib).toContain("CreatePopupMenu()");
+    expect(tauriLib).toContain("AppendMenuW(menu, MF_STRING, WIN32_AGENT_TRAY_COMMAND_EXIT");
+    expect(tauriLib).toContain("request_agent_exit()");
+    expect(tauriLib).toContain('.args(["/End", "/TN", "WonRemote Secure Capture"])');
+    expect(tauriLib).toContain('window.set_title("WonRemote Agent")');
   });
 
   it("exposes desktop packaging npm scripts", () => {
@@ -689,14 +699,15 @@ describe("desktop packaging scaffold", () => {
     expect(packageReleaseScript).toContain("runtime");
   });
 
-  it("reuses one x86 Rust binary for Viewer and Agent packaging", () => {
+  it("builds separate x86 Viewer and Agent hosts with product-specific identity", () => {
     const packageReleaseScript = readFileSync(path.join(projectRoot, "scripts", "package-release-exes.js"), "utf8");
     const rustBuildScript = readFileSync(path.join(projectRoot, "src-tauri", "build.rs"), "utf8");
     const rustApp = readFileSync(path.join(projectRoot, "src-tauri", "src", "lib.rs"), "utf8");
     const workflow = readFileSync(path.join(projectRoot, "..", ".github", "workflows", "publish-release.yml"), "utf8");
 
-    expect(packageReleaseScript).toContain("buildTauriBundleCommand(target, target.agentConfig)");
-    expect(packageReleaseScript).not.toContain("cleanTauriResourceOutput(target);\n  runShell(buildTauriBundleCommand");
+    expect(packageReleaseScript).toContain("buildTauriCommand(target, target.agentConfig)");
+    expect(packageReleaseScript).not.toContain("buildTauriBundleCommand(target, target.agentConfig)");
+    expect(packageReleaseScript).toContain("fs.rmSync(viewerBuildStampPath(target), { force: true })");
     expect(packageReleaseScript).not.toContain("WONREMOTE_DEFAULT_APP_MODE");
     expect(rustBuildScript).not.toContain("cargo:rerun-if-env-changed=WONREMOTE_DEFAULT_APP_MODE");
     expect(rustApp).toContain('directory.eq_ignore_ascii_case("agent")');

@@ -1,5 +1,65 @@
 # WonRemote Incident Registry
 
+## INC-20260916-096: Agent migration returned success while the legacy installation remained
+
+- Detected: 2026-09-16 from the installed v0.1.97 Program Files and v0.1.88 LocalAppData Agent state.
+- Severity: High; two installed runtimes and a stale uninstall entry can survive a reported successful update.
+- Affected: `manage-agent-login-task.ps1` update-handoff migration bridge and monitor.
+- Status: Source repaired and v0.1.98 package verified; installed migration pending.
+- User-visible symptom: `%LOCALAPPDATA%\WonRemote\Agent` and its v0.1.88 uninstall entry remain after v0.1.97 is installed under Program Files.
+- Minimal trigger: Upgrade a LocalAppData Agent to the protected Program Files installer when the handoff lock or replacement-health evidence is missing or late.
+- Root cause and contributors: The migration bridge removes its temporary runtime only when fresh health evidence is present, but returns success without an error when lock release or health proof fails. The monitor then stops tasks without surfacing cleanup failure to installation results.
+- Fix commit(s): Current v0.1.98 preparation commit.
+- Permanent guard: Require an explicit successful lock release and fresh healthy replacement result before final deletion; otherwise return nonzero and retain evidence. Delete only the two allowlisted legacy roots and a matching uninstall registration.
+- Regression proof: The Windows migration probes now require nonzero exit and named-task shutdown when fresh health proof is absent, while the healthy path completes without shutdown. The release-boundary set passed 129 tests, including the updated migration monitor and host-only legacy detection.
+- Release proof: Fresh local v0.1.98 Agent and Viewer installers passed payload verification; public publication and installed migration have not yet run.
+- Remaining blocker: Confirm that the signed v0.1.98 update removes only `%LOCALAPPDATA%\WonRemote\Agent` and its matching uninstall registration after the protected Agent reports healthy.
+
+## INC-20260916-095: Startup privilege handoff discarded an already-visible Agent update action
+
+- Detected: 2026-09-16 from the v0.1.95-to-v0.1.97 Tauri runtime log.
+- Severity: High; a user can confirm an update in a window that is immediately terminated by the required scheduled-task handoff.
+- Affected: installed Agent startup ordering around `manage-agent-login-task.ps1 -Mode Ensure`.
+- Status: Source repaired and v0.1.98 package verified; installed update transition pending.
+- User-visible symptom: repeated Update clicks appear to do nothing until the Agent/PoC is stopped, restarted and the update is requested again.
+- Minimal trigger: Launch a non-elevated installed Agent that needs scheduled-task handoff, then press Update before `manage-agent-login-task.ps1 -Mode Ensure` returns exit code 10.
+- Root cause and contributors: The Agent spawned its runtime and showed the interactive window before the asynchronous Ensure helper returned exit code 10. The shell then exited and launched the approved scheduled Agent, losing modal and button state from the first process.
+- Fix commit(s): Current v0.1.98 preparation commit.
+- Permanent guard: Defer an ordinary installed Agent window until Ensure completes. On handoff, write the existing show-window request before exiting; on success/failure, show the surviving process without requiring another click.
+- Regression proof: x86 Rust tests prove installed release Agents defer runtime until the helper settles while debug, Viewer and helper-missing paths do not. The release-boundary set passed 129 tests and x86 Rust passed 46 tests.
+- Release proof: Fresh local v0.1.98 installers passed payload and Agent product-identity checks; public publication and installed handoff have not yet run.
+- Remaining blocker: Confirm the existing approved v0.1.97 Agent reaches v0.1.98 through one update action and restarts exactly once.
+
+## INC-20260916-094: Shipped x86 Agent tray omitted Exit and explicit shutdown ownership
+
+- Detected: 2026-09-16 by source inspection and the installed v0.1.97 tray behavior.
+- Severity: High; operators cannot deliberately terminate the shipped Agent, and the independent SYSTEM capture broker remains after the shell closes.
+- Affected: x86 Win32 fallback tray and explicit Agent shutdown.
+- Status: Source repaired and v0.1.98 package verified; installed tray/process proof pending.
+- User-visible symptom: right-clicking the tray icon opens no menu, window close only hides the shell, and `wonremote-poc.exe` remains running.
+- Minimal trigger: Right-click the x86 Agent fallback tray icon or close its window, then inspect the elevated shell, Node child and `WonRemote Secure Capture` task.
+- Root cause and contributors: Tauri tray menus are disabled for x86. The custom Win32 fallback maps both mouse buttons to Open and implements no context menu or Exit action. The secure broker is a separately scheduled SYSTEM process outside the shell job object.
+- Fix commit(s): Current v0.1.98 preparation commit.
+- Permanent guard: Add a native right-click menu with Open and Exit. Route Exit to the Tauri owner, stop the named secure-broker task, then terminate the existing child job and shell. Keep normal window close as hide-to-tray.
+- Regression proof: x86 Rust tests cover left-click Open, right-click Menu and the explicit Exit command. Packaging coverage requires the native menu, exit request, secure-task stop and Agent title. The release-boundary set passed 129 tests and x86 Rust passed 46 tests.
+- Release proof: Fresh local v0.1.98 Agent installer passed payload verification; installed right-click and process-tree proof has not yet run.
+- Remaining blocker: On the installed v0.1.98 Agent, verify window close still hides, tray Exit removes shell/Node/broker, and scheduled start restores normal operation.
+
+## INC-20260916-093: Agent installer reused a Viewer-compiled desktop host
+
+- Detected: 2026-09-16 from packaging source, installed file metadata and WebView2 command line.
+- Severity: Critical; Agent identity, window title and WebView profile are wrong, allowing Viewer/Agent state and process ownership to collide.
+- Affected: `package-release-exes.js` Agent installer build.
+- Status: Source repaired and v0.1.98 package identity verified; installed profile proof pending.
+- User-visible symptom: the Agent window title and executable ProductName say `WonRemote Viewer`; its WebView uses `com.wonremote.viewer\EBWebView`.
+- Minimal trigger: Build the Viewer host, then package the Agent with `tauri bundle` only and inspect the Agent executable ProductName or WebView command line.
+- Root cause and contributors: Release packaging built the Viewer Rust host, then invoked only `tauri bundle` with Agent configuration. Bundling did not recompile product identity, so the Agent installer contained the previous Viewer binary. A test explicitly required this invalid reuse.
+- Fix commit(s): Current v0.1.98 preparation commit.
+- Permanent guard: Perform a fresh Agent `tauri build` with the Agent x86 configuration after preserving the Viewer installer, and make the release test reject bundle-only Agent packaging. Inspect the built Agent executable identity before publication.
+- Regression proof: RED packaging coverage required the invalid bundle-only command. GREEN now requires a separate full Agent build, invalidates the Viewer reuse stamp, and rejects a mismatched compiled ProductName. The release-boundary set passed 129 tests. The fresh x86 host reports ProductName `WonRemote Agent`, ProductVersion `0.1.98`.
+- Release proof: Local v0.1.98 installers are 20,325,401-byte Viewer SHA-256 `98bab32f9846bc7a148005b8a0b29fa59de2f81506e27aaecd0e3d5c3855aa0c` and 20,335,381-byte Agent SHA-256 `174f60b70739ab1cc51d2dfffe385a3a2f3689ff16a7684cfe72e7fb00b0612f`; both payload checks passed. Public publication has not yet run.
+- Remaining blocker: After signed update, verify the installed Agent reports Agent title/ProductName and uses `com.wonremote.agent\EBWebView` while the Viewer remains on its own profile.
+
 ## INC-20260916-092: Viewer process cleanup followed a reused parent PID into an unrelated process
 
 - Detected: 2026-09-16 during the local v0.1.97 packaged-installer cleanup proof.

@@ -30,7 +30,7 @@ use winreg::RegKey;
 
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE};
 #[cfg(target_arch = "x86")]
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
     SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
@@ -43,10 +43,11 @@ use windows_sys::Win32::UI::Shell::{
 };
 #[cfg(target_arch = "x86")]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow, LoadIconW, LoadImageW,
-    RegisterClassW, HICON, IDI_APPLICATION, IMAGE_ICON, LR_DEFAULTSIZE, LR_LOADFROMFILE, WM_APP,
-    WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONDBLCLK, WM_RBUTTONUP, WNDCLASSW, WS_EX_TOOLWINDOW,
-    WS_OVERLAPPED,
+    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyMenu,
+    DestroyWindow, GetCursorPos, LoadIconW, LoadImageW, RegisterClassW, SetForegroundWindow,
+    TrackPopupMenu, HICON, IDI_APPLICATION, IMAGE_ICON, LR_DEFAULTSIZE, LR_LOADFROMFILE, MF_STRING,
+    TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONDBLCLK,
+    WM_RBUTTONUP, WNDCLASSW, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
 };
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -83,8 +84,29 @@ const UPDATE_CHECK_PREFIX: &str = "[WonRemoteUpdateCheck]";
 const WIN32_AGENT_TRAY_ID: u32 = 37;
 #[cfg(target_arch = "x86")]
 const WM_WONREMOTE_AGENT_TRAY: u32 = WM_APP + 37;
+#[cfg(target_arch = "x86")]
+const WIN32_AGENT_TRAY_COMMAND_OPEN: u32 = 1;
+#[cfg(target_arch = "x86")]
+const WIN32_AGENT_TRAY_COMMAND_EXIT: u32 = 2;
 static PANIC_LOGGER: Once = Once::new();
 static VIEWER_UPDATE_CHECK_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+static AGENT_PROCESS_EXITING: AtomicBool = AtomicBool::new(false);
+
+#[cfg(target_arch = "x86")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Win32AgentTrayAction {
+    None,
+    Open,
+    Menu,
+}
+
+#[cfg(target_arch = "x86")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Win32AgentTrayCommand {
+    None,
+    Open,
+    Exit,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ViewerUpdateEntryPoint {
@@ -399,6 +421,10 @@ fn agent_show_window_request_file_from_appdata(appdata: &Path) -> PathBuf {
     appdata.join("WonRemote").join("agent-show-window.request")
 }
 
+fn agent_exit_request_file_from_appdata(appdata: &Path) -> PathBuf {
+    appdata.join("WonRemote").join("agent-exit.request")
+}
+
 fn runtime_log_path() -> Option<PathBuf> {
     env::var_os("APPDATA").map(|appdata| runtime_log_file_from_appdata(&PathBuf::from(appdata)))
 }
@@ -408,14 +434,28 @@ fn agent_show_window_request_path() -> Option<PathBuf> {
         .map(|appdata| agent_show_window_request_file_from_appdata(&PathBuf::from(appdata)))
 }
 
-fn request_existing_agent_window() -> io::Result<()> {
-    if let Some(path) = agent_show_window_request_path() {
+fn agent_exit_request_path() -> Option<PathBuf> {
+    env::var_os("APPDATA")
+        .map(|appdata| agent_exit_request_file_from_appdata(&PathBuf::from(appdata)))
+}
+
+fn write_agent_request(path: Option<PathBuf>) -> io::Result<()> {
+    if let Some(path) = path {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(path, runtime_log_timestamp())?;
     }
     Ok(())
+}
+
+fn request_existing_agent_window() -> io::Result<()> {
+    write_agent_request(agent_show_window_request_path())
+}
+
+#[cfg(target_arch = "x86")]
+fn request_agent_exit() -> io::Result<()> {
+    write_agent_request(agent_exit_request_path())
 }
 
 fn consume_agent_show_window_request() -> bool {
@@ -428,9 +468,48 @@ fn consume_agent_show_window_request() -> bool {
     std::fs::remove_file(path).is_ok()
 }
 
+fn consume_agent_exit_request() -> bool {
+    let Some(path) = agent_exit_request_path() else {
+        return false;
+    };
+    if !path.exists() {
+        return false;
+    }
+    std::fs::remove_file(path).is_ok()
+}
+
+fn stop_secure_capture_broker_task() {
+    use std::os::windows::process::CommandExt;
+    let result = Command::new("schtasks.exe")
+        .args(["/End", "/TN", "WonRemote Secure Capture"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status();
+    match result {
+        Ok(status) if status.success() => append_runtime_log("shutdown", "secure capture broker task stopped"),
+        Ok(status) => append_runtime_log("shutdown", &format!("secure capture broker task stop returned {status}")),
+        Err(error) => append_runtime_log("shutdown", &format!("secure capture broker task stop failed: {error}")),
+    }
+}
+
+fn exit_agent_explicitly(app: &tauri::AppHandle, reason: &str) {
+    append_runtime_log("shutdown", &format!("explicit Agent exit requested: {reason}"));
+    stop_secure_capture_broker_task();
+    app.exit(0);
+}
+
 fn start_agent_show_window_request_watcher(app: tauri::AppHandle) {
+    if let Some(path) = agent_exit_request_path() {
+        let _ = std::fs::remove_file(path);
+    }
     thread::spawn(move || loop {
         thread::sleep(Duration::from_millis(500));
+        if AGENT_PROCESS_EXITING.load(Ordering::Acquire) {
+            return;
+        }
+        if consume_agent_exit_request() {
+            exit_agent_explicitly(&app, "x86-tray");
+            return;
+        }
         if consume_agent_show_window_request() {
             show_main_window_with_log(&app, "agent-show-window-request");
         }
@@ -449,6 +528,58 @@ fn tray_tooltip(tooltip: &str) -> [u16; 128] {
 #[cfg(target_arch = "x86")]
 fn win32_agent_tray_class_name() -> Vec<u16> {
     to_wide_null("WonRemoteAgentWin32Tray")
+}
+
+#[cfg(target_arch = "x86")]
+fn win32_agent_tray_action(message: u32) -> Win32AgentTrayAction {
+    match message {
+        WM_LBUTTONUP | WM_LBUTTONDBLCLK => Win32AgentTrayAction::Open,
+        WM_RBUTTONUP | WM_RBUTTONDBLCLK => Win32AgentTrayAction::Menu,
+        _ => Win32AgentTrayAction::None,
+    }
+}
+
+#[cfg(target_arch = "x86")]
+fn win32_agent_tray_command(command: u32) -> Win32AgentTrayCommand {
+    match command {
+        WIN32_AGENT_TRAY_COMMAND_OPEN => Win32AgentTrayCommand::Open,
+        WIN32_AGENT_TRAY_COMMAND_EXIT => Win32AgentTrayCommand::Exit,
+        _ => Win32AgentTrayCommand::None,
+    }
+}
+
+#[cfg(target_arch = "x86")]
+unsafe fn show_win32_agent_tray_menu(hwnd: HWND) -> io::Result<Win32AgentTrayCommand> {
+    let menu = CreatePopupMenu();
+    if menu.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let open_label = to_wide_null("상태 열기");
+    let exit_label = to_wide_null("종료");
+    if AppendMenuW(menu, MF_STRING, WIN32_AGENT_TRAY_COMMAND_OPEN as usize, open_label.as_ptr()) == 0
+        || AppendMenuW(menu, MF_STRING, WIN32_AGENT_TRAY_COMMAND_EXIT as usize, exit_label.as_ptr()) == 0 {
+        let error = io::Error::last_os_error();
+        let _ = DestroyMenu(menu);
+        return Err(error);
+    }
+    let mut point = POINT { x: 0, y: 0 };
+    if GetCursorPos(&mut point) == 0 {
+        let error = io::Error::last_os_error();
+        let _ = DestroyMenu(menu);
+        return Err(error);
+    }
+    let _ = SetForegroundWindow(hwnd);
+    let selected = TrackPopupMenu(
+        menu,
+        TPM_RETURNCMD | TPM_RIGHTBUTTON,
+        point.x,
+        point.y,
+        0,
+        hwnd,
+        ptr::null(),
+    );
+    let _ = DestroyMenu(menu);
+    Ok(win32_agent_tray_command(selected as u32))
 }
 
 #[cfg(target_arch = "x86")]
@@ -537,8 +668,8 @@ unsafe extern "system" fn win32_agent_tray_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     if msg == WM_WONREMOTE_AGENT_TRAY {
-        match lparam as u32 {
-            WM_LBUTTONUP | WM_LBUTTONDBLCLK | WM_RBUTTONUP | WM_RBUTTONDBLCLK => {
+        match win32_agent_tray_action(lparam as u32) {
+            Win32AgentTrayAction::Open => {
                 let _ = std::panic::catch_unwind(|| {
                     append_runtime_log("tray", "agent x86 Win32 tray open requested");
                     if let Err(error) = request_existing_agent_window() {
@@ -550,7 +681,26 @@ unsafe extern "system" fn win32_agent_tray_proc(
                 });
                 return 0;
             }
-            _ => return 0,
+            Win32AgentTrayAction::Menu => {
+                let _ = std::panic::catch_unwind(|| match show_win32_agent_tray_menu(hwnd) {
+                    Ok(Win32AgentTrayCommand::Open) => {
+                        append_runtime_log("tray", "agent x86 tray menu open requested");
+                        if let Err(error) = request_existing_agent_window() {
+                            append_runtime_log("tray", &format!("agent x86 tray menu open request failed: {error}"));
+                        }
+                    }
+                    Ok(Win32AgentTrayCommand::Exit) => {
+                        append_runtime_log("tray", "agent x86 tray menu exit requested");
+                        if let Err(error) = request_agent_exit() {
+                            append_runtime_log("tray", &format!("agent x86 tray menu exit request failed: {error}"));
+                        }
+                    }
+                    Ok(Win32AgentTrayCommand::None) => {}
+                    Err(error) => append_runtime_log("tray", &format!("agent x86 tray menu failed: {error}")),
+                });
+                return 0;
+            }
+            Win32AgentTrayAction::None => return 0,
         }
     }
 
@@ -706,6 +856,9 @@ fn apply_main_window_policy(
     window: &tauri::WebviewWindow,
     is_agent: bool,
 ) -> tauri::Result<()> {
+    if is_agent {
+        window.set_title("WonRemote Agent")?;
+    }
     let Some(policy) = main_window_policy(is_agent) else {
         return Ok(());
     };
@@ -1435,6 +1588,10 @@ fn agent_launch_should_show_window_from_args(is_agent: bool, args: &[String]) ->
     is_agent && (args_request_show_window(args) || !args_request_background_agent(args))
 }
 
+fn should_defer_agent_runtime_start(is_agent: bool, debug_build: bool, startup_helper_available: bool) -> bool {
+    is_agent && !debug_build && startup_helper_available
+}
+
 fn args_request_show_window(args: &[String]) -> bool {
     args.iter().any(|arg| {
         matches!(
@@ -2084,6 +2241,30 @@ fn start_local_api_server_for_mode(job: &Job, resource_dir: &Path) -> Result<(),
     }
 }
 
+fn start_agent_runtime(app: &tauri::AppHandle, force_show_window: bool) -> Result<(), io::Error> {
+    let resource_dir = if cfg!(debug_assertions) {
+        app_root_from_manifest()
+    } else {
+        app.path().resource_dir().map_err(|error| io::Error::other(error.to_string()))?
+    };
+    let job = app.state::<Job>();
+    let agent_state = app.state::<AgentState>();
+    start_local_api_server_for_mode(&job, &resource_dir)?;
+    if is_agent_registered() {
+        let api_url = default_agent_config_path()
+            .and_then(|config_path| std::fs::read_to_string(config_path).ok())
+            .and_then(|content| parse_json_config(&content).ok())
+            .and_then(|json| json.get("apiUrl").and_then(|value| value.as_str()).map(str::to_string));
+        spawn_agent_only_process(app.clone(), &agent_state, &job, &resource_dir, api_url.as_deref())?;
+        if force_show_window {
+            show_main_window_with_log(app, "agent-startup-show-window");
+        }
+    } else {
+        show_main_window_with_log(app, "agent-registration-required");
+    }
+    Ok(())
+}
+
 fn set_registry_value(
     path: &str,
     value_name: &str,
@@ -2147,6 +2328,7 @@ fn is_startup_registered(is_agent: bool) -> bool {
 pub fn run() {
     install_panic_logger();
     let is_agent = launched_as_agent();
+    AGENT_PROCESS_EXITING.store(false, Ordering::Release);
     append_runtime_log(
         "startup",
         &format!(
@@ -2187,6 +2369,18 @@ pub fn run() {
     };
 
     maintain_runtime_storage(is_agent);
+    let force_show_agent_window = agent_launch_should_show_window(is_agent);
+    let reveal_agent_after_handoff = force_show_agent_window || (is_agent && !is_agent_registered());
+    let startup_helper_available = is_agent
+        && env::current_exe()
+            .ok()
+            .map(|exe| exe.with_file_name("manage-agent-login-task.ps1"))
+            .is_some_and(|helper| helper.is_file());
+    let defer_agent_runtime_start = should_defer_agent_runtime_start(
+        is_agent,
+        cfg!(debug_assertions),
+        startup_helper_available,
+    );
     let app = tauri::Builder::default()
         .manage(AgentState::new())
         .manage(viewer_downloads::Downloads::default())
@@ -2211,7 +2405,8 @@ pub fn run() {
             wake_device
         ])
         .setup(move |app| {
-            let job = Job::new()?;
+            app.manage(Job::new()?);
+            let job = app.state::<Job>();
             let agent_state = app.state::<AgentState>();
 
             if is_agent {
@@ -2223,43 +2418,10 @@ pub fn run() {
                         );
                     }
                 }
-                let force_show_window = agent_launch_should_show_window(is_agent);
                 start_agent_show_window_request_watcher(app.handle().clone());
 
-                // Agent Mode Setup
-                let resource_dir = if cfg!(debug_assertions) {
-                    app_root_from_manifest()
-                } else {
-                    app.path().resource_dir()?
-                };
-
-                start_local_api_server_for_mode(&job, &resource_dir)?;
-
-                if is_agent_registered() {
-                    // Read api_url from config
-                    let mut api_url = None;
-                    if let Some(config_path) = default_agent_config_path() {
-                        if let Ok(content) = std::fs::read_to_string(&config_path) {
-                            if let Ok(json) = parse_json_config(&content) {
-                                if let Some(url) = json.get("apiUrl").and_then(|v| v.as_str()) {
-                                    api_url = Some(url.to_string());
-                                }
-                            }
-                        }
-                    }
-                    spawn_agent_only_process(
-                        app.handle().clone(),
-                        &agent_state,
-                        &job,
-                        &resource_dir,
-                        api_url.as_deref(),
-                    )?;
-                    if force_show_window {
-                        show_main_window_with_log(app.handle(), "agent-startup-show-window");
-                    }
-                } else {
-                    // Show window to register
-                    show_main_window_with_log(app.handle(), "agent-registration-required");
+                if !defer_agent_runtime_start {
+                    start_agent_runtime(app.handle(), force_show_agent_window)?;
                 }
 
                 if agent_tray_enabled() {
@@ -2293,9 +2455,7 @@ pub fn run() {
                             .icon(icon)
                             .menu(&menu)
                             .on_menu_event(move |app, event| match event.id().as_ref() {
-                                "quit" => {
-                                    app.exit(0);
-                                }
+                                "quit" => exit_agent_explicitly(app, "tauri-tray"),
                                 "open" => {
                                     run_logged_action("tray-menu", "agent-open", || {
                                         show_main_window_with_log(app, "agent-menu-open");
@@ -2469,7 +2629,6 @@ pub fn run() {
                 }
             }
 
-            app.manage(job);
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -2482,7 +2641,7 @@ pub fn run() {
             }
         })
         .build(tauri::generate_context!())
-        .expect("failed to run WonRemote Viewer desktop shell");
+        .expect("failed to run WonRemote desktop shell");
     if !is_agent || cfg!(debug_assertions) {
         app.run(|_, _| {});
         return;
@@ -2490,31 +2649,58 @@ pub fn run() {
     let mut startup_cancel = None;
     let handoff_requested = Arc::new(AtomicBool::new(false));
     let handoff_event = handoff_requested.clone();
+    let show_after_handoff = Arc::new(AtomicBool::new(false));
+    let show_after_handoff_event = show_after_handoff.clone();
     app.run_return(move |handle, event| match event {
         tauri::RunEvent::ExitRequested { code: Some(10), .. } => {
             handoff_event.store(true, Ordering::Release);
         }
         tauri::RunEvent::Ready => {
-            if let Ok(exe) = env::current_exe() {
-                let helper = exe.with_file_name("manage-agent-login-task.ps1");
-                if helper.is_file() {
+            if defer_agent_runtime_start {
+                let startup_paths = env::current_exe().ok().and_then(|exe| {
+                    let helper = exe.with_file_name("manage-agent-login-task.ps1");
+                    helper.is_file().then_some((exe, helper))
+                });
+                if let Some((exe, helper)) = startup_paths {
                     use std::os::windows::process::CommandExt;
                     let mut command = Command::new("powershell.exe");
                     command.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
                         .arg(helper).args(["-Mode", "Ensure", "-AgentPath"]).arg(exe)
                         .creation_flags(0x08000000);
                     let handle = handle.clone();
+                    let show_after_handoff = show_after_handoff_event.clone();
                     startup_cancel = Some(agent_startup::start(command, move |status| {
                         match status {
-                            Ok(status) if status.code() == Some(10) => handle.exit(10),
-                            Ok(status) if status.success() => {},
-                            _ => append_runtime_log("startup", "Agent elevation setup declined or failed; continuing in current user context"),
+                            Ok(status) if status.code() == Some(10) => {
+                                show_after_handoff.store(reveal_agent_after_handoff, Ordering::Release);
+                                handle.exit(10);
+                            },
+                            Ok(status) if status.success() => {
+                                if let Err(error) = start_agent_runtime(&handle, force_show_agent_window) {
+                                    append_runtime_log("startup", &format!("Agent runtime start failed after setup: {error}"));
+                                    show_main_window_with_log(&handle, "agent-runtime-start-failed");
+                                }
+                            },
+                            _ => {
+                                append_runtime_log("startup", "Agent elevation setup declined or failed; continuing in current user context");
+                                if let Err(error) = start_agent_runtime(&handle, force_show_agent_window) {
+                                    append_runtime_log("startup", &format!("Agent fallback runtime start failed: {error}"));
+                                    show_main_window_with_log(&handle, "agent-fallback-start-failed");
+                                }
+                            },
                         }
                     }));
+                } else {
+                    append_runtime_log("startup", "Agent setup helper disappeared before startup; continuing with the current runtime");
+                    if let Err(error) = start_agent_runtime(handle, force_show_agent_window) {
+                        append_runtime_log("startup", &format!("Agent runtime start without setup helper failed: {error}"));
+                        show_main_window_with_log(handle, "agent-helper-missing-start-failed");
+                    }
                 }
             }
         }
         tauri::RunEvent::Exit => {
+            AGENT_PROCESS_EXITING.store(true, Ordering::Release);
             drop(startup_cancel.take());
             let state = handle.state::<AgentState>();
             state.spawn_generation.fetch_add(1, Ordering::AcqRel);
@@ -2533,6 +2719,10 @@ pub fn run() {
             .creation_flags(0x08000000).status();
         if !matches!(started, Ok(status) if status.success()) {
             append_runtime_log("startup", "Agent scheduled launch failed; restart Agent to retry");
+        } else if show_after_handoff.load(Ordering::Acquire) {
+            if let Err(error) = request_existing_agent_window() {
+                append_runtime_log("startup", &format!("failed to request approved Agent window after handoff: {error}"));
+            }
         }
     }
 }
@@ -2888,6 +3078,24 @@ mod registry_tests {
     fn test_win32_agent_tray_constants_are_stable() {
         assert_eq!(WIN32_AGENT_TRAY_ID, 37);
         assert_eq!(WM_WONREMOTE_AGENT_TRAY, WM_APP + 37);
+        assert_eq!(win32_agent_tray_action(WM_LBUTTONUP), Win32AgentTrayAction::Open);
+        assert_eq!(win32_agent_tray_action(WM_RBUTTONUP), Win32AgentTrayAction::Menu);
+        assert_eq!(
+            win32_agent_tray_command(WIN32_AGENT_TRAY_COMMAND_OPEN),
+            Win32AgentTrayCommand::Open
+        );
+        assert_eq!(
+            win32_agent_tray_command(WIN32_AGENT_TRAY_COMMAND_EXIT),
+            Win32AgentTrayCommand::Exit
+        );
+    }
+
+    #[test]
+    fn test_installed_agent_defers_runtime_until_startup_ensure_finishes() {
+        assert!(should_defer_agent_runtime_start(true, false, true));
+        assert!(!should_defer_agent_runtime_start(false, false, true));
+        assert!(!should_defer_agent_runtime_start(true, true, true));
+        assert!(!should_defer_agent_runtime_start(true, false, false));
     }
 
     #[test]

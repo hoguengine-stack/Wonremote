@@ -3,7 +3,9 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  assertBuiltProductIdentity,
   buildViewerInstaller,
+  buildTauriCommand,
   buildTauriBundleCommand,
   canReuseViewerBinary,
   copyStableX86Installers,
@@ -50,14 +52,33 @@ describe("x86 release installers", () => {
         resourceMarker = "fresh";
       },
       cleanResources: () => operations.push("clean-target-resources"),
+      verifyIdentity: () => operations.push("verify-viewer-identity"),
       bundleViewer: () => {
         operations.push("bundle-viewer");
         bundledMarker = resourceMarker;
       },
     });
 
-    expect(operations).toEqual(["build-resources", "clean-target-resources", "bundle-viewer"]);
+    expect(operations).toEqual([
+      "build-resources",
+      "clean-target-resources",
+      "verify-viewer-identity",
+      "bundle-viewer",
+    ]);
     expect(bundledMarker).toBe("fresh");
+  });
+
+  it("rejects a release host whose compiled product identity belongs to the other app", () => {
+    expect(() => assertBuiltProductIdentity(
+      "WonRemote Agent",
+      "WonRemote Agent",
+      "wonremote-viewer.exe",
+    )).not.toThrow();
+    expect(() => assertBuiltProductIdentity(
+      "WonRemote Viewer",
+      "WonRemote Agent",
+      "wonremote-viewer.exe",
+    )).toThrow(/expected WonRemote Agent, got WonRemote Viewer/);
   });
 
   it("validates the Agent bundle from the fresh Tauri resource source", () => {
@@ -80,16 +101,16 @@ describe("x86 release installers", () => {
       .toThrow(/protected-session protocol mismatch/);
   });
 
-  it("packages the Agent from the existing x86 binary without invoking tauri build", () => {
-    const command = buildTauriBundleCommand(
+  it("rebuilds the Agent host with Agent product identity before packaging", () => {
+    const command = buildTauriCommand(
       { rustTarget: "i686-pc-windows-msvc" },
       "src-tauri/tauri.agent.x86.conf.json",
     );
 
     expect(command).toBe(
-      "npx tauri bundle --bundles nsis --target i686-pc-windows-msvc --config src-tauri/tauri.agent.x86.conf.json",
+      "npx tauri build --target i686-pc-windows-msvc --config src-tauri/tauri.agent.x86.conf.json",
     );
-    expect(command).not.toContain("tauri build");
+    expect(command).not.toContain("tauri bundle");
   });
 
   it("copies only the x86 Viewer and Agent installers to stable release names", () => {

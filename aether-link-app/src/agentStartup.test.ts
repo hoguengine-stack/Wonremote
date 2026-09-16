@@ -317,19 +317,37 @@ describe.skipIf(process.platform !== "win32")("Agent first-run Windows boundarie
       function Start-Sleep {}
       $source=[IO.File]::ReadAllText('${helper}')
       $source=$source.Replace('$isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)', '$isAdmin = $true')
-      & ([scriptblock]::Create($source)) -Mode MonitorMigration -LegacyRoot '${legacyRoot.replace(/'/g, "''")}' -MigrationStartedUtc ([datetime]'2000-01-01T00:00:00Z')
+      $failed=$false
+      try {
+        & ([scriptblock]::Create($source)) -Mode MonitorMigration -LegacyRoot '${legacyRoot.replace(/'/g, "''")}' -MigrationStartedUtc ([datetime]'2000-01-01T00:00:00Z')
+      } catch {
+        $failed=$true
+        Write-Output "MIGRATION_ERROR:$($_.Exception.Message)"
+      }
       $global:events -join '|'
+      if ($failed) { exit 23 }
     `;
     try {
-      const output = execFileSync(
-        "powershell.exe",
-        ["-NoProfile", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
-        { windowsHide: true, timeout: 15000, encoding: "utf8" },
-      );
+      let output = "";
+      let exitCode = 0;
+      try {
+        output = execFileSync(
+          "powershell.exe",
+          ["-NoProfile", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
+          { windowsHide: true, timeout: 15000, encoding: "utf8" },
+        );
+      } catch (error) {
+        const failure = error as { status?: number; stdout?: string };
+        exitCode = failure.status ?? -1;
+        output = failure.stdout ?? "";
+      }
       expect(output).toContain("UNREGISTER:WonRemote Agent Migration");
       if (state === "healthy") {
+        expect(exitCode).toBe(0);
         expect(output).not.toContain("STOP:WonRemote Agent|");
       } else {
+        expect(exitCode).toBe(23);
+        expect(output).toContain("MIGRATION_ERROR:The protected replacement Agent migration did not complete successfully.");
         expect(output).toContain("STOP:WonRemote Agent");
         expect(output).toContain("STOP:WonRemote Secure Capture");
       }

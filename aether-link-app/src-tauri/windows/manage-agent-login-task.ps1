@@ -272,11 +272,14 @@ function Invoke-RunMigrationBridge([string]$Path, [string]$NodePath, [string]$Br
   Copy-Item -LiteralPath $protectedBridge -Destination $legacyScript -Force
   & $legacyNode $legacyScript --watch
 
-  if ((Wait-UpdateLockRelease $updatePaths.Lock) -and
-      (Test-FreshHealthyResult $updatePaths.Result $StartedUtc)) {
-    Remove-LegacyRuntime $legacy
-    Remove-LegacyUninstallRegistration $legacy
+  if (-not (Wait-UpdateLockRelease $updatePaths.Lock)) {
+    throw "The deployed WonRemote updater did not release its migration lock."
   }
+  if (-not (Test-FreshHealthyResult $updatePaths.Result $StartedUtc)) {
+    throw "The protected replacement Agent did not publish fresh healthy update evidence."
+  }
+  Remove-LegacyRuntime $legacy
+  Remove-LegacyUninstallRegistration $legacy
 }
 
 function Invoke-MigrationMonitor([string]$Path, [datetime]$StartedUtc) {
@@ -286,7 +289,7 @@ function Invoke-MigrationMonitor([string]$Path, [datetime]$StartedUtc) {
   $healthy = $released -and (Test-FreshHealthyResult $updatePaths.Result $StartedUtc)
   if (-not $healthy) {
     Stop-MigrationTasks -IncludeProtected
-    return
+    throw "The protected replacement Agent migration did not complete successfully."
   }
 
   $deadline = (Get-Date).AddSeconds(15)
