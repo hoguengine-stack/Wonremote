@@ -1,5 +1,20 @@
 # WonRemote Incident Registry
 
+## INC-20260917-103: Passing Job-boundary proof failed during Windows fixture cleanup
+
+- Detected: 2026-09-17 in GitHub Actions run 35128534014 after both v0.1.99 installers built.
+- Severity: Medium; publication was safely blocked even though the critical process-boundary behavior passed.
+- Affected: Final cleanup in `test_update_handoff_broker.ts`.
+- Status: Test cleanup repaired and locally verified; no v0.1.99 asset was published by the failed run.
+- User-visible symptom: CI prints that the x86 broker survived the kill-on-close Job and the shared E2E passed, then exits 1 while deleting `probe-error.txt` with Windows `EBUSY`.
+- Minimal trigger: Let the launcher and detached broker finish, then recursively delete the fixture directory immediately while Windows is still releasing the probe stderr redirection handle.
+- Root cause and contributors: The test waited for the launcher and proof but used one immediate recursive delete. Windows can retain the redirected-file handle briefly after process exit, and the cleanup did not use the standard bounded retry support intended for `EBUSY` and related transient removal errors.
+- Fix commit(s): Pending v0.1.99 preparation follow-up commit.
+- Permanent guard: Use Node's recursive `rm` with bounded `maxRetries` and `retryDelay` at both fixture setup and final cleanup. The test still fails if the file remains locked after the bounded window, so a genuinely leaked process is not hidden.
+- Regression proof: With bounded recursive cleanup, the direct-rustc x86 probe again survived the real local kill-on-close Job, wrote its proof, let the Job owner exit and removed the complete fixture without error.
+- Release proof: Not applicable until the normal v0.1.99 workflow completes.
+- Remaining blocker: Pass cleanup after the same real Job-boundary proof on the release runner, then continue signing and publication.
+
 ## INC-20260917-102: Release PowerShell contract timeout was below observed CI startup time
 
 - Detected: 2026-09-17 in GitHub Actions run 35127627515 before the v0.1.99 build started.

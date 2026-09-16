@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 
 const appRoot = path.resolve(import.meta.dirname, "..", "..");
 const fixtureRoot = path.join(os.tmpdir(), `wonremote-update-broker-e2e-${process.pid}`);
+const fixtureCleanup = { recursive: true, force: true, maxRetries: 20, retryDelay: 250 } as const;
 
 type BrokerScenario = {
   arch: "x64" | "x86";
@@ -38,14 +39,14 @@ if (scenarios.length === 0) {
 }
 
 async function main(): Promise<void> {
-  await rm(fixtureRoot, { recursive: true, force: true });
+  await rm(fixtureRoot, fixtureCleanup);
   try {
     for (const scenario of scenarios) {
       await runScenario(scenario);
     }
     console.log(`Shared update handoff broker E2E passed for ${scenarios.map((scenario) => scenario.arch).join(" and ")}.`);
   } finally {
-    await rm(fixtureRoot, { recursive: true, force: true });
+    await rm(fixtureRoot, fixtureCleanup);
   }
 }
 
