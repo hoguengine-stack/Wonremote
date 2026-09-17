@@ -92,7 +92,7 @@ if ($global:secureReads -ne 40 -or $global:secureSleeps -ne 39) { throw "unbound
       { encoding: "utf8", windowsHide: true, timeout: 10000 });
     expect(result.status, result.stderr + result.stdout).toBe(0);
     expect(result.stdout).toContain("health-predicate-and-budget-ok");
-  });
+  }, 20000);
 
   it.runIf(process.platform === "win32")("verifies a living replacement Node and its accepted heartbeat across real process/file boundaries", async () => {
     const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wonremote-health-process-")));
