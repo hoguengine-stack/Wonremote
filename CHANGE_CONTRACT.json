@@ -1,5 +1,5 @@
 {
-  "status": "ready-to-deploy",
+  "status": "verified",
   "processGateVerifiedTask20260917": {
     "status": "verified",
     "intent": "Reject missing regression comparison evidence through the existing local and CI change gate.",
@@ -826,7 +826,7 @@
         "aether-link-app/src/androidUpdateRelease.test.ts"
       ],
       "proofLevel": "deployment-required",
-      "verification": "pending"
+      "verification": "2026-09-17: Preparation commit 9120174103304677211cb4818b74584b619c62f0 pushed to main; CI 35178872269 passed. Firebase hosting-only deployment completed after change:verify:predeploy and --verify-hosted passed. Public android-update.json now advertises 0.1.103/versionCode 1103 for all three Android products. Each public versioned ZIP was downloaded, SHA256 matched, extracted APK SHA256 matched; Viewer ZIP b29125980c55432b6730e6cee62b870014dfa26f6cf098235478ceee1b7f3cf0 and APK e54bd044822184f65698d79f4a055505cde8541664cf95480b86a145f05dd37e. Hosted /viewer HTML equals the current built frontend. Old v0.1.93 Viewer ZIP remains byte-identical; Windows Viewer alias remains a 302 to the existing GitHub latest installer. Phone installation and real remote-control behavior remain unverified and are not claimed as complete."
     }
   ],
   "historicalOutcomes": [

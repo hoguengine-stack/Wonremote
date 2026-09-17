@@ -5,15 +5,15 @@
 - Detected: 2026-09-17 when the user reported Android Viewer was still 0.1.93.
 - Severity: Medium; the update source had no newer Android package despite newer Windows releases.
 - Affected: Android release delivery, test instructions and Firebase Hosting artifact freshness.
-- Status: Signed Android 0.1.103 build verified locally; public publication pending.
+- Status: Android 0.1.103 published and public downloads verified; phone installation remains unverified.
 - User-visible symptom: Installed Viewer 0.1.93 finds no newer APK, while the proposed test list assumes newer native changes.
 - Minimal trigger: Publish Windows releases without publishing matching Android packages, then ask for Android testing without checking discovery metadata.
 - Root cause and contributors: Public android-update.json still advertised versionCode 1093; the updater correctly rejected an equal version. During this release, concurrent APK/frontend builds also left an older manifest in dist although public/download had newer verified files. The prepublication comparison detected the stale copy before deployment.
-- Fix commit(s): Android release preparation and Hosting consistency check in this change.
+- Fix commit(s): `9120174103304677211cb4818b74584b619c62f0`.
 - Permanent guard: Verify the actual platform discovery version before requesting user tests. Release tests cover Viewer 1093 detecting 1103. verifyAndroidHostingArtifacts compares actual dist discovery, aliases and immutable archives with validated source artifacts, and the Firebase deployment script runs it after build including SkipAppBuild paths.
 - Regression proof: 23 Android unit tests, 10 release tests and two browser suites passed. Missing/stale dist metadata, aliases and versioned ZIPs fail even when source manifest verification passes. --verify-hosted passes after syncing the validated download files. Existing and new Viewer signing certificate digests match.
-- Release proof: APKs and frontend built locally; public manifest and download verification pending. No Windows binaries or server rules changed.
-- Remaining blocker: Publish and verify public discovery/downloads. Physical phone installation, keyboard/UI and remote-control behavior remain user-device checks.
+- Release proof: Hosting-only deployment completed after predeploy and actual dist-artifact verification. Public discovery advertises versionCode 1103; all three downloaded versioned ZIP and extracted APK hashes match. Viewer signing identity matches public 0.1.93. Hosted Viewer HTML matches the new frontend, old 0.1.93 Viewer archive remains unchanged, Windows download alias remains intact. Main CI 35178872269 passed. No Windows binaries or server rules changed.
+- Remaining blocker: Physical phone installation, keyboard/UI and remote-control behavior remain user-device checks. Update discovery and download delivery are verified, not an installed-phone success claim.
 
 ## INC-20260917-110: Written regression guidance was described as enforced without an executable gate
 
