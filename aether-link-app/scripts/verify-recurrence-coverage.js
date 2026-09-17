@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { regressionReviewErrors, verifyRegressionReview } from "./verify-regression-review.js";
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repositoryRoot = path.resolve(appRoot, "..");
@@ -101,7 +102,10 @@ export function changeValidationErrors(commit, registry) {
 }
 
 export function worktreeValidationErrors(contract, changedFiles, registry, stage = "complete") {
-  const errors = requestReviewErrors(contract.requestReview, changedFiles);
+  const errors = [
+    ...requestReviewErrors(contract.requestReview, changedFiles),
+    ...regressionReviewErrors(contract.regressionReview),
+  ];
   const changed = new Set(changedFiles.map((value) => value.replaceAll("\\", "/")));
   const changeType = String(contract.changeType ?? "").toLowerCase();
 
@@ -304,6 +308,7 @@ export function verifyRecurrenceCoverage(stage = "complete") {
     if (contractErrors.length > 0) {
       throw new Error(`Development omission gate failed:\n- ${contractErrors.join("\n- ")}`);
     }
+    verifyRegressionReview(contract);
   }
   console.log(
     `Verified ${processCommits.length} development commit(s), ${worktreeFiles.length} worktree file(s), and recurrence coverage for ${commits.length} commit(s).`,

@@ -22,6 +22,9 @@ jobs:
         with:
           node-version: 22
 
+      - name: Test regression comparison gate
+        run: node --test aether-link-app/scripts/verify-regression-review.test.mjs
+
       - name: Verify development and recurrence coverage
         run: |
           DEPLOYMENT_STAGE="$(node -e 'const c = require("./CHANGE_CONTRACT.json"); process.stdout.write(c.status === "ready-to-deploy" && ["deploy", "build-and-deploy"].includes(c.releaseImpact) ? "predeploy" : "complete");')"

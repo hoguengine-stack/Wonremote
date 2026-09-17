@@ -45,6 +45,15 @@ Review request necessity BEFORE adding/changing timers, effects, listeners, retr
 
 ## Verification Scope And Resume
 
+### Executable Regression Comparison Gate
+
+- Every current `CHANGE_CONTRACT.json` requires `regressionReview.kind` (`regression` or `non-regression`) and a concrete `reason`. A new feature or documentation task may use `non-regression`; do not label an update-induced failure that way to pass the gate.
+- For `regression`, compare the previous working version with the affected version before expanding investigation. Record full Git hashes as `baselineRevision` and `currentRevision`, normal-behavior evidence as `baselineEvidence`, repository-relative changed `files`, and comparison `findings`. Record the identified `rootCause`, focused repair `verification`, and proportional `prevention`. These are specific evidence strings, not pending placeholders. A regression test is a follow-up when useful, not a substitute for comparison; existing mandatory tests remain required.
+- `npm run change:verify` and `change:verify:predeploy` reject missing review or evidence. They verify both commits exist, the affected commit belongs to the current checkout history, and every claimed compared file exists in their actual diff. `npm run change:verify:regression` runs this narrow gate alone; it does not replace the complete or predeploy gate.
+- Missing baseline access does not prohibit investigation: keep the contract active and record the gap. Do not invent a known-good hash or mark the regression verified. Urgent containment remains distinct from claiming a completed root-cause repair.
+- CI `change-guard` runs the gate's executable rejection tests and the existing contract gate before dependent release jobs. The local CI definition takes effect on the remote only after it is committed and pushed. This is not an OS-level editing restriction or a configured protected-branch rule.
+- The gate validates omissions and Git facts, not the truth of prose, honest classification, chronology of investigation, or physical behavior. Never describe it as guaranteeing that every future mistake is impossible.
+
 - Before running checks, select the smallest set that covers the changed behavior and shared affected paths. State why a full suite, build, hardware check or cloud check is needed before running it; do not run these by default for unrelated edits.
 - Run each selected regression once per relevant code/environment state. Reuse recorded evidence only when the tested inputs and dependencies have not changed; never reuse it across a changed boundary.
 - Do not nest a test-runner invocation inside another discovered suite to rerun tests that the outer runner already discovers. Explicit grouped commands may select original suites directly.

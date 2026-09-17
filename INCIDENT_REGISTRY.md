@@ -1,5 +1,20 @@
 # WonRemote Incident Registry
 
+## INC-20260917-110: Written regression guidance was described as enforced without an executable gate
+
+- Detected: 2026-09-17 when the user asked whether global AGENTS.md rules actually block execution.
+- Severity: Medium; the user was given an overstated enforcement claim.
+- Affected: Development reporting, regression comparison evidence and local/CI change gates.
+- Status: Local implementation and rejection tests completed; remote CI activation remains pending commit/push.
+- User-visible symptom: Rules were said to be enforced although missing previous-version comparison evidence did not cause a command to fail.
+- Minimal trigger: A task omitted regression classification/comparison and relied only on the written AGENTS.md instruction.
+- Root cause and contributors: Documentation compliance was conflated with executable checks; the existing change gate had no regression-comparison schema or Git validation.
+- Fix commit(s): Uncommitted process-gate changes in this checkout.
+- Permanent guard: Require regression classification and reason in the existing gate; for regressions require comparison/resolution evidence and verify actual Git commits and changed files. The existing CI release dependency runs the gate and its rejection tests. Report local implementation separately from remote activation and semantic review.
+- Regression proof: node --test scripts/verify-regression-review.test.mjs passed five cases including real temporary Git history and subprocess exit 1 for missing/incomplete/invented evidence. Existing recurrence suite passed 16 tests.
+- Release proof: No product build, publication or device installation. CI workflow amended locally, not yet pushed or executed remotely.
+- Remaining blocker: Remote activation requires committing and pushing the changes. Prose truth, regression classification and actual product behavior still require evidence review; no claim of automatic semantic proof.
+
 ## INC-20260917-109: Per-machine installer looked for the legacy Agent in the wrong shell context
 
 - Detected: 2026-09-17 after the approved public v0.1.102 bootstrap on Agent 82220F6D.

@@ -135,6 +135,7 @@ describe("recurrence coverage gate", () => {
 
   it("blocks completion while the active acceptance contract is pending", () => {
     const contract = {
+      regressionReview: { kind: "non-regression", reason: "Existing test fixture exercises a separate contract boundary." },
       status: "active",
       requestReview: { impact: "none", reason: "Test-only fixture" },
       intent: "Prove the visible outcome",
@@ -159,6 +160,7 @@ describe("recurrence coverage gate", () => {
 
   it("requires separate proof for every declared user-visible outcome", () => {
     const contract = {
+      regressionReview: { kind: "non-regression", reason: "Existing test fixture exercises a separate contract boundary." },
       status: "verified",
       requestReview: { impact: "none", reason: "Test-only fixture" },
       intent: "Prove two visible outcomes",
@@ -199,6 +201,7 @@ describe("recurrence coverage gate", () => {
       evidenceFiles: ["work-guides/PROJECT_RULES.md"],
     };
     const contract = {
+      regressionReview: { kind: "non-regression", reason: "Existing test fixture exercises a separate contract boundary." },
       status: "verified", requestReview: { impact: "none", reason: "Local documentation review" },
       intent: "Record targets", changeType: "docs", risk: "low", releaseImpact: "none",
       rollback: "Restore previous documentation", outcomes: [documentation],
@@ -216,6 +219,7 @@ describe("recurrence coverage gate", () => {
 
   it("allows only deployment outcomes to remain pending at the predeploy gate", () => {
     const contract = {
+      regressionReview: { kind: "non-regression", reason: "Existing test fixture exercises a separate contract boundary." },
       status: "ready-to-deploy",
       requestReview: { impact: "none", reason: "Test-only fixture" },
       intent: "Deploy a verified build",

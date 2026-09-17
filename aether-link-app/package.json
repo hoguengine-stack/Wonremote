@@ -28,6 +28,8 @@
     "release:exes": "node scripts/package-release-exes.js && node scripts/verify-x86-installer-payloads.js",
     "release:verify-payloads": "node scripts/verify-x86-installer-payloads.js",
     "change:verify": "node scripts/verify-recurrence-coverage.js",
+    "change:verify:regression": "node scripts/verify-regression-review.js",
+    "test:regression-gate": "node --test scripts/verify-regression-review.test.mjs",
     "change:verify:predeploy": "node scripts/verify-recurrence-coverage.js --stage predeploy",
     "recurrence:verify": "node scripts/verify-recurrence-coverage.js",
     "build": "node scripts/build-app.js",
