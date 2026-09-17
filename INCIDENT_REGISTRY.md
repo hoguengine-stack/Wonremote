@@ -9,10 +9,10 @@
 - User-visible symptom: User reports files update from 0.1.95 but Agent does not restart and remote access is lost. Target version and device logs have not yet been provided.
 - Minimal trigger: Execute the actual postinstall helper with a protected installation and no legacy root; the original helper registered Agent/capture/update tasks but only started capture, returning without starting or checking Agent.
 - Root cause and contributors: The legacy migration branch explicitly starts the Agent task and checks runtime health; its no-legacy sibling omitted both and relied on the later unchecked RunAsUser call and old updater fallback. This verified omission is a candidate cause of the reported incident, not a confirmed diagnosis of the unidentified field PC.
-- Fix commit(s): Uncommitted focused helper change in this checkout.
+- Fix commit(s): 1fd1b20 (product fix); fde733e and cd2dace (CI prerequisite, fixture paths and diagnostics). Release source cd2dacefcda0ade48c988d318895d6822bd3b0ba.
 - Permanent guard: For no-legacy postinstall, explicitly start the registered protected Agent task and require existing bounded Agent-node and capture-task health checks. Keep the previous legacy path intact. The actual PowerShell helper is tested with scheduler/process stubs for legacy, no-legacy, and startup failure.
 - Regression proof: RED no-legacy fixture showed only registration and capture start, with no Agent start. GREEN three focused cases pass: both install paths start/check Agent, and missing runtime fails nonzero with cleanup. npm test -- src/agentStartup.test.ts src/desktopPackaging.test.ts passed 85/85 on 2026-09-17. These are local helper-boundary tests, not installed scheduler or remote-connectivity proof.
-- Release proof: Not built or deployed for this incident; current public Windows release remains 0.1.103.
+- Release proof: v0.1.104 published as GitHub latest at 2026-09-17T05:58:40Z by passing CI 35187149941. Both public installers downloaded and hashes plus trusted manifest signatures verified; production metadata loader returns Agent 0.1.104 above 0.1.95. CI verified x86 payloads, installer E2E, startup suite, real Job survival and four live Firebase aliases. Executables remain Authenticode NotSigned; this is distinct from verified update signatures. No field installation/reconnection claim.
 - Remaining blocker: Identify affected device/target version and obtain installer/handoff logs. Verify the packaged 0.1.95 upgrade on an isolated or designated device and confirm remote reconnection before claiming field resolution.
 
 ### INC-20260917-112 CI integration follow-up
@@ -20,6 +20,7 @@
 - CI 35185938764 stopped before building or publishing: the newly wired startup suite assumed NSIS already existed, compared a Windows short TEMP path to a resolved long path, and used a 5-second test deadline around a 15-second subprocess deadline.
 - Prevention: run the complete startup suite after packaging installs its NSIS prerequisite, canonicalize the two affected fixture roots, and give the broker test a bounded 20-second outer deadline. No product health timeout or assertion is weakened; failed publication left 0.1.103 unchanged.
 - CI 35186188109 built both installers and passed the complete startup suite, then the existing Job E2E timed out under a short TEMP root without launcher/probe diagnostics. Local x86 Job E2E with a short TEMP root passed, so the exact CI-only cause remains unconfirmed. Canonicalize its root before comparing CIM process paths and retain detached handoff exceptions in failure output; preserve the 30-second deadline and real process-exit proof. This follow-up changes only test paths and diagnostics, not product behavior.
+- CI 35187149941 passed the canonical-path Job test with the original deadline and completed publication. The complete startup suite is a mandatory post-build prerequisite to publication; failures block public release.
 
 ## INC-20260917-111: Android tests were requested before checking the published APK version
 

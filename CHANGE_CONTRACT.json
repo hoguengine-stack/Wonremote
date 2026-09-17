@@ -1,5 +1,5 @@
 {
-  "status": "ready-to-deploy",
+  "status": "verified",
   "androidPublicationVerified20260917": {
     "status": "verified",
     "intent": "Build and publish Android 0.1.103 with the existing signing identity so installed Viewer 0.1.93 detects and downloads the newer verified APK.",
@@ -882,7 +882,7 @@
       "boundaries": ["main commit", "Windows CI build", "x86 installer payload", "signed manifest", "GitHub latest", "Firebase aliases"],
       "contractTests": ["aether-link-app/src/agentStartup.test.ts", "aether-link-app/tests/e2e/test_update_handoff_broker.ts"],
       "proofLevel": "deployment-required",
-      "verification": "CI 35186188109 built both installers and passed startup checks, then blocked publication on the Job-boundary E2E timeout. Local real x86 Job E2E passed before and after canonical fixture-root and diagnostic repair under a short TEMP root. Original 30-second deadline and process survival assertions remain intact. CI rerun and public verification pending; no 0.1.104 assets published yet."
+      "verification": "2026-09-17: CI 35187149941 passed all build and publish jobs from cd2dacefcda0ade48c988d318895d6822bd3b0ba, including Agent startup suite, installer update E2E, real x86 Job survival and payload checks. GitHub latest v0.1.104 published at 05:58:40Z with both installers and signed manifest. Downloaded public assets passed verify-release-manifest.js with existing trusted key for x86 and x64 compatibility. Agent SHA256 5d94716e2984fbaa6bb4cca534e428e89cac4627e8516faf174f40815072b67c; Viewer SHA256 06bf1b5f27372c4225db49eb3e55e2965755c4a649de3ce9a1a4dd06715cba4d. Live production metadata loader returns Agent 0.1.104 and version comparison accepts it above 0.1.95. CI verified all four Firebase aliases. Executables are Authenticode NotSigned; manifest signatures verified. Actual 0.1.95 device installation and reconnection remain unverified."
     }
   ],
   "historicalOutcomes": [
