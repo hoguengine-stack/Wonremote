@@ -869,7 +869,8 @@
         "secure broker"
       ],
       "contractTests": [
-        "aether-link-app/src/agentStartup.test.ts"
+        "aether-link-app/src/agentStartup.test.ts",
+        "aether-link-app/tests/e2e/test_update_handoff_broker.ts"
       ],
       "proofLevel": "physical-required",
       "verification": "2026-09-17: npm test -- src/agentStartup.test.ts src/desktopPackaging.test.ts passed 85/85. Three actual-helper tests with stubbed OS boundaries cover legacy start, no-legacy start with three health observations, and missing-runtime failure with nonzero exit. User explicitly requested 0.1.104 publication to protect subsequent upgrades. No live scheduled task, installer, or remote reconnection was exercised; physical gap remains open.",
@@ -879,9 +880,9 @@
       "id": "windows-01104-publication",
       "acceptance": "Existing Windows clients discover signed 0.1.104 metadata and matching x86 Agent and Viewer installers built from the release commit, including the repaired postinstall helper.",
       "boundaries": ["main commit", "Windows CI build", "x86 installer payload", "signed manifest", "GitHub latest", "Firebase aliases"],
-      "contractTests": ["aether-link-app/src/agentStartup.test.ts"],
+      "contractTests": ["aether-link-app/src/agentStartup.test.ts", "aether-link-app/tests/e2e/test_update_handoff_broker.ts"],
       "proofLevel": "deployment-required",
-      "verification": "CI 35185938764 correctly blocked publication on startup-suite prerequisite and fixture-path failures; no 0.1.104 assets published. Local repaired startup suite passed 18/18. CI rerun, build and public verification pending."
+      "verification": "CI 35186188109 built both installers and passed startup checks, then blocked publication on the Job-boundary E2E timeout. Local real x86 Job E2E passed before and after canonical fixture-root and diagnostic repair under a short TEMP root. Original 30-second deadline and process survival assertions remain intact. CI rerun and public verification pending; no 0.1.104 assets published yet."
     }
   ],
   "historicalOutcomes": [

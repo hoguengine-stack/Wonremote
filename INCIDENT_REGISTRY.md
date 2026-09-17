@@ -19,6 +19,7 @@
 
 - CI 35185938764 stopped before building or publishing: the newly wired startup suite assumed NSIS already existed, compared a Windows short TEMP path to a resolved long path, and used a 5-second test deadline around a 15-second subprocess deadline.
 - Prevention: run the complete startup suite after packaging installs its NSIS prerequisite, canonicalize the two affected fixture roots, and give the broker test a bounded 20-second outer deadline. No product health timeout or assertion is weakened; failed publication left 0.1.103 unchanged.
+- CI 35186188109 built both installers and passed the complete startup suite, then the existing Job E2E timed out under a short TEMP root without launcher/probe diagnostics. Local x86 Job E2E with a short TEMP root passed, so the exact CI-only cause remains unconfirmed. Canonicalize its root before comparing CIM process paths and retain detached handoff exceptions in failure output; preserve the 30-second deadline and real process-exit proof. This follow-up changes only test paths and diagnostics, not product behavior.
 
 ## INC-20260917-111: Android tests were requested before checking the published APK version
 

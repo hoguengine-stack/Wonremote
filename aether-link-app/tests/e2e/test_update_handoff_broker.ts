@@ -1,11 +1,12 @@
 import { execFileSync } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { mkdir, rm, writeFile, copyFile, access, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 
 const appRoot = path.resolve(import.meta.dirname, "..", "..");
-const fixtureRoot = path.join(os.tmpdir(), `wonremote-update-broker-e2e-${process.pid}`);
+const fixtureRoot = path.join(realpathSync.native(os.tmpdir()), `wonremote-update-broker-e2e-${process.pid}`);
 const fixtureCleanup = { recursive: true, force: true, maxRetries: 20, retryDelay: 250 } as const;
 const BROKER_PROOF_TIMEOUT_MS = 30_000;
 
@@ -64,6 +65,7 @@ async function runScenario(scenario: BrokerScenario): Promise<void> {
   const launcherPath = path.join(root, "launch-in-job.ps1");
   const launcherErrorPath = path.join(root, "launcher-error.txt");
   const probeErrorPath = path.join(root, "probe-error.txt");
+  const handoffErrorPath = path.join(root, "handoff-error.txt");
 
   await Promise.all([
     mkdir(updateRoot, { recursive: true }),
@@ -75,6 +77,7 @@ async function runScenario(scenario: BrokerScenario): Promise<void> {
       handoffPath,
       [
         "$ErrorActionPreference = 'Stop'",
+        `trap { [IO.File]::WriteAllText('${escapePowerShell(handoffErrorPath)}', $_.Exception.ToString()); exit 1 }`,
         `$ProbePath = '${escapePowerShell(probePath)}'`,
         "$Target = Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -ieq $ProbePath } | Select-Object -First 1",
         "if ($null -eq $Target) { throw 'Fixture update broker probe was not found.' }",
@@ -115,14 +118,18 @@ async function runScenario(scenario: BrokerScenario): Promise<void> {
     } catch (error) {
       let launcherError = "";
       let probeError = "";
+      let handoffError = "";
       try {
         launcherError = await readFile(launcherErrorPath, "utf8");
       } catch {}
       try {
         probeError = await readFile(probeErrorPath, "utf8");
       } catch {}
+      try {
+        handoffError = await readFile(handoffErrorPath, "utf8");
+      } catch {}
       throw new Error(
-        `${String(error)}${launcherError ? `\nJob launcher: ${launcherError}` : ""}${probeError ? `\nBroker probe: ${probeError}` : ""}`,
+        `${String(error)}${launcherError ? `\nJob launcher: ${launcherError}` : ""}${probeError ? `\nBroker probe: ${probeError}` : ""}${handoffError ? `\nHandoff script: ${handoffError}` : ""}`,
       );
     }
     await waitForProcessExit(child, 5_000);
