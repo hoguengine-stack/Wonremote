@@ -36,6 +36,7 @@ import {
   Activity,
   Star,
   X,
+  Pause,
   Columns2,
   GripVertical,
 } from "lucide-react";
@@ -154,6 +155,7 @@ import {
   pressTrackedMouseButton,
   releaseTrackedKey,
   releaseTrackedKeyByRemoteKey,
+  releaseTrackedModifierKeys,
   releaseTrackedMouseButton,
   releaseTrackedMouseButtonsMissingFromMask,
   shouldForwardTrackedKeyRepeat,
@@ -191,6 +193,7 @@ import {
   getFileTransferEtaSeconds,
   getFileTransferPercent,
   markFileTransferTransferring,
+  pauseFileTransfer,
   updateFileTransferProgress,
   type FileTransferQueueItem,
 } from "./domain/fileTransferQueue";
@@ -3016,6 +3019,7 @@ function RemoteSessionPanel({
   const reverseReceiverRef = React.useRef<PersistentFileReceiver | null>(null);
   const receivedFileRef = React.useRef<{ id: string; filename: string; blob: Blob } | null>(null);
   const [receivedFile, setReceivedFile] = useState<{ id: string; filename: string; blob: Blob } | null>(null);
+  const [transferPanelOpen, setTransferPanelOpen] = useState(true);
   const [receivedDownloadRequested, setReceivedDownloadRequested] = useState(false);
   const [nativeSaveState, setNativeSaveState] = useState("");
   const nativeSaveRef = React.useRef<AbortController | null>(null);
@@ -3026,10 +3030,10 @@ function RemoteSessionPanel({
     if (nativeSaveRef.current) return;
     const controller = new AbortController();
     nativeSaveRef.current = controller;
-    setNativeSaveState("저장 중");
+    setNativeSaveState("검증 및 저장 중 · 99%");
     try {
       const savedPath = await saveDesktopFile(file, invoke, controller.signal);
-      if (!controller.signal.aborted) setNativeSaveState(`저장 완료 · ${savedPath}`);
+      if (!controller.signal.aborted) setNativeSaveState(`완료 · 100% · ${savedPath}`);
       try {
         await reverseReceiverRef.current?.discard();
         receivedFileRef.current = null;
@@ -3050,6 +3054,8 @@ function RemoteSessionPanel({
   const [reverseResumeSupported, setReverseResumeSupported] = useState(false);
   const [interruptedFile, setInterruptedFile] = useState<{ transferId: string; filename: string; receivedBytes: number; totalBytes: number; receiving?: boolean } | null>(null);
   const incomingProgressRef = React.useRef<typeof interruptedFile>(null);
+  const incomingStopIntentRef = React.useRef<"pause" | "cancel" | null>(null);
+  const [incomingStopPending, setIncomingStopPending] = useState<"pause" | "cancel" | null>(null);
   const markReceiveInterrupted = () => {
     if (!incomingProgressRef.current) return;
     incomingProgressRef.current = { ...incomingProgressRef.current, receiving: false };
@@ -3062,7 +3068,10 @@ function RemoteSessionPanel({
       reverseReceiverRef.current = new PersistentFileReceiver(`wonremote-receive:${encodeURIComponent(owner)}:${encodeURIComponent(preferenceDeviceId)}`, async file => {
         const ready = { id: file.transferId, filename: file.filename, blob: file.blob };
         incomingProgressRef.current = null;
+        incomingStopIntentRef.current = null;
+        setIncomingStopPending(null);
         setSessionDataError(previous => previous === "파일을 수신하지 못했습니다. 저장 공간을 확인한 뒤 다시 시도해 주세요." ? "" : previous);
+        setTransferPanelOpen(true);
         receivedFileRef.current = ready; setReceivedFile(ready); setInterruptedFile(null); setReceivedDownloadRequested(false);
       });
     }
@@ -3223,6 +3232,7 @@ function RemoteSessionPanel({
   const transferFilesRef = React.useRef<Map<string, File>>(new Map());
   const transferAbortControllersRef = React.useRef<Map<string, AbortController>>(new Map());
   const cancelledTransferIdsRef = React.useRef<Set<string>>(new Set());
+  const pausedTransferIdsRef = React.useRef<Set<string>>(new Set());
   const resumeTransferIdsRef = React.useRef(new Map<string, string>());
 
   // Phase 3 states
@@ -3777,9 +3787,33 @@ function RemoteSessionPanel({
             onReverseFileSupport: resumeSupported => { if (active) { setReverseFileSupported(true); setReverseResumeSupported(resumeSupported === true); } },
             onFileStatus: status => {
               if (!active) return;
-              const labels = { selecting: "원격 PC에서 파일 선택 중", sending: "원격 파일 수신 중", complete: "원격 파일 수신 완료",
+              const labels = { selecting: "원격 PC에서 파일 선택 중", sending: "원격 파일 수신 중", complete: "전송 완료 · 검증 및 저장 중",
                 cancelled: "원격 파일 가져오기 취소됨", "selection-failed": "원격 파일 선택 창을 열지 못했습니다. 로그인된 사용자 화면을 확인해 주세요.",
                 "send-failed": "원격 파일을 가져오지 못했습니다. 연결과 저장 공간을 확인해 주세요." };
+              if (status.state === "selecting" || status.state === "sending") {
+                setTransferPanelOpen(true);
+              }
+              if (status.state === "cancelled") {
+                const intent = incomingStopIntentRef.current;
+                incomingStopIntentRef.current = null;
+                setIncomingStopPending(null);
+                if (intent === "cancel") {
+                  setRemoteFileStatus("원격 파일 가져오기 취소됨");
+                  void getReverseReceiver().discard().then(() => {
+                    if (!active) return;
+                    incomingProgressRef.current = null;
+                    setInterruptedFile(null);
+                  }).catch(() => {
+                    if (active) setSessionDataError("취소한 수신 파일을 정리하지 못했습니다.");
+                  });
+                  return;
+                }
+                if (intent === "pause") {
+                  setRemoteFileStatus("파일 수신 일시중단됨");
+                  markReceiveInterrupted();
+                  return;
+                }
+              }
               setRemoteFileStatus(labels[status.state]);
               if (status.state === "cancelled" || status.state === "send-failed" || status.state === "selection-failed") markReceiveInterrupted();
             },
@@ -3792,6 +3826,7 @@ function RemoteSessionPanel({
               try {
                 const ack = await getReverseReceiver().accept(chunk, () => active && isCurrent());
                 if (ack && active && isCurrent() && ack.status !== "complete") {
+                  setTransferPanelOpen(true);
                   const previous = incomingProgressRef.current;
                   const progress = { transferId: chunk.transferId, filename: chunk.filename, totalBytes: chunk.totalBytes, receivedBytes: ack.receivedBytes, receiving: true };
                   incomingProgressRef.current = progress;
@@ -4128,6 +4163,9 @@ function RemoteSessionPanel({
       }
       suppressedKeyUpsRef.current.add(event.code || "Hangul");
       commitImeBeforeRemoteKey();
+      for (const modifier of releaseTrackedModifierKeys(pressedKeysRef.current)) {
+        onInputEvent(`key-up ${modifier}`);
+      }
       imeInputRef.current?.focus({ preventScroll: true });
       return;
     }
@@ -4658,6 +4696,7 @@ function RemoteSessionPanel({
 
   const transferSelectedFiles = async (files: File[]) => {
     if (!sessionId || files.length === 0) return;
+    setTransferPanelOpen(true);
     const queued = files.map((file, index) => {
       const id = `transfer-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`;
       transferFilesRef.current.set(id, file);
@@ -4671,11 +4710,19 @@ function RemoteSessionPanel({
         updateTransferQueueItem(item.id, cancelFileTransfer);
         continue;
       }
+      if (pausedTransferIdsRef.current.has(item.id)) {
+        updateTransferQueueItem(item.id, pauseFileTransfer);
+        pausedTransferIdsRef.current.delete(item.id);
+        continue;
+      }
       try {
         await transferSingleFile(file, item.id);
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") {
-          updateTransferQueueItem(item.id, cancelFileTransfer);
+          updateTransferQueueItem(
+            item.id,
+            pausedTransferIdsRef.current.has(item.id) ? pauseFileTransfer : cancelFileTransfer,
+          );
         } else {
           updateTransferQueueItem(item.id, (entry) => failFileTransfer(
             entry,
@@ -4685,19 +4732,37 @@ function RemoteSessionPanel({
       }
       transferAbortControllersRef.current.delete(item.id);
       cancelledTransferIdsRef.current.delete(item.id);
+      pausedTransferIdsRef.current.delete(item.id);
     }
   };
 
+  const clearActiveTransferProgress = (transferId: string) => {
+    if (activeTransferIdRef.current !== transferId) return;
+    activeTransferIdRef.current = "";
+    setTransferProgress(null);
+  };
+
+  const pauseQueuedTransfer = (transferId: string) => {
+    pausedTransferIdsRef.current.add(transferId);
+    transferAbortControllersRef.current.get(transferId)?.abort();
+    updateTransferQueueItem(transferId, pauseFileTransfer);
+    clearActiveTransferProgress(transferId);
+  };
+
   const cancelQueuedTransfer = (transferId: string) => {
+    pausedTransferIdsRef.current.delete(transferId);
     cancelledTransferIdsRef.current.add(transferId);
     transferAbortControllersRef.current.get(transferId)?.abort();
     updateTransferQueueItem(transferId, cancelFileTransfer);
+    clearActiveTransferProgress(transferId);
   };
 
   const retryQueuedTransfer = (transferId: string) => {
     if (transferAbortControllersRef.current.has(transferId)) return;
     const file = transferFilesRef.current.get(transferId);
     if (!file) return;
+    pausedTransferIdsRef.current.delete(transferId);
+    cancelledTransferIdsRef.current.delete(transferId);
     const retryId = `${transferId}-retry-${Date.now()}`;
     const resumeId = resumeTransferIdsRef.current.get(transferId) ?? transferId;
     resumeTransferIdsRef.current.set(retryId, resumeId);
@@ -4712,7 +4777,10 @@ function RemoteSessionPanel({
     void transferSingleFile(file, retryId, resumeId)
       .catch((error) => {
         if (error instanceof DOMException && error.name === "AbortError") {
-          updateTransferQueueItem(retryId, cancelFileTransfer);
+          updateTransferQueueItem(
+            retryId,
+            pausedTransferIdsRef.current.has(retryId) ? pauseFileTransfer : cancelFileTransfer,
+          );
         } else {
           updateTransferQueueItem(retryId, (item) => failFileTransfer(
             item,
@@ -4723,18 +4791,33 @@ function RemoteSessionPanel({
       .finally(() => {
         transferAbortControllersRef.current.delete(retryId);
         cancelledTransferIdsRef.current.delete(retryId);
+        pausedTransferIdsRef.current.delete(retryId);
       });
+  };
+
+  const requestIncomingReceiveStop = (intent: "pause" | "cancel") => {
+    if (!incomingProgressRef.current?.receiving || incomingStopIntentRef.current) return;
+    const transport = webRtcTransportRef.current;
+    incomingStopIntentRef.current = intent;
+    setIncomingStopPending(intent);
+    setRemoteFileStatus(intent === "pause" ? "파일 수신 일시중단 요청 중" : "파일 수신 취소 요청 중");
+    if (!transport?.isControlReady() || !transport.sendControl("cancel-file-send")) {
+      incomingStopIntentRef.current = null;
+      setIncomingStopPending(null);
+      setRemoteFileStatus(intent === "pause" ? "일시중단을 요청하지 못했습니다. 다시 시도해 주세요." : "취소를 요청하지 못했습니다. 다시 시도해 주세요.");
+    }
   };
 
   const clearTerminalTransfers = () => {
     setTransferQueue((current) => {
-      const retained = current.filter((item) => item.status === "queued" || item.status === "transferring" || item.status === "awaiting-receipt");
+      const retained = current.filter((item) => item.status === "queued" || item.status === "transferring" || item.status === "awaiting-receipt" || item.status === "paused");
       const retainedIds = new Set(retained.map((item) => item.id));
       for (const transferId of transferFilesRef.current.keys()) {
         if (!retainedIds.has(transferId)) {
           transferFilesRef.current.delete(transferId);
           resumeTransferIdsRef.current.delete(transferId);
           cancelledTransferIdsRef.current.delete(transferId);
+          pausedTransferIdsRef.current.delete(transferId);
         }
       }
       return retained;
@@ -4868,6 +4951,8 @@ function RemoteSessionPanel({
       </section>
     );
   }
+
+  const hasTransferItems = transferQueue.length > 0 || Boolean(receivedFile) || Boolean(interruptedFile);
 
   return (
     <section
@@ -5014,7 +5099,18 @@ function RemoteSessionPanel({
           )}
 
           {remoteFileStatus && <div className="session-transfer-progress" role="status">{remoteFileStatus}</div>}
-          {(transferQueue.length > 0 || receivedFile || interruptedFile) && (
+          {hasTransferItems && !transferPanelOpen && (
+            <button
+              className="session-transfer-queue-open"
+              type="button"
+              title="파일 전송 목록 열기"
+              aria-label="파일 전송 목록 열기"
+              onClick={() => setTransferPanelOpen(true)}
+            >
+              <FileUp size={18} />
+            </button>
+          )}
+          {hasTransferItems && transferPanelOpen && (
             <aside className="session-transfer-queue" aria-label="파일 전송 목록">
               <div className="session-transfer-queue-heading">
                 <strong>파일 전송</strong>
@@ -5035,30 +5131,40 @@ function RemoteSessionPanel({
                 >
                   <Trash2 size={14} />
                 </button>
+                <button
+                  type="button"
+                  title="파일 전송 목록 닫기"
+                  aria-label="파일 전송 목록 닫기"
+                  onClick={() => setTransferPanelOpen(false)}
+                >
+                  <X size={16} />
+                </button>
               </div>
               {interruptedFile && <div className={`session-transfer-queue-item ${interruptedFile.receiving ? "" : "failed"}`}>
-                <span><strong>{interruptedFile.filename}</strong><small>{interruptedFile.receiving ? "수신 중" : "수신 중단됨"} · {Math.floor(interruptedFile.receivedBytes * 100 / Math.max(1, interruptedFile.totalBytes))}% · {interruptedFile.receivedBytes} / {interruptedFile.totalBytes} bytes</small>
+                <span><strong>{interruptedFile.filename}</strong><small>{interruptedFile.receiving ? (incomingStopPending === "pause" ? "일시중단 요청 중" : incomingStopPending === "cancel" ? "취소 요청 중" : "수신 중") : "수신 중단됨"} · {Math.min(99, Math.floor(interruptedFile.receivedBytes * 100 / Math.max(1, interruptedFile.totalBytes)))}% · {interruptedFile.receivedBytes} / {interruptedFile.totalBytes} bytes</small>
                   <progress aria-label="파일 수신 진행률" max={interruptedFile.totalBytes || 1} value={interruptedFile.receivedBytes} />
                 </span>
-                <button type="button" aria-label="중단된 수신 이어받기" title={reverseResumeSupported ? "원격 PC에서 원본 파일을 다시 선택하여 이어받기" : "에이전트의 이어받기 지원이 확인되지 않았습니다"}
-                  disabled={interruptedFile.receiving || !isWebRtcConnectionReady || !reverseResumeSupported || remoteFileStatus === "원격 PC에서 파일 선택 중" || remoteFileStatus === "원격 파일 수신 중"}
+                {interruptedFile.receiving ? <button type="button" aria-label="파일 수신 일시중단" title="현재 수신을 멈추고 받은 위치부터 이어받기" disabled={incomingStopPending !== null} onClick={() => requestIncomingReceiveStop("pause")}><Pause size={16} /></button> : <button type="button" aria-label="중단된 수신 이어받기" title={reverseResumeSupported ? "원격 PC에서 원본 파일을 다시 선택하여 이어받기" : "에이전트의 이어받기 지원이 확인되지 않았습니다"}
+                  disabled={!isWebRtcConnectionReady || !reverseResumeSupported || remoteFileStatus === "원격 PC에서 파일 선택 중" || remoteFileStatus === "원격 파일 수신 중"}
                   onClick={async () => {
                     setRemoteFileStatus("원격 PC에서 파일 선택 중");
+                    setTransferPanelOpen(true);
                     try {
                       const transport = webRtcTransportRef.current;
                       if (!transport?.isControlReady() || !transport.sendControl(`request-file-resume ${interruptedFile.transferId}`)) throw new Error("File control channel unavailable");
                     }
                     catch { setRemoteFileStatus("이어받기를 요청하지 못했습니다. 다시 시도해 주세요."); }
-                  }}><RotateCcw size={16} /></button>
-                <button type="button" aria-label="중단된 수신 삭제" title="중단된 수신 삭제" disabled={interruptedFile.receiving} onClick={async () => {
+                  }}><RotateCcw size={16} /></button>}
+                <button type="button" aria-label={interruptedFile.receiving ? "파일 수신 취소" : "중단된 수신 삭제"} title={interruptedFile.receiving ? "수신을 취소하고 받은 데이터를 삭제" : "중단된 수신 삭제"} disabled={incomingStopPending !== null} onClick={async () => {
+                  if (interruptedFile.receiving) { requestIncomingReceiveStop("cancel"); return; }
                   try { await getReverseReceiver().discard(); incomingProgressRef.current = null; setInterruptedFile(null); }
                   catch { setSessionDataError("수신 임시 파일을 삭제하지 못했습니다."); }
-                }}><Trash2 size={16} /></button>
+                }}>{interruptedFile.receiving ? <X size={16} /> : <Trash2 size={16} />}</button>
               </div>}
               {receivedFile && (
                 <div className="session-transfer-queue-item completed">
                   <span><strong>{receivedFile.filename}</strong><small>{nativeSaveState || (receivedDownloadRequested ? "다운로드 요청됨" : "수신 완료 · 저장 대기")}</small></span>
-                  <button type="button" title="받은 파일 저장" aria-label="받은 파일 저장" disabled={nativeSaveState === "저장 중"} onClick={async () => {
+                  <button type="button" title="받은 파일 저장" aria-label="받은 파일 저장" disabled={nativeSaveState.includes("저장 중")} onClick={async () => {
                     if (desktopDownloads) { await saveReceivedDesktopFile(receivedFile); return; }
                     if (/\bWonRemoteViewer\/1\b/.test(navigator.userAgent)) {
                       const controller = new AbortController();
@@ -5079,7 +5185,7 @@ function RemoteSessionPanel({
                     window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
                     setReceivedDownloadRequested(true);
                   }}><Download size={16} /></button>
-                  <button type="button" title="수신 항목 정리" aria-label="수신 항목 정리" disabled={nativeSaveState === "저장 중"} onClick={async () => {
+                  <button type="button" title="수신 항목 정리" aria-label="수신 항목 정리" disabled={nativeSaveState.includes("저장 중")} onClick={async () => {
                     try {
                       await reverseReceiverRef.current?.discard();
                       receivedFileRef.current = null; setReceivedFile(null);
@@ -5092,6 +5198,7 @@ function RemoteSessionPanel({
                 const eta = getFileTransferEtaSeconds(item);
                 const statusLabel = item.status === "queued" ? "대기"
                   : item.status === "awaiting-receipt" ? "원격 저장 확인 중"
+                  : item.status === "paused" ? `일시중단됨 · ${percent}%`
                   : item.status === "transferring" ? `${percent}%${eta === null ? "" : ` · ${eta}초`}`
                     : item.status === "completed" ? "완료"
                       : item.status === "cancelled" ? "취소됨" : "실패";
@@ -5102,10 +5209,16 @@ function RemoteSessionPanel({
                       <span className="session-transfer-progress-fill" style={{ width: `${percent}%` }} />
                     </span>
                     {(item.status === "queued" || item.status === "transferring") && (
-                      <button type="button" onClick={() => cancelQueuedTransfer(item.id)}>취소</button>
+                      <>
+                        <button type="button" aria-label="파일 전송 일시중단" title="현재 위치에서 일시중단" onClick={() => pauseQueuedTransfer(item.id)}><Pause size={16} /></button>
+                        <button type="button" aria-label="파일 전송 취소" title="전송 취소" onClick={() => cancelQueuedTransfer(item.id)}><X size={16} /></button>
+                      </>
+                    )}
+                    {item.status === "paused" && (
+                      <button type="button" aria-label="파일 전송 이어받기" title="중단된 위치부터 이어받기" onClick={() => retryQueuedTransfer(item.id)}><RotateCcw size={16} /></button>
                     )}
                     {(item.status === "failed" || item.status === "cancelled") && (
-                      <button type="button" onClick={() => retryQueuedTransfer(item.id)}>재시도</button>
+                      <button type="button" aria-label="재시도" title="파일 전송 재시도" onClick={() => retryQueuedTransfer(item.id)}><RotateCcw size={16} /></button>
                     )}
                   </div>
                 );
@@ -5397,7 +5510,7 @@ function RemoteSessionPanel({
                   <input multiple type="file" ref={fileInputRef} onChange={handleFileUpload} style={{ display: "none" }} />
                   {device?.platform !== "android" && (!/\bWonRemoteViewer\/1\b/.test(navigator.userAgent) || androidFileExporter.available()) && (
                     <>
-                      <button className="secondary-button" type="button" disabled={!isWebRtcConnectionReady || !reverseFileSupported || (Boolean(receivedFile) && !receivedDownloadRequested)} onClick={() => onInputEvent("request-file-send")} title={reverseFileSupported ? "원격 PC에서 보낼 파일 선택" : "연결된 에이전트의 파일 가져오기 지원이 확인되지 않았습니다"}>
+                      <button className="secondary-button" type="button" disabled={!isWebRtcConnectionReady || !reverseFileSupported || (Boolean(receivedFile) && !receivedDownloadRequested)} onClick={() => { setTransferPanelOpen(true); onInputEvent("request-file-send"); }} title={reverseFileSupported ? "원격 PC에서 보낼 파일 선택" : "연결된 에이전트의 파일 가져오기 지원이 확인되지 않았습니다"}>
                         <Download size={17} /><span>원격 파일 가져오기</span>
                       </button>
                       <button className="secondary-button" type="button" disabled={!isWebRtcConnectionReady || !reverseFileSupported} onClick={() => onInputEvent("cancel-file-send")} title="원격 파일 선택·전송 취소">

@@ -50,6 +50,24 @@ describe("desktop packaging scaffold", () => {
     expect(packageReleaseScript).toContain("tauri.agent.x86.conf.json");
   });
 
+  it("keeps the Agent window and tray icon distinct from the Viewer icon", () => {
+    const cargo = readFileSync(path.join(projectRoot, "src-tauri", "Cargo.toml"), "utf8");
+    const config = JSON.parse(readFileSync(path.join(projectRoot, "src-tauri", "tauri.conf.json"), "utf8"));
+    const tauriLib = readFileSync(path.join(projectRoot, "src-tauri", "src", "lib.rs"), "utf8");
+    const agentIcon = readFileSync(path.join(projectRoot, "src-tauri", "icons", "agent.ico"));
+    const viewerIcon = readFileSync(path.join(projectRoot, "src-tauri", "icons", "viewer.ico"));
+
+    expect(cargo).toContain('features = ["tray-icon", "image-ico"]');
+    expect(config.bundle.resources).toMatchObject({
+      "icons/agent.ico": "icons/agent.ico",
+      "icons/viewer.ico": "icons/viewer.ico",
+    });
+    expect(tauriLib).toContain('join("agent.ico")');
+    expect(tauriLib).toContain("window.set_icon(icon)");
+    expect(tauriLib).toContain("agent_icon.or_else(|| app.default_window_icon().cloned())");
+    expect(agentIcon.equals(viewerIcon)).toBe(false);
+  });
+
   it("keeps x64 and x86 Agent registration windows compact and non-resizable", () => {
     for (const configName of ["tauri.agent.conf.json", "tauri.agent.x86.conf.json"]) {
       const config = JSON.parse(readFileSync(path.join(projectRoot, "src-tauri", configName), "utf8"));
@@ -212,6 +230,17 @@ describe("desktop packaging scaffold", () => {
     expect(tauriLib).not.toContain("agent x86 tray interactions disabled; icon-only mode");
     expect(tauriLib).not.toContain("agent x86 tray disabled; shortcut-only mode");
     expect(tauriLib).not.toContain("single-instance guard already held; exiting");
+    const restartAgent = tauriLib.slice(
+      tauriLib.indexOf("fn restart_agent_process("),
+      tauriLib.indexOf("fn get_agent_config()"),
+    );
+    expect(restartAgent).toContain("spawn_agent_only_process(");
+    expect(restartAgent).not.toContain("start_arch_specific_agent_tray");
+    expect(restartAgent).not.toContain("win32_tray");
+    const watcherStart = tauriLib.indexOf("start_agent_show_window_request_watcher(app.handle().clone())");
+    const runtimeStart = tauriLib.indexOf("start_agent_runtime(app.handle(), force_show_agent_window)", watcherStart);
+    expect(watcherStart).toBeGreaterThan(-1);
+    expect(runtimeStart).toBeGreaterThan(watcherStart);
   });
 
   it("installs the protected Agent and local SYSTEM session-broker tasks", () => {

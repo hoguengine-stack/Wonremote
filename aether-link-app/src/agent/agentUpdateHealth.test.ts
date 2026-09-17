@@ -72,6 +72,20 @@ function Start-Sleep { $global:sleeps++ }
 try { Wait-AgentOnlineReceipt 'fixture' $root '0.1.105' $identity $since; throw 'bad wait passed' }
 catch { if ($_.Exception.Message -notlike 'Agent online verification failed*') { throw } }
 if ($global:reads -ne 60 -or $global:sleeps -ne 59) { throw "unbounded wait: $global:reads / $global:sleeps" }
+$global:secureReads=0; $global:secureSleeps=0
+function Get-ScheduledTask {
+  param($TaskName,$ErrorAction)
+  $global:secureReads++
+  return [pscustomobject]@{Principal=[pscustomobject]@{UserId='SYSTEM';RunLevel='Highest'};Actions=[pscustomobject]@{Execute=(Join-Path $root 'bin\\wonremote-poc.exe');Arguments='--mode secure-broker'};State='Running'}
+}
+function Start-Sleep { $global:secureSleeps++ }
+Wait-AgentSecureCaptureTask $root
+if ($global:secureReads -ne 1 -or $global:secureSleeps -ne 0) { throw 'healthy secure broker was not accepted immediately' }
+$global:secureReads=0; $global:secureSleeps=0
+function Get-ScheduledTask { param($TaskName,$ErrorAction); $global:secureReads++; return $null }
+try { Wait-AgentSecureCaptureTask $root; throw 'missing secure broker passed' }
+catch { if ($_.Exception.Message -notlike 'Agent secure-desktop verification failed*') { throw } }
+if ($global:secureReads -ne 40 -or $global:secureSleeps -ne 39) { throw "unbounded secure wait: $global:secureReads / $global:secureSleeps" }
 'health-predicate-and-budget-ok'
 `;
     const result = spawnSync("powershell.exe", ["-NoProfile", "-EncodedCommand", Buffer.from(command, "utf16le").toString("base64")],

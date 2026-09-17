@@ -11,6 +11,15 @@ export interface AgentCaptureSpawnPlan {
   secure: boolean;
 }
 
+export interface AgentDesktopCaptureTransition {
+  secureDesktop: boolean;
+  restartRequired: boolean;
+}
+
+export interface AppliedAgentDesktopCaptureTransition extends AgentDesktopCaptureTransition {
+  restartRequested: boolean;
+}
+
 export function nextSecureDesktopCaptureState(
   current: boolean,
   sessionChanged: boolean,
@@ -20,6 +29,34 @@ export function nextSecureDesktopCaptureState(
   if (eventType === "secure-desktop-required") return true;
   if (eventType === "default-desktop-required") return false;
   return current;
+}
+
+export function resolveAgentDesktopCaptureTransition(
+  current: boolean,
+  eventType: unknown,
+): AgentDesktopCaptureTransition {
+  const secureDesktop = nextSecureDesktopCaptureState(current, false, eventType);
+  return {
+    secureDesktop,
+    restartRequired: secureDesktop !== current,
+  };
+}
+
+export function applyAgentDesktopCaptureTransition(
+  current: boolean,
+  eventType: unknown,
+  requestRestart: () => boolean,
+): AppliedAgentDesktopCaptureTransition {
+  const transition = resolveAgentDesktopCaptureTransition(current, eventType);
+  if (!transition.restartRequired) {
+    return { ...transition, restartRequested: false };
+  }
+  const restartRequested = requestRestart();
+  return {
+    secureDesktop: restartRequested ? transition.secureDesktop : current,
+    restartRequired: true,
+    restartRequested,
+  };
 }
 
 export function resolveAgentAppDir(env: AgentPathEnv, defaultAppDir: string): string {

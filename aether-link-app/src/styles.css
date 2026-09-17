@@ -3242,6 +3242,22 @@ input:focus {
   z-index: 6;
 }
 
+.session-transfer-queue-open {
+  align-items: center;
+  background: #142630;
+  border: 1px solid #4b6872;
+  border-radius: 5px;
+  bottom: 16px;
+  color: #dce9e7;
+  display: inline-flex;
+  height: 36px;
+  justify-content: center;
+  position: absolute;
+  right: 16px;
+  width: 40px;
+  z-index: 6;
+}
+
 .session-transfer-queue-heading,
 .session-transfer-queue-item {
   align-items: center;

@@ -9,6 +9,7 @@ import {
   pressTrackedMouseButton,
   releaseTrackedKeyByRemoteKey,
   releaseTrackedKey,
+  releaseTrackedModifierKeys,
   releaseTrackedMouseButton,
   releaseTrackedMouseButtonsMissingFromMask,
   normalizeWheelDelta,
@@ -36,6 +37,18 @@ describe("Viewer input state", () => {
     expect(isExactCtrlShortcut({ key: "Escape", ctrlKey: true, shiftKey: true }, "Escape")).toBe(false);
     expect(isExactCtrlShortcut({ key: "Escape", ctrlKey: true, shiftKey: true }, "Escape")).toBe(false);
     expect(isExactCtrlShortcut({ key: "Escape", ctrlKey: true, altKey: true }, "Escape")).toBe(false);
+  });
+
+  it("releases every tracked remote modifier before the local Hangul toggle takes focus", () => {
+    const pressed = new Map([
+      ["ControlLeft", "Ctrl"],
+      ["ShiftLeft", "Shift"],
+      ["AltRight", "Alt"],
+      ["MetaLeft", "Win"],
+      ["KeyA", "A"],
+    ]);
+    expect(releaseTrackedModifierKeys(pressed)).toEqual(["Ctrl", "Shift", "Alt", "Win"]);
+    expect([...pressed]).toEqual([["KeyA", "A"]]);
   });
 
   it("emits completed Korean composition once even when a trailing input event repeats it", () => {

@@ -521,8 +521,9 @@ function Wait-WonRemoteAgentOnline {
   }
   . (Join-Path $root 'agent-update-health.ps1')
   $receiptPath = Join-Path (Split-Path -Parent (Split-Path -Parent $OriginalInstallerPath)) 'agent-online.json'
+  Wait-AgentSecureCaptureTask $root
   Wait-AgentOnlineReceipt $receiptPath $root $TargetVersion $IdentityBeforeUpdate $UpdateStarted
-  Write-HandoffLog 'WonRemote Agent target version, identity and accepted heartbeat verified.'
+  Write-HandoffLog 'WonRemote Agent target version, identity, secure capture and accepted heartbeat verified.'
 }
 
 function Start-WonRemoteAgent {

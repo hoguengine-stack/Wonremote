@@ -156,6 +156,22 @@ export function releaseTrackedKeyByRemoteKey(
   return released;
 }
 
+export function releaseTrackedModifierKeys(pressed: Map<string, string>): string[] {
+  const released: string[] = [];
+  const seen = new Set<string>();
+  for (const [physicalKey, remoteKey] of pressed) {
+    if (!["Ctrl", "Shift", "Alt", "Win"].includes(remoteKey)) {
+      continue;
+    }
+    pressed.delete(physicalKey);
+    if (!seen.has(remoteKey)) {
+      seen.add(remoteKey);
+      released.push(remoteKey);
+    }
+  }
+  return released;
+}
+
 export function normalizeWheelDelta(deltaY: number): -120 | 0 | 120 {
   if (!Number.isFinite(deltaY) || deltaY === 0) {
     return 0;

@@ -25,6 +25,7 @@ use std::sync::{
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use sha2::{Digest, Sha256};
 use tauri::{
+    image::Image,
     menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager, WindowEvent,
@@ -744,22 +745,12 @@ unsafe extern "system" fn win32_agent_tray_proc(
 #[cfg(target_arch = "x86")]
 fn start_arch_specific_agent_tray(app: &tauri::App, agent_state: &tauri::State<'_, AgentState>) {
     append_runtime_log("tray", "agent x86 Win32 tray starting");
-    let icon_path = if cfg!(debug_assertions) {
-        app_root_from_manifest()
-            .join("src-tauri")
-            .join("icons")
-            .join("agent.ico")
-    } else {
-        match app.path().resource_dir() {
-            Ok(resource_dir) => resource_dir.join("icons").join("agent.ico"),
-            Err(error) => {
-                append_runtime_log(
-                    "tray",
-                    &format!("agent resource directory unavailable: {error}"),
-                );
-                show_main_window_with_log(app.handle(), "agent-icon-resource-failed");
-                return;
-            }
+    let icon_path = match resolve_agent_icon_path(app) {
+        Ok(path) => path,
+        Err(error) => {
+            append_runtime_log("tray", &error);
+            show_main_window_with_log(app.handle(), "agent-icon-resource-failed");
+            return;
         }
     };
     match start_win32_agent_tray(&icon_path) {
@@ -772,6 +763,30 @@ fn start_arch_specific_agent_tray(app: &tauri::App, agent_state: &tauri::State<'
             show_main_window_with_log(app.handle(), "agent-win32-tray-failed");
         }
     }
+}
+
+fn agent_icon_path_from_roots(
+    debug_build: bool,
+    app_root: &Path,
+    resource_dir: Option<&Path>,
+) -> Result<PathBuf, String> {
+    if debug_build {
+        return Ok(app_root.join("src-tauri").join("icons").join("agent.ico"));
+    }
+    resource_dir
+        .map(|root| root.join("icons").join("agent.ico"))
+        .ok_or_else(|| "agent resource directory unavailable".to_string())
+}
+
+fn resolve_agent_icon_path(app: &tauri::App) -> Result<PathBuf, String> {
+    if cfg!(debug_assertions) {
+        return agent_icon_path_from_roots(true, &app_root_from_manifest(), None);
+    }
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|error| format!("agent resource directory unavailable: {error}"))?;
+    agent_icon_path_from_roots(false, Path::new(""), Some(&resource_dir))
 }
 
 #[cfg(not(target_arch = "x86"))]
@@ -2739,7 +2754,20 @@ pub fn run() {
             let agent_state = app.state::<AgentState>();
 
             if is_agent {
+                let agent_icon = resolve_agent_icon_path(app)
+                    .and_then(|path| Image::from_path(&path)
+                        .map_err(|error| format!("agent icon load failed path={} error={error}", path.display())))
+                    .map_err(|error| append_runtime_log("window", &error))
+                    .ok();
                 if let Some(window) = app.get_webview_window("main") {
+                    if let Some(icon) = agent_icon.clone() {
+                        if let Err(error) = window.set_icon(icon) {
+                            append_runtime_log(
+                                "window",
+                                &format!("agent-startup: window icon failed: {error}"),
+                            );
+                        }
+                    }
                     if let Err(error) = apply_main_window_policy(&window, true) {
                         append_runtime_log(
                             "window",
@@ -2754,7 +2782,7 @@ pub fn run() {
                 }
 
                 if agent_tray_enabled() {
-                    if let Some(icon) = app.default_window_icon().cloned() {
+                    if let Some(icon) = agent_icon.or_else(|| app.default_window_icon().cloned()) {
                         // System Tray Menu Setup for Agent
                         let status_i = MenuItemBuilder::new("Status: Connecting")
                             .id("status")
@@ -3132,6 +3160,21 @@ mod registry_tests {
         assert!(!executable_path_requests_agent(Path::new(
             r"C:\Users\test\AppData\Local\WonRemote\Viewer\wonremote-viewer.exe",
         )));
+    }
+
+    #[test]
+    fn test_agent_icon_path_is_role_specific_in_debug_and_release() {
+        let app_root = PathBuf::from(r"C:\source\aether-link-app");
+        let resources = PathBuf::from(r"C:\Program Files (x86)\WonRemote Agent");
+        assert_eq!(
+            agent_icon_path_from_roots(true, &app_root, None).unwrap(),
+            app_root.join("src-tauri").join("icons").join("agent.ico")
+        );
+        assert_eq!(
+            agent_icon_path_from_roots(false, &app_root, Some(&resources)).unwrap(),
+            resources.join("icons").join("agent.ico")
+        );
+        assert!(agent_icon_path_from_roots(false, &app_root, None).is_err());
     }
 
     #[test]

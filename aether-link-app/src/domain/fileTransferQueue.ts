@@ -2,6 +2,7 @@ export type FileTransferStatus =
   | "queued"
   | "transferring"
   | "awaiting-receipt"
+  | "paused"
   | "completed"
   | "failed"
   | "cancelled";
@@ -70,7 +71,7 @@ export function updateFileTransferProgress(
   sentBytes: number,
   speedBytesPerSecond?: number,
 ): FileTransferQueueItem {
-  if (isTerminal(item.status)) {
+  if (isTerminal(item.status) || item.status === "paused") {
     return item;
   }
   const nextSpeed = isValidSpeed(speedBytesPerSecond)
@@ -98,8 +99,20 @@ export function completeFileTransfer(item: FileTransferQueueItem): FileTransferQ
 }
 
 export function awaitFileTransferReceipt(item: FileTransferQueueItem): FileTransferQueueItem {
-  if (isTerminal(item.status)) return item;
+  if (isTerminal(item.status) || item.status === "paused") return item;
   return {...item, sentBytes:item.totalBytes, status:"awaiting-receipt"};
+}
+
+export function pauseFileTransfer(item: FileTransferQueueItem): FileTransferQueueItem {
+  if (isTerminal(item.status) || item.status === "awaiting-receipt") {
+    return item;
+  }
+  return {
+    ...item,
+    status: "paused",
+    speedBytesPerSecond: 0,
+    error: undefined,
+  };
 }
 
 export function failFileTransfer(item: FileTransferQueueItem, error: string): FileTransferQueueItem {

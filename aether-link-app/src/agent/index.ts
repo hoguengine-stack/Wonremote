@@ -21,6 +21,7 @@ import {
   recoverMissingAgentRegistration,
 } from "./agentRegistrationRecovery";
 import {
+  applyAgentDesktopCaptureTransition,
   nextSecureDesktopCaptureState,
   resolveAgentAppDir,
   resolveAgentCaptureSpawnPlan,
@@ -449,6 +450,23 @@ async function startStreaming(
     windowsHide: true,
   });
   streamProcess = child;
+  let desktopTransitionRestartRequested = false;
+  const requestDesktopTransitionRestart = (): boolean => {
+    if (desktopTransitionRestartRequested || streamProcess !== child) {
+      return desktopTransitionRestartRequested;
+    }
+    try {
+      desktopTransitionRestartRequested = child.kill();
+      if (!desktopTransitionRestartRequested) {
+        lastStreamError = "Capture desktop transition restart could not stop the current capture process.";
+        console.warn(`[Capture Desktop] ${lastStreamError}`);
+      }
+    } catch (error) {
+      lastStreamError = `Capture desktop transition restart failed: ${error instanceof Error ? error.message : error}`;
+      console.warn(`[Capture Desktop] ${lastStreamError}`);
+    }
+    return desktopTransitionRestartRequested;
+  };
   const stopObservingCaptureControl = observeCaptureControlErrors(child.stdin, (error) => {
     if (streamProcess === child) {
       lastStreamError = `Capture control pipe failed: ${error.message}`;
@@ -470,22 +488,31 @@ async function startStreaming(
     }
     try {
       const data = JSON.parse(line);
+      if (desktopTransitionRestartRequested) return;
       if (data.type === "secure-desktop-required") {
         console.log("[Capture Desktop] Windows entered the secure input desktop.");
-        streamSecureDesktop = nextSecureDesktopCaptureState(
-          streamSecureDesktop,
-          false,
-          data.type,
-        );
         lastStreamError = "Windows switched to the secure credential desktop; handing capture to the protected broker.";
+        const transition = applyAgentDesktopCaptureTransition(
+          streamSecureDesktop,
+          data.type,
+          requestDesktopTransitionRestart,
+        );
+        streamSecureDesktop = transition.secureDesktop;
+        if (transition.restartRequested) {
+          pendingInitialKeyframe = null;
+        }
       } else if (data.type === "default-desktop-required") {
         console.log("[Capture Desktop] Windows returned to the default input desktop.");
-        streamSecureDesktop = nextSecureDesktopCaptureState(
-          streamSecureDesktop,
-          false,
-          data.type,
-        );
         lastStreamError = "Windows left the secure credential desktop; returning capture to the interactive desktop.";
+        const transition = applyAgentDesktopCaptureTransition(
+          streamSecureDesktop,
+          data.type,
+          requestDesktopTransitionRestart,
+        );
+        streamSecureDesktop = transition.secureDesktop;
+        if (transition.restartRequested) {
+          pendingInitialKeyframe = null;
+        }
       } else if (data.type === "frame") {
         if (currentStreamMode === "auto") adaptiveCapture.observe(data.processingMs);
         streamFrameSequence += 1;
@@ -605,10 +632,18 @@ async function startStreaming(
       streamProcess = null;
     }
     if (streamDesired && captureRunGeneration === captureGeneration) {
-      const nextBackend = nextStreamCaptureBackend(streamBackend, finalStderr);
+      const nextBackend = desktopTransitionRestartRequested
+        ? streamBackend
+        : nextStreamCaptureBackend(streamBackend, finalStderr);
       const nextSleep = nextBackend === "gdi" ? Math.max(loopSleepMs, 125) : loopSleepMs;
-      const delayMs = nextStreamRestartDelayMs(streamFailureCount);
-      streamFailureCount += 1;
+      const delayMs = desktopTransitionRestartRequested
+        ? 0
+        : nextStreamRestartDelayMs(streamFailureCount);
+      if (desktopTransitionRestartRequested) {
+        streamFailureCount = 0;
+      } else {
+        streamFailureCount += 1;
+      }
       streamRestartCount += 1;
       streamBackend = nextBackend;
       if (!lastStreamError && finalStderr.trim()) {

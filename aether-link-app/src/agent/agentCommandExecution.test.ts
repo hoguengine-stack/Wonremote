@@ -369,6 +369,13 @@ describe("Agent command execution", () => {
     expect(startBlock).toContain("keyframe: data.keyframe === true");
     expect(startBlock).toContain('writeCaptureControl(streamProcess.stdin, "request-keyframe\\n"');
     expect(startBlock).toContain("observeCaptureControlErrors(child.stdin");
+    expect(startBlock).toContain("applyAgentDesktopCaptureTransition(");
+    expect(startBlock).toContain("requestDesktopTransitionRestart,");
+    expect(startBlock).toContain("desktopTransitionRestartRequested = child.kill()");
+    expect(startBlock).toContain("if (desktopTransitionRestartRequested) return");
+    expect(startBlock.indexOf("if (desktopTransitionRestartRequested) return"))
+      .toBeLessThan(startBlock.indexOf('if (data.type === "secure-desktop-required")'));
+    expect(startBlock).toContain("desktopTransitionRestartRequested\n        ? 0");
     expect(startBlock).not.toContain("data.keyframe === true && keyframeRetryTimer");
     expect(startBlock).not.toContain("webRtcTransport.close()");
     expect(ensureBlock).toContain("webRtcTransport ||");

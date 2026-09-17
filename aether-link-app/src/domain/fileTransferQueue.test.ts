@@ -9,6 +9,7 @@ import {
   getFileTransferEtaSeconds,
   getFileTransferPercent,
   markFileTransferTransferring,
+  pauseFileTransfer,
   updateFileTransferProgress,
 } from "./fileTransferQueue";
 
@@ -52,13 +53,29 @@ describe("file transfer queue item", () => {
     expect(queued).toMatchObject({ sentBytes: 0, status: "queued" });
   });
 
+  it("keeps a paused transfer resumable without accepting late progress", () => {
+    const active = updateFileTransferProgress(
+      createFileTransferQueueItem({ id: "pause", fileName: "pause.bin", totalBytes: 100 }),
+      40,
+      20,
+    );
+    const paused = pauseFileTransfer(active);
+
+    expect(paused).toMatchObject({ status: "paused", sentBytes: 40, speedBytesPerSecond: 0 });
+    expect(updateFileTransferProgress(paused, 80, 20)).toBe(paused);
+    expect(awaitFileTransferReceipt(paused)).toBe(paused);
+    expect(markFileTransferTransferring(paused)).toMatchObject({ status: "transferring", sentBytes: 40 });
+    expect(cancelFileTransfer(paused)).toMatchObject({ status: "cancelled", sentBytes: 40 });
+  });
+
   it("keeps every active transfer when a new batch is appended and only trims terminal history", () => {
     const completed = completeFileTransfer(createFileTransferQueueItem({ id: "done", fileName: "done.bin", totalBytes: 1 }));
     const queued = createFileTransferQueueItem({ id: "queued", fileName: "queued.bin", totalBytes: 2 });
     const transferring = markFileTransferTransferring(createFileTransferQueueItem({ id: "active", fileName: "active.bin", totalBytes: 3 }));
+    const paused = pauseFileTransfer(updateFileTransferProgress(createFileTransferQueueItem({ id: "paused", fileName: "paused.bin", totalBytes: 5 }), 2));
     const added = createFileTransferQueueItem({ id: "new", fileName: "new.bin", totalBytes: 4 });
 
-    expect(appendFileTransferQueueItems([completed, queued, transferring], [added], 3).map((item) => item.id))
-      .toEqual(["queued", "active", "new"]);
+    expect(appendFileTransferQueueItems([completed, queued, transferring, paused], [added], 4).map((item) => item.id))
+      .toEqual(["queued", "active", "paused", "new"]);
   });
 });

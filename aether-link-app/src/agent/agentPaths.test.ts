@@ -1,7 +1,9 @@
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+  applyAgentDesktopCaptureTransition,
   nextSecureDesktopCaptureState,
+  resolveAgentDesktopCaptureTransition,
   resolveAgentAppDir,
   resolveAgentCaptureSpawnPlan,
   resolveAgentPocPath,
@@ -89,5 +91,38 @@ describe("agent runtime paths", () => {
     expect(nextSecureDesktopCaptureState(true, false, "frame")).toBe(true);
     expect(nextSecureDesktopCaptureState(true, false, "default-desktop-required")).toBe(false);
     expect(nextSecureDesktopCaptureState(true, true)).toBe(false);
+  });
+
+  it("restarts capture exactly once for each real desktop-class transition", () => {
+    expect(resolveAgentDesktopCaptureTransition(false, "secure-desktop-required")).toEqual({
+      secureDesktop: true,
+      restartRequired: true,
+    });
+    expect(resolveAgentDesktopCaptureTransition(true, "secure-desktop-required")).toEqual({
+      secureDesktop: true,
+      restartRequired: false,
+    });
+    expect(resolveAgentDesktopCaptureTransition(true, "default-desktop-required")).toEqual({
+      secureDesktop: false,
+      restartRequired: true,
+    });
+    expect(resolveAgentDesktopCaptureTransition(false, "frame")).toEqual({
+      secureDesktop: false,
+      restartRequired: false,
+    });
+  });
+
+  it("commits a desktop transition only after restart is requested and retries a failed stop", () => {
+    const restart = vi.fn()
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true);
+
+    const failed = applyAgentDesktopCaptureTransition(false, "secure-desktop-required", restart);
+    expect(failed).toEqual({ secureDesktop: false, restartRequired: true, restartRequested: false });
+    const retried = applyAgentDesktopCaptureTransition(failed.secureDesktop, "secure-desktop-required", restart);
+    expect(retried).toEqual({ secureDesktop: true, restartRequired: true, restartRequested: true });
+    const duplicate = applyAgentDesktopCaptureTransition(retried.secureDesktop, "secure-desktop-required", restart);
+    expect(duplicate).toEqual({ secureDesktop: true, restartRequired: false, restartRequested: false });
+    expect(restart).toHaveBeenCalledTimes(2);
   });
 });

@@ -392,6 +392,18 @@ describe("manual Viewer device list in a real browser", () => {
         const input=document.querySelector<HTMLTextAreaElement>('[data-remote-ime-input="true"]')!;
         const dispatch=(type:string,key:string,code:string,flags:KeyboardEventInit={})=>input.dispatchEvent(new KeyboardEvent(type,{bubbles:true,cancelable:true,key,code,...flags}));
         (window as any).testState.controls=[];
+        dispatch('keydown','Control','ControlLeft',{ctrlKey:true});
+        dispatch('keydown','Shift','ShiftLeft',{ctrlKey:true,shiftKey:true});
+        dispatch('keydown','HangulMode','Lang1',{ctrlKey:true,shiftKey:true});
+        dispatch('keyup','HangulMode','Lang1');
+        dispatch('keyup','Shift','ShiftLeft');
+        dispatch('keyup','Control','ControlLeft');
+      });
+      expect(await page.evaluate(()=>(window as any).testState.controls)).toEqual(['key-down Ctrl','key-down Shift','key-up Ctrl','key-up Shift']);
+      await page.evaluate(() => {
+        const input=document.querySelector<HTMLTextAreaElement>('[data-remote-ime-input="true"]')!;
+        const dispatch=(type:string,key:string,code:string,flags:KeyboardEventInit={})=>input.dispatchEvent(new KeyboardEvent(type,{bubbles:true,cancelable:true,key,code,...flags}));
+        (window as any).testState.controls=[];
         dispatch('keydown','Process','ShiftLeft',{shiftKey:true,isComposing:true});
         dispatch('keydown','ArrowLeft','ArrowLeft',{shiftKey:true});
         dispatch('keyup','ArrowLeft','ArrowLeft',{shiftKey:true});
@@ -454,7 +466,7 @@ describe("manual Viewer device list in a real browser", () => {
       await page.waitForFunction(() => Boolean((window as any).rtcCallbacks));
       const text="local automatic save", sha=createHash("sha256").update(text).digest("hex");
       await page.evaluate(chunk=>(window as any).rtcCallbacks.onFileChunk(chunk,()=>true),{type:"file-chunk",transferId:"native-auto",filename:"received.txt",chunkIndex:0,totalChunks:1,totalBytes:Buffer.byteLength(text),isLast:true,fileData:Buffer.from(text).toString("base64"),chunkSha256:sha,fileSha256:sha});
-      await page.getByText("저장 완료 · C:/Downloads/received.txt",{exact:true}).waitFor();
+      await page.getByText("완료 · 100% · C:/Downloads/received.txt",{exact:true}).waitFor();
       await page.getByRole("button",{name:"내 PC 받은 폴더 열기",exact:true}).click();
       await page.getByRole("button",{name:"기본 다운로드 폴더 설정",exact:true}).click();
       const result=await page.evaluate(()=>({calls:(window as any).nativeCalls.map((x:any)=>x.command),chunks:(window as any).nativeChunks,controls:(window as any).testState.controls}));
@@ -780,6 +792,60 @@ describe("manual Viewer device list in a real browser", () => {
     } finally { await page.close(); }
   });
 
+  it("pauses, resumes, and separately cancels an outgoing transfer", async () => {
+    const page = await openViewer({ connected: true, desktop: true });
+    try {
+      await page.getByText("PC-0", { exact: true }).waitFor();
+      await page.evaluate(() => {
+        const w = window as any;
+        w.outgoingAttempts = [];
+        w.outgoingAborts = 0;
+        w.testSendFile = (input: any) => {
+          w.outgoingAttempts.push({ resume: input.resume === true, transferId: input.transferId });
+          input.onProgress?.(Math.min(32768, input.file.size), input.file.size);
+          return new Promise<boolean>((resolve, reject) => {
+            const abort = () => {
+              w.outgoingAborts += 1;
+              reject(new DOMException("File transfer cancelled.", "AbortError"));
+            };
+            input.signal.addEventListener("abort", abort, { once: true });
+            w.finishOutgoing = () => {
+              input.signal.removeEventListener("abort", abort);
+              input.onProgress?.(input.file.size, input.file.size);
+              resolve(true);
+            };
+          });
+        };
+      });
+      await page.locator(".table-row").filter({ has: page.getByText("PC-0", { exact: true }) })
+        .getByRole("button", { name: "접속", exact: true }).click();
+      const panel = page.getByTestId("remote-session-workspace");
+      const fileInput = panel.locator('input[type="file"]').first();
+
+      await fileInput.setInputFiles({ name: "outgoing.bin", mimeType: "application/octet-stream", buffer: Buffer.alloc(65536, 65) });
+      const outgoingRow = panel.locator(".session-transfer-queue-item").filter({ hasText: "outgoing.bin" });
+      await panel.getByRole("button", { name: "파일 전송 일시중단", exact: true }).click();
+      await expect.poll(() => outgoingRow.innerText()).toContain("일시중단됨");
+      await page.screenshot({ path: ".local-run/outgoing-paused-desktop.png" });
+      expect(await page.evaluate(() => (window as any).outgoingAttempts)).toHaveLength(1);
+      expect(await page.evaluate(() => (window as any).outgoingAborts)).toBe(1);
+
+      await panel.getByRole("button", { name: "파일 전송 이어받기", exact: true }).click();
+      await page.waitForFunction(() => (window as any).outgoingAttempts.length === 2);
+      const attempts = await page.evaluate(() => (window as any).outgoingAttempts);
+      expect(attempts[1]).toEqual({ resume: true, transferId: attempts[0].transferId });
+      await page.evaluate(() => (window as any).finishOutgoing());
+      await expect.poll(() => outgoingRow.innerText()).toContain("완료");
+
+      await fileInput.setInputFiles({ name: "cancel.bin", mimeType: "application/octet-stream", buffer: Buffer.alloc(65536, 66) });
+      const cancelRow = panel.locator(".session-transfer-queue-item").filter({ hasText: "cancel.bin" });
+      await cancelRow.getByRole("button", { name: "파일 전송 취소", exact: true }).click();
+      await expect.poll(() => cancelRow.innerText()).toContain("취소됨");
+      expect(await page.evaluate(() => (window as any).outgoingAborts)).toBe(2);
+      expect(await cancelRow.getByRole("button", { name: "재시도", exact: true }).count()).toBe(1);
+    } finally { await page.close(); }
+  });
+
   it("previews diagnostics before downloading the exact reviewed content", async () => {
     const page = await openViewer();
     try {
@@ -982,7 +1048,8 @@ describe("manual Viewer device list in a real browser", () => {
       expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(page.viewportSize()!.width);
       await page.screenshot({ path: `.local-run/incoming-progress-${mobile ? "mobile" : "desktop"}.png` });
       expect(await progress.getAttribute("value")).toBe("32768");
-      expect(await page.getByRole("button", { name: "중단된 수신 삭제", exact: true }).isDisabled()).toBe(true);
+      expect(await page.getByRole("button", { name: "파일 수신 일시중단", exact: true }).isEnabled()).toBe(true);
+      expect(await page.getByRole("button", { name: "파일 수신 취소", exact: true }).isEnabled()).toBe(true);
       await page.evaluate(chunk => (window as any).rtcCallbacks.onFileChunk(chunk, () => true), chunk(1));
       expect(await progress.getAttribute("value")).toBe("32768");
       await page.evaluate(async chunk => {
@@ -996,6 +1063,40 @@ describe("manual Viewer device list in a real browser", () => {
       expect(await page.getByRole("button", { name: "중단된 수신 이어받기", exact: true }).isEnabled()).toBe(true);
       await page.getByRole("button", { name: "중단된 수신 삭제", exact: true }).click();
       await progress.waitFor({ state: "detached" });
+    } finally { await page.close(); }
+  });
+  it("pauses, resumes, cancels and hides an incoming transfer without deleting it on panel close", async () => {
+    const page = await openViewer({ connected: true });
+    const first = Buffer.alloc(32768, 65), second = Buffer.alloc(32768, 66);
+    const chunk = (index: number, bytes: Buffer) => ({
+      type: "file-chunk", transferId: "controls-ui", filename: "controls.bin", totalBytes: 65537,
+      totalChunks: 3, chunkIndex: index, isLast: false, fileData: bytes.toString("base64"),
+      chunkSha256: createHash("sha256").update(bytes).digest("hex"),
+    });
+    try {
+      await page.locator(".table-row").filter({ has: page.getByText("PC-0", { exact: true }) }).getByRole("button", { name: "접속", exact: true }).click();
+      await page.waitForFunction(() => typeof (window as any).rtcCallbacks?.onFileChunk === "function");
+      await page.evaluate(() => (window as any).rtcCallbacks.onReverseFileSupport(true));
+      await page.evaluate(chunk => (window as any).rtcCallbacks.onFileChunk(chunk, () => true), chunk(0, first));
+      const progress = page.getByRole("progressbar", { name: "파일 수신 진행률" });
+      await progress.waitFor();
+      expect(await progress.locator("..").innerText()).toContain("49%");
+      await page.getByRole("button", { name: "파일 전송 목록 닫기", exact: true }).click();
+      await progress.waitFor({ state: "detached" });
+      await page.getByRole("button", { name: "파일 전송 목록 열기", exact: true }).click();
+      await page.getByRole("button", { name: "파일 수신 일시중단", exact: true }).click();
+      await page.evaluate(() => (window as any).rtcCallbacks.onFileStatus({ type: "file-status", requestId: "controls-ui", state: "cancelled" }));
+      await page.getByText(/수신 중단됨/).waitFor();
+      await page.getByRole("button", { name: "중단된 수신 이어받기", exact: true }).click();
+      await page.evaluate(() => (window as any).rtcCallbacks.onFileStatus({ type: "file-status", requestId: "controls-ui", state: "sending" }));
+      await page.evaluate(chunk => (window as any).rtcCallbacks.onFileChunk(chunk, () => true), chunk(1, second));
+      await expect.poll(() => progress.locator("..").innerText()).toContain("99%");
+      await page.getByRole("button", { name: "파일 수신 취소", exact: true }).click();
+      await page.evaluate(() => (window as any).rtcCallbacks.onFileStatus({ type: "file-status", requestId: "controls-ui", state: "cancelled" }));
+      await progress.waitFor({ state: "detached" });
+      expect(await page.getByRole("button", { name: "중단된 수신 이어받기", exact: true }).count()).toBe(0);
+      expect(await page.evaluate(() => (window as any).testState.controls.filter((value: string) => value === "cancel-file-send" || value.startsWith("request-file-resume"))))
+        .toEqual(["cancel-file-send", "request-file-resume controls-ui", "cancel-file-send"]);
     } finally { await page.close(); }
   });
   it("resumes an interrupted receive from its persisted ID only after capability confirmation", async () => {

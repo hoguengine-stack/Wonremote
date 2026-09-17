@@ -34,3 +34,22 @@ function Wait-AgentOnlineReceipt([string]$ReceiptPath, [string]$Root, [string]$V
   }
   throw "Agent online verification failed: target version, original identity and fresh server heartbeat were not confirmed. Previous files are retained."
 }
+
+function Wait-AgentSecureCaptureTask([string]$Root) {
+  $expectedCapture = [IO.Path]::GetFullPath((Join-Path $Root 'bin\wonremote-poc.exe'))
+  for ($attempt = 0; $attempt -lt 40; $attempt++) {
+    try {
+      $task = Get-ScheduledTask -TaskName 'WonRemote Secure Capture' -ErrorAction Stop
+      $actualCapture = [IO.Path]::GetFullPath([string]$task.Actions.Execute)
+      if ($task.Principal.UserId -eq 'SYSTEM' -and
+          $task.Principal.RunLevel -eq 'Highest' -and
+          $actualCapture.Equals($expectedCapture, [StringComparison]::OrdinalIgnoreCase) -and
+          $task.Actions.Arguments -eq '--mode secure-broker' -and
+          $task.State -eq 'Running') {
+        return
+      }
+    } catch { }
+    if ($attempt -lt 39) { Start-Sleep -Milliseconds 250 }
+  }
+  throw "Agent secure-desktop verification failed: the protected capture broker is missing, invalid or stopped. Previous files are retained."
+}
