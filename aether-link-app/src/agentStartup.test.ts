@@ -1,12 +1,12 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, rmdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, rmdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it, expect } from "vitest";
 
 describe.skipIf(process.platform !== "win32")("Agent first-run Windows boundaries", () => {
   it("runs the protected updater broker from its fixed install-relative request", () => {
-    const root = mkdtempSync(path.join(os.tmpdir(), "wonremote-protected-broker-"));
+    const root = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "wonremote-protected-broker-")));
     const requestId = "123e4567-e89b-42d3-a456-426614174000";
     const handoffRoot = path.join(root, ".update-handoff");
     const stageRoot = path.join(handoffRoot, requestId);
@@ -40,7 +40,7 @@ exit 0
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, 20_000);
 
   it("retains the requested handoff code independently of the event-loop return value", () => {
     // Installed RED: Wry translated request_exit(10) to ControlFlow::Exit (return0).
@@ -232,7 +232,7 @@ exit 0
     { hasLegacy: false, healthy: true },
     { hasLegacy: false, healthy: false },
   ])("starts and verifies postinstall runtime %j", ({ hasLegacy, healthy }) => {
-    const root = mkdtempSync(path.join(os.tmpdir(), "wonremote-agent-migration-"));
+    const root = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "wonremote-agent-migration-")));
     const appData = path.join(root, "Roaming");
     const profileRoot = path.join(root, "InteractiveUser");
     const localAppData = path.join(profileRoot, "AppData", "Local");

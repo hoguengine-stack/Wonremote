@@ -881,7 +881,7 @@
       "boundaries": ["main commit", "Windows CI build", "x86 installer payload", "signed manifest", "GitHub latest", "Firebase aliases"],
       "contractTests": ["aether-link-app/src/agentStartup.test.ts"],
       "proofLevel": "deployment-required",
-      "verification": "pending"
+      "verification": "CI 35185938764 correctly blocked publication on startup-suite prerequisite and fixture-path failures; no 0.1.104 assets published. Local repaired startup suite passed 18/18. CI rerun, build and public verification pending."
     }
   ],
   "historicalOutcomes": [

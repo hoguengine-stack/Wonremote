@@ -15,6 +15,11 @@
 - Release proof: Not built or deployed for this incident; current public Windows release remains 0.1.103.
 - Remaining blocker: Identify affected device/target version and obtain installer/handoff logs. Verify the packaged 0.1.95 upgrade on an isolated or designated device and confirm remote reconnection before claiming field resolution.
 
+### INC-20260917-112 CI integration follow-up
+
+- CI 35185938764 stopped before building or publishing: the newly wired startup suite assumed NSIS already existed, compared a Windows short TEMP path to a resolved long path, and used a 5-second test deadline around a 15-second subprocess deadline.
+- Prevention: run the complete startup suite after packaging installs its NSIS prerequisite, canonicalize the two affected fixture roots, and give the broker test a bounded 20-second outer deadline. No product health timeout or assertion is weakened; failed publication left 0.1.103 unchanged.
+
 ## INC-20260917-111: Android tests were requested before checking the published APK version
 
 - Detected: 2026-09-17 when the user reported Android Viewer was still 0.1.93.
