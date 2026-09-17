@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, rmdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -227,7 +227,11 @@ exit 0
     expect(output).not.toContain("STOPPED_PID=205");
   });
 
-  it("proves the protected runtime and broker before scheduling limited legacy cleanup", () => {
+  it.each([
+    { hasLegacy: true, healthy: true },
+    { hasLegacy: false, healthy: true },
+    { hasLegacy: false, healthy: false },
+  ])("starts and verifies postinstall runtime %j", ({ hasLegacy, healthy }) => {
     const root = mkdtempSync(path.join(os.tmpdir(), "wonremote-agent-migration-"));
     const appData = path.join(root, "Roaming");
     const profileRoot = path.join(root, "InteractiveUser");
@@ -250,7 +254,9 @@ exit 0
       $global:registered = @{}
       $global:protectedStarted = $false
       $global:bridgeStarted = $false
-      function Test-Path { param($LiteralPath,$PathType); return $true }
+      $global:clock = [datetime]'2026-09-17T00:00:00Z'
+      ${healthy ? "" : "function Get-Date { $global:clock = $global:clock.AddSeconds(20); return $global:clock }"}
+      function Test-Path { param($LiteralPath,$PathType); if ($LiteralPath -like '*AppData*Local*wonremote-viewer.exe') { return $${hasLegacy} }; return $true }
       function Resolve-Path { param($LiteralPath); return [pscustomobject]@{Path=$LiteralPath} }
       function Get-ItemProperty { param($LiteralPath,$ErrorAction); if ($LiteralPath -like '*ProfileList*') { return [pscustomobject]@{ProfileImagePath=$profileRoot} } }
       function New-ScheduledTaskAction { param($Execute,$Argument,$WorkingDirectory); return [pscustomobject]@{Execute=$Execute;Arguments=$Argument;WorkingDirectory=$WorkingDirectory} }
@@ -275,8 +281,9 @@ exit 0
       function Unregister-ScheduledTask { param($TaskName,[switch]$Confirm,$ErrorAction); $global:registered.Remove($TaskName); $global:events.Add("UNREGISTER:$TaskName") }
       function Get-CimInstance {
         param($ClassName,$ErrorAction)
+        $global:events.Add('CHECK_RUNTIME')
         $items = @()
-        if ($global:protectedStarted) { $items += [pscustomobject]@{ProcessId=201;Name='node.exe';ExecutablePath=(Join-Path $protectedRoot 'runtime\\node.exe');CommandLine=((Join-Path $protectedRoot 'agent\\index.mjs') + ' --watch')} }
+        if ($global:protectedStarted -and $${healthy}) { $items += [pscustomobject]@{ProcessId=201;Name='node.exe';ExecutablePath=(Join-Path $protectedRoot 'runtime\\node.exe');CommandLine=((Join-Path $protectedRoot 'agent\\index.mjs') + ' --watch')} }
         if ($global:bridgeStarted) { $items += [pscustomobject]@{ProcessId=202;Name='node.exe';ExecutablePath=(Join-Path $legacyRoot 'runtime\\node.exe');CommandLine=((Join-Path $legacyRoot 'agent\\index.mjs') + ' --watch')} }
         return $items
       }
@@ -287,26 +294,44 @@ exit 0
       function Start-Sleep {}
       $source = [IO.File]::ReadAllText('${helper}')
       $source = $source.Replace('$isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)', '$isAdmin = $true')
-      & ([scriptblock]::Create($source)) -Mode Migrate -AgentPath (Join-Path $protectedRoot 'wonremote-viewer.exe') -UserId 'S-1-5-21-1-2-3-1001'
+      try {
+        & ([scriptblock]::Create($source)) -Mode Migrate -AgentPath (Join-Path $protectedRoot 'wonremote-viewer.exe') -UserId 'S-1-5-21-1-2-3-1001'
+      } catch { Write-Output ($global:events -join '|'); Write-Output $_.Exception.Message; exit 1 }
       $global:events -join '|'
     `;
     try {
-      const output = execFileSync(
+      const result = spawnSync(
         "powershell.exe",
         ["-NoProfile", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
         { windowsHide: true, timeout: 15000, encoding: "utf8" },
       );
-      expect(output).toContain("REGISTER:WonRemote Agent Migration:Limited");
-      expect(output).toContain("START:WonRemote Agent Migration");
-      expect(output).toContain("MIGRATION_COMMAND:");
-      expect(output).toContain(legacyRoot);
-      expect(output).not.toContain(path.join(machineLocalAppData, "WonRemote", "Agent"));
-      expect(output).toContain("-Mode RunMigrationBridge");
-      expect(output).not.toContain("-UpdateHandoff");
-      expect(output).not.toContain("-SourceNode");
-      expect(output).not.toContain("-BridgePath");
-      expect(output).not.toContain("MONITOR");
-      expect(output.indexOf("START:WonRemote Agent|")).toBeLessThan(output.indexOf("START:WonRemote Agent Migration"));
+      expect(result.error).toBeUndefined();
+      const output = result.stdout;
+      expect(result.status, result.stderr + output).toBe(healthy ? 0 : 1);
+      expect(output).toContain("START:WonRemote Agent|");
+      expect(output).toContain("CHECK_RUNTIME");
+      if (!healthy) {
+        expect(output).toContain("The protected WonRemote Agent runtime did not stay healthy.");
+        expect(output).toContain("STOP:WonRemote Agent");
+        return;
+      }
+      expect(output.match(/CHECK_RUNTIME/g)).toHaveLength(3);
+      if (hasLegacy) {
+        expect(output).toContain("REGISTER:WonRemote Agent Migration:Limited");
+        expect(output).toContain("START:WonRemote Agent Migration");
+        expect(output).toContain("MIGRATION_COMMAND:");
+        expect(output).toContain(legacyRoot);
+        expect(output).not.toContain(path.join(machineLocalAppData, "WonRemote", "Agent"));
+        expect(output).toContain("-Mode RunMigrationBridge");
+        expect(output).not.toContain("-UpdateHandoff");
+        expect(output).not.toContain("-SourceNode");
+        expect(output).not.toContain("-BridgePath");
+        expect(output).not.toContain("MONITOR");
+        expect(output.indexOf("START:WonRemote Agent|")).toBeLessThan(output.indexOf("START:WonRemote Agent Migration"));
+      } else {
+        expect(output).not.toContain("REGISTER:WonRemote Agent Migration");
+        expect(output).not.toContain("START:WonRemote Agent Migration");
+      }
       expect(output).not.toContain(`REMOVE:${legacyRoot}`);
       expect(output).not.toContain("COPY:");
     } finally {

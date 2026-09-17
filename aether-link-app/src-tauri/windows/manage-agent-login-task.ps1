@@ -524,6 +524,11 @@ try {
     $resolvedLegacyRoot = Resolve-LegacyRoot $LegacyRoot
     if ($resolvedLegacyRoot) {
       Start-LegacyMigration $runtime $resolvedLegacyRoot
+    } else {
+      # The old updater or shell launch can disappear with its Windows Job.
+      Start-ScheduledTask -TaskName $taskName
+      Wait-ProtectedAgentRuntime $runtime
+      Wait-SecureBrokerTask
     }
   }
 } catch {

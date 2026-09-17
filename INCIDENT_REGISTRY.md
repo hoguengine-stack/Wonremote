@@ -1,5 +1,20 @@
 # WonRemote Incident Registry
 
+## INC-20260917-112: Protected Agent update path registers tasks without starting and checking the Agent
+
+- Detected: 2026-09-17 following the user's 0.1.95 update-then-offline report.
+- Severity: High; an installed-but-stopped Agent cannot provide remote access.
+- Affected: Agent postinstall Mode Migrate when no allowlisted legacy LocalAppData installation exists.
+- Status: Source repair and focused helper tests passed; affected-device root cause and packaged recovery remain unverified.
+- User-visible symptom: User reports files update from 0.1.95 but Agent does not restart and remote access is lost. Target version and device logs have not yet been provided.
+- Minimal trigger: Execute the actual postinstall helper with a protected installation and no legacy root; the original helper registered Agent/capture/update tasks but only started capture, returning without starting or checking Agent.
+- Root cause and contributors: The legacy migration branch explicitly starts the Agent task and checks runtime health; its no-legacy sibling omitted both and relied on the later unchecked RunAsUser call and old updater fallback. This verified omission is a candidate cause of the reported incident, not a confirmed diagnosis of the unidentified field PC.
+- Fix commit(s): Uncommitted focused helper change in this checkout.
+- Permanent guard: For no-legacy postinstall, explicitly start the registered protected Agent task and require existing bounded Agent-node and capture-task health checks. Keep the previous legacy path intact. The actual PowerShell helper is tested with scheduler/process stubs for legacy, no-legacy, and startup failure.
+- Regression proof: RED no-legacy fixture showed only registration and capture start, with no Agent start. GREEN three focused cases pass: both install paths start/check Agent, and missing runtime fails nonzero with cleanup. npm test -- src/agentStartup.test.ts src/desktopPackaging.test.ts passed 85/85 on 2026-09-17. These are local helper-boundary tests, not installed scheduler or remote-connectivity proof.
+- Release proof: Not built or deployed for this incident; current public Windows release remains 0.1.103.
+- Remaining blocker: Identify affected device/target version and obtain installer/handoff logs. Verify the packaged 0.1.95 upgrade on an isolated or designated device and confirm remote reconnection before claiming field resolution.
+
 ## INC-20260917-111: Android tests were requested before checking the published APK version
 
 - Detected: 2026-09-17 when the user reported Android Viewer was still 0.1.93.
