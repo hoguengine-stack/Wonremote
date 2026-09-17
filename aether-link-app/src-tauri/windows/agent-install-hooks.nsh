@@ -43,6 +43,7 @@
 
 !macro NSIS_HOOK_POSTINSTALL
   File /oname=$INSTDIR\manage-agent-login-task.ps1 "${WONREMOTE_AGENT_TASK_HOOK_DIR}\manage-agent-login-task.ps1"
+  File /oname=$INSTDIR\agent-update-health.ps1 "${WONREMOTE_AGENT_TASK_HOOK_DIR}\agent-update-health.ps1"
   File /oname=$INSTDIR\update-handoff-broker.ps1 "${WONREMOTE_AGENT_TASK_HOOK_DIR}\update-handoff-broker.ps1"
   !insertmacro WONREMOTE_MIGRATE_LEGACY_AGENT
   CreateDirectory "$SMPROGRAMS\WonRemote"
@@ -58,6 +59,7 @@
   !insertmacro WONREMOTE_MANAGE_AGENT_LOGIN_TASK Uninstall
   !insertmacro WONREMOTE_STOP_RUNNING_PROCESSES
   Delete "$INSTDIR\manage-agent-login-task.ps1"
+  Delete "$INSTDIR\agent-update-health.ps1"
   Delete "$INSTDIR\update-handoff-broker.ps1"
   RMDir /r "$INSTDIR\.update-handoff"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "WonRemoteAgent"

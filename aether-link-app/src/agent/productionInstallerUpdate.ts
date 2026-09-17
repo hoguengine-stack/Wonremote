@@ -24,6 +24,7 @@ export type InstallerHandoffResult = {
   args: string[];
   command: string;
   creationFlags: number;
+  installerPath: string;
   installerSha256: string;
   logPath: string;
   protectedAcknowledgementPath?: string;
@@ -50,6 +51,7 @@ type PrepareInstallerHandoffOptions = {
   restartExecutablePath?: string;
   restartMode?: InstallerRestartMode;
   targetVersion?: string;
+  legacyRollback?: boolean;
 };
 
 export type InstallerRestartMode = "agent" | "viewer";
@@ -214,6 +216,7 @@ export async function prepareInstallerHandoff(
     restartExecutablePath: options.restartExecutablePath,
     restartMode: options.restartMode ?? "agent",
     targetVersion: options.targetVersion,
+    legacyRollback: options.legacyRollback,
   });
   const scriptSha256 = createHash("sha256").update(script, "utf8").digest("hex");
   await writeFile(scriptPath, script, "utf8");
@@ -231,6 +234,7 @@ export async function prepareInstallerHandoff(
     args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath],
     command: "powershell.exe",
     creationFlags: INSTALLER_HANDOFF_CREATION_FLAGS,
+    installerPath: download.installerPath,
     installerSha256,
     logPath,
     ...(protectedAcknowledgementPath ? { protectedAcknowledgementPath } : {}),
@@ -256,6 +260,7 @@ function buildInstallerHandoffScript(input: {
   restartExecutablePath?: string;
   restartMode: InstallerRestartMode;
   targetVersion?: string;
+  legacyRollback?: boolean;
 }): string {
   const quotedArgs = input.installerArgs.map((arg) => `'${escapePowerShellSingleQuoted(arg)}'`).join(", ");
   const quotedExplicitInstallRoots = installerInstallRootsForHandoff(input.installerArgs)
@@ -273,6 +278,9 @@ $LockPath = '${escapePowerShellSingleQuoted(input.lockPath)}'
 $RestartMode = '${escapePowerShellSingleQuoted(input.restartMode)}'
 $RestartExecutablePath = '${escapePowerShellSingleQuoted(input.restartExecutablePath ?? "")}'
 $TargetVersion = '${escapePowerShellSingleQuoted(input.targetVersion ?? "")}'
+$LegacyRollback = $${input.legacyRollback === true}
+$UpdateStarted = [datetime]::UtcNow
+$IdentityBeforeUpdate = $null
 $ResultPath = Join-Path (Split-Path -Parent $OriginalInstallerPath) 'last-update-result.json'
 $explicitInstallRoots = @(${quotedExplicitInstallRoots})
 $RollbackRoot = Join-Path (Split-Path -Parent $OriginalInstallerPath) ('rollback-' + [guid]::NewGuid().ToString())
@@ -383,6 +391,16 @@ function Get-WonRemoteInstallRoots {
 }
 
 function Backup-WonRemoteInstall {
+  if ($RestartMode -eq 'agent') {
+    $configPath = Join-Path (Split-Path -Parent (Split-Path -Parent $OriginalInstallerPath)) 'agent-config.json'
+    if (Test-Path -LiteralPath $configPath -PathType Leaf) {
+      $script:IdentityBeforeUpdate = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    }
+    # Privileged rollback copies must not be writable through the user's download directory.
+    if (Test-UnderPath $PSScriptRoot @($env:ProgramFiles, \${env:ProgramFiles(x86)})) {
+      $script:RollbackRoot = Join-Path $PSScriptRoot ('rollback-' + [guid]::NewGuid().ToString())
+    }
+  }
   New-Item -ItemType Directory -Path $RollbackRoot -Force | Out-Null
   $pendingEntries = @()
   $index = 0
@@ -391,7 +409,8 @@ function Backup-WonRemoteInstall {
       if (-not (Test-Path -LiteralPath $root -PathType Container)) { continue }
       $backupPath = Join-Path $RollbackRoot ([string]$index)
       New-Item -ItemType Directory -Path $backupPath -Force | Out-Null
-      Get-ChildItem -LiteralPath $root -Force | Copy-Item -Destination $backupPath -Recurse -Force
+      Get-ChildItem -LiteralPath $root -Force | Where-Object { $_.Name -ne '.update-handoff' } |
+        Copy-Item -Destination $backupPath -Recurse -Force
       $pendingEntries += [pscustomobject]@{ Root = $root; Backup = $backupPath }
       Write-HandoffLog "Backed up WonRemote install root: $root"
       $index++
@@ -416,10 +435,21 @@ function Restore-WonRemoteInstall {
   if ($script:RollbackEntries.Count -eq 0) {
     throw 'No previous WonRemote installation was available to restore.'
   }
+  if ($RestartMode -eq 'agent') {
+    $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+    if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+      $protectedRoots = @($env:ProgramFiles, \${env:ProgramFiles(x86)})
+      if (-not (Test-UnderPath $RollbackRoot $protectedRoots) -or
+          @($script:RollbackEntries | Where-Object { -not (Test-UnderPath $_.Root $protectedRoots) }).Count -gt 0) {
+        throw 'Refusing privileged rollback from or into a user-writable legacy installation; recovery files retained.'
+      }
+    }
+  }
   Stop-WonRemoteProcesses
   foreach ($entry in $script:RollbackEntries) {
     if (Test-Path -LiteralPath $entry.Root) {
-      Remove-Item -LiteralPath $entry.Root -Recurse -Force
+      Get-ChildItem -LiteralPath $entry.Root -Force | Where-Object { $_.Name -ne '.update-handoff' } |
+        Remove-Item -Recurse -Force
     }
     New-Item -ItemType Directory -Path $entry.Root -Force | Out-Null
     Get-ChildItem -LiteralPath $entry.Backup -Force | Copy-Item -Destination $entry.Root -Recurse -Force
@@ -444,6 +474,8 @@ function Test-WonRemoteAgentRunning([string[]]$Roots) {
 
 function Get-WonRemoteAgentRoots {
   return @(
+    $(if ($env:ProgramFiles) { Join-Path $env:ProgramFiles 'WonRemote Agent' }),
+    $(if (\${env:ProgramFiles(x86)}) { Join-Path \${env:ProgramFiles(x86)} 'WonRemote Agent' }),
     $(if (-not [string]::IsNullOrWhiteSpace($RestartExecutablePath)) { Split-Path -Parent $RestartExecutablePath }),
     $explicitInstallRoots,
     "$env:LOCALAPPDATA\\WonRemote\\Agent",
@@ -473,6 +505,24 @@ function Wait-WonRemoteAgentRuntime {
     Start-Sleep -Milliseconds 500
   } while ((Get-Date) -lt $deadline)
   throw 'WonRemote Agent shell started, but its node.exe agent/index.mjs --watch runtime did not stay alive.'
+}
+
+function Wait-WonRemoteAgentOnline {
+  if ($LegacyRollback -and [version]$TargetVersion -le [version]'0.1.104') {
+    Write-HandoffLog 'Explicit legacy rollback: this release predates online receipts; only runtime recovery is confirmed.'
+    return
+  }
+  $root = @(Get-WonRemoteAgentRoots) | Where-Object {
+    (Test-UnderPath $_ @($env:ProgramFiles, \${env:ProgramFiles(x86)})) -and
+    (Test-Path -LiteralPath (Join-Path $_ 'agent-update-health.ps1') -PathType Leaf)
+  } | Select-Object -First 1
+  if (-not $root -or [string]::IsNullOrWhiteSpace($TargetVersion)) {
+    throw 'Installed Agent online verifier or target version is missing.'
+  }
+  . (Join-Path $root 'agent-update-health.ps1')
+  $receiptPath = Join-Path (Split-Path -Parent (Split-Path -Parent $OriginalInstallerPath)) 'agent-online.json'
+  Wait-AgentOnlineReceipt $receiptPath $root $TargetVersion $IdentityBeforeUpdate $UpdateStarted
+  Write-HandoffLog 'WonRemote Agent target version, identity and accepted heartbeat verified.'
 }
 
 function Start-WonRemoteAgent {
@@ -568,6 +618,7 @@ try {
   ${restartCommand}
   if ($RestartMode -eq 'agent') {
     Wait-WonRemoteAgentRuntime
+    Wait-WonRemoteAgentOnline
   } else {
     Wait-WonRemoteViewer
   }
@@ -594,6 +645,7 @@ try {
   $rollbackCompleted = $false
   if ($script:RollbackEntries.Count -gt 0) {
     try {
+      Write-UpdateResult 'rollback' 'New installation failed; restoring the previous runtime. Recovery is not yet confirmed.'
       Restore-WonRemoteInstall
       $rollbackCompleted = $true
     } catch {

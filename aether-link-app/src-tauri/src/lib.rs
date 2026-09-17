@@ -2022,7 +2022,28 @@ fn restart_viewer_from_tray(app: &tauri::AppHandle) {
 }
 
 #[tauri::command]
-fn start_installer_update(
+async fn start_installer_update(
+    app: tauri::AppHandle,
+    restart_mode: String,
+    restart_after_check: Option<bool>,
+    rollback_version: Option<String>,
+    selected_viewer: Option<bool>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        start_installer_update_inner(app, restart_mode, restart_after_check, rollback_version, selected_viewer)
+    }).await.map_err(|error| error.to_string())?
+}
+
+fn manual_update_uses_protected_task(restart_mode: &str, agent_runtime: bool) -> bool {
+    restart_mode == "agent" && agent_runtime
+}
+
+fn manual_update_completion(success: bool, handoff_error: Option<String>) -> Result<(), String> {
+    if let Some(error) = handoff_error { return Err(error); }
+    if success { Ok(()) } else { Err("Update process failed before installation.".to_string()) }
+}
+
+fn start_installer_update_inner(
     app: tauri::AppHandle,
     restart_mode: String,
     restart_after_check: Option<bool>,
@@ -2048,6 +2069,7 @@ fn start_installer_update(
     let package_kind = packaged_update_kind(&resources.root);
     let restart_executable = node_compatible_path(&env::current_exe().map_err(|error| error.to_string())?);
     let is_viewer_update = restart_mode == "viewer";
+    let allow_agent_update_task = manual_update_uses_protected_task(restart_mode, launched_as_agent());
     if is_viewer_update {
         if restart_after_check.unwrap_or(false) {
             return Err(
@@ -2103,8 +2125,11 @@ fn start_installer_update(
         }
     };
     let update_handoff_started = Arc::new(AtomicBool::new(false));
+    let handoff_error = Arc::new(Mutex::new(None::<String>));
+    let (completion_tx, completion_rx) = std::sync::mpsc::channel();
     let stdout_reader = child.stdout.take().map(|stdout| {
         let update_handoff_started = Arc::clone(&update_handoff_started);
+        let handoff_error = Arc::clone(&handoff_error);
         thread::spawn(move || {
             for line in BufReader::new(stdout).lines() {
                 match line {
@@ -2115,9 +2140,9 @@ fn start_installer_update(
                                 if should_attempt_update_handoff(
                                     &request,
                                     update_handoff_started.load(Ordering::Acquire),
-                                    false,
+                                    allow_agent_update_task,
                                 ) {
-                                    launch_brokered_update_handoff(request, false)
+                                    launch_brokered_update_handoff(request, allow_agent_update_task)
                                 } else {
                                     Ok(false)
                                 }
@@ -2125,7 +2150,10 @@ fn start_installer_update(
                         }) {
                             Ok(true) => update_handoff_started.store(true, Ordering::Release),
                             Ok(false) => {}
-                            Err(error) => append_runtime_log("updater-broker", &error),
+                            Err(error) => {
+                                append_runtime_log("updater-broker", &error);
+                                *handoff_error.lock().unwrap() = Some(error);
+                            }
                         }
                     }
                     Err(error) => {
@@ -2153,6 +2181,10 @@ fn start_installer_update(
     thread::spawn(move || {
         let result = child.wait();
         if let Some(reader) = stdout_reader { let _ = reader.join(); }
+        let completion = match &result {
+            Ok(status) => manual_update_completion(status.success(), handoff_error.lock().unwrap().take()),
+            Err(error) => Err(format!("Update process could not be monitored: {error}")),
+        };
         match result {
             Ok(status) => {
                 append_runtime_log("updater", &format!("process exited: {status}"));
@@ -2176,6 +2208,7 @@ fn start_installer_update(
         if selected && !update_handoff_started.load(Ordering::Acquire) {
             let _ = update_app.emit("selected-viewer-update-finished", ());
         }
+        let _ = completion_tx.send(completion);
     });
     append_runtime_log(
         "updater",
@@ -2183,7 +2216,7 @@ fn start_installer_update(
             "verified updater started restart_mode={restart_mode} arch={build_arch} package={package_kind}"
         ),
     );
-    Ok(())
+    completion_rx.recv().map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -3159,6 +3192,17 @@ mod registry_tests {
         );
         assert!(parse_update_handoff_request(UPDATE_HANDOFF_PREFIX).is_err());
         assert!(parse_update_handoff_request(&format!("{UPDATE_HANDOFF_PREFIX}%%%")).is_err());
+    }
+
+    #[test]
+    fn test_manual_update_task_scope_and_error_reporting() {
+        assert!(manual_update_uses_protected_task("agent", true));
+        assert!(!manual_update_uses_protected_task("agent", false));
+        assert!(!manual_update_uses_protected_task("viewer", true));
+        assert!(!manual_update_uses_protected_task("viewer", false));
+        assert_eq!(manual_update_completion(true, Some("os error 5".into())), Err("os error 5".into()));
+        assert!(manual_update_completion(false, None).is_err());
+        assert!(manual_update_completion(true, None).is_ok());
     }
 
     #[test]

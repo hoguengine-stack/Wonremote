@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { writeSync } from "node:fs";
 import path from "node:path";
 import {
-  formatUpdateHandoffBrokerRequest,
+  formatPreparedUpdateHandoff,
   isUpdateHandoffBrokerEnabled,
 } from "./agentUpdateHandoffBroker";
 import { WONREMOTE_APP_VERSION } from "../domain/appVersion";
@@ -53,7 +53,7 @@ interface UpdateOnceDeps {
   loadRollbackMetadata: typeof loadProductionRollbackMetadata;
   prepareHandoff: (
     download: InstallerDownloadResult,
-    options: { baseDir: string; restartExecutablePath?: string; restartMode: InstallerRestartMode; targetVersion?: string },
+    options: { baseDir: string; restartExecutablePath?: string; restartMode: InstallerRestartMode; targetVersion?: string; legacyRollback?: boolean },
   ) => Promise<InstallerHandoffResult>;
   preparePortableHandoff: (
     download: PortableDownloadResult,
@@ -203,7 +203,8 @@ async function prepareVerifiedInstallerUpdate(
     baseDir: options.baseDir,
     restartExecutablePath: options.restartExecutablePath,
     restartMode: options.restartMode,
-    ...(options.rollbackVersion ? { targetVersion: options.rollbackVersion } : {}),
+    targetVersion: metadata.latestVersion,
+    ...(options.rollbackVersion ? { legacyRollback: true } : {}),
   });
 }
 
@@ -276,7 +277,7 @@ export function launchInstallerHandoff(
   },
 ): void {
   if (isUpdateHandoffBrokerEnabled(env.WONREMOTE_TAURI_UPDATE_BROKER)) {
-    writeBrokerRequest(formatUpdateHandoffBrokerRequest(handoff.scriptPath));
+    writeBrokerRequest(formatPreparedUpdateHandoff(handoff));
     return;
   }
   const child = spawn(handoff.command, handoff.args, {

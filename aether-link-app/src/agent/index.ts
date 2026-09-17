@@ -14,6 +14,7 @@ import type { SessionData } from "../domain/sessionData";
 import { parseAgentConfigJson } from "./agentConfigJson";
 import { pollAgentCommands, postAgentSessionApproval, sendAgentHeartbeat } from "./agentClient";
 import { waitForApiHealth } from "./agentHealth";
+import { createAgentHealthReporter } from "./agentUpdateHealth";
 import {
   canRecoverMissingAgentRegistration,
   reconcileAgentRegistration,
@@ -91,8 +92,7 @@ import { parseAgentDisplayInventory } from "./agentDisplayInventory";
 import { PersistentInputInjector } from "./persistentInputInjector";
 import {
   AGENT_UPDATE_HANDOFF_EXIT_CODE,
-  formatInstallerUpdateHandoffBrokerRequest,
-  formatUpdateHandoffBrokerRequest,
+  formatPreparedUpdateHandoff,
   isUpdateHandoffBrokerEnabled,
   UPDATE_HANDOFF_ACKNOWLEDGEMENT_TIMEOUT_MS,
   updateHandoffAcknowledgementPath,
@@ -191,6 +191,10 @@ const USE_FIREBASE = isAgentFirebaseEnabled(process.env);
 const AGENT_SYSTEM_INFO = discoverAgentSystemInfo();
 const FIRESTORE_TILE_FALLBACK_POLICY = resolveFirestoreTileFallbackPolicy(process.env);
 const persistentInputInjector = new PersistentInputInjector(POC_PATH);
+const reportAgentOnline = createAgentHealthReporter({
+  baseDir: process.env.APPDATA ?? process.cwd(),
+  version: WONREMOTE_APP_VERSION,
+});
 
 async function releaseInputAndCompleteUpdateHandoff(
   scriptPath: string,
@@ -213,16 +217,7 @@ async function releaseInputAndCompleteUpdateHandoff(
     if (installerHandoff && !installerHandoff.protectedAcknowledgementPath) {
       throw new Error("Protected Agent update acknowledgement path is unavailable.");
     }
-    const request = installerHandoff
-      ? formatInstallerUpdateHandoffBrokerRequest({
-          acknowledgementPath: installerHandoff.protectedAcknowledgementPath!,
-          installerPath: installerHandoff.installerPath,
-          installerSha256: installerHandoff.installerSha256,
-          requestId: installerHandoff.requestId,
-          scriptPath,
-          scriptSha256: installerHandoff.scriptSha256,
-        })
-      : formatUpdateHandoffBrokerRequest(scriptPath);
+    const request = formatPreparedUpdateHandoff({ scriptPath, ...installerHandoff });
     await new Promise<void>((resolve, reject) => {
       process.stdout.write(`${request}\n`, (error) => {
         if (error) reject(error);
@@ -1108,13 +1103,6 @@ async function main() {
     console.error(error instanceof Error ? error.message : error);
   }
 
-  const baseDir = process.env.APPDATA ?? process.cwd();
-  const wonRemoteDir = path.join(baseDir, "WonRemote");
-  const successMarker = path.join(wonRemoteDir, ".update_success");
-  try {
-    await writeFile(successMarker, "SUCCESS");
-  } catch (e) {}
-
   if (!USE_FIREBASE || !process.argv.includes("--watch")) {
     activeConfig = await runCommandPollTick(activeConfig);
   }
@@ -1572,7 +1560,7 @@ async function rollbackAgent(config: AgentLocalConfig, version: string): Promise
       handoff: async (metadata, guard) => {
         if (!isInstallerUpdateMetadata(metadata)) throw new Error("Invalid rollback installer metadata.");
         await setUpdateTelemetry(config, { targetVersion: version, state: "downloading", progress: 0 });
-        await handoffToProductionInstallerUpdate(metadata, config, retry, guard);
+        await handoffToProductionInstallerUpdate(metadata, config, retry, guard, true);
       },
     });
     if (result === "deferred") remoteUpdateRequest.defer(retry);
@@ -1599,6 +1587,7 @@ async function handoffToProductionInstallerUpdate(
   config: AgentLocalConfig,
   retry: () => Promise<void> = () => checkUpdate(config, true),
   beforeLaunch?: () => Promise<void>,
+  legacyRollback = false,
 ): Promise<void> {
   const baseDir = process.env.APPDATA ?? process.cwd();
   const download = await downloadInstallerUpdate(data, {
@@ -1640,6 +1629,7 @@ async function handoffToProductionInstallerUpdate(
     restartExecutablePath: process.env.WONREMOTE_HOST_EXE_PATH,
     restartMode: "agent",
     targetVersion: data.latestVersion,
+    legacyRollback,
   });
   const { installerArgs, installerPath } = download;
   console.log(`[WonRemote Agent] Verified installer update downloaded: ${installerPath}`);
@@ -1979,6 +1969,9 @@ async function sendHeartbeat(config: AgentLocalConfig, heartbeatRequestId?: stri
     updateTelemetry: currentUpdateTelemetry,
   });
   console.log(`Heartbeat accepted: ${result.device.id}`);
+  await reportAgentOnline(config, result.device.id).catch((error) => {
+    console.warn(`[Agent] Online receipt could not be saved: ${error instanceof Error ? error.message : error}`);
+  });
 }
 
 async function pollCommands(config: AgentLocalConfig): Promise<void> {

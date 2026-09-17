@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: ["main"]
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish after build (disable for installed candidate verification)
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -129,7 +134,7 @@ jobs:
         run: npm run change:verify:predeploy
 
       - name: Verify release contract tests
-        run: npm test -- src/desktopPackaging.test.ts src/agent/productionUpdateCheck.test.ts src/agent/productionInstallerUpdate.test.ts src/agent/agentUpdateOnce.test.ts src/agent/productionUpdateMetadata.test.ts src/domain/updateManifest.test.ts src/domain/updateManifestScript.test.ts
+        run: npm test -- src/desktopPackaging.test.ts src/agent/productionUpdateCheck.test.ts src/agent/productionInstallerUpdate.test.ts src/agent/agentUpdateOnce.test.ts src/agent/agentUpdateHandoffBroker.test.ts src/agent/agentUpdateHealth.test.ts src/agent/updateResult.test.ts src/agent/productionUpdateMetadata.test.ts src/domain/updateManifest.test.ts src/domain/updateManifestScript.test.ts
 
       - name: Verify installer update E2E
         run: npm run test:update-e2e
@@ -145,6 +150,9 @@ jobs:
           rustc --edition 2021 --target i686-pc-windows-msvc -C opt-level=s tests/e2e/update_handoff_job_probe.rs -o src-tauri/target/i686-pc-windows-msvc/release/wonremote-job-probe.exe
           $env:WONREMOTE_BROKER_E2E_ARCH = "x86"
           npx tsx tests/e2e/test_update_handoff_broker.ts
+
+      - name: Verify manual update task scope and launch error reporting
+        run: cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc --release --lib test_manual_update
 
       - name: Apply and verify Authenticode signatures
         run: npm run release:sign
@@ -181,6 +189,7 @@ jobs:
 
   publish-release:
     needs: build-release
+    if: github.event_name != 'workflow_dispatch' || inputs.publish
     runs-on: windows-2022
     permissions:
       contents: write

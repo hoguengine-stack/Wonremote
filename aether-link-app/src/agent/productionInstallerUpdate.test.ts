@@ -17,7 +17,7 @@ const POWERSHELL_HARNESS_TIMEOUT_MS = 60_000;
 const POWERSHELL_CASE_TIMEOUT_MS = 75_000;
 
 describe("production installer update", () => {
-  it.runIf(process.platform === "win32").each(["launch", "installer", "runtime"])(
+  it.runIf(process.platform === "win32").each(["launch", "installer", "runtime", "online"])(
     "preserves or restores the runtime at the %s failure boundary",
     async (failure) => {
       const baseDir = path.join(os.tmpdir(), `wonremote-failure-${process.pid}-${failure}-${Date.now()}`);
@@ -51,7 +51,8 @@ function Start-Process {
   return $p
 }
 function Start-WonRemoteAgent { Record 'start' }
-function Wait-WonRemoteAgentRuntime { Record 'health'; throw 'replacement runtime unavailable' }
+function Wait-WonRemoteAgentRuntime { Record 'health'; if ($env:WR_FAILURE -eq 'runtime') { throw 'replacement runtime unavailable' } }
+function Wait-WonRemoteAgentOnline { Record 'online'; throw 'replacement heartbeat unavailable' }
 function Restore-WonRemoteInstall { Record 'restore-and-restart' }
 function Remove-WonRemoteRollback { Record 'cleanup-backup' }
 function Write-UpdateResult([string]$State, [string]$Message) { Record $State }
@@ -69,14 +70,78 @@ ${script.slice(start)}
           await expect(stat(`${harness}.accepted`)).rejects.toThrow();
         } else {
           expect(recorded).toEqual([
-            "backup", "launch", ...(failure === "runtime" ? ["start", "health"] : []),
-            "restore-and-restart", "rollback", "cleanup-backup", "unlock",
+            "backup", "launch", ...(["runtime", "online"].includes(failure) ? ["start", "health"] : []),
+            ...(failure === "online" ? ["online"] : []),
+            "rollback", "restore-and-restart", "rollback", "cleanup-backup", "unlock",
           ]);
         }
       } finally { await rm(baseDir, { recursive: true, force: true }); }
     },
     POWERSHELL_CASE_TIMEOUT_MS,
   );
+  it.runIf(process.platform === "win32")("backs up and restores without copying or deleting the active protected handoff", async () => {
+    const baseDir = path.join(os.tmpdir(), `wonremote-protected-rollback-${process.pid}-${Date.now()}`);
+    try {
+      const programFiles = path.join(baseDir, "Program Files");
+      const root = path.join(programFiles, "WonRemote Agent");
+      const stage = path.join(root, ".update-handoff", "test");
+      await mkdir(stage, { recursive: true });
+      await writeFile(path.join(root, "app.txt"), "previous-version");
+      await writeFile(path.join(stage, "handoff-alive.txt"), "running");
+      const installer = path.join(baseDir, "installer.exe");
+      await writeFile(installer, "installer");
+      const handoff = await prepareInstallerHandoff({ installerPath: installer, installerArgs: ["/S"],
+        installerSha256: createHash("sha256").update("installer").digest("hex") }, { baseDir, targetVersion: "0.1.105" });
+      const script = await readFile(handoff.scriptPath, "utf8");
+      const prefix = script.slice(0, script.lastIndexOf("\ntry {\n  Backup-WonRemoteInstall"));
+      const q = (value: string) => `'${value.replace(/'/g, "''")}'`;
+      const harness = path.join(stage, "rollback-test.ps1");
+      await writeFile(harness, prefix + `
+$env:ProgramFiles=${q(programFiles)}
+\${env:ProgramFiles(x86)}=${q(programFiles)}
+function Get-WonRemoteInstallRoots { return ${q(root)} }
+function Stop-WonRemoteProcesses {}
+function Start-WonRemoteAgent {}
+function Wait-WonRemoteAgentRuntime {}
+Backup-WonRemoteInstall
+if (-not (Test-UnderPath $RollbackRoot $PSScriptRoot)) { throw 'backup is unprotected' }
+if (Test-Path -LiteralPath (Join-Path $RollbackRoot '0\\.update-handoff')) { throw 'recursive stage backup' }
+Set-Content -LiteralPath ${q(path.join(root, "app.txt"))} -Value 'broken'
+Restore-WonRemoteInstall
+if (-not (Test-Path -LiteralPath ${q(path.join(stage, "handoff-alive.txt"))})) { throw 'active updater deleted' }
+Remove-WonRemoteRollback
+Close-UpdateLock
+`);
+      const result = spawnSync("powershell.exe", ["-NoProfile", "-File", harness], { encoding: "utf8", windowsHide: true, timeout: 10000 });
+      expect(result.status, result.stderr + result.stdout).toBe(0);
+      expect(await readFile(path.join(root, "app.txt"), "utf8")).toBe("previous-version");
+    } finally { await rm(baseDir, { recursive: true, force: true }); }
+  });
+  it.runIf(process.platform === "win32")("only permits the explicitly requested pre-receipt rollback to use legacy runtime proof", async () => {
+    const baseDir = path.join(os.tmpdir(), `wonremote-legacy-health-${process.pid}-${Date.now()}`);
+    try {
+      await mkdir(baseDir, { recursive: true });
+      const installer = path.join(baseDir, "installer.exe");
+      await writeFile(installer, "installer");
+      const handoff = await prepareInstallerHandoff({ installerPath: installer, installerArgs: ["/S"],
+        installerSha256: createHash("sha256").update("installer").digest("hex") }, { baseDir });
+      const script = await readFile(handoff.scriptPath, "utf8");
+      const functionBody = script.slice(script.indexOf("function Wait-WonRemoteAgentOnline"), script.indexOf("function Start-WonRemoteAgent"));
+      const harness = path.join(baseDir, "legacy-health.ps1");
+      await writeFile(harness, `$ErrorActionPreference='Stop'
+${functionBody}
+function Write-HandoffLog([string]$Message) {}
+function Get-WonRemoteAgentRoots { return @() }
+$LegacyRollback=$true; $TargetVersion='0.1.104'; Wait-WonRemoteAgentOnline
+foreach ($case in @(@{legacy=$false;version='0.1.104'},@{legacy=$true;version='0.1.105'})) {
+  $LegacyRollback=$case.legacy; $TargetVersion=$case.version
+  try { Wait-WonRemoteAgentOnline; throw 'missing verifier accepted' }
+  catch { if ($_.Exception.Message -ne 'Installed Agent online verifier or target version is missing.') { throw } }
+}`);
+      const result = spawnSync("powershell.exe", ["-NoProfile", "-File", harness], { encoding: "utf8", windowsHide: true, timeout: 10000 });
+      expect(result.status, result.stderr).toBe(0);
+    } finally { await rm(baseDir, { recursive: true, force: true }); }
+  });
   it.runIf(process.platform === "win32")("executes successful handoff cleanup without deleting failure evidence or identity", async () => {
     const baseDir = path.join(os.tmpdir(), `wonremote-cleanup-${process.pid}-${Date.now()}`);
     const updates = path.join(baseDir, "WonRemote", "updates");

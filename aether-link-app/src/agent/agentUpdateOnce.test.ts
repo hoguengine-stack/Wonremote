@@ -1,4 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { prepareInstallerHandoff } from "./productionInstallerUpdate";
 import {
   UPDATE_ONCE_EXIT,
   UpdateOnceError,
@@ -36,6 +41,7 @@ function updateDeps(overrides: Record<string, unknown> = {}) {
       args: ["-File", "handoff.ps1"],
       command: "powershell.exe",
       creationFlags: 1,
+      installerPath: "C:\\Temp\\WonRemote-Viewer-Agent-Setup.exe",
       installerSha256: "a".repeat(64),
       logPath: "handoff.log",
       requestId: "123e4567-e89b-42d3-a456-426614174000",
@@ -55,6 +61,31 @@ function updateDeps(overrides: Record<string, unknown> = {}) {
 }
 
 describe("non-interactive bundled updater", () => {
+  it.each(["agent", "viewer"] as const)("routes confirmed %s installer through its correct broker protocol", async (restartMode) => {
+    const baseDir = await mkdtemp(path.join(os.tmpdir(), "wonremote-manual-update-"));
+    try {
+      const installerPath = path.join(baseDir, "installer.exe");
+      await writeFile(installerPath, "verified fixture bytes");
+      const installerSha256 = createHash("sha256").update(await readFile(installerPath)).digest("hex");
+      const requests: string[] = [];
+      const deps = updateDeps({
+        downloadInstaller: async () => ({ installerPath, installerSha256, installerArgs: ["/S"] }),
+        prepareHandoff: prepareInstallerHandoff,
+        launchHandoff: (handoff: Parameters<typeof launchInstallerHandoff>[0]) => launchInstallerHandoff(handoff, { WONREMOTE_TAURI_UPDATE_BROKER: "1" }, request => requests.push(request)),
+      });
+      await runUpdateOnce({ baseDir, restartMode, restartExecutablePath: path.join(baseDir, "protected", "wonremote-viewer.exe") }, deps as any);
+      expect(requests).toHaveLength(1);
+      if (restartMode === "agent") {
+        expect(requests[0]).toMatch(/^\[WonRemoteUpdateHandoffV2\]/);
+        const payload = JSON.parse(Buffer.from(requests[0].split("]")[1], "base64url").toString("utf8"));
+        expect(payload).toMatchObject({ version: 2, installerPath, installerSha256 });
+        expect(payload.acknowledgementPath).toBe(path.join(baseDir, "protected", ".update-handoff", payload.requestId, "installer-started.accepted"));
+        expect(createHash("sha256").update(await readFile(payload.scriptPath)).digest("hex")).toBe(payload.scriptSha256);
+      } else {
+        expect(requests[0]).toMatch(/^\[WonRemoteUpdateHandoff\]/);
+      }
+    } finally { await rm(baseDir, { recursive: true, force: true }); }
+  });
   it("requires an explicit stable rollback version and rejects portable rollback", () => {
     expect(parseUpdateOnceOptions(["--update-once", "--restart-mode", "agent", "--rollback-version", "0.1.90"], {})).toMatchObject({ rollbackVersion: "0.1.90" });
     for (const args of [["--rollback-version"], ["--rollback-version", "../latest"], ["--rollback-version", "0.1.90", "--rollback-version", "0.1.89"]]) {
@@ -86,6 +117,7 @@ describe("non-interactive bundled updater", () => {
       args: ["-File", "C:\\Data\\WonRemote\\updates\\run-installer-update-test.ps1"],
       command: "powershell.exe",
       creationFlags: 1,
+      installerPath: "C:\\Temp\\WonRemote-Viewer-Agent-Setup.exe",
       installerSha256: "a".repeat(64),
       logPath: "C:\\Data\\WonRemote\\updates\\handoff.log",
       requestId: "123e4567-e89b-42d3-a456-426614174000",
@@ -141,6 +173,7 @@ describe("non-interactive bundled updater", () => {
       baseDir: "C:\\Data",
       restartMode: "agent",
       restartExecutablePath: "C:\\WonRemote\\Agent.exe",
+      targetVersion: "9.9.9",
     });
   });
 
@@ -180,6 +213,7 @@ describe("non-interactive bundled updater", () => {
     expect(deps.prepareHandoff).toHaveBeenCalledWith(expect.anything(), {
       baseDir: "C:\\Data",
       restartMode: "viewer",
+      targetVersion: "9.9.9",
     });
     expect(deps.launchHandoff).toHaveBeenCalledOnce();
   });

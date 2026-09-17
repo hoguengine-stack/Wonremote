@@ -169,7 +169,8 @@ describe("desktop packaging scaffold", () => {
     expect(tauriLib).toContain("stage_agent_installer_handoff");
     expect(tauriLib).toContain("run_agent_update_handoff_task");
     expect(agentIndex).toContain("prepareInstallerHandoff");
-    expect(agentIndex).toContain("formatInstallerUpdateHandoffBrokerRequest");
+    expect(agentIndex).toContain("formatPreparedUpdateHandoff");
+    expect(readFileSync(path.join(projectRoot, "src/agent/agentUpdateOnce.ts"), "utf8")).toContain("formatPreparedUpdateHandoff");
     expect(agentIndex).toContain("creationFlags: handoff.creationFlags");
     expect(agentIndex).not.toContain("spawn(installerPath, installerArgs");
     const taskLaunch = brokerProcess.slice(brokerProcess.indexOf("pub(crate) fn run_agent_update_handoff_task"));
@@ -765,6 +766,8 @@ describe("desktop packaging scaffold", () => {
 
     expect(redirects["/download/viewer-x86"]).toContain("WonRemote-Viewer-Setup.exe");
     expect(redirects["/download/agent-x86"]).toContain("WonRemote-Agent-Setup.exe");
+    expect(redirects["/download/agent"]).toBe("https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Agent-Setup.exe");
+    expect(redirects["/download/agent-x86"]).toBe(redirects["/download/agent"]);
     expect(redirects["/download/agent.apk"]).toBe("/download/agent.zip");
     expect(redirects["/download/viewer.apk"]).toBe("/download/viewer.zip");
     expect(redirects["/download/control-addon.apk"]).toBe("/download/control-addon.zip");
@@ -1015,6 +1018,14 @@ describe("desktop packaging scaffold", () => {
       "/download/viewer-x86",
       "/download/viewer.apk",
     ]);
+  });
+
+  it("can build a main-branch candidate without publishing untested installation bytes", () => {
+    const workflow = readFileSync(path.join(projectRoot, "..", ".github/workflows/publish-release.yml"), "utf8");
+    expect(workflow).toContain("type: boolean\n        default: true");
+    expect(workflow.split("  publish-release:")[1]).toContain("if: github.event_name != 'workflow_dispatch' || inputs.publish");
+    expect(workflow).toContain("needs: change-guard");
+    expect(workflow).toContain("needs: build-release");
   });
 
   it("verifies delivery against the split WonRemote install folders", () => {

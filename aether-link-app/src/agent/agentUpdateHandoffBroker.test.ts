@@ -3,6 +3,7 @@ import {
   AGENT_UPDATE_HANDOFF_EXIT_CODE,
   encodeUpdateHandoffScriptPath,
   formatInstallerUpdateHandoffBrokerRequest,
+  formatPreparedUpdateHandoff,
   formatUpdateHandoffBrokerRequest,
   INSTALLER_UPDATE_HANDOFF_BROKER_PREFIX,
   isUpdateHandoffBrokerEnabled,
@@ -54,5 +55,17 @@ describe("agent update handoff broker", () => {
 
   it("allows Task Scheduler cold start without abandoning the healthy Agent", () => {
     expect(UPDATE_HANDOFF_ACKNOWLEDGEMENT_TIMEOUT_MS).toBe(30_000);
+  });
+
+  it("uses the same prepared request for manual and automatic installed updates without downgrading incomplete V2", () => {
+    const handoff = { scriptPath: "update.ps1", installerPath: "setup.exe", installerSha256: "a".repeat(64),
+      scriptSha256: "b".repeat(64), requestId: "request", protectedAcknowledgementPath: "protected.accepted" };
+    const decode = (request: string) => JSON.parse(Buffer.from(request.slice(INSTALLER_UPDATE_HANDOFF_BROKER_PREFIX.length), "base64url").toString("utf8"));
+    expect(decode(formatPreparedUpdateHandoff(handoff))).toEqual(decode(formatInstallerUpdateHandoffBrokerRequest({
+      scriptPath: handoff.scriptPath, installerPath: handoff.installerPath, installerSha256: handoff.installerSha256,
+      scriptSha256: handoff.scriptSha256, requestId: handoff.requestId, acknowledgementPath: handoff.protectedAcknowledgementPath,
+    })));
+    expect(() => formatPreparedUpdateHandoff({ ...handoff, installerSha256: undefined })).toThrow("incomplete");
+    expect(formatPreparedUpdateHandoff({ scriptPath: "portable.ps1" })).toBe(formatUpdateHandoffBrokerRequest("portable.ps1"));
   });
 });

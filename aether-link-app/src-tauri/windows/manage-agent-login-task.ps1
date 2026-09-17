@@ -375,9 +375,6 @@ function Start-MigrationMonitor([string]$Path, [datetime]$StartedUtc) {
 
 function Start-LegacyMigration($Runtime, [string]$Path) {
   $legacy = Resolve-LegacyRoot $Path
-  Start-ScheduledTask -TaskName $taskName
-  Wait-ProtectedAgentRuntime $Runtime
-  Wait-SecureBrokerTask
 
   $started = [datetime]::UtcNow
   $escapedScript = $PSCommandPath.Replace("'", "''")
@@ -521,18 +518,33 @@ try {
   }
 
   if ($Mode -eq "Migrate") {
-    $resolvedLegacyRoot = Resolve-LegacyRoot $LegacyRoot
-    if ($resolvedLegacyRoot) {
-      Start-LegacyMigration $runtime $resolvedLegacyRoot
-    } else {
-      # The old updater or shell launch can disappear with its Windows Job.
-      Start-ScheduledTask -TaskName $taskName
-      Wait-ProtectedAgentRuntime $runtime
-      Wait-SecureBrokerTask
+    $legacyRoots = if ($LegacyRoot) { @(Resolve-LegacyRoot $LegacyRoot) } else {
+      @(Get-LegacyAgentRoots | Where-Object { Test-Path -LiteralPath (Join-Path $_ 'wonremote-viewer.exe') -PathType Leaf })
+    }
+    # Read identity before the replacement starts. Never remove registration data.
+    $profileAppData = Split-Path -Parent (Get-UserLocalAppData $UserId)
+    $stateRoot = Join-Path $profileAppData 'Roaming\WonRemote'
+    $configPath = Join-Path $stateRoot 'agent-config.json'
+    $expectedIdentity = $null
+    if (Test-Path -LiteralPath $configPath -PathType Leaf) {
+      $expectedIdentity = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    }
+    $started = [datetime]::UtcNow
+    Start-ScheduledTask -TaskName $taskName
+    Wait-ProtectedAgentRuntime $runtime
+    Wait-SecureBrokerTask
+    $script:replacementRunning = $true
+    if ($expectedIdentity -or $legacyRoots.Count -gt 0) {
+      . (Join-Path $runtime.Root 'agent-update-health.ps1')
+      $version = (Get-Item -LiteralPath $runtime.Agent).VersionInfo.ProductVersion -replace '\+.*$', ''
+      Wait-AgentOnlineReceipt (Join-Path $stateRoot 'agent-online.json') $runtime.Root $version $expectedIdentity $started
+    }
+    foreach ($root in $legacyRoots) {
+      Start-LegacyMigration $runtime $root
     }
   }
 } catch {
-  if ($Mode -eq "Migrate") {
+  if ($Mode -eq "Migrate" -and -not $script:replacementRunning) {
     Stop-MigrationTasks -IncludeProtected
   }
   throw

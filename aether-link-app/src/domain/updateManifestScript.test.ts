@@ -2,6 +2,9 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
+import { runInNewContext } from "node:vm";
+import { transformSync } from "esbuild";
 import { describe, expect, it } from "vitest";
 
 const projectRoot = path.resolve(__dirname, "..", "..");
@@ -44,6 +47,21 @@ describe("production update manifest scripts", () => {
       expect(manifest.windows).toEqual(manifest.viewerWindows);
       expect(manifest.viewerWindows.x64.url).toContain("/download/v9.9.9/");
       expect(manifest.viewerWindows.x64.url).not.toContain("latest/download");
+      // Run the actual 0.1.88 reader, not today's parser posing as a legacy client.
+      const legacySource = execFileSync("git", ["show", "04cb8336253e5d102bdd9f58af69ae19b4f7e1a5:aether-link-app/src/domain/updateManifest.ts"],
+        { cwd: projectRoot, encoding: "utf8" });
+      const legacyModule = { exports: {} as { parseProductionUpdateManifest: (manifest: unknown, options: unknown) => { latestVersion: string; assetName: string } } };
+      runInNewContext(transformSync(legacySource, { loader: "ts", format: "cjs" }).code,
+        { module: legacyModule, exports: legacyModule.exports, require: createRequire(import.meta.url), Buffer, URL });
+      for (const product of ["agent", "viewer"]) {
+        for (const arch of ["x86", "x64"]) {
+          const options = { product, arch, publicKeyPem: readFileSync(publicKey, "utf8") };
+          expect(legacyModule.exports.parseProductionUpdateManifest(manifest, options)).toMatchObject({
+            latestVersion: "9.9.9", assetName: product === "agent" ? "WonRemote-Agent-Setup.exe" : "WonRemote-Viewer-Setup.exe",
+          });
+          expect(() => legacyModule.exports.parseProductionUpdateManifest({ ...manifest, version: "9.9.10" }, options)).toThrow();
+        }
+      }
       execFileSync(process.execPath, [
         path.join(projectRoot, "scripts", "verify-release-manifest.js"),
         "--manifest", out,

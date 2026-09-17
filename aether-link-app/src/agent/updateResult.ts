@@ -10,7 +10,7 @@ export async function loadInstallerUpdateResult(
   const content = await readFile(resultPath, "utf8").catch(() => "");
   if (!content) return null;
   try {
-    const value = JSON.parse(content) as Record<string, unknown>;
+    const value = JSON.parse(content.replace(/^\uFEFF/, "")) as Record<string, unknown>;
     if (!RESULT_STATES.has(value.state as DeviceUpdateState)) return null;
     return {
       currentVersion,

@@ -1,5 +1,33 @@
 # WonRemote Incident Registry
 
+## INC-20260917-114: Installer success did not establish online recovery; Windows result BOM was ignored
+
+- Detected: 2026-09-17 during the user-requested update lifecycle repair; source inspection and focused failing tests, not a newly claimed production outage.
+- Severity: High; a shell/Node process alone cannot prove the replacement version is reachable under the same registration.
+- Root cause: Installer and legacy cleanup accepted process existence. Manual preparation omitted targetVersion. The startup success marker was written even after heartbeat failure. Windows PowerShell writes UTF-8 BOM but updateResult parsed raw JSON, silently dropping recovery state; rollback state was also recorded after starting the old process.
+- Permanent guard implemented in source: Shared manual/automatic handoff serializer; atomic once-per-process server-accepted receipt; live PID, start time, executable path, version and identity checks; finite 60-probe verification before cleanup; both exact legacy roots; preserve a running replacement on failed online validation. Protected rollback backup excludes the active handoff directory and refuses elevated restoration through user-writable roots. Old-release reader compatibility executes pinned v0.1.88 source. Release CI definition includes health, shared-dispatch, BOM and native error guards; this change has not been pushed or deployed.
+- Evidence: BOM RED/GREEN reproduced and fixed. 153 distinct focused TypeScript/Vitest cases passed across scoped runs, including the real fixture Node plus local HTTP acknowledgement and PowerShell/CIM receipt boundary. Migration fixture denies cleanup when online health fails and handles both allowlisted roots on success. Existing installer E2E passed success, two rollback paths and pre-launch backup refusal. TypeScript and git diff checks passed. Prior native x86 manual-update test remains valid for unchanged Rust source. These are local/fixture checks, not a production installed-upgrade claim.
+- Test-development corrections: Compare decoded broker JSON rather than key-order bytes; use the physical stage directory for PowerShell PSScriptRoot; keep fixture profile variables distinct from script locals. These fixture issues are not claimed as deployed defects.
+- Remaining: Corrected installer build, real old-to-new installed upgrade, outage recovery and device/server checks on the fixed test devices. No release or installation of these changes is claimed.
+- Compatibility exception: An explicit rollback to <=0.1.104 can prove only runtime recovery because those versions do not emit online receipts; normal upgrades cannot use that exception. A privileged restore involving writable legacy binaries fails closed and retains its files for manual recovery instead of executing those binaries with elevated rights.
+- Release gate check: change:verify:predeploy rejected this active contract solely because it is not ready-to-deploy. The status was intentionally not promoted while the corrected installer and physical upgrade boundary remain unverified; no guard was bypassed.
+
+## INC-20260917-113: Manual Agent updater still uses denied legacy Job breakaway
+
+- Detected: 2026-09-17 on local Agent 82220F6D, installed 0.1.103.
+- Severity: High; confirmed manual updates download but never start installation.
+- Affected: update confirmation -> native start_installer_update -> bundled agentUpdateOnce -> native broker.
+- Status: Source routing repair passed focused checks. Local PC separately recovered to public 0.1.104 via its normal installer; installed manual button still requires a future corrected build.
+- User-visible symptom: Confirming 0.1.104 installation does nothing; restarting only replaces the Node child, leaving the Agent window present.
+- Minimal trigger: Agent scheduled task runtime requests a manual update. Local log records denied PowerShell breakaway (os error 5) twice after a legacy WonRemoteUpdateHandoff request; no Agent installer handoff log appears.
+- Root cause and contributors: Automatic Agent updates gained protected InstallerV2 task handoff in 0.1.102, but manual agentUpdateOnce still emits the legacy script-only protocol and its native reader forbids the Agent task. The native command returned success before the reader error, leaving the existing UI error handler unused. Prior 0.1.104 repair covered postinstall startup, not this preinstall manual branch.
+- Fix commit(s): Uncommitted source repair.
+- Permanent guard: Real manual-updater preparation tests check Agent V2 paths and hashes while Viewer retains its own protocol; native tests restrict protected task use to Agent mode and prove a broker error overrides subprocess success. Return the background completion result to the existing confirmation error dialog without blocking the UI thread.
+- Regression proof: Local installed logs are the failing evidence. Focused updater/installer/packaging tests passed 92/92, TypeScript passed, and x86 release native test_manual_update_task_scope_and_error_reporting passed. Installed corrected-button proof remains open.
+- Release proof: No new build or public deployment for this incident. Published 0.1.104 still has the manual-branch defect; its separate postinstall startup repair remains valid.
+- Local recovery: Rechecked downloaded Agent installer SHA256 5d94716e2984fbaa6bb4cca534e428e89cac4627e8516faF174f40815072b67c, launched through normal Windows RunAs installation, exit 0. Runtime log confirms Agent 0.1.104 at the protected path, original 123-45-67890:AGENT-82220F6D identity, accepted heartbeat and active command listener. This does not prove the old manual button was repaired.
+- Remaining blocker: Install a built correction and verify manual confirmation end-to-end. Agent full-window restart behavior remains a separate unimplemented user request.
+
 ## INC-20260917-112: Protected Agent update path registers tasks without starting and checking the Agent
 
 - Detected: 2026-09-17 following the user's 0.1.95 update-then-offline report.

@@ -36,3 +36,25 @@ export function formatInstallerUpdateHandoffBrokerRequest(
 export function updateHandoffAcknowledgementPath(scriptPath: string): string {
   return `${scriptPath}.accepted`;
 }
+
+export function formatPreparedUpdateHandoff(handoff: {
+  scriptPath: string;
+  protectedAcknowledgementPath?: string;
+  installerPath?: string;
+  installerSha256?: string;
+  requestId?: string;
+  scriptSha256?: string;
+}): string {
+  if (!handoff.protectedAcknowledgementPath) return formatUpdateHandoffBrokerRequest(handoff.scriptPath);
+  if (!handoff.installerPath || !handoff.installerSha256 || !handoff.requestId || !handoff.scriptSha256) {
+    throw new Error("Protected installer handoff is incomplete.");
+  }
+  return formatInstallerUpdateHandoffBrokerRequest({
+    acknowledgementPath: handoff.protectedAcknowledgementPath,
+    installerPath: handoff.installerPath,
+    installerSha256: handoff.installerSha256,
+    requestId: handoff.requestId,
+    scriptPath: handoff.scriptPath,
+    scriptSha256: handoff.scriptSha256,
+  });
+}
