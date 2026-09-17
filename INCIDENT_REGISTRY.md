@@ -1,5 +1,12 @@
 # WonRemote Incident Registry
 
+## 0.1.105 candidate and installed evidence (2026-09-17)
+
+- CI 35202314215 on 54b11bc455fb42522bd2c220e41ae31f6c2ed9a8 passed normal release tests/build/signing-manifest steps with publication disabled. Downloaded manifest and both installers passed trusted signature/hash checks; executable Authenticode remains NotSigned.
+- On 82220F6D, the exact Agent candidate upgraded protected 0.1.104 to 0.1.105 through normal RunAs /S installation, exit 0 at 09:09:23Z. No manual launch was needed. Installed PE, living Node PID 31384, matching original device/install IDs, fresh accepted heartbeat receipt and active Firebase command listener confirmed automatic return. Both legacy install roots were already absent; this is not legacy-migration proof.
+- Corrected manual-button operation, outage recovery, other devices and remote pixels/input remain unverified. Historical incident gaps are not closed by this installed startup result.
+- Process correction: the pre-commit check for 54b11bc failed because its workflow-only worktree did not contain earlier outcome test paths. The command sequence incorrectly continued to commit, and its trailer saying the gate passed omitted that timing. Clean committed-tree change:verify subsequently passed and CI independently passed; this does not retroactively establish a successful pre-commit check. Subsequent command batches must stop on failed validation before committing/publishing.
+
 ## Candidate build phase correction (2026-09-17)
 
 CI 35201994636 correctly refused the first 0.1.105 candidate because its Windows build step still required predeploy status even with publication disabled. No installer was published. Build-only dispatch now runs the existing complete source gate; publishing builds retain predeploy, and the publication job independently enforces predeploy again. The candidate guard tests both the conditional source check and the unconditional publication readiness check. Physical gaps remain open; this phase correction does not mark installation verified.
