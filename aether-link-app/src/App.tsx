@@ -11,6 +11,7 @@ import {
   Clipboard,
   FileUp,
   Download,
+  ExternalLink,
   FolderOpen,
   Video,
   Volume2,
@@ -3022,6 +3023,7 @@ function RemoteSessionPanel({
   const [transferPanelOpen, setTransferPanelOpen] = useState(true);
   const [receivedDownloadRequested, setReceivedDownloadRequested] = useState(false);
   const [nativeSaveState, setNativeSaveState] = useState("");
+  const [receivedSavedPath, setReceivedSavedPath] = useState("");
   const nativeSaveRef = React.useRef<AbortController | null>(null);
   const desktopDownloads = Boolean((window as any).__TAURI_INTERNALS__);
   const [downloadFolder, setDownloadFolder] = useState("");
@@ -3033,7 +3035,10 @@ function RemoteSessionPanel({
     setNativeSaveState("검증 및 저장 중 · 99%");
     try {
       const savedPath = await saveDesktopFile(file, invoke, controller.signal);
-      if (!controller.signal.aborted) setNativeSaveState(`완료 · 100% · ${savedPath}`);
+      if (!controller.signal.aborted) {
+        setReceivedSavedPath(savedPath);
+        setNativeSaveState(`완료 · 100% · ${savedPath}`);
+      }
       try {
         await reverseReceiverRef.current?.discard();
         receivedFileRef.current = null;
@@ -3043,7 +3048,7 @@ function RemoteSessionPanel({
       if (!controller.signal.aborted) setNativeSaveState(`저장 실패 · ${error instanceof Error ? error.message : String(error)}`);
     } finally { if (nativeSaveRef.current === controller) nativeSaveRef.current = null; }
   }
-  useEffect(() => { setNativeSaveState(""); }, [receivedFile?.id]);
+  useEffect(() => { setNativeSaveState(""); setReceivedSavedPath(""); }, [receivedFile?.id]);
   useEffect(() => {
     if (!desktopDownloads || !receivedFile || autoSavedId.current === receivedFile.id) return;
     autoSavedId.current = receivedFile.id;
@@ -5164,8 +5169,16 @@ function RemoteSessionPanel({
               {receivedFile && (
                 <div className="session-transfer-queue-item completed">
                   <span><strong>{receivedFile.filename}</strong><small>{nativeSaveState || (receivedDownloadRequested ? "다운로드 요청됨" : "수신 완료 · 저장 대기")}</small></span>
+                  {desktopDownloads ? (nativeSaveState.startsWith("저장 실패") ? (
+                    <button type="button" title="파일 저장 다시 시도" aria-label="파일 저장 다시 시도" onClick={() => void saveReceivedDesktopFile(receivedFile)}>
+                      <RotateCcw size={16} />
+                    </button>
+                  ) : (
+                    <button type="button" title="다운로드 받은 파일 열기" aria-label="다운로드 받은 파일 열기" disabled={!receivedSavedPath} onClick={() => {
+                      void invoke("open_viewer_download_file", { path: receivedSavedPath }).catch(error => setSessionDataError(String(error)));
+                    }}><ExternalLink size={16} /></button>
+                  )) : (
                   <button type="button" title="받은 파일 저장" aria-label="받은 파일 저장" disabled={nativeSaveState.includes("저장 중")} onClick={async () => {
-                    if (desktopDownloads) { await saveReceivedDesktopFile(receivedFile); return; }
                     if (/\bWonRemoteViewer\/1\b/.test(navigator.userAgent)) {
                       const controller = new AbortController();
                       nativeSaveRef.current = controller;
@@ -5184,11 +5197,11 @@ function RemoteSessionPanel({
                     document.body.appendChild(link); link.click(); link.remove();
                     window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
                     setReceivedDownloadRequested(true);
-                  }}><Download size={16} /></button>
+                  }}><Download size={16} /></button>)}
                   <button type="button" title="수신 항목 정리" aria-label="수신 항목 정리" disabled={nativeSaveState.includes("저장 중")} onClick={async () => {
                     try {
                       await reverseReceiverRef.current?.discard();
-                      receivedFileRef.current = null; setReceivedFile(null);
+                      receivedFileRef.current = null; setReceivedSavedPath(""); setReceivedFile(null);
                     } catch { setSessionDataError("수신 임시 파일을 삭제하지 못했습니다."); }
                   }}><Trash2 size={16} /></button>
                 </div>
@@ -5509,14 +5522,9 @@ function RemoteSessionPanel({
                   </button>
                   <input multiple type="file" ref={fileInputRef} onChange={handleFileUpload} style={{ display: "none" }} />
                   {device?.platform !== "android" && (!/\bWonRemoteViewer\/1\b/.test(navigator.userAgent) || androidFileExporter.available()) && (
-                    <>
-                      <button className="secondary-button" type="button" disabled={!isWebRtcConnectionReady || !reverseFileSupported || (Boolean(receivedFile) && !receivedDownloadRequested)} onClick={() => { setTransferPanelOpen(true); onInputEvent("request-file-send"); }} title={reverseFileSupported ? "원격 PC에서 보낼 파일 선택" : "연결된 에이전트의 파일 가져오기 지원이 확인되지 않았습니다"}>
-                        <Download size={17} /><span>원격 파일 가져오기</span>
-                      </button>
-                      <button className="secondary-button" type="button" disabled={!isWebRtcConnectionReady || !reverseFileSupported} onClick={() => onInputEvent("cancel-file-send")} title="원격 파일 선택·전송 취소">
-                        <X size={17} /><span>가져오기 취소</span>
-                      </button>
-                    </>
+                    <button className="secondary-button" type="button" disabled={!isWebRtcConnectionReady || !reverseFileSupported || (Boolean(receivedFile) && !receivedDownloadRequested)} onClick={() => { setTransferPanelOpen(true); onInputEvent("request-file-send"); }} title={reverseFileSupported ? "원격 PC에서 보낼 파일 선택" : "연결된 에이전트의 파일 가져오기 지원이 확인되지 않았습니다"}>
+                      <Download size={17} /><span>원격 파일 가져오기</span>
+                    </button>
                   )}
                   {desktopDownloads && <button className="secondary-button" type="button" title={downloadFolder || "내 PC 기본 다운로드 폴더 설정"} onClick={async () => {
                     try { setDownloadFolder(await invoke<string>("choose_viewer_download_folder")); }

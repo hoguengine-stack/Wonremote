@@ -1,6 +1,6 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use std::os::windows::ffi::OsStrExt;
-use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+use windows_sys::Win32::{Storage::FileSystem::MoveFileExW, UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL}};
 use std::{collections::HashMap, fs::{self, File, OpenOptions}, io::Write, path::{Path, PathBuf}, sync::{Mutex, atomic::{AtomicU64, Ordering}}};
 
 struct Download { file: File, temporary: PathBuf, destination: PathBuf, total: u64, written: u64 }
@@ -78,6 +78,21 @@ fn finish(state: &Downloads, id: &str) -> Result<String, String> {
     drop(item.file);
     Ok(path.to_string_lossy().into_owned())
 }
+fn resolve_download_file(root: &Path, requested: &Path) -> Result<PathBuf, String> {
+    if !requested.is_absolute() { return Err("다운로드 받은 파일 경로가 올바르지 않습니다.".into()); }
+    let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
+    let requested = fs::canonicalize(requested).map_err(|_| "다운로드 받은 파일을 찾을 수 없습니다.".to_string())?;
+    if !requested.starts_with(&root) || !requested.is_file() { return Err("다운로드 폴더 안의 파일만 열 수 있습니다.".into()); }
+    Ok(requested)
+}
+fn open_download_file_at(root: &Path, requested: &Path) -> Result<(), String> {
+    let requested = resolve_download_file(root, requested)?;
+    let operation: Vec<u16> = "open".encode_utf16().chain(Some(0)).collect();
+    let requested: Vec<u16> = requested.as_os_str().encode_wide().chain(Some(0)).collect();
+    let result = unsafe { ShellExecuteW(std::ptr::null_mut(), operation.as_ptr(), requested.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL) };
+    if result as isize <= 32 { return Err(format!("다운로드 받은 파일을 열지 못했습니다. 오류 코드: {}", result as isize)); }
+    Ok(())
+}
 #[tauri::command]
 pub fn viewer_download_folder() -> Result<String, String> { Ok(folder()?.to_string_lossy().into_owned()) }
 #[tauri::command]
@@ -99,6 +114,8 @@ pub fn open_viewer_download_folder() -> Result<(), String> {
     std::process::Command::new("explorer.exe").arg(folder()?).spawn().map_err(|e| e.to_string())?;
     Ok(())
 }
+#[tauri::command]
+pub fn open_viewer_download_file(path: String) -> Result<(), String> { open_download_file_at(&folder()?, Path::new(&path)) }
 #[tauri::command]
 pub async fn choose_viewer_download_folder() -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(|| {
@@ -149,5 +166,22 @@ mod tests {
         for path in results { assert_eq!(fs::read(path).unwrap(), b"x"); }
         assert_eq!(fs::read(root.join("test.txt")).unwrap(), b"old");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn resolves_only_existing_files_inside_download_root() {
+        let base = std::env::temp_dir().join(format!("wonremote-open-{}-{}", std::process::id(), NEXT_ID.fetch_add(1, Ordering::Relaxed)));
+        let root = base.join("downloads");
+        fs::create_dir_all(&root).unwrap();
+        let saved = root.join("received.txt");
+        let outside = base.join("outside.txt");
+        fs::write(&saved, b"saved").unwrap();
+        fs::write(&outside, b"outside").unwrap();
+        assert_eq!(resolve_download_file(&root, &saved).unwrap(), fs::canonicalize(&saved).unwrap());
+        assert!(resolve_download_file(&root, &outside).is_err());
+        assert!(resolve_download_file(&root, &root).is_err());
+        assert!(resolve_download_file(&root, &root.join("missing.txt")).is_err());
+        assert!(resolve_download_file(&root, Path::new("received.txt")).is_err());
+        fs::remove_dir_all(base).unwrap();
     }
 }

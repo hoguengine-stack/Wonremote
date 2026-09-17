@@ -2732,6 +2732,7 @@ pub fn run() {
             viewer_downloads::viewer_download_folder,
             viewer_downloads::choose_viewer_download_folder,
             viewer_downloads::open_viewer_download_folder,
+            viewer_downloads::open_viewer_download_file,
             viewer_downloads::begin_viewer_download,
             viewer_downloads::write_viewer_download,
             viewer_downloads::finish_viewer_download,

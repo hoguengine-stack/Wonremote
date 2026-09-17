@@ -467,12 +467,15 @@ describe("manual Viewer device list in a real browser", () => {
       const text="local automatic save", sha=createHash("sha256").update(text).digest("hex");
       await page.evaluate(chunk=>(window as any).rtcCallbacks.onFileChunk(chunk,()=>true),{type:"file-chunk",transferId:"native-auto",filename:"received.txt",chunkIndex:0,totalChunks:1,totalBytes:Buffer.byteLength(text),isLast:true,fileData:Buffer.from(text).toString("base64"),chunkSha256:sha,fileSha256:sha});
       await page.getByText("완료 · 100% · C:/Downloads/received.txt",{exact:true}).waitFor();
+      expect(await page.getByRole("button",{name:"받은 파일 저장",exact:true}).count()).toBe(0);
+      await page.getByRole("button",{name:"다운로드 받은 파일 열기",exact:true}).click();
       await page.getByRole("button",{name:"내 PC 받은 폴더 열기",exact:true}).click();
       await page.getByRole("button",{name:"기본 다운로드 폴더 설정",exact:true}).click();
-      const result=await page.evaluate(()=>({calls:(window as any).nativeCalls.map((x:any)=>x.command),chunks:(window as any).nativeChunks,controls:(window as any).testState.controls}));
-      expect(result.calls.filter((x:string)=>x==="finish_viewer_download")).toHaveLength(1);
-      expect(result.calls).toContain("open_viewer_download_folder");
-      expect(result.calls).toContain("choose_viewer_download_folder");
+      const result=await page.evaluate(()=>({calls:(window as any).nativeCalls,chunks:(window as any).nativeChunks,controls:(window as any).testState.controls}));
+      expect(result.calls.filter((x:any)=>x.command==="finish_viewer_download")).toHaveLength(1);
+      expect(result.calls).toContainEqual({command:"open_viewer_download_file",args:{path:"C:/Downloads/received.txt"}});
+      expect(result.calls.map((x:any)=>x.command)).toContain("open_viewer_download_folder");
+      expect(result.calls.map((x:any)=>x.command)).toContain("choose_viewer_download_folder");
       expect(result.controls).not.toContain("open-download-folder");
       expect(Buffer.from(result.chunks.join(""),"base64").toString()).toBe(text);
     } finally { await page.close(); }
@@ -980,7 +983,7 @@ describe("manual Viewer device list in a real browser", () => {
       expect(downloads).toEqual([]);
     } finally { await page.close(); }
   });
-  it("sends explicit remote file selection and cancellation from the PC tools menu", async () => {
+  it("starts remote file selection without duplicating transfer cancellation in the PC tools menu", async () => {
     const page = await openViewer({ connected: true });
     try {
       await page.getByText("PC-0", { exact: true }).waitFor();
@@ -989,9 +992,9 @@ describe("manual Viewer device list in a real browser", () => {
       expect(await page.getByRole("button", { name: "원격 파일 가져오기", exact: true }).isDisabled()).toBe(true);
       await page.evaluate(() => (window as any).rtcCallbacks.onReverseFileSupport());
       await page.getByRole("button", { name: "원격 파일 가져오기", exact: true }).click();
-      await page.getByRole("button", { name: "가져오기 취소", exact: true }).click();
+      expect(await page.getByRole("button", { name: "가져오기 취소", exact: true }).count()).toBe(0);
       expect(await page.evaluate(() => (window as any).testState.controls.filter((value: string) => value.endsWith("file-send"))))
-        .toEqual(["request-file-send", "cancel-file-send"]);
+        .toEqual(["request-file-send"]);
       await page.evaluate(() => (window as any).rtcCallbacks.onFileStatus({ type: "file-status", requestId: "reverse-ui", state: "selecting" }));
       await page.getByRole("status").filter({ hasText: "원격 PC에서 파일 선택 중" }).waitFor();
       await page.evaluate(() => (window as any).rtcCallbacks.onFileStatus({ type: "file-status", requestId: "reverse-ui", state: "selection-failed" }));
