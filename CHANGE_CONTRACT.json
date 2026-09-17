@@ -777,7 +777,7 @@
         "aether-link-app/scripts/verify-recurrence-coverage.test.js"
       ],
       "proofLevel": "automated-runtime",
-      "verification": "2026-09-17: node --test scripts/verify-regression-review.test.mjs passed 5 cases using real temporary Git commits and CLI subprocess rejection; npm test -- scripts/verify-recurrence-coverage.test.js passed 16 existing contract tests. Local CI definition keeps change-guard as a release prerequisite and adds gate rejection tests. Remote workflow activation is not claimed; changes remain uncommitted."
+      "verification": "2026-09-17: node --test scripts/verify-regression-review.test.mjs passed 5 cases using real temporary Git commits and CLI subprocess rejection; npm test -- scripts/verify-recurrence-coverage.test.js passed 16 existing contract tests. npm run change:verify passed locally. Main commit 65972e9571c22f6e414f3e0838189cc14593f825 activated the gate in GitHub Actions run 35177780697: rejection tests and development/recurrence verification passed; build-release and publish-release were skipped. No product or device changes."
     }
   ],
   "historicalOutcomes": [
