@@ -61,6 +61,9 @@ if (-not $SkipAppBuild) {
   }
 }
 
+& node (Join-Path $RepoRoot "mobile/android/create-update-manifest.mjs") --verify-hosted
+if ($LASTEXITCODE -ne 0) { throw "Android Hosting output does not match verified release artifacts." }
+
 $DeployFunctions = $IncludeFunctions -and -not $SparkOnly
 $DeployStorage = $IncludeStorage -and -not $SkipStorage
 

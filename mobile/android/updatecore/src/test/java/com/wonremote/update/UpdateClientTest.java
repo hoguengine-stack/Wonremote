@@ -53,6 +53,7 @@ public class UpdateClientTest {
         }
     }
     @Test public void currentOrOlderReleaseNeverDownloads() throws Exception {
+        // Current discovery must remain quiet when no newer artifact was published.
         byte[] content = {1};
         AtomicInteger reads = new AtomicInteger();
         try (UpdateClient client = new UpdateClient(ID, 1080, url -> {
@@ -60,6 +61,24 @@ public class UpdateClientTest {
         })) {
             assertNull(client.check(false)); assertEquals(1, reads.get());
         }
+    }
+    @Test public void viewer1093Detects1103AndVerifiesDownload() throws Exception {
+        String viewer = "com.wonremote.viewer";
+        byte[] apk = "viewer-1103-fixture".getBytes(StandardCharsets.UTF_8);
+        byte[] archive = zip(apk, "WonRemote-Viewer.apk");
+        byte[] metadata = new String(manifest(viewer, 1103, archive, apk), StandardCharsets.UTF_8)
+            .replace("0.1.80", "0.1.103").replace("/agent.zip", "/viewer.zip")
+            .getBytes(StandardCharsets.UTF_8);
+        File target = Files.createTempFile("wonremote-viewer-1103", ".apk").toFile();
+        try (UpdateClient client = new UpdateClient(viewer, 1093, url ->
+                new ByteArrayInputStream(url.equals(UpdateClient.MANIFEST) ? metadata : archive))) {
+            UpdateClient.Release release = client.check(true);
+            assertNotNull(release);
+            assertEquals(1103, release.versionCode);
+            assertEquals("0.1.103", release.versionName);
+            client.download(release, target);
+            assertArrayEquals(apk, Files.readAllBytes(target.toPath()));
+        } finally { target.delete(); }
     }
     @Test public void quotaOrNetworkFailureNeverRetriesWithoutUserAction() throws Exception {
         AtomicInteger reads = new AtomicInteger();

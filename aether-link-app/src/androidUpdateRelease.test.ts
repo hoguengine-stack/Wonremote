@@ -1,11 +1,11 @@
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, cpSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 // @ts-expect-error Standalone Node release script.
-import { publishAndroidManifest, verifyAndroidManifest } from "../../mobile/android/create-update-manifest.mjs";
+import { publishAndroidManifest, verifyAndroidManifest, verifyAndroidHostingArtifacts } from "../../mobile/android/create-update-manifest.mjs";
 
 const roots: string[] = [];
 function fixture() {
@@ -28,6 +28,33 @@ function fixture() {
 }
 afterEach(() => roots.splice(0).forEach(root => rmSync(root, { recursive: true, force: true })));
 describe("Android release discovery", () => {
+  it("blocks stale or missing Hosting copies even when public APK metadata passes", () => {
+    const { root, app, inspect } = fixture();
+    publishAndroidManifest(root, inspect);
+    expect(() => verifyAndroidHostingArtifacts(root)).toThrow("Stale Android Hosting artifact");
+    const hosted = path.join(app, "dist/download");
+    cpSync(path.join(app, "public/download"), hosted, { recursive: true });
+    expect(() => verifyAndroidHostingArtifacts(root)).not.toThrow();
+    for (const file of ["android-update.json", "viewer.zip", "android/v0.1.81/viewer.zip"]) {
+      const target = path.join(hosted, file);
+      const original = readFileSync(target);
+      writeFileSync(target, "old hosting output");
+      expect(() => verifyAndroidManifest(root)).not.toThrow();
+      expect(() => verifyAndroidHostingArtifacts(root)).toThrow("Stale Android Hosting artifact");
+      writeFileSync(target, original);
+    }
+  });
+  it("publishes a strictly newer discovery entry for installed Viewer 0.1.93", () => {
+    const { root, app, inspect } = fixture();
+    writeFileSync(path.join(app, "package.json"), JSON.stringify({ version: "0.1.103" }));
+    const manifest = publishAndroidManifest(root, (file: string) =>
+      inspect(file).replace("1081", "1103").replace("0.1.81", "0.1.103"));
+    const viewer = manifest.apps["com.wonremote.viewer"];
+    expect(viewer.versionCode).toBeGreaterThan(1093);
+    expect(viewer.versionName).toBe("0.1.103");
+    expect(viewer.url).toContain("/android/v0.1.103/viewer.zip");
+    expect(() => verifyAndroidManifest(root)).not.toThrow();
+  });
   it("publishes all three actual package versions and hashes with versioned payload URLs", () => {
     const { root, app, inspect } = fixture();
     const manifest = publishAndroidManifest(root, inspect);

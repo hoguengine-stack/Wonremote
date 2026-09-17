@@ -1,5 +1,40 @@
 {
-  "status": "verified",
+  "status": "ready-to-deploy",
+  "processGateVerifiedTask20260917": {
+    "status": "verified",
+    "intent": "Reject missing regression comparison evidence through the existing local and CI change gate.",
+    "changeType": "feature",
+    "risk": "medium",
+    "releaseImpact": "none",
+    "rollback": "Revert only the process-gate changes; preserve prior product outcomes and release requirements.",
+    "requestReview": {
+      "impact": "none",
+      "reason": "Local Git and contract validation only; no product network or request path changes."
+    },
+    "regressionReview": {
+      "kind": "non-regression",
+      "reason": "New enforcement capability requested by the user; no previously working product behavior is being repaired."
+    },
+    "outcomes": [
+      {
+        "id": "regression-comparison-enforced",
+        "acceptance": "Local change verification and the existing CI prerequisite reject absent classification, incomplete regression evidence and invalid Git comparisons, while documented non-regression tasks pass.",
+        "boundaries": [
+          "CHANGE_CONTRACT.json",
+          "change:verify",
+          "Git comparison",
+          "CI change-guard",
+          "dependent build-release"
+        ],
+        "contractTests": [
+          "aether-link-app/scripts/verify-regression-review.test.mjs",
+          "aether-link-app/scripts/verify-recurrence-coverage.test.js"
+        ],
+        "proofLevel": "automated-runtime",
+        "verification": "2026-09-17: node --test scripts/verify-regression-review.test.mjs passed 5 cases using real temporary Git commits and CLI subprocess rejection; npm test -- scripts/verify-recurrence-coverage.test.js passed 16 existing contract tests. npm run change:verify passed locally. Main commit 65972e9571c22f6e414f3e0838189cc14593f825 activated the gate in GitHub Actions run 35177780697: rejection tests and development/recurrence verification passed; build-release and publish-release were skipped. No product or device changes."
+      }
+    ]
+  },
   "processGatePreviousTask20260917": {
     "status": "verified",
     "intent": "Repair per-machine legacy-profile discovery, release WonRemote Windows Viewer and Agent v0.1.103, and prove automatic selected-device update plus exact obsolete LocalAppData cleanup on 82220F6D without widening rollout.",
@@ -159,7 +194,7 @@
   },
   "regressionReview": {
     "kind": "non-regression",
-    "reason": "New enforcement capability requested by the user; no previously working product behavior is being repaired."
+    "reason": "Public Android discovery still advertises 0.1.93; publish existing newer source. Also add a missing Hosting-artifact consistency guard after observing an old dist copy during concurrent local builds. No previously working updater algorithm is being repaired."
   },
   "agentLifecycleRepair20260916": {
     "status": "verified",
@@ -647,18 +682,18 @@
   "currentRequest": "2026-09-17: Resolve the intended user's legacy Agent root from its SID-backed profile instead of the per-machine installer shell context, then publish v0.1.103 and prove the protected scheduled updater, exact cleanup, restart and heartbeat on 82220F6D only.",
   "clipboardFetchRepair": "2026-09-14: Replace the fixed 600ms remote-clipboard fetch with one explicit, bounded clipboard-only event subscription. Drain pre-existing queued clipboard data before sending the request, accept the first subsequent Agent response, close immediately on success/error/timeout/session change, and preserve manual-only clipboard ownership. Do not add polling, an idle listener or automatic synchronization.",
   "clipboardChange": "2026-09-08: Remote shortcuts must use only the remote clipboard. Local clipboard transfer requires an explicit toolbar action; remove automatic synchronization including saved preferences. Build/deployment deferred until this change is verified.",
-  "intent": "Reject missing regression comparison evidence through the existing local and CI change gate.",
-  "changeType": "feature",
+  "intent": "Build and publish Android 0.1.103 with the existing signing identity so installed Viewer 0.1.93 detects and downloads the newer verified APK.",
+  "changeType": "build",
   "risk": "medium",
-  "releaseImpact": "none",
-  "rollback": "Revert only the process-gate changes; preserve prior product outcomes and release requirements.",
+  "releaseImpact": "build-and-deploy",
+  "rollback": "Restore the previous Firebase Hosting release if public artifact verification fails; retain immutable Android archives and do not downgrade installed devices.",
   "deploymentBlockers": [],
   "firestoreVerification": "2026-09-14: npm run firebase:rules:test passed with a temporary Microsoft OpenJDK 21 runtime and the local Firestore emulator. Agent session access, central and managed Viewer device access, unauthorized Viewer denial, central deletion, manual presence and stale legacy denial all returned the expected result. The emulator-gated command deletion recovery integration also passed 1/1 with the real Firebase SDK and repository rules. No production database traffic.",
   "authenticodeStatus": "No code-signing certificate in CurrentUser/LocalMachine My stores or configured Process/User/Machine PFX variables. Public-trust issuance requires user identity/account setup. Existing release policy makes Authenticode optional; unsigned status alone is not a deployment blocker. Installers remain unsigned.",
   "incident": "INC-20260917-109",
   "requestReview": {
     "impact": "none",
-    "reason": "Local Git and contract validation only; no product network or request path changes."
+    "reason": "Package and publish existing Android and web source. No runtime polling, listener, retry or request logic is changed."
   },
   "priorOutcomes": [
     {"id":"v0189-desktop-continuity-regression","acceptance":"After updating the installed Agent from the previously working version to v0.1.89, Viewer continues showing the normal lock screen, welcome transition, PIN credential screen and unlocked desktop instead of replacing any interval with black. Every installed capture starts through the LocalSystem active-console broker; the worker attaches to whichever Windows input desktop is current rather than waiting for a conditional handoff to a fixed Winlogon desktop.","boundaries":["installed protected Agent","LocalSystem broker from first frame","active console session","OpenInputDesktop","SetThreadDesktop on a dedicated worker thread","DXGI capture","desktop change or access-loss restart","normal-to-lock-to-PIN-to-unlock transition","authenticated Viewer stream"],"contractTests":["aether-link-poc/src/secure_capture.rs","aether-link-poc/src/main.rs","aether-link-app/src/desktopPackaging.test.ts","aether-link-app/src/agent/agentPaths.test.ts"],"proofLevel":"physical-required","verification":"2026-09-09: i686 release-profile native tests passed 47/47, including live input-desktop attachment and concurrent broker channels. Six focused install/package/Agent files passed 154/154; TypeScript and warnings-denied Clippy passed. No product installer was built or deployed.","physicalGap":"Install the next build over v0.1.89 and compare continuous lock/PIN/unlock visibility from another PC. Protected credential-screen pixels cannot be proven by an automated test."},
@@ -763,21 +798,35 @@
   ],
   "outcomes": [
     {
-      "id": "regression-comparison-enforced",
-      "acceptance": "Local change verification and the existing CI prerequisite reject absent classification, incomplete regression evidence and invalid Git comparisons, while documented non-regression tasks pass.",
+      "id": "android-0193-upgrade-compatibility",
+      "acceptance": "The existing updater recognizes versionCode 1103 above installed 1093 and verifies downloaded ZIP/APK bytes; signed release artifacts preserve the existing certificate identity.",
       "boundaries": [
-        "CHANGE_CONTRACT.json",
-        "change:verify",
-        "Git comparison",
-        "CI change-guard",
-        "dependent build-release"
+        "Android UpdateClient",
+        "release APK signing",
+        "archive and manifest"
       ],
       "contractTests": [
-        "aether-link-app/scripts/verify-regression-review.test.mjs",
-        "aether-link-app/scripts/verify-recurrence-coverage.test.js"
+        "mobile/android/updatecore/src/test/java/com/wonremote/update/UpdateClientTest.java",
+        "aether-link-app/src/androidUpdateRelease.test.ts"
       ],
       "proofLevel": "automated-runtime",
-      "verification": "2026-09-17: node --test scripts/verify-regression-review.test.mjs passed 5 cases using real temporary Git commits and CLI subprocess rejection; npm test -- scripts/verify-recurrence-coverage.test.js passed 16 existing contract tests. npm run change:verify passed locally. Main commit 65972e9571c22f6e414f3e0838189cc14593f825 activated the gate in GitHub Actions run 35177780697: rejection tests and development/recurrence verification passed; build-release and publish-release were skipped. No product or device changes."
+      "verification": "2026-09-17: Android Viewer/updatecore 23 unit tests passed including installed versionCode 1093 detecting and downloading 1103. Android release discovery tests passed 10 cases, including stale actual Hosting copies. Browser control and gesture tests passed portrait/landscape, fixed toolbar, explicit IME and pointer handling. Three release APKs built and passed v2 signature and JNI mapping checks. Viewer 0.1.93 and 0.1.103 share certificate SHA256 6ab6c18845975a7b46ba0d0b6f74a60bf8bcaf5bf318ff58a8a3bb57f6b76914. Viewer APK SHA256 e54bd044822184f65698d79f4a055505cde8541664cf95480b86a145f05dd37e. Hosted frontend built with TypeScript and Vite; --verify-hosted passed after synchronizing downloads. Phone installation and physical remote control remain unverified."
+    },
+    {
+      "id": "android-01103-public-discovery",
+      "acceptance": "The public Android update manifest and versioned downloads serve matching 0.1.103 artifacts and the hosted Viewer serves the current built frontend. Windows release assets and server rules remain unchanged.",
+      "boundaries": [
+        "signed APK",
+        "Firebase Hosting",
+        "public manifest",
+        "download hash",
+        "hosted Viewer"
+      ],
+      "contractTests": [
+        "aether-link-app/src/androidUpdateRelease.test.ts"
+      ],
+      "proofLevel": "deployment-required",
+      "verification": "pending"
     }
   ],
   "historicalOutcomes": [

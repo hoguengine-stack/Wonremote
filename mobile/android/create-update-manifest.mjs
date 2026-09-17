@@ -88,9 +88,29 @@ export function publishAndroidManifest(repo, inspectApk) {
   return manifest;
 }
 
+export function verifyAndroidHostingArtifacts(repo) {
+  verifyAndroidManifest(repo);
+  const app = path.join(repo, "aether-link-app");
+  const { version } = JSON.parse(readFileSync(path.join(app, "package.json"), "utf8"));
+  const files = ["android-update.json", ...products.flatMap(([key]) => [
+    `${key}.zip`, `android/v${version}/${key}.zip`,
+  ])];
+  for (const file of files) {
+    const source = path.join(app, "public/download", file);
+    const hosted = path.join(app, "dist/download", file);
+    if (!existsSync(source) || !existsSync(hosted)
+        || !readFileSync(source).equals(readFileSync(hosted))) {
+      throw new Error(`Stale Android Hosting artifact: ${file}; build APKs before the frontend or synchronize verified downloads.`);
+    }
+  }
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-  if (process.argv[2] === "--verify") {
+  if (process.argv[2] === "--verify-hosted") {
+    verifyAndroidHostingArtifacts(repo);
+    console.log("Android Hosting artifacts match the verified release.");
+  } else if (process.argv[2] === "--verify") {
     verifyAndroidManifest(repo);
     console.log("Android update payloads and discovery metadata verified");
   } else {
