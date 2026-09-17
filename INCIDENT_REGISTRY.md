@@ -1,5 +1,9 @@
 # WonRemote Incident Registry
 
+## Candidate build phase correction (2026-09-17)
+
+CI 35201994636 correctly refused the first 0.1.105 candidate because its Windows build step still required predeploy status even with publication disabled. No installer was published. Build-only dispatch now runs the existing complete source gate; publishing builds retain predeploy, and the publication job independently enforces predeploy again. The candidate guard tests both the conditional source check and the unconditional publication readiness check. Physical gaps remain open; this phase correction does not mark installation verified.
+
 ## INC-20260917-114: Installer success did not establish online recovery; Windows result BOM was ignored
 
 - Detected: 2026-09-17 during the user-requested update lifecycle repair; source inspection and focused failing tests, not a newly claimed production outage.

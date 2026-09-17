@@ -1026,6 +1026,11 @@ describe("desktop packaging scaffold", () => {
     expect(workflow.split("  publish-release:")[1]).toContain("if: github.event_name != 'workflow_dispatch' || inputs.publish");
     expect(workflow).toContain("needs: change-guard");
     expect(workflow).toContain("needs: build-release");
+    expect(workflow).toContain("if ('${{ github.event_name }}' -eq 'workflow_dispatch' -and '${{ inputs.publish }}' -eq 'false')");
+    expect(workflow).toContain("npm run change:verify\n          } else {\n            npm run change:verify:predeploy");
+    const publication = workflow.split("  publish-release:")[1];
+    expect(publication.indexOf("npm run change:verify:predeploy")).toBeGreaterThan(0);
+    expect(publication.indexOf("npm run change:verify:predeploy")).toBeLessThan(publication.indexOf("run: npm run release:publish"));
   });
 
   it("verifies delivery against the split WonRemote install folders", () => {

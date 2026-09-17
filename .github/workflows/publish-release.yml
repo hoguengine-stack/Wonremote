@@ -131,7 +131,12 @@ jobs:
           }
 
       - name: Verify development and recurrence coverage
-        run: npm run change:verify:predeploy
+        run: |
+          if ('${{ github.event_name }}' -eq 'workflow_dispatch' -and '${{ inputs.publish }}' -eq 'false') {
+            npm run change:verify
+          } else {
+            npm run change:verify:predeploy
+          }
 
       - name: Verify release contract tests
         run: npm test -- src/desktopPackaging.test.ts src/agent/productionUpdateCheck.test.ts src/agent/productionInstallerUpdate.test.ts src/agent/agentUpdateOnce.test.ts src/agent/agentUpdateHandoffBroker.test.ts src/agent/agentUpdateHealth.test.ts src/agent/updateResult.test.ts src/agent/productionUpdateMetadata.test.ts src/domain/updateManifest.test.ts src/domain/updateManifestScript.test.ts
@@ -215,6 +220,11 @@ jobs:
         with:
           name: wonremote-release-${{ github.sha }}
           path: aether-link-app/release-exe
+
+      - name: Enforce publication readiness
+        run: |
+          git fetch --unshallow --tags
+          npm run change:verify:predeploy
 
       - name: Publish GitHub release
         run: npm run release:publish
