@@ -2,6 +2,8 @@
 
 ## 0.1.105 candidate and installed evidence (2026-09-17)
 
+- Published: v0.1.105 public latest at 09:13:22Z through the normal publisher, using exact CI bytes. Uploaded bytes were re-downloaded and hash/signature verified before publication. All four public Firebase aliases reach 105 with HTTP 200; production Agent/Viewer metadata readers verify signed latest 105. Release source 8ecbf63 differs from build 54b11bc only in the two evidence documents. Agent SHA256 24fe19e6d82c6433d6e43fc9fb671ed606c04e78c52df8951ee2a5a495462e13; Viewer 5b67ad71b71d2a6869d3b00c6bfd70025a491c75e3865e927cf4a2a777f1000a. Other-device/manual-button/legacy/outage qualification remains open.
+
 - CI 35202314215 on 54b11bc455fb42522bd2c220e41ae31f6c2ed9a8 passed normal release tests/build/signing-manifest steps with publication disabled. Downloaded manifest and both installers passed trusted signature/hash checks; executable Authenticode remains NotSigned.
 - On 82220F6D, the exact Agent candidate upgraded protected 0.1.104 to 0.1.105 through normal RunAs /S installation, exit 0 at 09:09:23Z. No manual launch was needed. Installed PE, living Node PID 31384, matching original device/install IDs, fresh accepted heartbeat receipt and active Firebase command listener confirmed automatic return. Both legacy install roots were already absent; this is not legacy-migration proof.
 - Corrected manual-button operation, outage recovery, other devices and remote pixels/input remain unverified. Historical incident gaps are not closed by this installed startup result.
