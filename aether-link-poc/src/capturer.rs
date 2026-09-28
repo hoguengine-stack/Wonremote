@@ -5,6 +5,7 @@ use windows::Win32::Graphics::Direct3D11::{
     D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, D3D11_CPU_ACCESS_READ,
     D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
 };
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_MODE_ROTATION, DXGI_MODE_ROTATION_UNSPECIFIED};
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, IDXGIAdapter1, IDXGIFactory1, IDXGIOutput1, IDXGIOutputDuplication,
     DXGI_ADAPTER_DESC1, DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO,
@@ -16,6 +17,7 @@ use windows::Win32::Graphics::Gdi::{
     BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HDC, HGDIOBJ, HMONITOR, MONITORINFO, MONITORINFOEXW,
     SRCCOPY,
 };
+use crate::capture_orientation::orient_duplication_bgra;
 
 pub struct DesktopCapturer {
     backend: CaptureBackend,
@@ -111,6 +113,7 @@ pub struct DxgiCapturer {
     staging_texture: Option<ID3D11Texture2D>,
     width: u32,
     height: u32,
+    rotation: DXGI_MODE_ROTATION,
     adapter_name: String,
     output_name: String,
     output_index: u32,
@@ -325,6 +328,7 @@ impl DxgiCapturer {
                 staging_texture: None,
                 width: 0,
                 height: 0,
+                rotation: DXGI_MODE_ROTATION_UNSPECIFIED,
                 adapter_name: String::new(),
                 output_name: String::new(),
                 output_index,
@@ -348,11 +352,16 @@ impl DxgiCapturer {
             output.GetDesc(&mut output_desc)?;
 
             let duplication = output1.DuplicateOutput(&self.device)?;
-            let mut desc = windows::Win32::Graphics::Dxgi::DXGI_OUTDUPL_DESC::default();
-            duplication.GetDesc(&mut desc);
-
-            self.width = desc.ModeDesc.Width;
-            self.height = desc.ModeDesc.Height;
+            let (_, _, display_width, display_height) =
+                gdi_capture_geometry(output_desc.DesktopCoordinates).ok_or_else(|| {
+                    Error::new(
+                        E_INVALIDARG,
+                        "DXGI output has invalid desktop dimensions".into(),
+                    )
+                })?;
+            self.width = display_width;
+            self.height = display_height;
+            self.rotation = output_desc.Rotation;
             self.adapter_name = utf16_to_string(&adapter_desc.Description);
             self.output_name = utf16_to_string(&output_desc.DeviceName);
             self.duplication = Some(duplication);
@@ -431,7 +440,16 @@ impl DxgiCapturer {
                     let capture_time = capture_start.elapsed().as_micros();
 
                     let convert_start = std::time::Instant::now();
-                    let rgb565_buffer = bgra_to_rgb565(&bgra_buffer, width, height);
+                    let bgra_buffer = orient_duplication_bgra(
+                        bgra_buffer,
+                        width,
+                        height,
+                        self.width as usize,
+                        self.height as usize,
+                        self.rotation,
+                    )?;
+                    let rgb565_buffer =
+                        bgra_to_rgb565(&bgra_buffer, self.width as usize, self.height as usize);
                     let convert_time = convert_start.elapsed().as_micros();
 
                     Ok(CaptureFrameStatus::Frame {

@@ -1,6 +1,19 @@
 !include LogicLib.nsh
 !define WONREMOTE_AGENT_TASK_HOOK_DIR "${__FILEDIR__}"
 
+!macro WONREMOTE_MANAGE_AGENT_FIREWALL MODE
+  Push $0
+  IfFileExists "$INSTDIR\manage-agent-firewall.ps1" +2 0
+    Goto firewall_done_${MODE}
+  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\manage-agent-firewall.ps1" -Mode ${MODE} -AgentPath "$INSTDIR\wonremote-viewer.exe"'
+  Pop $0
+  ${If} $0 != 0
+    DetailPrint "WonRemote Agent firewall rule could not be configured (exit code: $0); Windows policy or manual approval may still be required."
+  ${EndIf}
+  firewall_done_${MODE}:
+  Pop $0
+!macroend
+
 ; Keep the stock finish page, with deterministic Agent actions instead of choices.
 !macroundef MUI_PAGE_FINISH
 !macro MUI_PAGE_FINISH

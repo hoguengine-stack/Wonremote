@@ -7,4 +7,6 @@ RequestExecutionLevel admin
 Section
   StrCpy $INSTDIR "$TEMP\WonRemote Agent"
   !insertmacro WONREMOTE_MIGRATE_LEGACY_AGENT
+  !insertmacro WONREMOTE_MANAGE_AGENT_FIREWALL Install
+  !insertmacro WONREMOTE_MANAGE_AGENT_FIREWALL Uninstall
 SectionEnd

@@ -1,3 +1,4 @@
+mod capture_orientation;
 mod capturer;
 mod secure_capture;
 

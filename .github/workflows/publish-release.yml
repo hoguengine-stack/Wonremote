@@ -177,7 +177,7 @@ jobs:
       - name: Build signed update manifest from final installer bytes
         run: |
           if ('${{ inputs.trialAgentZlib }}' -eq 'true') {
-            node scripts/create-update-manifest.js --release-tag v0.1.107-zlib-test
+            node scripts/create-update-manifest.js --release-tag v0.1.108-zlib-kiosk-test
           } else {
             npm run release:manifest
           }

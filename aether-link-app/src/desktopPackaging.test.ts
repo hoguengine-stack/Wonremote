@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -6,6 +7,48 @@ const projectRoot = path.resolve(__dirname, "..");
 const packageJson = JSON.parse(readFileSync(path.join(projectRoot, "package.json"), "utf8"));
 
 describe("desktop packaging scaffold", () => {
+  it("installs, updates and removes only the protected Agent Node firewall rule", () => {
+    const helper = path.join(projectRoot, "src-tauri", "windows", "manage-agent-firewall.ps1");
+    const script = `
+      $script:calls = @()
+      $script:present = $false
+      function Test-Path { param($LiteralPath); return $true }
+      function Get-NetFirewallRule { param($PolicyStore, $Name, $ErrorAction); if ($script:present) { return [pscustomobject]@{Name=$Name} } }
+      function New-NetFirewallRule { param($PolicyStore, $Name, $DisplayName, $Direction, $Action, $Program, $Profile, $Protocol, $Enabled, $ErrorAction); $script:calls += [pscustomobject]@{kind='new'; args=$PSBoundParameters}; $script:present=$true }
+      function Set-NetFirewallRule { param($PolicyStore, $Name, $Direction, $Action, $Program, $Profile, $Protocol, $Enabled, $ErrorAction); $script:calls += [pscustomobject]@{kind='set'; args=$PSBoundParameters} }
+      function Remove-NetFirewallRule { param($PolicyStore, $Name, $ErrorAction); $script:calls += [pscustomobject]@{kind='remove'; args=$PSBoundParameters}; $script:present=$false }
+      . '${helper.replace(/'/g, "''")}' -Mode Install -AgentPath 'C:\\Program Files (x86)\\WonRemote Agent\\wonremote-viewer.exe'
+      . '${helper.replace(/'/g, "''")}' -Mode Install -AgentPath 'C:\\Program Files (x86)\\WonRemote Agent\\wonremote-viewer.exe'
+      . '${helper.replace(/'/g, "''")}' -Mode Uninstall -AgentPath 'C:\\Program Files (x86)\\WonRemote Agent\\wonremote-viewer.exe'
+      $script:calls | ConvertTo-Json -Depth 4 -Compress
+    `;
+    const output = execFileSync("powershell.exe", ["-NoProfile", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { encoding: "utf8", windowsHide: true, timeout: 15000 });
+    const calls = JSON.parse(output.trim());
+    expect(calls.map((call: { kind: string }) => call.kind)).toEqual(["new", "set", "remove"]);
+    for (const call of calls.slice(0, 2)) {
+      expect(call.args).toMatchObject({
+        PolicyStore: "PersistentStore",
+        Name: "WonRemote.Agent.Node.Inbound",
+        Program: "C:\\Program Files (x86)\\WonRemote Agent\\runtime\\node.exe",
+        Direction: "Inbound",
+        Action: "Allow",
+        Protocol: "Any",
+        Enabled: "True",
+      });
+      expect(call.args.Profile).toEqual(["Private", "Public"]);
+    }
+    expect(calls[2].args).toMatchObject({ PolicyStore: "PersistentStore", Name: "WonRemote.Agent.Node.Inbound" });
+    const sharedHook = readFileSync(path.join(projectRoot, "src-tauri", "windows", "agent-login-task.nsh"), "utf8");
+    expect(sharedHook).toContain("!macro WONREMOTE_MANAGE_AGENT_FIREWALL MODE");
+    expect(sharedHook).toContain("Windows policy or manual approval may still be required.");
+    for (const hookName of ["agent-install-hooks.nsh", "agent-install-hooks-x86.nsh"]) {
+      const hook = readFileSync(path.join(projectRoot, "src-tauri", "windows", hookName), "utf8");
+      expect(hook).toContain("File /oname=$INSTDIR\\manage-agent-firewall.ps1");
+      expect(hook).toContain("!insertmacro WONREMOTE_MANAGE_AGENT_FIREWALL Install");
+      expect(hook).toContain("!insertmacro WONREMOTE_MANAGE_AGENT_FIREWALL Uninstall");
+      expect(hook).toContain('Delete "$INSTDIR\\manage-agent-firewall.ps1"');
+    }
+  });
   it("uses Tauri with the existing Vite build output", () => {
     const configPath = path.join(projectRoot, "src-tauri", "tauri.conf.json");
     expect(existsSync(configPath)).toBe(true);
@@ -98,7 +141,7 @@ describe("desktop packaging scaffold", () => {
     expect(workflow).toContain("WONREMOTE_AGENT_ZLIB_TRIAL: ${{ inputs.trialAgentZlib && !inputs.publish && 'YES' || 'NO' }}");
     expect(workflow).toContain("The zlib Agent trial cannot publish the production latest release.");
     expect(workflow).toContain('"$GITHUB_EVENT_NAME" == "workflow_dispatch" && "${{ inputs.trialAgentZlib }}" == "true" && "${{ inputs.publish }}" == "false"');
-    expect(workflow).toContain("node scripts/create-update-manifest.js --release-tag v0.1.107-zlib-test");
+    expect(workflow).toContain("node scripts/create-update-manifest.js --release-tag v0.1.108-zlib-kiosk-test");
   });
 
   it("keeps a completed Agent registration when startup integration is degraded", () => {
@@ -818,7 +861,7 @@ describe("desktop packaging scaffold", () => {
     expect(redirects["/download/viewer-x86"]).toContain("WonRemote-Viewer-Setup.exe");
     expect(redirects["/download/agent-x86"]).toContain("WonRemote-Agent-Setup.exe");
     expect(redirects["/download/agent"]).toBe("https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Agent-Setup.exe");
-    expect(redirects["/download/agent1"]).toBe("https://github.com/hoguengine-stack/Wonremote/releases/download/v0.1.107-zlib-test/WonRemote-Agent-Setup.exe");
+    expect(redirects["/download/agent1"]).toBe("https://github.com/hoguengine-stack/Wonremote/releases/download/v0.1.108-zlib-kiosk-test/WonRemote-Agent-Setup.exe");
     expect(redirects["/download/agent-x86"]).toBe(redirects["/download/agent"]);
     expect(redirects["/download/agent.apk"]).toBe("/download/agent.zip");
     expect(redirects["/download/viewer.apk"]).toBe("/download/viewer.zip");

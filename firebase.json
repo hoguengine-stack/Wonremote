@@ -112,7 +112,7 @@
       },
       {
         "source": "/download/agent1",
-        "destination": "https://github.com/hoguengine-stack/Wonremote/releases/download/v0.1.107-zlib-test/WonRemote-Agent-Setup.exe",
+        "destination": "https://github.com/hoguengine-stack/Wonremote/releases/download/v0.1.108-zlib-kiosk-test/WonRemote-Agent-Setup.exe",
         "type": 302
       },
       {

@@ -36,7 +36,9 @@
   File /oname=$INSTDIR\manage-agent-login-task.ps1 "${WONREMOTE_AGENT_TASK_HOOK_DIR}\manage-agent-login-task.ps1"
   File /oname=$INSTDIR\agent-update-health.ps1 "${WONREMOTE_AGENT_TASK_HOOK_DIR}\agent-update-health.ps1"
   File /oname=$INSTDIR\update-handoff-broker.ps1 "${WONREMOTE_AGENT_TASK_HOOK_DIR}\update-handoff-broker.ps1"
+  File /oname=$INSTDIR\manage-agent-firewall.ps1 "${WONREMOTE_AGENT_TASK_HOOK_DIR}\manage-agent-firewall.ps1"
   !insertmacro WONREMOTE_MIGRATE_LEGACY_AGENT
+  !insertmacro WONREMOTE_MANAGE_AGENT_FIREWALL Install
   CreateDirectory "$SMPROGRAMS\WonRemote"
   CreateShortCut "$DESKTOP\WonRemote Agent.lnk" "$INSTDIR\wonremote-viewer.exe" "--agent --show-window"
   CreateShortCut "$SMPROGRAMS\WonRemote\WonRemote Agent.lnk" "$INSTDIR\wonremote-viewer.exe" "--agent --show-window"
@@ -49,9 +51,11 @@
 !macro NSIS_HOOK_PREUNINSTALL
   !insertmacro WONREMOTE_MANAGE_AGENT_LOGIN_TASK Uninstall
   !insertmacro WONREMOTE_STOP_RUNNING_PROCESSES
+  !insertmacro WONREMOTE_MANAGE_AGENT_FIREWALL Uninstall
   Delete "$INSTDIR\manage-agent-login-task.ps1"
   Delete "$INSTDIR\agent-update-health.ps1"
   Delete "$INSTDIR\update-handoff-broker.ps1"
+  Delete "$INSTDIR\manage-agent-firewall.ps1"
   RMDir /r "$INSTDIR\.update-handoff"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "WonRemoteAgent"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "WonRemoteAgentCLI"

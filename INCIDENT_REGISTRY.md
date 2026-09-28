@@ -1,5 +1,23 @@
 # WonRemote Incident Registry
 
+## INC-20260929-120: Portrait kiosk capture was scrambled and first-run Node triggered a firewall prompt
+
+- Detected: 2026-09-29 after the isolated `/download/agent1` installer completed on `AGENT-45190183` and the Viewer displayed fine horizontal stripes in a 1080x1920 frame. Another remote product showed a Windows Defender Firewall prompt for the installed `runtime\node.exe`; allowing it did not repair the stripes.
+- Severity: High; the session connects but the kiosk screen is unusable.
+- Affected: Windows x86 Agent DXGI frame orientation, downstream tile encoding, and elevated Agent install/update/uninstall firewall handling. Production and prior trial installations are not modified by this source change.
+- Status: Source tests passed; distinct v0.1.108 Agent trial build/publication and kiosk installation are pending.
+- User-visible symptom: Viewer receives a portrait-shaped field of fine horizontal stripes; first installed Agent Node run can trigger a Windows Defender Firewall consent prompt.
+- Minimal trigger: Install the v0.1.107 trial on a portrait kiosk, connect from Viewer, and observe the 1080x1920 remote frame; on first Node network activity Windows may show a firewall prompt.
+- Cause: Microsoft documents that rotated DXGI desktop duplication returns an unrotated texture, requiring explicit rotation before display. Our Agent copied that texture as-is but advertised the display geometry to the tile encoder. This exactly fits the stripe pattern; the affected device's DXGI rotation and raw frame have not yet been captured, so installed-device causation is still provisional. The installer independently had no program-scoped Node firewall rule, causing Windows to ask on first use.
+- Root cause and contributors: The DXGI path used the display mode dimensions but did not apply `DXGI_OUTPUT_DESC.Rotation` to the actual texture before encoding. This is a source-confirmed omission and a device-specific probable cause, not yet a physically proven fix. The NSIS hooks contained no Agent Node firewall rule.
+- Fix commit(s): Pending; no build-source commit has been created yet.
+- Permanent guard: Derive displayed dimensions from the output desktop rectangle, rotate 90/180/270-degree BGRA pixels before RGB565/tile conversion, and reject surface/display mismatches instead of publishing corrupt frames. During elevated per-machine Agent install or upgrade, add or update one local inbound rule for the protected bundled Node path; uninstall removes only that named rule. Do not disable Windows Firewall or bypass UAC. A policy refusal is logged and does not abort installation.
+- Source proof: The new native orientation test first failed because rotation normalization was absent, then passed for 90/180/270/identity and mismatch. Focused x86 capture tests passed 5/5. The PowerShell firewall fixture exercises new/update/remove with exact program/profile arguments, and the actual shared NSIS macro compiles in the installation fixture. Focused installer tests passed 91/91, TypeScript and contract regression review passed. The affected installation and device-specific pixels are not yet tested.
+- Regression proof: A newly added x86 native test failed before the rotation helper existed and passed after the change; it covers 90/180/270/identity and invalid dimensions. Packaging/startup tests pass 91/91 with the real PowerShell path mocked and the NSIS macro compiled. No false installed-device claim is made.
+- Release proof: No new trial build or public download has been verified yet. The older `/download/agent1` remains v0.1.107-zlib-test until the new prerelease and Hosting redirect are independently verified.
+- Remaining blocker: Fresh CI x86 packaging, signed-manifest and artifact hash comparison, new immutable prerelease publication, `/download/agent1` HTTP/hash check, and later installed kiosk pixel/firewall verification.
+- Remaining verification: The user requested an isolated `/download/agent1` build and deployment. Installing it on `AGENT-45190183` and comparing kiosk pixels, cursor, effective firewall rule and absence of another prompt remain separate physical checks. Group Policy can override local rules.
+
 ## INC-20260928-119: Trial compression initially touched the production Agent config
 
 - Detected: 2026-09-28 during review before any build or publication.
