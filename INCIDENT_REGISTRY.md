@@ -14,6 +14,7 @@
 - Regression proof: Focused `desktopPackaging.test.ts` passed after the overlay and workflow selection change; normal and trial build artifacts remain to be verified.
 - Release proof: Pending CI artifact, prerelease and live `/download/agent1` checks.
 - Remaining blocker: Build the trial candidate from committed source, verify installer contents and live URL, then measure on the affected PC.
+- 2026-09-28 CI correction: Manual `publish=false` trial run 36400574388 stopped in `change-guard` because that shared step selected the completed-deployment gate even though the contract correctly remained `ready-to-deploy`. The workflow now selects predeploy for the exact manual trial tuple and retains complete-stage validation for ordinary manual build-only runs; a packaging test asserts the selection. No binaries were built or published by the failed run.
 
 ## INC-20260928-117: Fresh Agent install aborted before registration runtime could exist
 

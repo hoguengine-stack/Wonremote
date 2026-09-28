@@ -97,6 +97,7 @@ describe("desktop packaging scaffold", () => {
     const workflow = readFileSync(path.join(projectRoot, "..", ".github", "workflows", "publish-release.yml"), "utf8");
     expect(workflow).toContain("WONREMOTE_AGENT_ZLIB_TRIAL: ${{ inputs.trialAgentZlib && !inputs.publish && 'YES' || 'NO' }}");
     expect(workflow).toContain("The zlib Agent trial cannot publish the production latest release.");
+    expect(workflow).toContain('"$GITHUB_EVENT_NAME" == "workflow_dispatch" && "${{ inputs.trialAgentZlib }}" == "true" && "${{ inputs.publish }}" == "false"');
     expect(workflow).toContain("node scripts/create-update-manifest.js --release-tag v0.1.107-zlib-test");
   });
 

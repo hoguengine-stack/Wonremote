@@ -37,7 +37,7 @@ jobs:
       - name: Verify development and recurrence coverage
         run: |
           DEPLOYMENT_STAGE="$(node -e 'const c = require("./CHANGE_CONTRACT.json"); process.stdout.write(c.status === "ready-to-deploy" && ["deploy", "build-and-deploy"].includes(c.releaseImpact) ? "predeploy" : "complete");')"
-          if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" && "$DEPLOYMENT_STAGE" == "predeploy" ]]; then
+          if [[ "$DEPLOYMENT_STAGE" == "predeploy" && ( "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" || "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "${{ inputs.trialAgentZlib }}" == "true" && "${{ inputs.publish }}" == "false" ) ]]; then
             node aether-link-app/scripts/verify-recurrence-coverage.js --stage predeploy
           else
             node aether-link-app/scripts/verify-recurrence-coverage.js
