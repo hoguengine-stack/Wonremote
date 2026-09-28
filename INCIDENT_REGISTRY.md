@@ -5,15 +5,15 @@
 - Detected: 2026-09-28 during review before any build or publication.
 - Severity: Medium; if left in place, a future normal Agent release would silently use the trial compression mode.
 - Affected: Windows x86 Agent NSIS configuration and release packaging.
-- Status: Corrected in the worktree before build; trial build and installed timing proof pending.
+- Status: Trial build and isolated public delivery verified; installed timing proof pending.
 - User-visible symptom: None published. The initial worktree patch would have changed normal release packaging despite a trial-only request.
 - Minimal trigger: Set `compression` directly in `tauri.agent.x86.conf.json` while preparing `/download/agent1`.
 - Root cause and contributors: The Agent's x86 configuration is shared by the normal publisher; a trial-only choice needs a separate overlay and explicit build selection.
-- Fix commit(s): Pending trial source commit.
+- Fix commit(s): 8fae091b62796ab5e62475d778725d9ac09f7527; trial workflow gate correction 0b0b409392d725ec89e3c00ce8483bfe54b4e9f0.
 - Permanent guard: Keep the default Agent and Viewer compression untouched, merge the zlib overlay only when the explicit trial flag is set, and reject trial publication as production latest. Packaging tests assert this separation and the trial route.
-- Regression proof: Focused `desktopPackaging.test.ts` passed after the overlay and workflow selection change; normal and trial build artifacts remain to be verified.
-- Release proof: Pending CI artifact, prerelease and live `/download/agent1` checks.
-- Remaining blocker: Build the trial candidate from committed source, verify installer contents and live URL, then measure on the affected PC.
+- Regression proof: Focused `desktopPackaging.test.ts` passed after the overlay and workflow selection change. CI confirmed the trial Agent installer and separately built Viewer installer under the existing x86 release checks.
+- Release proof: CI run 36400767485 passed from 0b0b409. The signed manifest verifies both x86 installers; Agent SHA256 14a9858fa9ca30a87d7e8ce1ef0d92c77628319f69958f3b08fe2f0256472387. Public `v0.1.107-zlib-test` is prerelease with latest explicitly false. Hosting `/download/agent1` redirects to it, and directly downloaded Agent bytes match CI. Production `/download/agent` and latest v0.1.107 are unchanged.
+- Remaining blocker: Measure full installer duration and verify first registration on the affected PC; no installed behavior was claimed from URL or CI checks.
 - 2026-09-28 CI correction: Manual `publish=false` trial run 36400574388 stopped in `change-guard` because that shared step selected the completed-deployment gate even though the contract correctly remained `ready-to-deploy`. The workflow now selects predeploy for the exact manual trial tuple and retains complete-stage validation for ordinary manual build-only runs; a packaging test asserts the selection. No binaries were built or published by the failed run.
 
 ## INC-20260928-117: Fresh Agent install aborted before registration runtime could exist
@@ -24,6 +24,7 @@
 - Permanent guard: When no registered identity or legacy Agent root exists, register the protected Agent and SYSTEM broker tasks and require the broker to run, but leave the Agent Node process to the finish-page registration flow. Existing registered upgrades still require protected Node, broker and online identity/health before any legacy cleanup. A PowerShell-executed postinstall fixture asserts both paths and the failure case.
 - Source proof: 2026-09-28 focused Agent startup, desktop packaging, retry-policy, command-execution and listener-runtime suites passed; first-install and registered-upgrade cases are included. TypeScript compilation passed. Installed first-run proof remains open.
 - Deployment: No installer build, installation or public release in this work. The affected PC must retry with a future verified installer; this source change does not alter its current installer.
+- Later trial delivery: CI run 36400767485 included the first-install repair in the test-only `/download/agent1` installer. The affected PC has not installed it, so first-run recovery remains unverified.
 - Remaining: Install on an unregistered affected PC, complete registration and verify online/remote control. Test an already registered upgrade and alternate-administrator-credential install separately.
 
 ## INC-20260928-118: Failed Firebase command listener retried every 15 seconds
