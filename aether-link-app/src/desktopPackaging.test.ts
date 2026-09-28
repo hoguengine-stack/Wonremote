@@ -864,6 +864,7 @@ describe("desktop packaging scaffold", () => {
     expect(redirects["/download/agent-x86"]).toContain("WonRemote-Agent-Setup.exe");
     expect(redirects["/download/agent"]).toBe("https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Agent-Setup.exe");
     expect(redirects["/download/agent1"]).toBe("https://github.com/hoguengine-stack/Wonremote/releases/download/v0.1.108-zlib-kiosk-test/WonRemote-Agent-Setup.exe");
+    expect(redirects["/download/agent1"]).not.toBe(redirects["/download/agent"]);
     expect(redirects["/download/agent-x86"]).toBe(redirects["/download/agent"]);
     expect(redirects["/download/agent.apk"]).toBe("/download/agent.zip");
     expect(redirects["/download/viewer.apk"]).toBe("/download/viewer.zip");
