@@ -38,6 +38,8 @@ describe("desktop packaging scaffold", () => {
       expect(call.args.Profile).toEqual(["Private", "Public"]);
     }
     expect(calls[2].args).toMatchObject({ PolicyStore: "PersistentStore", Name: "WonRemote.Agent.Node.Inbound" });
+    const releaseWorkflow = readFileSync(path.join(projectRoot, "..", ".github", "workflows", "publish-release.yml"), "utf8");
+    expect(releaseWorkflow).toContain("npx vitest run --maxWorkers=1");
     const sharedHook = readFileSync(path.join(projectRoot, "src-tauri", "windows", "agent-login-task.nsh"), "utf8");
     expect(sharedHook).toContain("!macro WONREMOTE_MANAGE_AGENT_FIREWALL MODE");
     expect(sharedHook).toContain("Windows policy or manual approval may still be required.");

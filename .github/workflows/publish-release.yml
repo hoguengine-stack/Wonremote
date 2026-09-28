@@ -151,7 +151,7 @@ jobs:
           }
 
       - name: Verify release contract tests
-        run: npm test -- src/desktopPackaging.test.ts src/agent/productionUpdateCheck.test.ts src/agent/productionInstallerUpdate.test.ts src/agent/agentUpdateOnce.test.ts src/agent/agentUpdateHandoffBroker.test.ts src/agent/agentUpdateHealth.test.ts src/agent/updateResult.test.ts src/agent/productionUpdateMetadata.test.ts src/domain/updateManifest.test.ts src/domain/updateManifestScript.test.ts
+        run: npx vitest run --maxWorkers=1 --exclude scripts/verify-*.test.mjs src/desktopPackaging.test.ts src/agent/productionUpdateCheck.test.ts src/agent/productionInstallerUpdate.test.ts src/agent/agentUpdateOnce.test.ts src/agent/agentUpdateHandoffBroker.test.ts src/agent/agentUpdateHealth.test.ts src/agent/updateResult.test.ts src/agent/productionUpdateMetadata.test.ts src/domain/updateManifest.test.ts src/domain/updateManifestScript.test.ts
 
       - name: Verify installer update E2E
         run: npm run test:update-e2e

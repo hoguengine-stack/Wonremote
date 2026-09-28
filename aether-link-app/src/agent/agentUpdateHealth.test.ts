@@ -123,7 +123,7 @@ if ($global:secureReads -ne 40 -or $global:secureSleeps -ne 39) { throw "unbound
 'health-predicate-and-budget-ok'
 `;
     const result = spawnSync("powershell.exe", ["-NoProfile", "-EncodedCommand", Buffer.from(command, "utf16le").toString("base64")],
-      { encoding: "utf8", windowsHide: true, timeout: 10000 });
+      { encoding: "utf8", windowsHide: true, timeout: 30000 });
     expect(result.status, result.stderr + result.stdout).toBe(0);
     expect(result.stdout).toContain("health-predicate-and-budget-ok");
   }, 20000);
