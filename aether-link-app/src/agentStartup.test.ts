@@ -228,11 +228,12 @@ exit 0
   });
 
   it.each([
-    { hasLegacy: true, healthy: true, online: true },
-    { hasLegacy: false, healthy: true, online: true },
-    { hasLegacy: false, healthy: false, online: false },
-    { hasLegacy: true, healthy: true, online: false },
-  ])("starts and verifies postinstall runtime %j", ({ hasLegacy, healthy, online }) => {
+    { hasLegacy: true, healthy: true, online: true, registered: true },
+    { hasLegacy: false, healthy: true, online: true, registered: true },
+    { hasLegacy: false, healthy: false, online: false, registered: true },
+    { hasLegacy: true, healthy: true, online: false, registered: true },
+    { hasLegacy: false, healthy: false, online: false, registered: false },
+  ])("starts and verifies postinstall runtime %j", ({ hasLegacy, healthy, online, registered }) => {
     const root = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "wonremote-agent-migration-")));
     const appData = path.join(root, "Roaming");
     const profileRoot = path.join(root, "InteractiveUser");
@@ -260,7 +261,7 @@ exit 0
       function Test-Path { param($LiteralPath,$PathType); if ($LiteralPath -like '*AppData*Local*wonremote-viewer.exe') { return $${hasLegacy} }; return $true }
       function Resolve-Path { param($LiteralPath); return [pscustomobject]@{Path=$LiteralPath} }
       function Get-ItemProperty { param($LiteralPath,$ErrorAction); if ($LiteralPath -like '*ProfileList*') { return [pscustomobject]@{ProfileImagePath=$profileRoot} } }
-      function Get-Content { param($LiteralPath,[switch]$Raw,$Encoding); return '{"registeredDeviceId":"A","installId":"I"}' }
+      function Get-Content { param($LiteralPath,[switch]$Raw,$Encoding); return '${registered ? '{"registeredDeviceId":"A","installId":"I"}' : '{"installId":"I"}'}' }
       function Get-Item { param($LiteralPath); return [pscustomobject]@{VersionInfo=@{ProductVersion='0.1.105'}} }
       function Wait-AgentOnlineReceipt { param($ReceiptPath,$Root,$Version,$Identity,$Since); $global:events.Add('CHECK_ONLINE'); if (-not $${online}) { throw 'Agent online verification failed' }; if ($Identity.registeredDeviceId -ne 'A' -or $Version -ne '0.1.105') { throw 'health inputs missing' } }
       function New-ScheduledTaskAction { param($Execute,$Argument,$WorkingDirectory); return [pscustomobject]@{Execute=$Execute;Arguments=$Argument;WorkingDirectory=$WorkingDirectory} }
@@ -312,7 +313,14 @@ exit 0
       );
       expect(result.error).toBeUndefined();
       const output = result.stdout;
-      expect(result.status, result.stderr + output).toBe(healthy && online ? 0 : 1);
+      expect(result.status, result.stderr + output).toBe(!registered || healthy && online ? 0 : 1);
+      if (!registered) {
+        expect(output).toContain("START:WonRemote Secure Capture");
+        expect(output).not.toContain("START:WonRemote Agent|");
+        expect(output).not.toContain("CHECK_RUNTIME");
+        expect(output).not.toContain("CHECK_ONLINE");
+        return;
+      }
       expect(output).toContain("START:WonRemote Agent|");
       expect(output).toContain("CHECK_RUNTIME");
       if (!healthy) {

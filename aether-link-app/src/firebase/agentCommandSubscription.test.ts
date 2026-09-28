@@ -3,6 +3,7 @@ import { getDoc, getDocs, getDocsFromServer, onSnapshot } from "firebase/firesto
 import {
   fetchActiveFirebaseSessionsForAgent,
   pollAgentCommandsWithFirebase,
+  queueAgentHealthChallengeWithFirebase,
   subscribeAgentCommandsWithFirebase,
 } from "./agentFirebase";
 import { sendAgentHeartbeatWithFirebase } from "./agentFirebase";
@@ -91,6 +92,43 @@ describe("Agent Firebase command subscription", () => {
     await state.snapshotHandler?.(snapshot([]));
     expect(state.batch.commit).not.toHaveBeenCalled();
     expect(onCommands).not.toHaveBeenCalled();
+  });
+
+  it("reports command receiver readiness only after the first listener snapshot", async () => {
+    const onReady = vi.fn();
+    await subscribeAgentCommandsWithFirebase(
+      { deviceId: "device-1", installId: "install-1", onReady },
+      vi.fn(),
+      vi.fn(),
+    );
+    expect(onReady).not.toHaveBeenCalled();
+    state.snapshotHandler?.(snapshot([]));
+    state.snapshotHandler?.(snapshot([]));
+    expect(onReady).toHaveBeenCalledOnce();
+  });
+
+  it("queues one health challenge through the fixed reusable command document", async () => {
+    const firestoreWrite = await import("./firestoreWrite");
+    await queueAgentHealthChallengeWithFirebase({
+      deviceId: "device-1",
+      challengeId: "00000000-0000-4000-8000-000000000001",
+    });
+
+    expect(firestoreWrite.safeSetDoc).toHaveBeenCalledWith(
+      { path: "devices/device-1/commands/agent-health" },
+      {
+        action: "agent-health-check 00000000-0000-4000-8000-000000000001",
+        createdAt: "server-time",
+        state: "pending",
+      },
+    );
+  });
+
+  it("rejects malformed health challenge IDs before any cloud write", async () => {
+    const firestoreWrite = await import("./firestoreWrite");
+    await expect(queueAgentHealthChallengeWithFirebase({ deviceId: "device-1", challengeId: "bad" }))
+      .rejects.toThrow("Invalid Agent health challenge");
+    expect(firestoreWrite.safeSetDoc).not.toHaveBeenCalled();
   });
 
   it("forwards permission errors from the snapshot listener", async () => {

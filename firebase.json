@@ -111,6 +111,11 @@
         "type": 302
       },
       {
+        "source": "/download/agent1",
+        "destination": "https://github.com/hoguengine-stack/Wonremote/releases/download/v0.1.107-zlib-test/WonRemote-Agent-Setup.exe",
+        "type": 302
+      },
+      {
         "source": "/download/viewer-x86",
         "destination": "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Viewer-Setup.exe",
         "type": 302

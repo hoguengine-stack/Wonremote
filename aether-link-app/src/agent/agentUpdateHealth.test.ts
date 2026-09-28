@@ -16,17 +16,48 @@ describe("Agent update online readiness", () => {
     try {
       const report = createAgentHealthReporter({ baseDir, version: "0.1.105" });
       const file = path.join(baseDir, "WonRemote", "agent-online.json");
-      await report(identity, "other-device");
+      await report.heartbeatAccepted(identity, "other-device");
       await expect(readFile(file)).rejects.toThrow();
       await expect(readFile(path.join(baseDir, "WonRemote", ".update_success"))).rejects.toThrow();
-      await Promise.all([report(identity, identity.registeredDeviceId), report(identity, identity.registeredDeviceId)]);
+      await Promise.all([
+        report.heartbeatAccepted(identity, identity.registeredDeviceId),
+        report.heartbeatAccepted(identity, identity.registeredDeviceId),
+      ]);
+      await expect(readFile(file)).rejects.toThrow();
+      const challenge = report.takeCommandChallenge(identity);
+      expect(challenge).toMatch(/^agent-health-check [a-f0-9-]{36}$/);
+      await report.commandReceiverReady(identity);
+      await expect(readFile(file)).rejects.toThrow();
+      expect(await report.commandRoundTripVerified(identity, challenge!)).toBe(true);
       const bytes = await readFile(file, "utf8");
       expect(await readFile(path.join(baseDir, "WonRemote", ".update_success"), "utf8")).toBe("SUCCESS");
-      expect(JSON.parse(bytes)).toMatchObject({ schemaVersion: 1, version: "0.1.105", deviceId: identity.registeredDeviceId,
+      expect(JSON.parse(bytes)).toMatchObject({ schemaVersion: 3, version: "0.1.105", deviceId: identity.registeredDeviceId,
         installId: identity.installId, pid: process.pid, executablePath: process.execPath });
-      await report(identity, identity.registeredDeviceId);
+      expect(JSON.parse(bytes).commandReceiverReadyAt).toEqual(expect.any(String));
+      expect(JSON.parse(bytes).commandRoundTripAt).toEqual(expect.any(String));
+      expect(JSON.parse(bytes).commandChallengeId).toBe(challenge!.split(" ")[1]);
+      await report.heartbeatAccepted(identity, identity.registeredDeviceId);
       expect(await readFile(file, "utf8")).toBe(bytes);
     } finally { await rm(baseDir, { recursive: true, force: true }); }
+  });
+
+  it("requires the exact command round trip and discards failed listener readiness", async () => {
+    const writeReceipt = vi.fn(async () => {});
+    const report = createAgentHealthReporter({ baseDir: "unused", version: "1", writeReceipt });
+
+    const challenge = report.takeCommandChallenge(identity)!;
+    await report.commandReceiverReady(identity);
+    report.commandReceiverUnavailable();
+    await report.heartbeatAccepted(identity, identity.registeredDeviceId);
+    expect(await report.commandRoundTripVerified(identity, challenge)).toBe(true);
+    expect(writeReceipt).not.toHaveBeenCalled();
+
+    expect(await report.commandRoundTripVerified({ ...identity, installId: "other-install" }, challenge)).toBe(false);
+    expect(await report.commandRoundTripVerified(identity, `${challenge}-wrong`)).toBe(false);
+    expect(writeReceipt).not.toHaveBeenCalled();
+    await report.commandReceiverReady(identity);
+    expect(report.takeCommandChallenge(identity)).toBeNull();
+    expect(writeReceipt).toHaveBeenCalledTimes(1);
   });
 
   it("owns one concurrent write, no idle timer, and at most three failed attempts", async () => {
@@ -36,8 +67,11 @@ describe("Agent update online readiness", () => {
       const report = createAgentHealthReporter({ baseDir: "unused", version: "1", writeReceipt });
       await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
       expect(writeReceipt).not.toHaveBeenCalled();
+      const challenge = report.takeCommandChallenge(identity)!;
+      await report.commandReceiverReady(identity);
+      await report.commandRoundTripVerified(identity, challenge);
       for (let attempt = 0; attempt < 5; attempt++) {
-        await Promise.allSettled(Array.from({ length: 8 }, () => report(identity, identity.registeredDeviceId)));
+        await Promise.allSettled(Array.from({ length: 8 }, () => report.heartbeatAccepted(identity, identity.registeredDeviceId)));
       }
       expect(writeReceipt).toHaveBeenCalledTimes(3);
       expect(vi.getTimerCount()).toBe(0);
@@ -53,11 +87,11 @@ $root='C:\\Program Files (x86)\\WonRemote Agent'
 $created=[datetime]::UtcNow.AddSeconds(-10)
 $identity=@{registeredDeviceId='A';installId='I'}
 $process=@{ProcessId=12;ExecutablePath=(Join-Path $root 'runtime\\node.exe');CommandLine=((Join-Path $root 'agent\\index.mjs') + ' --watch');CreationDate=$created}
-$receipt=@{schemaVersion=1;version='0.1.105';deviceId='A';installId='I';pid=12;executablePath=$process.ExecutablePath;startedAt=$created.ToString('o');acceptedAt=[datetime]::UtcNow.ToString('o')}
+$receipt=@{schemaVersion=3;version='0.1.105';deviceId='A';installId='I';pid=12;executablePath=$process.ExecutablePath;startedAt=$created.ToString('o');acceptedAt=[datetime]::UtcNow.ToString('o');commandReceiverReadyAt=[datetime]::UtcNow.ToString('o');commandRoundTripAt=[datetime]::UtcNow.ToString('o');commandChallengeId='00000000-0000-4000-8000-000000000001'}
 function Check($r,$p,$since) { Test-AgentOnlineReceipt $r $p $root '0.1.105' $identity $since }
 $since=$created.AddSeconds(-1)
 if (-not (Check $receipt $process $since)) { throw 'valid receipt rejected' }
-foreach ($key in @('version','deviceId','installId','pid','executablePath','startedAt','acceptedAt','schemaVersion')) {
+foreach ($key in @('version','deviceId','installId','pid','executablePath','startedAt','acceptedAt','commandReceiverReadyAt','commandRoundTripAt','commandChallengeId','schemaVersion')) {
   $bad=$receipt.Clone(); $bad[$key]='wrong'
   if (Check $bad $process $since) { throw "accepted bad $key" }
 }
@@ -115,7 +149,10 @@ if ($global:secureReads -ne 40 -or $global:secureSleeps -ne 39) { throw "unbound
         const report = createAgentHealthReporter({baseDir:${JSON.stringify(root)},version:'0.1.105'});
         const response = await fetch('http://127.0.0.1:${port}/heartbeat');
         const result = await response.json();
-        await report(${JSON.stringify(identity)}, result.device.id);
+        await report.heartbeatAccepted(${JSON.stringify(identity)}, result.device.id);
+        const challenge = report.takeCommandChallenge(${JSON.stringify(identity)});
+        await report.commandReceiverReady(${JSON.stringify(identity)});
+        await report.commandRoundTripVerified(${JSON.stringify(identity)}, challenge);
         console.log('ready'); setInterval(() => {}, 1000);`);
       await build({ entryPoints: [entry], bundle: true, platform: "node", format: "esm", outfile: script });
       const since = new Date().toISOString();

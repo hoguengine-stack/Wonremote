@@ -11,6 +11,10 @@ on:
         description: Publish after build (disable for installed candidate verification)
         type: boolean
         default: true
+      trialAgentZlib:
+        description: Build a separate zlib Agent test candidate without publishing latest
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -63,6 +67,7 @@ jobs:
       WONREMOTE_AUTHENTICODE_PFX_BASE64: ${{ secrets.WONREMOTE_AUTHENTICODE_PFX_BASE64 }}
       WONREMOTE_AUTHENTICODE_PFX_PASSWORD: ${{ secrets.WONREMOTE_AUTHENTICODE_PFX_PASSWORD }}
       WONREMOTE_REQUIRE_AUTHENTICODE: ${{ vars.WONREMOTE_REQUIRE_AUTHENTICODE }}
+      WONREMOTE_AGENT_ZLIB_TRIAL: ${{ inputs.trialAgentZlib && !inputs.publish && 'YES' || 'NO' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -101,6 +106,9 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY)) {
             throw "WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY GitHub Actions secret is missing."
           }
+          if ('${{ inputs.trialAgentZlib }}' -eq 'true' -and '${{ inputs.publish }}' -ne 'false') {
+            throw "The zlib Agent trial cannot publish the production latest release."
+          }
 
       - name: Verify realtime ICE configuration
         run: |
@@ -133,7 +141,11 @@ jobs:
       - name: Verify development and recurrence coverage
         run: |
           if ('${{ github.event_name }}' -eq 'workflow_dispatch' -and '${{ inputs.publish }}' -eq 'false') {
-            npm run change:verify
+            if ('${{ inputs.trialAgentZlib }}' -eq 'true') {
+              npm run change:verify:predeploy
+            } else {
+              npm run change:verify
+            }
           } else {
             npm run change:verify:predeploy
           }
@@ -163,7 +175,12 @@ jobs:
         run: npm run release:sign
 
       - name: Build signed update manifest from final installer bytes
-        run: npm run release:manifest
+        run: |
+          if ('${{ inputs.trialAgentZlib }}' -eq 'true') {
+            node scripts/create-update-manifest.js --release-tag v0.1.107-zlib-test
+          } else {
+            npm run release:manifest
+          }
 
       - name: Verify Tauri resource paths
         run: cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc --release --lib test_node_resource_paths

@@ -489,7 +489,7 @@ try {
   $action = New-ScheduledTaskAction -Execute $runtime.Agent -Argument "--agent" -WorkingDirectory (Split-Path -Parent $runtime.Agent)
   $trigger = New-ScheduledTaskTrigger -AtLogOn -User $UserId
   $taskPrincipal = New-ScheduledTaskPrincipal -UserId $UserId -LogonType Interactive -RunLevel Highest
-  $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+  $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
 
   Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $taskPrincipal -Settings $settings -Force | Out-Null
   $brokerAction = New-ScheduledTaskAction -Execute $runtime.Capture -Argument $brokerArguments -WorkingDirectory (Split-Path -Parent $runtime.Capture)
@@ -529,12 +529,15 @@ try {
     if (Test-Path -LiteralPath $configPath -PathType Leaf) {
       $expectedIdentity = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
     }
+    $registeredIdentity = $expectedIdentity -and -not [string]::IsNullOrWhiteSpace([string]$expectedIdentity.registeredDeviceId)
     $started = [datetime]::UtcNow
-    Start-ScheduledTask -TaskName $taskName
-    Wait-ProtectedAgentRuntime $runtime
+    if ($registeredIdentity -or $legacyRoots.Count -gt 0) {
+      Start-ScheduledTask -TaskName $taskName
+      Wait-ProtectedAgentRuntime $runtime
+    }
     Wait-SecureBrokerTask
     $script:replacementRunning = $true
-    if ($expectedIdentity -or $legacyRoots.Count -gt 0) {
+    if ($registeredIdentity -or $legacyRoots.Count -gt 0) {
       . (Join-Path $runtime.Root 'agent-update-health.ps1')
       $version = (Get-Item -LiteralPath $runtime.Agent).VersionInfo.ProductVersion -replace '\+.*$', ''
       Wait-AgentOnlineReceipt (Join-Path $stateRoot 'agent-online.json') $runtime.Root $version $expectedIdentity $started

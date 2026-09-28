@@ -1,5 +1,57 @@
 # WonRemote Incident Registry
 
+## INC-20260928-119: Trial compression initially touched the production Agent config
+
+- Detected: 2026-09-28 during review before any build or publication.
+- Severity: Medium; if left in place, a future normal Agent release would silently use the trial compression mode.
+- Affected: Windows x86 Agent NSIS configuration and release packaging.
+- Status: Corrected in the worktree before build; trial build and installed timing proof pending.
+- User-visible symptom: None published. The initial worktree patch would have changed normal release packaging despite a trial-only request.
+- Minimal trigger: Set `compression` directly in `tauri.agent.x86.conf.json` while preparing `/download/agent1`.
+- Root cause and contributors: The Agent's x86 configuration is shared by the normal publisher; a trial-only choice needs a separate overlay and explicit build selection.
+- Fix commit(s): Pending trial source commit.
+- Permanent guard: Keep the default Agent and Viewer compression untouched, merge the zlib overlay only when the explicit trial flag is set, and reject trial publication as production latest. Packaging tests assert this separation and the trial route.
+- Regression proof: Focused `desktopPackaging.test.ts` passed after the overlay and workflow selection change; normal and trial build artifacts remain to be verified.
+- Release proof: Pending CI artifact, prerelease and live `/download/agent1` checks.
+- Remaining blocker: Build the trial candidate from committed source, verify installer contents and live URL, then measure on the affected PC.
+
+## INC-20260928-117: Fresh Agent install aborted before registration runtime could exist
+
+- Detected: 2026-09-28 from a first-install NSIS screenshot showing `The protected WonRemote Agent runtime did not stay healthy` in `manage-agent-login-task.ps1`.
+- Severity: High; installation aborts on some new PCs before Agent registration can be completed.
+- Confirmed cause: The NSIS postinstall always ran `Migrate`, which started the Agent task and required `agent/index.mjs --watch` before completing setup. The installed Agent shell intentionally starts Node only after registration exists; an unregistered first install therefore cannot satisfy that check. The same 15-second predicate existed in earlier source, so this is a missing first-install branch, not a newly introduced timeout. The affected PC's account, scheduled-task result and native logs have not been inspected.
+- Permanent guard: When no registered identity or legacy Agent root exists, register the protected Agent and SYSTEM broker tasks and require the broker to run, but leave the Agent Node process to the finish-page registration flow. Existing registered upgrades still require protected Node, broker and online identity/health before any legacy cleanup. A PowerShell-executed postinstall fixture asserts both paths and the failure case.
+- Source proof: 2026-09-28 focused Agent startup, desktop packaging, retry-policy, command-execution and listener-runtime suites passed; first-install and registered-upgrade cases are included. TypeScript compilation passed. Installed first-run proof remains open.
+- Deployment: No installer build, installation or public release in this work. The affected PC must retry with a future verified installer; this source change does not alter its current installer.
+- Remaining: Install on an unregistered affected PC, complete registration and verify online/remote control. Test an already registered upgrade and alternate-administrator-credential install separately.
+
+## INC-20260928-118: Failed Firebase command listener retried every 15 seconds
+
+- Detected: 2026-09-28 while reviewing per-device Firestore request counts and user-requested Agent-initiated recovery.
+- Cause: The app-level transient listener retry used a fixed 15-second timer even during a prolonged outage. Preflight errors could also reach the Agent through both callback and rejected promise, so a naive failure counter would overcount.
+- Permanent guard: One listener attempt has one failure count; fallback waits 1, 5, then 15 minutes. While disconnected only, a local interface check every 30 seconds advances a pending retry on a down-to-up transition, without a cloud request. Readiness clears the local check and resets the counter. Quota/authorization errors keep at least five minutes. A runtime test exercises duplicate preflight error delivery and down-to-up recovery; policy tests fix the delay bounds.
+- Source proof: 2026-09-28 the listener runtime fixture passed transient recovery and permission-denied no-early-retry cases after correcting a missing fixture dependency. Retry-policy tests passed and TypeScript compilation passed. No production Firestore billing or physical outage test was performed.
+- Limitation: A WAN/Firebase outage with an unchanged local interface relies on the 15-minute fallback. Firestore SDK internal retries and billed reads are not determined by the app-level timer alone. Existing installed Agents retain the old cadence until updated.
+
+## INC-20260920-116: Updated Agent reported 0.1.107 once and then became command-unreachable
+
+- Detected: 2026-09-20 from Viewer refreshes against device `299-60-00114:AGENT-8E97376F` after its 0.1.95-to-0.1.107 update.
+- Severity: Critical; the field PC appears updated but cannot be remotely reached for repair.
+- Affected: Installed Windows Agent update health, Firebase command-listener recovery and Agent scheduled-task process recovery.
+- Status: Production rollout paused; source hardening and automated command-round-trip/circuit checks passed; physical recovery and installed-upgrade proof pending.
+- User-visible symptom: The Viewer briefly shows Agent version 0.1.107, then refresh changes the device to offline and connection cannot start although 0.1.95 was reachable immediately before the update.
+- Minimal trigger: End the last 0.1.95 remote session, allow the Agent to update, then refresh the device after the replacement publishes its first 0.1.107 heartbeat.
+- Confirmed evidence: The device delivered commands through `2026-09-20T13:52:48.718Z` and reported 0.1.107 with a server timestamp of `2026-09-20T13:53:42.092Z`. Six commands created from `13:57:49.119Z` through `14:01:43.507Z` remain pending. No later heartbeat or command delivery exists. This rules out a Viewer-only stale badge. The exact device-local exit or listener error is not observable while the Agent is unreachable.
+- Root cause and contributors: Update success accepted a single server heartbeat and wrote `agent-online.json` before the Firebase command listener was started. Therefore installation could be marked healthy without proving that the replacement could receive even one command. Creating a listener object alone is also insufficient because permission or transport failure can arrive asynchronously. The original internal watchdog also reset its failure count on a superficial `Online` log and eventually retried every 30 seconds forever, so it could neither prove command reachability nor open a bounded recovery circuit. The `WonRemote Agent` scheduled task was installed with `RestartCount = 0`, leaving a shell exit unrecovered. The precise process that stopped on 8E97376F is not claimed without its local logs.
+- Containment: At `2026-09-20T14:02:40.080963Z`, the production Agent rollout was atomically changed to `paused: true` while retaining target 0.1.107 and the existing rollout selection.
+- Permanent guard: Schema-3 update health is published only after the original identity sends a server-accepted heartbeat, the production listener is ready and that same process consumes and acknowledges its exact random one-time `agent-health-check` command. The fixed `devices/{deviceId}/commands/agent-health` document is reused so probes cannot accumulate. Listener errors clear readiness; transient failures reconnect within 15 seconds while authorization, authentication, quota and 429 failures retain the five-minute backoff. Unexpected Node exits retry after 5 seconds, 30 seconds and 2 minutes, then enter one 15-minute half-open probe cadence; the failure count resets only after an accepted command round trip and 10 minutes of continuous child uptime. The outer Agent task remains limited to three one-minute failed-exit retries, and replacement health failure still enters the existing automatic installer rollback. A version-only heartbeat or listener creation without exact command delivery is never update-success evidence. Keep the rollout paused until an installed old-Agent-to-candidate test remains command-reachable after installer cleanup.
+- Regression proof: Compared baseline `6a644a305c2790e06fa4aeac5774430efc8b9f8c` with affected release source `574c48eb90416c374de1e10181563f20676a9118`. Initial RED produced 9 intended failures across 141 cases plus one first-snapshot readiness failure; GREEN passed 162/162. The first restart repair used an excessive 999 retries; refinement rejected it and retained three outer retries. The final RED additionally failed eight TypeScript expectations and the new Rust circuit/reset expectations until exact command round-trip health and staged recovery were implemented. GREEN passed 180/180 focused TypeScript cases, 54/54 Rust library tests, TypeScript compilation, Windows x86 Rust compilation, both changed PowerShell parsers and `git diff --check`. A real Firestore emulator using repository rules passed 2/2 tests, including two successive exact challenges through one reused fixed document. Full `cargo fmt --check` still reports broad pre-existing formatting drift outside this change and was not applied. Installed old-Agent-to-candidate recovery, induced repeated child failure and delayed Viewer command/input remain open.
+- Fix commit(s): Uncommitted source repair.
+- Release proof: No new build, installation or deployment was requested or performed for this repair. The public v0.1.107 rollout remains paused; source verification does not recover 8E97376F.
+- Remaining blocker: Build a later candidate and prove a real 0.1.95-to-candidate update remains command-reachable after delayed Viewer refresh. 8E97376F must first be started or rebooted locally because an offline Agent cannot receive its repair.
+- Recovery limit: This Agent cannot receive a repair while its listener/process is down. Someone at the PC must start the installed Agent or reboot/log on before it can take a later fixed update.
+- 2026-09-28 follow-up: The prior 15-second transient listener retry is replaced in unbuilt source by the sparse recovery described in INC-20260928-118. The fixed health-command round trip and Agent child watchdog remain unchanged; physical qualification is still open.
+
 ## INC-20260917-115: Windows role UI, input, secure transition and transfer lifecycle failures
 
 - Detected: 2026-09-17 from user testing of the public 0.1.105 Windows Agent and Viewer.

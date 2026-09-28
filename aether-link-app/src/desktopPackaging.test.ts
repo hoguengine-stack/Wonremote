@@ -48,6 +48,7 @@ describe("desktop packaging scaffold", () => {
     });
     expect(readFileSync(agentHookPath, "utf8")).not.toContain('StrCpy $INSTDIR "$LOCALAPPDATA\\WonRemote\\Agent"');
     expect(packageReleaseScript).toContain("tauri.agent.x86.conf.json");
+    expect(packageReleaseScript).toContain('process.env.WONREMOTE_AGENT_ZLIB_TRIAL === "YES"');
   });
 
   it("keeps the Agent window and tray icon distinct from the Viewer icon", () => {
@@ -84,6 +85,19 @@ describe("desktop packaging scaffold", () => {
 
     const styles = readFileSync(path.join(projectRoot, "src", "styles.css"), "utf8");
     expect(styles).toContain(".agent-screen .agent-panel");
+  });
+
+  it("uses zlib only for the x86 Agent trial installer", () => {
+    const agent = JSON.parse(readFileSync(path.join(projectRoot, "src-tauri", "tauri.agent.x86.conf.json"), "utf8"));
+    const trial = JSON.parse(readFileSync(path.join(projectRoot, "src-tauri", "tauri.agent.x86.zlib-trial.conf.json"), "utf8"));
+    const viewer = JSON.parse(readFileSync(path.join(projectRoot, "src-tauri", "tauri.x86.conf.json"), "utf8"));
+    expect(agent.bundle.windows.nsis.compression).toBeUndefined();
+    expect(trial.bundle.windows.nsis.compression).toBe("zlib");
+    expect(viewer.bundle.windows.nsis.compression).toBeUndefined();
+    const workflow = readFileSync(path.join(projectRoot, "..", ".github", "workflows", "publish-release.yml"), "utf8");
+    expect(workflow).toContain("WONREMOTE_AGENT_ZLIB_TRIAL: ${{ inputs.trialAgentZlib && !inputs.publish && 'YES' || 'NO' }}");
+    expect(workflow).toContain("The zlib Agent trial cannot publish the production latest release.");
+    expect(workflow).toContain("node scripts/create-update-manifest.js --release-tag v0.1.107-zlib-test");
   });
 
   it("keeps a completed Agent registration when startup integration is degraded", () => {
@@ -282,6 +296,13 @@ describe("desktop packaging scaffold", () => {
     expect(taskScript).toContain('Test-Path -LiteralPath (Join-Path $_ "wonremote-viewer.exe") -PathType Leaf');
     expect(taskScript).toContain('New-ScheduledTaskTrigger -AtLogOn -User $UserId');
     expect(taskScript).toContain('New-ScheduledTaskAction -Execute $runtime.Agent -Argument "--agent"');
+    const mainAgentSettings = taskScript.slice(
+      taskScript.indexOf('$settings = New-ScheduledTaskSettingsSet', taskScript.indexOf('$taskPrincipal =')),
+      taskScript.indexOf('Register-ScheduledTask -TaskName $taskName'),
+    );
+    expect(mainAgentSettings).toContain('-RestartCount 3');
+    expect(mainAgentSettings).not.toContain('-RestartCount 999');
+    expect(mainAgentSettings).toContain('-RestartInterval (New-TimeSpan -Minutes 1)');
     expect(taskScript.indexOf("Start-ScheduledTask -TaskName $taskName")).toBeGreaterThan(
       taskScript.indexOf('function Start-LegacyMigration'),
     );
@@ -796,6 +817,7 @@ describe("desktop packaging scaffold", () => {
     expect(redirects["/download/viewer-x86"]).toContain("WonRemote-Viewer-Setup.exe");
     expect(redirects["/download/agent-x86"]).toContain("WonRemote-Agent-Setup.exe");
     expect(redirects["/download/agent"]).toBe("https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Agent-Setup.exe");
+    expect(redirects["/download/agent1"]).toBe("https://github.com/hoguengine-stack/Wonremote/releases/download/v0.1.107-zlib-test/WonRemote-Agent-Setup.exe");
     expect(redirects["/download/agent-x86"]).toBe(redirects["/download/agent"]);
     expect(redirects["/download/agent.apk"]).toBe("/download/agent.zip");
     expect(redirects["/download/viewer.apk"]).toBe("/download/viewer.zip");
@@ -808,7 +830,7 @@ describe("desktop packaging scaffold", () => {
     expect(existsSync(path.join(projectRoot, "public", "download", "agent.apk"))).toBe(false);
     expect(existsSync(path.join(projectRoot, "public", "download", "viewer.apk"))).toBe(false);
     expect(existsSync(path.join(projectRoot, "public", "download", "control-addon.apk"))).toBe(false);
-    expect(firebaseConfig.hosting.redirects).toHaveLength(7);
+    expect(firebaseConfig.hosting.redirects).toHaveLength(8);
     for (const obsoletePath of [
       "/download/viewer-agent",
       "/download/portable",
@@ -1042,6 +1064,7 @@ describe("desktop packaging scaffold", () => {
       "/download/agent",
       "/download/agent-x86",
       "/download/agent.apk",
+      "/download/agent1",
       "/download/control-addon.apk",
       "/download/viewer",
       "/download/viewer-x86",
@@ -1056,7 +1079,7 @@ describe("desktop packaging scaffold", () => {
     expect(workflow).toContain("needs: change-guard");
     expect(workflow).toContain("needs: build-release");
     expect(workflow).toContain("if ('${{ github.event_name }}' -eq 'workflow_dispatch' -and '${{ inputs.publish }}' -eq 'false')");
-    expect(workflow).toContain("npm run change:verify\n          } else {\n            npm run change:verify:predeploy");
+    expect(workflow).toContain("if ('${{ inputs.trialAgentZlib }}' -eq 'true') {\n              npm run change:verify:predeploy\n            } else {\n              npm run change:verify");
     const publication = workflow.split("  publish-release:")[1];
     expect(publication.indexOf("npm run change:verify:predeploy")).toBeGreaterThan(0);
     expect(publication.indexOf("npm run change:verify:predeploy")).toBeLessThan(publication.indexOf("run: npm run release:publish"));
@@ -1175,7 +1198,7 @@ describe("desktop packaging scaffold", () => {
     expect(releaseWorkflow.indexOf("run: npm run release:sign")).toBeGreaterThan(
       releaseWorkflow.indexOf("run: npm run release:exes"),
     );
-    expect(releaseWorkflow.indexOf("run: npm run release:manifest")).toBeGreaterThan(
+    expect(releaseWorkflow.indexOf("npm run release:manifest")).toBeGreaterThan(
       releaseWorkflow.indexOf("run: npm run release:sign"),
     );
   });

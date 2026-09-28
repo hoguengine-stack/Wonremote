@@ -1081,13 +1081,14 @@ fn spawn_agent_only_process(
 
     let update_handoff_started = Arc::new(AtomicBool::new(false));
     let unregistered_detected = Arc::new(AtomicBool::new(false));
+    let health_round_trip_verified = Arc::new(AtomicBool::new(false));
     if let Some(stdout) = stdout {
         let status_clone = agent_state.status.clone();
         let status_menu_item_clone = agent_state.status_menu_item.clone();
         let app_handle_clone = app_handle.clone();
-        let watchdog_failure_count = agent_state.watchdog_failure_count.clone();
         let update_handoff_started_clone = update_handoff_started.clone();
         let unregistered_detected_clone = unregistered_detected.clone();
+        let health_round_trip_verified_clone = health_round_trip_verified.clone();
         std::thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines() {
@@ -1120,6 +1121,9 @@ fn spawn_agent_only_process(
                 if line_str.contains("[Error] Agent unregistered") {
                     unregistered_detected_clone.store(true, Ordering::Release);
                 }
+                if line_str.contains("[Health] Command round-trip verified") {
+                    health_round_trip_verified_clone.store(true, Ordering::Release);
+                }
                 let new_status = if line_str.contains("[Status] Connecting") {
                     Some("Connecting")
                 } else if line_str.contains("[Status] Online") {
@@ -1131,9 +1135,6 @@ fn spawn_agent_only_process(
                 };
 
                 if let Some(status_str) = new_status {
-                    if status_str == "Online" {
-                        watchdog_failure_count.store(0, Ordering::Release);
-                    }
                     *status_clone.lock().unwrap() = status_str.to_string();
                     if let Some(menu_item) = &*status_menu_item_clone.lock().unwrap() {
                         let _ = menu_item.set_text(format!("Status: {status_str}"));
@@ -1159,6 +1160,7 @@ fn spawn_agent_only_process(
         spawn_generation,
         update_handoff_started,
         unregistered_detected,
+        health_round_trip_verified,
     );
 
     Ok(())
@@ -1174,12 +1176,28 @@ fn start_agent_watchdog(
     watched_generation: u64,
     update_handoff_started: Arc<AtomicBool>,
     unregistered_detected: Arc<AtomicBool>,
+    health_round_trip_verified: Arc<AtomicBool>,
 ) {
     thread::spawn(move || {
+        let started_at = Instant::now();
+        let mut failures_reset = false;
         loop {
             thread::sleep(Duration::from_secs(1));
             if generation.load(Ordering::Acquire) != watched_generation {
                 return;
+            }
+            if !failures_reset && agent_watchdog_should_reset_failures(
+                health_round_trip_verified.load(Ordering::Acquire),
+                started_at.elapsed(),
+            ) {
+                let previous = failure_count.swap(0, Ordering::AcqRel);
+                failures_reset = true;
+                if previous > 0 {
+                    append_runtime_log(
+                        "agent-watchdog",
+                        "command round trip remained healthy for 10 minutes; recovery circuit reset",
+                    );
+                }
             }
             let exit_status = {
                 let mut guard = child_process.lock().unwrap();
@@ -1214,10 +1232,23 @@ fn start_agent_watchdog(
             }
             let attempt = failure_count.fetch_add(1, Ordering::AcqRel) + 1;
             let delay = agent_watchdog_restart_delay(attempt as u32);
-            append_runtime_log(
-                "agent-watchdog",
-                &format!("unexpected exit; restarting in {}ms", delay.as_millis()),
-            );
+            if agent_watchdog_is_circuit_probe(attempt as u32) {
+                append_runtime_log(
+                    "agent-watchdog",
+                    &format!(
+                        "unexpected exit; recovery circuit open after {attempt} failures; half-open probe in {}s",
+                        delay.as_secs()
+                    ),
+                );
+            } else {
+                append_runtime_log(
+                    "agent-watchdog",
+                    &format!(
+                        "unexpected exit; recovery attempt {attempt} in {}s",
+                        delay.as_secs()
+                    ),
+                );
+            }
             thread::sleep(delay);
             if generation.load(Ordering::Acquire) != watched_generation {
                 return;
@@ -1247,8 +1278,16 @@ fn start_agent_watchdog(
 }
 
 fn agent_watchdog_restart_delay(attempt: u32) -> Duration {
-    const DELAYS_MS: [u64; 5] = [1_000, 2_000, 5_000, 15_000, 30_000];
-    Duration::from_millis(DELAYS_MS[attempt.saturating_sub(1).min(4) as usize])
+    const DELAYS_SECONDS: [u64; 4] = [5, 30, 120, 900];
+    Duration::from_secs(DELAYS_SECONDS[attempt.saturating_sub(1).min(3) as usize])
+}
+
+fn agent_watchdog_is_circuit_probe(attempt: u32) -> bool {
+    attempt >= 4
+}
+
+fn agent_watchdog_should_reset_failures(round_trip_verified: bool, uptime: Duration) -> bool {
+    round_trip_verified && uptime >= Duration::from_secs(10 * 60)
 }
 
 fn parse_update_handoff_request(line: &str) -> Result<Option<UpdateHandoffRequest>, String> {
@@ -3795,10 +3834,21 @@ mod registry_tests {
 
     #[test]
     fn test_agent_watchdog_restart_delay_is_bounded() {
-        assert_eq!(agent_watchdog_restart_delay(0), Duration::from_secs(1));
-        assert_eq!(agent_watchdog_restart_delay(1), Duration::from_secs(1));
-        assert_eq!(agent_watchdog_restart_delay(2), Duration::from_secs(2));
-        assert_eq!(agent_watchdog_restart_delay(3), Duration::from_secs(5));
-        assert_eq!(agent_watchdog_restart_delay(99), Duration::from_secs(30));
+        assert_eq!(agent_watchdog_restart_delay(0), Duration::from_secs(5));
+        assert_eq!(agent_watchdog_restart_delay(1), Duration::from_secs(5));
+        assert_eq!(agent_watchdog_restart_delay(2), Duration::from_secs(30));
+        assert_eq!(agent_watchdog_restart_delay(3), Duration::from_secs(120));
+        assert_eq!(agent_watchdog_restart_delay(4), Duration::from_secs(900));
+        assert_eq!(agent_watchdog_restart_delay(99), Duration::from_secs(900));
+        assert!(!agent_watchdog_is_circuit_probe(3));
+        assert!(agent_watchdog_is_circuit_probe(4));
+        assert!(agent_watchdog_is_circuit_probe(99));
+    }
+
+    #[test]
+    fn test_agent_watchdog_requires_stable_round_trip_before_reset() {
+        assert!(!agent_watchdog_should_reset_failures(false, Duration::from_secs(3600)));
+        assert!(!agent_watchdog_should_reset_failures(true, Duration::from_secs(599)));
+        assert!(agent_watchdog_should_reset_failures(true, Duration::from_secs(600)));
     }
 }

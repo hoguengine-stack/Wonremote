@@ -9,7 +9,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { bootstrapAgent } from "./agentBootstrap";
 import { subscribeLocalSessionData } from "../api/sessionData";
-import { firebaseRequestRetryDelayMs } from "../firebase/requestRetryPolicy";
+import { firebaseCommandListenerRetryDelayMs, firebaseRequestRetryDelayMs } from "../firebase/requestRetryPolicy";
 import type { SessionData } from "../domain/sessionData";
 import { parseAgentConfigJson } from "./agentConfigJson";
 import { pollAgentCommands, postAgentSessionApproval, sendAgentHeartbeat } from "./agentClient";
@@ -126,6 +126,7 @@ import {
   postChatWithFirebase,
   postClipboardWithFirebase,
   postFileTransferReceiptWithFirebase,
+  queueAgentHealthChallengeWithFirebase,
   reportAgentUpdateTelemetryWithFirebase,
   postSessionTilesWithFirebase,
   registerAgentFirstRunWithFirebase,
@@ -192,8 +193,9 @@ const USE_FIREBASE = isAgentFirebaseEnabled(process.env);
 const AGENT_SYSTEM_INFO = discoverAgentSystemInfo();
 const FIRESTORE_TILE_FALLBACK_POLICY = resolveFirestoreTileFallbackPolicy(process.env);
 const persistentInputInjector = new PersistentInputInjector(POC_PATH);
-const reportAgentOnline = createAgentHealthReporter({
+const agentHealthReporter = createAgentHealthReporter({
   baseDir: process.env.APPDATA ?? process.cwd(),
+  onHealthy: () => console.log("[Health] Command round-trip verified"),
   version: WONREMOTE_APP_VERSION,
 });
 
@@ -1262,6 +1264,9 @@ async function main() {
           activeConfig = nextConfig;
         });
       }, COMMAND_POLL_INTERVAL_MS);
+      await agentHealthReporter.commandReceiverReady(activeConfig).catch((error) => {
+        console.warn(`[Agent] Command readiness receipt could not be saved: ${error instanceof Error ? error.message : error}`);
+      });
     }
   }
 }
@@ -1813,6 +1818,19 @@ async function runCommandPollTick(config: AgentLocalConfig): Promise<AgentLocalC
 }
 
 function startFirebaseCommandListener(getConfig: () => AgentLocalConfig): void {
+  let consecutiveFailures = 0;
+  let networkRecoveryTimer: ReturnType<typeof setInterval> | null = null;
+  let networkWasAvailable = false;
+  let connecting = false;
+  let failedThisAttempt = false;
+  const hasNetworkInterface = () => Object.values(networkInterfaces()).some((addresses) =>
+    addresses?.some((address) => !address.internal));
+  const stopNetworkRecoveryWatch = () => {
+    if (networkRecoveryTimer) {
+      clearInterval(networkRecoveryTimer);
+      networkRecoveryTimer = null;
+    }
+  };
   const schedule = (delayMs: number) => {
     if (firebaseCommandRetryTimer) {
       return;
@@ -1824,34 +1842,79 @@ function startFirebaseCommandListener(getConfig: () => AgentLocalConfig): void {
   };
 
   const handleFailure = (error: unknown) => {
+    if (failedThisAttempt) { return; }
+    failedThisAttempt = true;
     firebaseCommandUnsubscribe?.();
     firebaseCommandUnsubscribe = null;
+    agentHealthReporter.commandReceiverUnavailable();
     console.error(`[Firebase command listener error] ${error instanceof Error ? error.message : String(error)}`);
-    schedule(firebaseRequestRetryDelayMs(error));
+    consecutiveFailures++;
+    schedule(firebaseCommandListenerRetryDelayMs(error, consecutiveFailures));
+    if (firebaseRequestRetryDelayMs(error) >= 300_000) {
+      stopNetworkRecoveryWatch();
+      return;
+    }
+    networkWasAvailable = hasNetworkInterface();
+    if (!networkRecoveryTimer) {
+      networkRecoveryTimer = setInterval(() => {
+        const available = hasNetworkInterface();
+        if (available && !networkWasAvailable && firebaseCommandRetryTimer && !connecting) {
+          clearTimeout(firebaseCommandRetryTimer);
+          firebaseCommandRetryTimer = null;
+          schedule(0);
+        }
+        networkWasAvailable = available;
+      }, 30_000);
+    }
   };
 
   const connect = async () => {
-    const config = getConfig();
-    if (!config.registeredDeviceId) {
-      handleFailure(new Error("Firebase command subscription requires a registered device ID."));
-      return;
-    }
+    if (connecting) { return; }
+    connecting = true;
+    failedThisAttempt = false;
     try {
+      const config = getConfig();
+      if (!config.registeredDeviceId) {
+        throw new Error("Firebase command subscription requires a registered device ID.");
+      }
+      const healthChallenge = agentHealthReporter.takeCommandChallenge(config);
+      if (healthChallenge) {
+        try {
+          await queueAgentHealthChallengeWithFirebase({
+            deviceId: config.registeredDeviceId,
+            challengeId: healthChallenge.slice("agent-health-check ".length),
+          });
+        } catch (error) {
+          agentHealthReporter.commandChallengeFailed(healthChallenge);
+          throw error;
+        }
+      }
       firebaseCommandUnsubscribe?.();
       firebaseCommandUnsubscribe = await subscribeAgentCommandsWithFirebase(
         {
           deviceId: config.registeredDeviceId,
           installId: config.installId,
+          onReady: () => {
+            failedThisAttempt = false;
+            consecutiveFailures = 0;
+            stopNetworkRecoveryWatch();
+            void agentHealthReporter.commandReceiverReady(config).catch((error) => {
+              console.warn(`[Agent] Command readiness receipt could not be saved: ${error instanceof Error ? error.message : error}`);
+            });
+            console.log("Firebase command listener active.");
+          },
         },
         (commands) => executeReceivedCommands(getConfig(), commands),
         handleFailure,
       );
-      console.log("Firebase command listener active.");
     } catch (error) {
       handleFailure(error);
+    } finally {
+      connecting = false;
     }
   };
 
+  process.once("exit", stopNetworkRecoveryWatch);
   schedule(0);
 }
 
@@ -2004,7 +2067,7 @@ async function sendHeartbeat(config: AgentLocalConfig, heartbeatRequestId?: stri
     updateTelemetry: currentUpdateTelemetry,
   });
   console.log(`Heartbeat accepted: ${result.device.id}`);
-  await reportAgentOnline(config, result.device.id).catch((error) => {
+  await agentHealthReporter.heartbeatAccepted(config, result.device.id).catch((error) => {
     console.warn(`[Agent] Online receipt could not be saved: ${error instanceof Error ? error.message : error}`);
   });
 }
@@ -2025,6 +2088,10 @@ async function pollCommands(config: AgentLocalConfig): Promise<void> {
 
 async function executeReceivedCommands(config: AgentLocalConfig, commands: AgentCommand[]): Promise<void> {
   for (const command of commands) {
+    if (command.action.startsWith("agent-health-check ")) {
+      await agentHealthReporter.commandRoundTripVerified(config, command.action);
+      continue;
+    }
     if (command.action.startsWith("request-rollback ")) {
       const request = parseAgentRollbackRequest(command.action);
       if (request) {

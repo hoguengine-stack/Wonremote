@@ -309,8 +309,15 @@ describe("Agent command execution", () => {
     expect(source.match(/await pollCommands\(/g)).toHaveLength(1);
     expect(source).toContain('if (!USE_FIREBASE || !process.argv.includes("--watch"))');
     expect(source).toContain("subscribeAgentCommandsWithFirebase(");
+    expect(source).toContain("onReady: () => {");
+    expect(source).toContain("agentHealthReporter.commandReceiverReady(config)");
+    expect(source).toContain("queueAgentHealthChallengeWithFirebase(");
+    expect(source.match(/agentHealthReporter\.commandChallengeFailed\(healthChallenge\)/g)).toHaveLength(1);
+    expect(source).toContain('command.action.startsWith("agent-health-check ")');
+    expect(source).toContain("agentHealthReporter.commandRoundTripVerified(config, command.action)");
+    expect(source).toContain('console.log("[Health] Command round-trip verified")');
     expect(source).toContain("Firebase command listener active.");
-    expect(source).toContain("schedule(firebaseRequestRetryDelayMs(error))");
+    expect(source).toContain("schedule(firebaseCommandListenerRetryDelayMs(error, consecutiveFailures))");
     expect(source).not.toContain("HEARTBEAT_INTERVAL_MS");
     expect(source).toContain('command.action.startsWith("refresh-status ")');
   });

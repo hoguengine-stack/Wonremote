@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { firebaseRequestRetryDelayMs } from "./requestRetryPolicy";
+import { firebaseCommandListenerRetryDelayMs, firebaseRequestRetryDelayMs } from "./requestRetryPolicy";
 
 describe("necessary background request retries", () => {
   it.each(["resource-exhausted", "firestore/resource-exhausted", "RESOURCE_EXHAUSTED", "permission-denied", "unauthenticated"])("backs off %s for five minutes", (code) => {
@@ -11,6 +11,14 @@ describe("necessary background request retries", () => {
     expect(firebaseRequestRetryDelayMs(new Error("offline"))).toBe(60_000);
     expect(firebaseRequestRetryDelayMs(null)).toBe(60_000);
   });
+  it("uses bounded sparse command listener retries while preserving quota backoff", () => {
+    expect(firebaseCommandListenerRetryDelayMs(new Error("offline"), 1)).toBe(60_000);
+    expect(firebaseCommandListenerRetryDelayMs(new Error("offline"), 2)).toBe(300_000);
+    expect(firebaseCommandListenerRetryDelayMs(new Error("offline"), 3)).toBe(900_000);
+    expect(firebaseCommandListenerRetryDelayMs(new Error("offline"), 100)).toBe(900_000);
+    expect(firebaseCommandListenerRetryDelayMs({ code: "resource-exhausted" }, 1)).toBe(300_000);
+    expect(firebaseCommandListenerRetryDelayMs({ code: "permission-denied" }, 3)).toBe(900_000);
+  });
   it("keeps Agent auxiliary delivery event-driven and heartbeats nonoverlapping", () => {
     const source = readFileSync(new URL("../agent/index.ts", import.meta.url), "utf8");
     expect(source).not.toContain("fetchSessionDataWithFirebase");
@@ -20,6 +28,8 @@ describe("necessary background request retries", () => {
     expect(source).toContain("active && activeSessionId === sessionId");
     expect(source).toContain("agentHeartbeatGate.run(() => runAgentTick(config, requestId))");
     expect(source).toContain("Date.now() < heartbeatRetryAtMs");
-    expect(source).toContain("schedule(firebaseRequestRetryDelayMs(error))");
+    expect(source).toContain("schedule(firebaseCommandListenerRetryDelayMs(error, consecutiveFailures))");
+    expect(source).toContain("available && !networkWasAvailable && firebaseCommandRetryTimer");
+    expect(source).toContain("stopNetworkRecoveryWatch();");
   });
 });

@@ -262,8 +262,9 @@ function buildAgentDefaultInstaller(target) {
   // The Agent build overwrites the shared target host with Agent identity.
   // Invalidate Viewer reuse first so a later packaging run cannot bundle it as Viewer.
   fs.rmSync(viewerBuildStampPath(target), { force: true });
+  const trialZlib = process.env.WONREMOTE_AGENT_ZLIB_TRIAL === "YES";
   runShell(
-    buildTauriCommand(target, target.agentConfig),
+    `${buildTauriCommand(target, target.agentConfig)}${trialZlib ? " --config src-tauri/tauri.agent.x86.zlib-trial.conf.json" : ""}`,
     buildEnvFor(target, { WONREMOTE_BUILD_STAGE: "full" }),
   );
   verifyBuiltProductIdentity(target, "WonRemote Agent");

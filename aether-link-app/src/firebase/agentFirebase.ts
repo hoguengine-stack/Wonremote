@@ -387,6 +387,21 @@ export async function pollAgentCommandsWithFirebase(
   return { commands: orderAgentCommands(await acknowledgeAgentCommands(services.db, commandQuery, snapshot.docs, input.deviceId)) };
 }
 
+export async function queueAgentHealthChallengeWithFirebase(
+  input: { deviceId: string; challengeId: string },
+  env: AgentFirebaseEnv = process.env,
+): Promise<void> {
+  if (!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(input.challengeId)) {
+    throw new Error("Invalid Agent health challenge.");
+  }
+  const services = getAgentFirebaseServices(env);
+  await safeSetDoc(doc(services.db, "devices", input.deviceId, "commands", "agent-health"), {
+    action: `agent-health-check ${input.challengeId}`,
+    createdAt: serverTimestamp(),
+    state: "pending",
+  });
+}
+
 async function acknowledgeAgentCommands(
   db: Parameters<typeof writeBatch>[0],
   commandQuery: Parameters<typeof getDocsFromServer>[0],
@@ -431,7 +446,7 @@ async function acknowledgeAgentCommands(
 }
 
 export async function subscribeAgentCommandsWithFirebase(
-  input: { deviceId: string; installId: string },
+  input: { deviceId: string; installId: string; onReady?: () => void },
   onCommands: (commands: AgentCommand[]) => void | Promise<void>,
   onError: (error: Error) => void,
   env: AgentFirebaseEnv = process.env,
@@ -459,6 +474,7 @@ export async function subscribeAgentCommandsWithFirebase(
     limit(50),
   );
   let active = true;
+  let ready = false;
   let serialized = Promise.resolve();
   let unsubscribe: Unsubscribe | undefined;
   const queuedIds = new Set<string>();
@@ -477,6 +493,15 @@ export async function subscribeAgentCommandsWithFirebase(
     commandQuery,
     (snapshot) => {
       if (!active) return;
+      if (!ready) {
+        ready = true;
+        try {
+          input.onReady?.();
+        } catch (error) {
+          fail(error);
+          return;
+        }
+      }
       const documents = snapshot.docChanges()
         .filter((change) => change.type === "added" && !queuedIds.has(change.doc.id))
         .map((change) => change.doc);

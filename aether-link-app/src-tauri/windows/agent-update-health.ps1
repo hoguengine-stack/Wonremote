@@ -4,7 +4,7 @@ function Test-AgentOnlineReceipt($Receipt, $Process, [string]$Root, [string]$Ver
     if (-not $Receipt -or -not $Process -or -not $Identity -or
         [string]::IsNullOrWhiteSpace([string]$Identity.registeredDeviceId) -or
         [string]::IsNullOrWhiteSpace([string]$Identity.installId) -or
-        $Receipt.schemaVersion -ne 1 -or $Receipt.version -cne $Version -or
+        $Receipt.schemaVersion -ne 3 -or $Receipt.version -cne $Version -or
         $Receipt.deviceId -cne $Identity.registeredDeviceId -or $Receipt.installId -cne $Identity.installId -or
         $Receipt.pid -ne $Process.ProcessId) { return $false }
     $expectedNode = [IO.Path]::GetFullPath((Join-Path $Root 'runtime\node.exe'))
@@ -17,9 +17,14 @@ function Test-AgentOnlineReceipt($Receipt, $Process, [string]$Root, [string]$Ver
     $created = ([datetime]$Process.CreationDate).ToUniversalTime()
     $started = ([datetime]$Receipt.startedAt).ToUniversalTime()
     $accepted = ([datetime]$Receipt.acceptedAt).ToUniversalTime()
+    $commandReceiverReady = ([datetime]$Receipt.commandReceiverReadyAt).ToUniversalTime()
+    $commandRoundTrip = ([datetime]$Receipt.commandRoundTripAt).ToUniversalTime()
+    if ([string]$Receipt.commandChallengeId -notmatch '^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$') { return $false }
     return $created -ge $Since.ToUniversalTime() -and
       [Math]::Abs(($created - $started).TotalSeconds) -lt 3 -and
-      $accepted -ge $created -and $accepted -le [datetime]::UtcNow.AddSeconds(5)
+      $accepted -ge $created -and $accepted -le [datetime]::UtcNow.AddSeconds(5) -and
+      $commandReceiverReady -ge $created -and $commandReceiverReady -le [datetime]::UtcNow.AddSeconds(5) -and
+      $commandRoundTrip -ge $commandReceiverReady -and $commandRoundTrip -le [datetime]::UtcNow.AddSeconds(5)
   } catch { return $false }
 }
 
@@ -32,7 +37,7 @@ function Wait-AgentOnlineReceipt([string]$ReceiptPath, [string]$Root, [string]$V
     } catch { }
     if ($attempt -lt 59) { Start-Sleep -Seconds 1 }
   }
-  throw "Agent online verification failed: target version, original identity and fresh server heartbeat were not confirmed. Previous files are retained."
+  throw "Agent online verification failed: target version, original identity, fresh server heartbeat and command round trip were not confirmed. Previous files are retained."
 }
 
 function Wait-AgentSecureCaptureTask([string]$Root) {
