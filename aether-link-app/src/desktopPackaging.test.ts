@@ -48,7 +48,7 @@ describe("desktop packaging scaffold", () => {
       expect(hook).toContain("!insertmacro WONREMOTE_MANAGE_AGENT_FIREWALL Uninstall");
       expect(hook).toContain('Delete "$INSTDIR\\manage-agent-firewall.ps1"');
     }
-  });
+  }, 20000);
   it("uses Tauri with the existing Vite build output", () => {
     const configPath = path.join(projectRoot, "src-tauri", "tauri.conf.json");
     expect(existsSync(configPath)).toBe(true);

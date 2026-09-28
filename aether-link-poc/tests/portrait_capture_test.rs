@@ -35,4 +35,5 @@ fn duplication_frame_matches_display_orientation_before_tile_encoding() {
         expected
     );
     assert!(orient_duplication_bgra(expected, 3, 2, 2, 3, DXGI_MODE_ROTATION_IDENTITY).is_err());
+    assert!(orient_duplication_bgra(vec![0; 23], 3, 2, 3, 2, DXGI_MODE_ROTATION_IDENTITY).is_err());
 }
