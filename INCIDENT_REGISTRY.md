@@ -5,15 +5,15 @@
 - Detected: 2026-09-29 user reported slow Viewer device-list refresh.
 - Severity: Medium; a silent Agent can keep the list looking unchanged for five seconds.
 - Affected: Production Firebase Viewer device-list refresh and manual-presence status display; local API response format is outside this repair.
-- Status: Viewer repair verified in browser; v0.1.109 production release pending.
+- Status: Viewer repair verified in browser and published in v0.1.109; installed Viewer timing remains unverified.
 - User-visible symptom: Clicking device-list refresh leaves the old list and a busy button until all manual Agents respond or the five-second deadline expires.
 - Minimal trigger: Refresh a Firebase Viewer list containing one manual-presence Agent that does not answer.
 - Root cause and contributors: Firebase refresh already offers initial and per-reply progress, but App calls fetchDevices(true) without a progress callback. The final result alone updates React state; an earlier false-online incident also requires neutral status until each manual reply is confirmed.
-- Fix commit(s): Pending.
+- Fix commit(s): 33531c965521432d42643e8719c6ba1a816c071c.
 - Permanent guard: Paint the server list immediately, track pending manual devices separately from persisted online/offline status, preserve the single click/request owner, and ignore cancelled or late progress. Keep the existing five-second deadline and connection-time target validation.
 - Regression proof: 2026-09-29 Chromium Viewer, Firebase request boundary, five-second timeout and local API suites passed 150/150. Fresh list appeared before final replies; pending rows stayed neutral, one reply updated only its row, failure stayed neutral, duplicate clicks issued no extra list read and logout discarded late callbacks. TypeScript passed.
-- Release proof: Pending v0.1.109 CI, manifest, latest and alias checks.
-- Remaining blocker: Verify exact main-commit CI build, signed manifest, published bytes and aliases. Installed timing on another PC and other-PC update remain separate physical checks.
+- Release proof: CI 36514137921 passed from the exact main commit, published non-prerelease latest v0.1.109, and independently downloaded Agent/Viewer bytes matched the signed manifest and GitHub hashes. All four production aliases point to latest; agent1 still points to v0.1.108 trial.
+- Remaining blocker: Installed Viewer refresh timing, other-PC update and physical connection remain unverified; deployment is not installation proof.
 
 ## INC-20260929-120: Portrait kiosk capture was scrambled and first-run Node triggered a firewall prompt
 
