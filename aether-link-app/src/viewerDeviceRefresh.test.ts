@@ -98,13 +98,16 @@ async function openViewer(options: { slow?: boolean; fail?: boolean; local?: boo
       subscribeFirebaseConnectionHistory: (next: (history: unknown[]) => void) => { state.historySubscriptions++; next([]); return () => {}; },
       fetchFirebaseConnectionHistory: async () => { state.historyReads++; return w.historyFixture ?? []; },
       isCurrentViewerAccountManager: async () => Boolean(opts.accountManager),
-      fetchFirebaseDevices: async (_env?: unknown, refreshPresence = false, _signal?: AbortSignal, onProgress?: (devices: unknown[]) => void) => {
+      fetchFirebaseDevices: async (_env?: unknown, refreshPresence = false, _signal?: AbortSignal, onProgress?: (devices: unknown[], pendingIds: string[]) => void) => {
         state.reads++;
         const devices = structuredClone(state.devices);
         if (refreshPresence && w.refreshProgressAllOnline) {
-          onProgress?.(devices.map((device: any) => ({ ...device, status: "online" })));
+          const fresh = devices.map((device: any) => ({ ...device, desktopName: `Fresh-${device.desktopName}`, presenceMode: "manual", status: "online" }));
+          onProgress?.(fresh, fresh.map((device: any) => device.id));
+          w.emitPresenceReply = () => onProgress?.(fresh, fresh.slice(1).map((device: any) => device.id));
           await new Promise<void>((resolve) => { w.finishPresenceRefresh = resolve; });
           delete w.finishPresenceRefresh;
+          delete w.emitPresenceReply;
         }
         if (state.slow) await new Promise<void>((resolve) => { w.finishRead = resolve; });
         if (state.fail) throw new Error("Quota exceeded.");
@@ -290,7 +293,7 @@ describe("manual Viewer device list in a real browser", () => {
       expect(await dialog.getByRole('button', { name: '저장', exact: true }).isEnabled()).toBe(true);
     } finally { await page.close(); }
   });
-  it("keeps the pre-click mixed statuses visible until presence refresh completes", async () => {
+  it("shows the fresh list immediately and marks unconfirmed manual Agents as checking", async () => {
     const page = await openViewer();
     const online = page.locator(".table-row .status-pill.online");
     const offline = page.locator(".table-row .status-pill.offline");
@@ -300,15 +303,66 @@ describe("manual Viewer device list in a real browser", () => {
       await page.evaluate(() => { (window as any).refreshProgressAllOnline = true; });
       await refresh(page).click();
       await page.waitForFunction(() => typeof (window as any).finishPresenceRefresh === "function");
+      await expect.poll(() => page.getByText("Fresh-PC-0", { exact: true }).count()).toBe(1);
+      await expect.poll(() => page.getByText("확인 중", { exact: true }).count()).toBe(10);
+      expect(await online.count()).toBe(0);
+      await page.evaluate(() => (window as any).emitPresenceReply());
+      await expect.poll(() => page.getByText("확인 중", { exact: true }).count()).toBe(9);
       expect(await online.count()).toBe(1);
-      expect(await offline.count()).toBe(9);
+      expect(await refresh(page).isEnabled()).toBe(false);
       await page.evaluate(() => (window as any).finishPresenceRefresh());
       await expect.poll(() => refresh(page).isEnabled()).toBe(true);
+      expect(await page.getByText("확인 중", { exact: true }).count()).toBe(0);
       expect(await online.count()).toBe(1);
       expect(await offline.count()).toBe(9);
     } finally {
       await page.close();
     }
+  });
+
+  it("keeps a failed manual presence check neutral and prevents duplicate refresh reads", async () => {
+    const page = await openViewer();
+    try {
+      await expect.poll(() => refresh(page).isEnabled()).toBe(true);
+      await page.evaluate(() => {
+        const w = window as any;
+        w.refreshProgressAllOnline = true;
+        w.testState.fail = true;
+      });
+      await refresh(page).click();
+      await page.waitForFunction(() => typeof (window as any).finishPresenceRefresh === "function");
+      for (let i = 0; i < 3; i++) await refresh(page).dispatchEvent("click");
+      expect(await counts(page)).toEqual({ reads: 2, subscriptions: 0 });
+      await expect.poll(() => page.getByText("확인 중", { exact: true }).count()).toBe(10);
+      await page.evaluate(() => (window as any).finishPresenceRefresh());
+      await expect.poll(() => page.getByText("확인 실패", { exact: true }).count()).toBe(10);
+      expect(await page.locator(".table-row .status-pill.online").count()).toBe(0);
+      expect(await refresh(page).isEnabled()).toBe(true);
+    } finally { await page.close(); }
+  });
+
+  it("discards late presence progress after logout", async () => {
+    const page = await openViewer();
+    try {
+      await expect.poll(() => refresh(page).isEnabled()).toBe(true);
+      await page.evaluate(() => { (window as any).refreshProgressAllOnline = true; });
+      await refresh(page).click();
+      await page.waitForFunction(() => typeof (window as any).finishPresenceRefresh === "function");
+      await expect.poll(() => page.getByText("확인 중", { exact: true }).count()).toBe(10);
+      await page.evaluate(() => (window as any).authChanged(false));
+      await page.locator('input[name="username"]').waitFor();
+      await page.evaluate(() => (window as any).emitPresenceReply());
+      await page.evaluate(() => (window as any).finishPresenceRefresh());
+      await page.evaluate(() => {
+        const w = window as any;
+        w.refreshProgressAllOnline = false;
+        w.authChanged(true);
+      });
+      await page.getByText("PC-0", { exact: true }).waitFor();
+      expect(await page.getByText("Fresh-PC-0", { exact: true }).count()).toBe(0);
+      expect(await page.getByText("확인 중", { exact: true }).count()).toBe(0);
+      expect(await counts(page)).toEqual({ reads: 3, subscriptions: 0 });
+    } finally { await page.close(); }
   });
 
   it.each([1024, 1366, 1920])("keeps a long Agent update result clear of the heading, tools and dashboard at %ipx", async (width) => {

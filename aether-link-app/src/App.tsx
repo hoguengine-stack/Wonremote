@@ -375,6 +375,8 @@ function ViewerApp() {
   const [isManualUpdateChecking, setIsManualUpdateChecking] = useState(false);
   const [viewerUpdateDialog, setViewerUpdateDialog] = useState<ViewerUpdateDialogState | null>(null);
   const [isRefreshingDevices, setIsRefreshingDevices] = useState(false);
+  const [isLoadingDeviceList, setIsLoadingDeviceList] = useState(false);
+  const [presenceChecks, setPresenceChecks] = useState<Record<string, "checking" | "failed">>({});
   const [deviceListRefreshKey, setDeviceListRefreshKey] = useState(0);
   const [connectionHistory, setConnectionHistory] = useState<ConnectionHistoryEntry[]>([]);
   const [observedConnections, setObservedConnections] = useState<Record<string, string>>({});
@@ -438,7 +440,7 @@ function ViewerApp() {
           return;
         }
         setIsAuthenticated(hasSession);
-        if (!hasSession) { setDeviceListRefreshKey(0); setIsRefreshingDevices(false); setDevices([]); setConnectionHistory([]); }
+        if (!hasSession) { setDeviceListRefreshKey(0); setIsRefreshingDevices(false); setIsLoadingDeviceList(false); setPresenceChecks({}); setDevices([]); setConnectionHistory([]); }
         if (hasSession) {
           setDeviceListRefreshKey((current) => current || 1);
           setLoginError("");
@@ -712,24 +714,32 @@ function ViewerApp() {
 
     let cancelled = false;
     const abort = new AbortController();
-    const request = fetchDevices(true, abort.signal);
+    setIsLoadingDeviceList(true);
+    const request = fetchDevices(true, abort.signal, (nextDevices, pendingIds) => {
+      if (cancelled) return;
+      setDevices(nextDevices);
+      setPresenceChecks(Object.fromEntries(pendingIds.map((id) => [id, "checking" as const])));
+      setIsLoadingDeviceList(false);
+    });
     deviceListRequestRef.current = request;
     setIsRefreshingDevices(true);
     void request
       .then((nextDevices) => {
         if (!cancelled) {
           setDevices(nextDevices);
+          setPresenceChecks({});
           setApiError("");
         }
       })
       .catch((error) => {
         if (!cancelled) {
+          setPresenceChecks((current) => Object.fromEntries(Object.entries(current).map(([id, status]) => [id, status === "checking" ? "failed" : status])));
           setApiError(error instanceof Error ? error.message : "장비 목록 갱신 실패");
         }
       })
       .finally(() => {
         if (deviceListRequestRef.current === request) deviceListRequestRef.current = null;
-        if (!cancelled) setIsRefreshingDevices(false);
+        if (!cancelled) { setIsRefreshingDevices(false); setIsLoadingDeviceList(false); }
       });
     return () => {
       cancelled = true;
@@ -807,6 +817,8 @@ function ViewerApp() {
       setIsAuthenticated(false);
       setDeviceListRefreshKey(0);
       setIsRefreshingDevices(false);
+      setIsLoadingDeviceList(false);
+      setPresenceChecks({});
       sessions.forEach((openSession) => removeSessionCleanup(window.localStorage, openSession.id));
       setSessions([]);
       setActiveSessionId(null);
@@ -1486,6 +1498,8 @@ function ViewerApp() {
               onRequestUpdate={handleRequestAgentUpdate}
               onRefresh={handleRefreshDeviceList}
               isRefreshing={isRefreshingDevices}
+              isLoading={isLoadingDeviceList}
+              presenceChecks={presenceChecks}
               favoriteDeviceIds={favoriteDeviceIds}
               selectedDeviceIds={selectedDeviceIds}
               onToggleFavorite={toggleFavoriteDevice}
@@ -2634,6 +2648,8 @@ function DeviceTable({
   onRequestUpdate,
   onRefresh,
   isRefreshing,
+  isLoading,
+  presenceChecks,
   selectedDeviceIds,
 }: {
   activeDeviceIds: string[];
@@ -2651,6 +2667,8 @@ function DeviceTable({
   onRequestUpdate: (device: ManagedDevice) => void | Promise<void>;
   onRefresh: () => void | Promise<void>;
   isRefreshing: boolean;
+  isLoading: boolean;
+  presenceChecks: Record<string, "checking" | "failed">;
   selectedDeviceIds: string[];
 }) {
   const recentConnections = useMemo(() => {
@@ -2687,10 +2705,10 @@ function DeviceTable({
             type="button"
             onClick={() => void onRefresh()}
             disabled={isRefreshing}
-            title="장비 목록 새로고침"
+            title={isRefreshing && !isLoading ? "장비 상태 확인 중" : "장비 목록 새로고침"}
             aria-label="장비 목록 새로고침"
           >
-            <RotateCcw size={15} className={isRefreshing ? "is-spinning" : undefined} />
+            <RotateCcw size={15} className={isLoading ? "is-spinning" : undefined} />
           </button>
         </div>
       </div>
@@ -2712,7 +2730,8 @@ function DeviceTable({
           <span>작업</span>
         </div>
         {devices.map((device) => {
-          const isOnline = device.status === "online";
+          const check = presenceChecks[device.id];
+          const isOnline = !check && device.status === "online";
           const updateInfo = resolveDeviceUpdateInfo(device);
           const systemSummary = formatDeviceSystemInfo(device.systemInfo);
           return (
@@ -2740,9 +2759,9 @@ function DeviceTable({
                   aria-label={`${device.desktopName} 선택`}
                   onChange={() => onToggleSelected(device.id)}
                 />
-                <span className={`status-pill ${isOnline ? "online" : "offline"}`} title="마지막 조회 시 상태">
-                  {isOnline ? <Wifi size={14} /> : <WifiOff size={14} />}
-                  {isOnline ? "온라인" : "오프라인"}
+                <span className={`status-pill ${check ? "checking" : isOnline ? "online" : "offline"}`} title={check ? "응답 대기 또는 확인 실패" : "마지막 조회 시 상태"}>
+                  {check ? <CircleDot size={14} /> : isOnline ? <Wifi size={14} /> : <WifiOff size={14} />}
+                  {check === "checking" ? "확인 중" : check === "failed" ? "확인 실패" : isOnline ? "온라인" : "오프라인"}
                 </span>
               </span>
               <span className="store-cell">

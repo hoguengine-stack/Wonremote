@@ -54,7 +54,9 @@ describe("desktop packaging scaffold", () => {
   it("uses Tauri with the existing Vite build output", () => {
     const configPath = path.join(projectRoot, "src-tauri", "tauri.conf.json");
     expect(existsSync(configPath)).toBe(true);
-    expect(packageJson.version).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(packageJson.version).toBe("0.1.109");
+    expect(readFileSync(path.join(projectRoot, "src", "domain", "appVersion.ts"), "utf8")).toContain('WONREMOTE_APP_VERSION = "0.1.109"');
+    expect(readFileSync(path.join(projectRoot, "src-tauri", "Cargo.toml"), "utf8")).toMatch(/^version = "0\.1\.109"/m);
 
     const config = JSON.parse(readFileSync(configPath, "utf8"));
     expect(config.build).toMatchObject({
@@ -132,11 +134,11 @@ describe("desktop packaging scaffold", () => {
     expect(styles).toContain(".agent-screen .agent-panel");
   });
 
-  it("uses zlib only for the x86 Agent trial installer", () => {
+  it("promotes the tested zlib x86 Agent installer while preserving the trial route", () => {
     const agent = JSON.parse(readFileSync(path.join(projectRoot, "src-tauri", "tauri.agent.x86.conf.json"), "utf8"));
     const trial = JSON.parse(readFileSync(path.join(projectRoot, "src-tauri", "tauri.agent.x86.zlib-trial.conf.json"), "utf8"));
     const viewer = JSON.parse(readFileSync(path.join(projectRoot, "src-tauri", "tauri.x86.conf.json"), "utf8"));
-    expect(agent.bundle.windows.nsis.compression).toBeUndefined();
+    expect(agent.bundle.windows.nsis.compression).toBe("zlib");
     expect(trial.bundle.windows.nsis.compression).toBe("zlib");
     expect(viewer.bundle.windows.nsis.compression).toBeUndefined();
     const workflow = readFileSync(path.join(projectRoot, "..", ".github", "workflows", "publish-release.yml"), "utf8");

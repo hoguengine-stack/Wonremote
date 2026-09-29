@@ -53,11 +53,14 @@ describe("fresh device reads without collection listeners", () => {
     let next!: (snapshot: any) => void;
     const stop = vi.fn();
     vi.mocked(onSnapshot).mockImplementation(((_query: unknown, callback: typeof next) => { next = callback; return stop; }) as any);
-    const result = fetchFirebaseDevices(env, true);
+    const progress = vi.fn();
+    const result = fetchFirebaseDevices(env, true, undefined, progress);
     await vi.advanceTimersByTimeAsync(0);
+    expect(progress).toHaveBeenCalledWith(expect.any(Array), ["device-1"]);
     expect(addDoc).toHaveBeenCalledOnce();
     const action = (vi.mocked(addDoc).mock.calls[0][1] as any).action;
     next({ docChanges: () => [{ type: "modified", doc: { id: "device-1", data: () => ({ ...record, heartbeatRequestId: action.split(" ")[1] }) } }] });
+    expect(progress.mock.lastCall?.[1]).toEqual([]);
     expect((await result)[0]).toMatchObject({ status: "online", presenceMode: "manual" });
     expect(stop).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(86_400_000);

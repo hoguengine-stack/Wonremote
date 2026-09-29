@@ -28,9 +28,10 @@ describe("on-demand Agent presence", () => {
     const result = collectDevicePresence([device, other], "nonce", (callback) => {
       next = callback; return stop;
     }, send, undefined, progress);
-    expect(progress).toHaveBeenCalledExactlyOnceWith([device, other]);
+    expect(progress).toHaveBeenCalledExactlyOnceWith([device, other], [device.id, other.id]);
     next({ ...device, desktopName: "Fresh", heartbeatRequestId: "nonce" });
     expect(progress.mock.lastCall?.[0][0].desktopName).toBe("Fresh");
+    expect(progress.mock.lastCall?.[1]).toEqual([other.id]);
     await vi.advanceTimersByTimeAsync(5_000);
     expect((await result)[1].status).toBe("offline");
     const updates = progress.mock.calls.length;

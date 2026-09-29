@@ -912,6 +912,11 @@ input:focus {
   color: #b91c1c;
 }
 
+.status-pill.checking {
+  background: #eef2f5;
+  color: #475569;
+}
+
 .icon-button {
   background: #edf2f5;
   border-radius: 6px;

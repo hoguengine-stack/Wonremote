@@ -22,6 +22,7 @@
     "icon": ["icons/agent.ico"],
     "windows": {
       "nsis": {
+        "compression": "zlib",
         "installMode": "perMachine",
         "installerHooks": "./windows/agent-install-hooks-x86.nsh",
         "startMenuFolder": "WonRemote"

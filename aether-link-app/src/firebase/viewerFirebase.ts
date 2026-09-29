@@ -366,7 +366,7 @@ export function subscribeFirebaseDevices(
   );
 }
 
-export async function fetchFirebaseDevices(env: ViewerFirebaseEnv = import.meta.env, refreshPresence = false, signal?: AbortSignal, onProgress?: (devices: ManagedDevice[]) => void): Promise<ManagedDevice[]> {
+export async function fetchFirebaseDevices(env: ViewerFirebaseEnv = import.meta.env, refreshPresence = false, signal?: AbortSignal, onProgress?: (devices: ManagedDevice[], pendingIds: string[]) => void): Promise<ManagedDevice[]> {
   const services = getViewerFirebaseServices(env);
   requireCurrentUserId(services.auth.currentUser?.uid);
   const snapshot = await getDocsFromServer(collection(services.db, "devices"));
