@@ -9,10 +9,11 @@
 - User-visible symptom: The first remote picture can be interrupted during initial monitor synchronization.
 - Minimal trigger: A desired live capture on output 0 receives switch-monitor 0 after the Viewer control channel opens.
 - Root cause and contributors: Viewer always synchronizes selected output after channel readiness; Agent unconditionally called startStreaming, which kills the previous capture. v0.1.107 and v0.1.109 both contain this behavior, so no new version regression or known-good baseline is established. Existing 82220F6D log shows capture start followed roughly 1.1 seconds later by another capture start for output 0.
-- Fix commit(s): Upcoming normal v0.1.110 main preparation commit; no workflow or gate bypass.
+- Fix commit(s): Capture repair in 5b91b35d6407d08e725cbff87de5b3ff459a3c7f; follow-up release preparation corrects the existing packaging version assertions without changing the workflow or gates.
 - Permanent guard: Skip only unchanged output with desired capture, no pending restart, and a non-killed child with null exit/signal codes. Changed output or non-live capture retains recovery. Test executes the production callback, not a duplicated policy implementation.
 - Regression proof: RED observed two startStreaming calls for duplicate same-output commands. GREEN plus monitor-change, missing/killed/exited/signalled child, undesired capture and pending restart passed. Nine focused suites 121/121 and TypeScript passed; isolated Chromium 3/3 and device-organization browser flow passed for included preceding work.
 - Release proof: Pending normal CI x86 installers, signed manifest and independent live download verification. Existing published assets and agent1 trial are retained.
+- Release preparation failure and prevention: CI 36654061206 rejected the first preparation before artifact creation because desktopPackaging.test.ts still expected 0.1.109; 138 other release assertions passed. Update all three strict version expectations to 0.1.110 and run the existing packaging suite before the next preparation push. Keep the CI version, installation and signature checks unchanged.
 - Remaining blocker: A new installed Agent and another-PC Viewer must still confirm no visible first-frame blink. Publication does not prove fleet installation, physical pixels or exact cause of every transient black screen.
 
 ## INC-20260930-124: Viewer business-number edits had no Agent synchronization path

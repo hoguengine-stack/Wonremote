@@ -54,9 +54,9 @@ describe("desktop packaging scaffold", () => {
   it("uses Tauri with the existing Vite build output", () => {
     const configPath = path.join(projectRoot, "src-tauri", "tauri.conf.json");
     expect(existsSync(configPath)).toBe(true);
-    expect(packageJson.version).toBe("0.1.109");
-    expect(readFileSync(path.join(projectRoot, "src", "domain", "appVersion.ts"), "utf8")).toContain('WONREMOTE_APP_VERSION = "0.1.109"');
-    expect(readFileSync(path.join(projectRoot, "src-tauri", "Cargo.toml"), "utf8")).toMatch(/^version = "0\.1\.109"/m);
+    expect(packageJson.version).toBe("0.1.110");
+    expect(readFileSync(path.join(projectRoot, "src", "domain", "appVersion.ts"), "utf8")).toContain('WONREMOTE_APP_VERSION = "0.1.110"');
+    expect(readFileSync(path.join(projectRoot, "src-tauri", "Cargo.toml"), "utf8")).toMatch(/^version = "0\.1\.110"/m);
 
     const config = JSON.parse(readFileSync(configPath, "utf8"));
     expect(config.build).toMatchObject({
