@@ -2,6 +2,19 @@ import { WONREMOTE_APP_VERSION } from "../domain/appVersion";
 import type { AgentFirstRunInput, AgentFirstRunResult } from "../domain/types";
 import { buildFirebaseDeviceId } from "../firebase/firebaseIdentity";
 import type { AgentLocalConfig } from "./agentBootstrap";
+import { normalizeBusinessNumber } from "../domain/agentRegistry";
+
+export function agentAuthBusinessNumber(config: AgentLocalConfig): string {
+  return normalizeBusinessNumber(config.authBusinessNumber ?? config.businessNumber ?? "");
+}
+
+export async function synchronizeAgentBusinessNumber(config: AgentLocalConfig, load: () => Promise<string>, writeConfig: (config: AgentLocalConfig) => Promise<void>): Promise<void> {
+  const businessNumber = normalizeBusinessNumber(await load());
+  if (businessNumber === config.businessNumber) return;
+  const next = { ...config, businessNumber, authBusinessNumber: agentAuthBusinessNumber(config) };
+  await writeConfig(next);
+  Object.assign(config, next);
+}
 
 export interface AgentRegistrationRecoveryDeps {
   nowIso: () => string;
@@ -28,13 +41,14 @@ export async function reconcileAgentRegistration(
     throw new Error("Agent registration cannot be recovered without businessNumber and installId.");
   }
 
+  const authBusinessNumber = agentAuthBusinessNumber(config);
   const result = await deps.registerFirstRun({
-    businessNumber: config.businessNumber!,
+    businessNumber: authBusinessNumber,
     installId: config.installId,
     password: "1234",
     ...(config.desktopName?.trim() ? { desktopName: config.desktopName.trim() } : {}),
     ...(config.registeredDeviceId?.trim() &&
-    config.registeredDeviceId.trim() !== buildFirebaseDeviceId(config.businessNumber!, config.installId)
+    config.registeredDeviceId.trim() !== buildFirebaseDeviceId(authBusinessNumber, config.installId)
       ? { previousDeviceId: config.registeredDeviceId.trim() }
       : {}),
     version: WONREMOTE_APP_VERSION,
@@ -42,6 +56,7 @@ export async function reconcileAgentRegistration(
   const recoveredConfig: AgentLocalConfig = {
     ...config,
     businessNumber: result.device.businessNumber,
+    ...(config.authBusinessNumber || result.device.businessNumber !== authBusinessNumber ? { authBusinessNumber } : {}),
     desktopName: config.desktopName?.trim() || result.device.desktopName,
     installId: config.installId,
     registeredAt: deps.nowIso(),

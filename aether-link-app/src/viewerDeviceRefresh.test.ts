@@ -11,7 +11,7 @@ let bundle: string;
 beforeAll(async () => {
   const result = await build({
     stdin: {
-      contents: 'import React from "react"; import { createRoot } from "react-dom/client"; import { App } from "./src/App"; window.root = createRoot(document.getElementById("root")); window.root.render(<React.StrictMode><App /></React.StrictMode>);',
+      contents: 'import React from "react"; import { createRoot } from "react-dom/client"; import { App } from "./src/App"; import { collectDevicePresence } from "./src/domain/devicePresenceRefresh"; window.collectDevicePresence = collectDevicePresence; window.root = createRoot(document.getElementById("root")); window.root.render(<React.StrictMode><App /></React.StrictMode>);',
       resolveDir: process.cwd(), loader: "tsx",
     },
     bundle: true, write: false, outfile: "viewer-test.js", platform: "browser", format: "iife",
@@ -31,7 +31,7 @@ beforeAll(async () => {
 }, 30_000);
 afterAll(async () => { await browser?.close(); });
 
-async function openViewer(options: { slow?: boolean; fail?: boolean; local?: boolean; connected?: boolean; mobile?: boolean; emulateMobile?: boolean; rolloutSupported?: boolean; nativeAndroid?: boolean; desktop?: boolean; accountManager?: boolean; viewport?: { width: number; height: number }; storeName?: string } = {}) {
+async function openViewer(options: { agent?: boolean; manual?: boolean; slow?: boolean; fail?: boolean; local?: boolean; connected?: boolean; mobile?: boolean; emulateMobile?: boolean; rolloutSupported?: boolean; nativeAndroid?: boolean; desktop?: boolean; accountManager?: boolean; viewport?: { width: number; height: number }; storeName?: string } = {}) {
   const page = await browser.newPage({ viewport: options.viewport ?? (options.mobile ? { width: 390, height: 844 } : { width: 1440, height: 900 }), ...(options.emulateMobile ? { isMobile: true, hasTouch: true } : {}), ...(options.nativeAndroid ? { userAgent: "Android WonRemoteViewer/1" } : {}) });
   const origin = options.nativeAndroid ? "https://wonremote-a7fd3.web.app" : "http://viewer.test";
   page.setDefaultTimeout(3_000);
@@ -66,7 +66,10 @@ async function openViewer(options: { slow?: boolean; fail?: boolean; local?: boo
         invoke: async (command:string,args:any) => {
           w.nativeCalls.push({command,args});
           if (command === "plugin:event|listen") { w.nativeEvents[args.event]=w.nativeCallbacks[args.handler]; return args.handler; }
-          if (command === "get_app_mode") return "viewer";
+          if (command === "get_app_mode") return opts.agent ? "agent" : "viewer";
+          if (command === "get_agent_config") return w.agentConfig ?? {businessNumber:"123-45-67890",registeredDeviceId:"123-45-67890:AGENT-0",installId:"test-agent"};
+          if (command === "get_or_create_agent_install_id") return "test-agent";
+          if (command === "get_computer_name") return "PC";
           if (command === "begin_viewer_download") return "local-save";
           if (command === "write_viewer_download") { w.nativeChunks.push(args.data); return; }
           if (command === "finish_viewer_download") { if (w.failNativeSave) throw Error("Disk full"); return "C:/Downloads/received.txt"; }
@@ -78,12 +81,14 @@ async function openViewer(options: { slow?: boolean; fail?: boolean; local?: boo
     }
     const state = w.testState = {
       reads: 0, subscriptions: 0, connections: [] as string[], closedSessions: [] as string[], slow: Boolean(opts.slow), fail: Boolean(opts.fail),
+      presenceCommands: [] as string[], presenceStarts: 0, presenceStops: 0,
       auxiliaryReads: 0, auxiliarySubscriptions: [] as any[], auxiliaryStops: 0,
       historyReads: 0, historySubscriptions: 0, rtcStarts: 0, controls: [] as unknown[],
       devices: Array.from({ length: 10 }, (_, i) => ({
         id: `device-${i}`, deviceNumber: `AGENT-${i}`, businessNumber: "123-45-67890",
         desktopName: `PC-${i}`, deviceName: "POS", storeName: opts.storeName ?? "Store", status: i === 9 ? "online" : "offline", protocolVersion: 1,
         lastSeenAt: new Date().toISOString(),
+        ...(opts.manual ? { presenceMode: "manual" } : {}),
         ...(opts.rolloutSupported ? {version:"0.1.93",selectedRolloutVersion:"0.1.93",rollbackSupportVersion:"0.1.93"} : {}),
       })),
     };
@@ -98,9 +103,18 @@ async function openViewer(options: { slow?: boolean; fail?: boolean; local?: boo
       subscribeFirebaseConnectionHistory: (next: (history: unknown[]) => void) => { state.historySubscriptions++; next([]); return () => {}; },
       fetchFirebaseConnectionHistory: async () => { state.historyReads++; return w.historyFixture ?? []; },
       isCurrentViewerAccountManager: async () => Boolean(opts.accountManager),
-      fetchFirebaseDevices: async (_env?: unknown, refreshPresence = false, _signal?: AbortSignal, onProgress?: (devices: unknown[], pendingIds: string[]) => void) => {
+      fetchFirebaseDevices: async (_env?: unknown, refreshPresence = false, signal?: AbortSignal, onProgress?: (devices: unknown[], pendingIds: string[]) => void, knownDevices?: unknown[]) => {
         state.reads++;
         const devices = structuredClone(state.devices);
+        if (refreshPresence && w.parallelRefresh) {
+          const read = new Promise(resolve => { w.finishParallelRead = () => resolve(structuredClone(state.devices)); });
+          state.presenceCommands = []; state.presenceStarts = 0; state.presenceStops = 0;
+          return w.collectDevicePresence(knownDevices ?? [], "nonce", (next: any) => {
+            state.presenceStarts++;
+            w.replyParallel = (id: string) => next({ ...state.devices.find((device: any) => device.id === id), heartbeatRequestId: "nonce", status: "online" });
+            return () => { state.presenceStops++; };
+          }, async (device: any) => { state.presenceCommands.push(device.id); }, signal, onProgress, read);
+        }
         if (refreshPresence && w.refreshProgressAllOnline) {
           const fresh = devices.map((device: any) => ({ ...device, desktopName: `Fresh-${device.desktopName}`, presenceMode: "manual", status: "online" }));
           onProgress?.(fresh, fresh.map((device: any) => device.id));
@@ -152,6 +166,119 @@ const counts = (page: Page) => page.evaluate(() => {
 const refresh = (page: Page) => page.getByRole("button", { name: "장비 목록 새로고침", exact: true });
 
 describe("manual Viewer device list in a real browser", () => {
+  it("saves a business-number edit through the right-click editor without changing device ID", async () => {
+    const page = await openViewer({desktop:true});
+    try {
+      await page.evaluate(() => {
+        const w = window as any;
+        w.businessEdits = [];
+        w.testApi.updateFirebaseDeviceMetadata = async (id:string,input:any) => {
+          w.businessEdits.push({id,input});
+          const device = w.testState.devices.find((d:any)=>d.id===id);
+          Object.assign(device,Object.fromEntries(Object.entries(input).filter(([,value])=>value!==undefined))); return structuredClone(device);
+        };
+      });
+      await page.locator('.table-row').filter({hasText:'PC-0'}).click({button:'right'});
+      const dialog = page.getByRole('dialog',{name:'등록 장비 수정',exact:true});
+      await dialog.getByLabel('사업자번호',{exact:true}).fill('987-65-43210');
+      await dialog.getByRole('button',{name:'저장',exact:true}).click();
+      await expect.poll(()=>dialog.count()).toBe(0);
+      const row = page.locator('.table-row').filter({hasText:'PC-0'});
+      expect(await row.innerText()).toContain('987-65-43210');
+      expect(await page.evaluate(()=>(window as any).businessEdits[0])).toMatchObject({id:'device-0',input:{businessNumber:'987-65-43210'}});
+      await page.screenshot({path:'../.codex-tmp/viewer-business-number-edit.png'});
+      await page.locator('.group-list .group-button').filter({hasText:'Store'}).click({button:'right'});
+      const groupDialog = page.getByRole('dialog');
+      expect(await groupDialog.getByLabel('사업자번호',{exact:true}).evaluate((input:HTMLInputElement)=>input.readOnly)).toBe(true);
+      await groupDialog.getByRole('button',{name:'저장',exact:true}).click();
+      await expect.poll(()=>groupDialog.count()).toBe(0);
+      expect(await page.evaluate(()=>(window as any).businessEdits.slice(1).every((edit:any)=>!Object.prototype.hasOwnProperty.call(edit.input,'businessNumber')))).toBe(true);
+      expect(await row.innerText()).toContain('987-65-43210');
+    } finally { await page.close(); }
+  });
+
+  it("refreshes the open Agent business number on the native config-change event without cloud polling", async () => {
+    const page = await openViewer({desktop:true,agent:true});
+    try {
+      await page.getByText('123-45-67890',{exact:true}).waitFor();
+      await page.evaluate(()=>{
+        const w = window as any;
+        w.agentConfig = {businessNumber:'987-65-43210',registeredDeviceId:'123-45-67890:AGENT-0',installId:'test-agent'};
+        w.nativeEvents['agent-config-changed']({payload:null});
+      });
+      await page.getByText('987-65-43210',{exact:true}).waitFor();
+      expect(await page.getByText('123-45-67890:AGENT-0',{exact:true}).count()).toBe(1);
+      await page.clock.runFor(86_400_000);
+      expect(await counts(page)).toEqual({reads:0,subscriptions:0});
+      expect(await page.evaluate(()=>(window as any).nativeCalls.filter((call:any)=>call.command==='get_agent_config').length)).toBe(2);
+      await page.screenshot({path:'../.codex-tmp/agent-business-number-sync.png'});
+    } finally { await page.close(); }
+  });
+
+  it("checks the existing list during a slow read without false online or duplicate commands", async () => {
+    const page = await openViewer({ manual: true });
+    try {
+      await expect.poll(() => refresh(page).isEnabled()).toBe(true);
+      await page.evaluate(() => { (window as any).parallelRefresh = true; });
+      await refresh(page).click();
+      await expect.poll(() => page.getByText("확인 중", { exact: true }).count()).toBe(10);
+      expect(await page.getByText("PC-0", { exact: true }).count()).toBe(1);
+      expect(await page.locator(".status-pill.online").count()).toBe(0);
+      await page.evaluate(() => (window as any).replyParallel("device-0"));
+      await expect.poll(() => page.locator(".status-pill.online").count()).toBe(1);
+      for (let i = 0; i < 3; i++) await refresh(page).dispatchEvent("click");
+      await page.getByPlaceholder("매장, 장비, 담당자, 연락처, 메모 검색").fill("PC");
+      expect(await counts(page)).toEqual({ reads: 2, subscriptions: 0 });
+      expect(await page.evaluate(() => (window as any).testState.presenceCommands.length)).toBe(10);
+      await page.clock.runFor(2_000);
+      await page.evaluate(() => {
+        const w = window as any;
+        w.testState.devices = w.testState.devices.slice(0, 9).map((d: any) => ({ ...d, desktopName: `Fresh-${d.desktopName}` }));
+        w.testState.devices.push({ ...w.testState.devices[0], id: "new", desktopName: "New-PC" });
+        w.finishParallelRead();
+      });
+      await page.getByText("Fresh-PC-0", { exact: true }).waitFor();
+      expect(await page.getByText("PC-9", { exact: true }).count()).toBe(0);
+      expect(await page.getByText("New-PC", { exact: true }).count()).toBe(1);
+      expect(await page.getByText("NEW", { exact: true }).count()).toBe(1);
+      expect(await page.evaluate(() => (window as any).testState.presenceCommands.length)).toBe(11);
+      expect(await page.evaluate(() => (window as any).testState.presenceStarts)).toBe(1);
+      await page.screenshot({ path: "../.codex-tmp/viewer-parallel-refresh.png" });
+      await page.clock.runFor(3_000);
+      await expect.poll(() => page.getByText("확인 중", { exact: true }).count()).toBe(1);
+      await page.clock.runFor(2_000);
+      await expect.poll(() => refresh(page).isEnabled()).toBe(true);
+      expect(await page.locator(".status-pill.online").count()).toBe(1);
+      expect(await page.locator(".status-pill.offline").count()).toBe(9);
+      await page.clock.runFor(86_400_000);
+      expect(await counts(page)).toEqual({ reads: 2, subscriptions: 0 });
+      expect(await page.evaluate(() => (window as any).testState.presenceCommands.length)).toBe(11);
+      expect(await page.evaluate(() => (window as any).testState.presenceStops)).toBe(1);
+    } finally { await page.close(); }
+  });
+
+  it("aborts the parallel owner on logout and ignores its late list and replies", async () => {
+    const page = await openViewer({ manual: true });
+    try {
+      await expect.poll(() => refresh(page).isEnabled()).toBe(true);
+      await page.evaluate(() => { (window as any).parallelRefresh = true; });
+      await refresh(page).click();
+      await expect.poll(() => page.getByText("확인 중", { exact: true }).count()).toBe(10);
+      await page.evaluate(() => (window as any).authChanged(false));
+      await page.locator('input[name="username"]').waitFor();
+      await page.evaluate(() => {
+        const w = window as any;
+        w.testState.devices.push({ ...w.testState.devices[0], id: "late", desktopName: "Late-PC" });
+        w.finishParallelRead(); w.replyParallel("device-0");
+      });
+      await page.clock.runFor(86_400_000);
+      expect(await page.getByText("Late-PC", { exact: true }).count()).toBe(0);
+      expect(await page.evaluate(() => (window as any).testState.presenceCommands.length)).toBe(10);
+      expect(await page.evaluate(() => (window as any).testState.presenceStops)).toBe(1);
+      expect(await counts(page)).toEqual({ reads: 2, subscriptions: 0 });
+    } finally { await page.close(); }
+  });
+
   it("edits device fields and opens device type with an ordinary left pointer", async () => {
     const page = await openViewer({ desktop: true });
     try {

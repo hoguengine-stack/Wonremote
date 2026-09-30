@@ -104,9 +104,9 @@ export async function logoutAdmin(): Promise<void> {
   }
 }
 
-export async function fetchDevices(refreshPresence = false, signal?: AbortSignal, onProgress?: (devices: ManagedDevice[], pendingIds: string[]) => void): Promise<ManagedDevice[]> {
+export async function fetchDevices(refreshPresence = false, signal?: AbortSignal, onProgress?: (devices: ManagedDevice[], pendingIds: string[]) => void, knownDevices?: ManagedDevice[]): Promise<ManagedDevice[]> {
   if (isViewerFirebaseEnabled()) {
-    return fetchFirebaseDevices(undefined, refreshPresence, signal, onProgress);
+    return fetchFirebaseDevices(undefined, refreshPresence, signal, onProgress, knownDevices);
   }
 
   const body = await request<{ devices: ManagedDevice[] }>(`/api/devices${refreshPresence ? "?refresh=1" : ""}`, { signal });

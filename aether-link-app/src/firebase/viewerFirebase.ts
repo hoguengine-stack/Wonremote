@@ -104,6 +104,7 @@ import {
 import { getWonRemoteFirebaseServices } from "./firebaseServices";
 import { throwExplainedFirebaseAuthError } from "./firebaseError";
 import { safeAddDoc, safeBatchSet, safeBatchUpdate, safeSetDoc, safeUpdateDoc } from "./firestoreWrite";
+import { normalizeBusinessNumber } from "../domain/agentRegistry";
 import type { UpdateFleetRollout } from "../domain/updateFleetPolicy";
 import { parseRolloutSelection } from "../domain/updateFleetPolicy";
 import { isHigherVersion } from "../domain/versioning";
@@ -366,24 +367,27 @@ export function subscribeFirebaseDevices(
   );
 }
 
-export async function fetchFirebaseDevices(env: ViewerFirebaseEnv = import.meta.env, refreshPresence = false, signal?: AbortSignal, onProgress?: (devices: ManagedDevice[], pendingIds: string[]) => void): Promise<ManagedDevice[]> {
+export async function fetchFirebaseDevices(env: ViewerFirebaseEnv = import.meta.env, refreshPresence = false, signal?: AbortSignal, onProgress?: (devices: ManagedDevice[], pendingIds: string[]) => void, knownDevices: ManagedDevice[] = []): Promise<ManagedDevice[]> {
   const services = getViewerFirebaseServices(env);
   requireCurrentUserId(services.auth.currentUser?.uid);
-  const snapshot = await getDocsFromServer(collection(services.db, "devices"));
-  const devices = prepareViewerDeviceList(
+  if (signal?.aborted) return knownDevices;
+  const load = getDocsFromServer(collection(services.db, "devices")).then((snapshot) => prepareViewerDeviceList(
     snapshot.docs
       .filter((deviceDoc) => !isDeletedDeviceDocument(deviceDoc.data()))
       .map((deviceDoc) => mapFirestoreDevice(deviceDoc.id, deviceDoc.data())),
     new Date().toISOString(),
     resolveViewerOfflineAfterMs(env),
-  );
-  if (!refreshPresence || signal?.aborted) return devices;
+  ));
+  if (!refreshPresence) return load;
+  const parallel = knownDevices.some((device) => device.presenceMode === "manual");
+  const devices = parallel ? knownDevices : await load;
+  if (signal?.aborted) return devices;
   return collectDevicePresence(devices, crypto.randomUUID(), (next, fail) => onSnapshot(
     collection(services.db, "devices"),
     (updates) => updates.docChanges().forEach((change) => {
       if (change.type !== "removed") next(mapFirestoreDevice(change.doc.id, change.doc.data()));
     }), fail,
-  ), (device, action) => enqueueFirebaseDeviceCommandDirect(device.id, action, env), signal, onProgress);
+  ), (device, action) => enqueueFirebaseDeviceCommandDirect(device.id, action, env), signal, onProgress, parallel ? load : undefined);
 }
 
 export async function fetchFirebaseConnectionHistory(
@@ -438,6 +442,9 @@ export async function updateFirebaseDeviceMetadata(
   const update: Record<string, unknown> = {
     updatedAt: serverTimestamp(),
   };
+  const businessNumber = typeof input.businessNumber === "string" ? normalizeBusinessNumber(input.businessNumber) : currentDevice.businessNumber;
+  const businessNumberChanged = businessNumber !== currentDevice.businessNumber;
+  if (businessNumberChanged) update.businessNumber = businessNumber;
 
   if (typeof input.storeName === "string" && input.storeName.trim()) {
     const storeName = normalizeStoreNameForDisplay(input.storeName, currentDevice.businessNumber);
@@ -472,7 +479,14 @@ export async function updateFirebaseDeviceMetadata(
     update.notes = sanitizeDeviceOperationalMetadataText(input.notes, DEVICE_NOTES_MAX_LENGTH) ?? deleteField();
   }
 
-  await safeUpdateDoc(deviceRef, update);
+  if (businessNumberChanged) {
+    const batch = writeBatch(services.db);
+    safeBatchUpdate(batch, deviceRef, update);
+    safeBatchSet(batch, doc(collection(services.db, "devices", deviceId, "commands")), {
+      action: "sync-business-number", createdAt: serverTimestamp(), state: "pending",
+    });
+    await batch.commit();
+  } else await safeUpdateDoc(deviceRef, update);
   const snapshot = await getDoc(deviceRef);
   if (!snapshot.exists()) {
     throw new Error("Firebase device not found.");

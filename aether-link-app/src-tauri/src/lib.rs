@@ -1101,6 +1101,9 @@ fn spawn_agent_only_process(
                 };
                 println!("[Agent Output] {}", line_str);
                 append_runtime_log("agent-stdout", &line_str);
+                if line_str == "[AgentConfig] Changed" {
+                    let _ = app_handle_clone.emit("agent-config-changed", ());
+                }
                 match parse_update_handoff_request(&line_str).and_then(|request| {
                     request.map_or(Ok(false), |request| {
                         if should_attempt_update_handoff(

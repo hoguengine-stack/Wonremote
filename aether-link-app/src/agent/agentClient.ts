@@ -8,6 +8,7 @@ import type {
 } from "../domain/types";
 import {
   isAgentFirebaseEnabled,
+  fetchAgentBusinessNumberWithFirebase,
   pollAgentCommandsWithFirebase,
   sendAgentHeartbeatWithFirebase,
 } from "../firebase/agentFirebase";
@@ -118,6 +119,16 @@ export async function sendAgentHeartbeat({
     throw err;
   }
   return payload;
+}
+
+export async function fetchAgentBusinessNumber({ apiBaseUrl, deviceId, installId, fetchImpl = fetch }: PollAgentCommandsOptions): Promise<string> {
+  if (isAgentFirebaseEnabled(process.env)) return fetchAgentBusinessNumberWithFirebase(deviceId);
+  const response = await fetchImpl(`${apiBaseUrl}/api/agent/device`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ deviceId, installId }),
+  });
+  const payload = await response.json() as { device?: { id: string; businessNumber: string }; error?: string };
+  if (!response.ok || payload.device?.id !== deviceId) throw new Error(payload.error ?? "Agent device read failed.");
+  return payload.device.businessNumber;
 }
 
 export async function pollAgentCommands({

@@ -93,6 +93,16 @@ import { DesktopRemoteKeyboardRecovery } from "./components/DesktopRemoteKeyboar
 import { groupDevicesByStore } from "./domain/agentRegistry";
 import { organizeDevices, createDeviceGroupMover, DEVICE_DRAG_TYPE } from "./domain/deviceOrganization";
 import {
+  GROUP_DRAG_TYPE,
+  VIEWER_LIST_STORAGE_KEY,
+  acknowledgeNewDevice,
+  discoverNewDevices,
+  moveStoreGroup,
+  orderStoreGroups,
+  readDeviceListPreferences,
+  renameStoreGroup,
+} from "./domain/deviceListPreferences";
+import {
   scheduleVisualPingPresentedMeasurement,
 } from "./domain/visualPing";
 import { getViewerVersion } from "./domain/versioning";
@@ -356,6 +366,9 @@ function ViewerApp() {
   const [rawDevices, setDevices] = useState<ManagedDevice[]>([]);
   const devices = useMemo(() => organizeDevices(rawDevices), [rawDevices]);
   const [dropStore, setDropStore] = useState<string | null>(null);
+  const [groupDrop, setGroupDrop] = useState<{ storeName: string; after: boolean } | null>(null);
+  const [listPreferences, setListPreferences] = useState(() =>
+    readDeviceListPreferences(window.localStorage.getItem(VIEWER_LIST_STORAGE_KEY)));
   const groupMover = useMemo(() => createDeviceGroupMover(updateDeviceMetadata), [isAuthenticated]);
   useEffect(() => { groupMover.activate(); return () => groupMover.dispose(); }, [groupMover]);
   const [sessions, setSessions] = useState<RemoteSession[]>([]);
@@ -628,7 +641,7 @@ function ViewerApp() {
       : device));
   };
 
-  const groups = useMemo(() => groupDevicesByStore(devices), [devices]);
+  const groups = useMemo(() => orderStoreGroups(groupDevicesByStore(devices), listPreferences.groupOrder), [devices, listPreferences.groupOrder]);
   const filteredDevices = useMemo(() => {
     return filterDeviceWorkspace(devices, {
       favoriteDeviceIds,
@@ -642,6 +655,18 @@ function ViewerApp() {
   useEffect(() => {
     window.localStorage.setItem("wonremote-favorite-devices", serializeFavoriteDeviceIds(favoriteDeviceIds));
   }, [favoriteDeviceIds]);
+
+  useEffect(() => {
+    if (listPreferences.knownDeviceIds === null && !listPreferences.groupOrder.length && !listPreferences.newDeviceIds.length) return;
+    try {
+      const serialized = JSON.stringify(listPreferences);
+      if (window.localStorage.getItem(VIEWER_LIST_STORAGE_KEY) !== serialized) {
+        window.localStorage.setItem(VIEWER_LIST_STORAGE_KEY, serialized);
+      }
+    } catch {
+      setApiError("이 PC의 장비 목록 설정을 저장하지 못했습니다.");
+    }
+  }, [listPreferences]);
 
   useEffect(() => {
     setSelectedDeviceIds((current) => pruneSelectedDeviceIds(current, devices));
@@ -717,15 +742,17 @@ function ViewerApp() {
     setIsLoadingDeviceList(true);
     const request = fetchDevices(true, abort.signal, (nextDevices, pendingIds) => {
       if (cancelled) return;
+      setListPreferences((current) => discoverNewDevices(current, nextDevices.map((device) => device.id)));
       setDevices(nextDevices);
       setPresenceChecks(Object.fromEntries(pendingIds.map((id) => [id, "checking" as const])));
       setIsLoadingDeviceList(false);
-    });
+    }, devices);
     deviceListRequestRef.current = request;
     setIsRefreshingDevices(true);
     void request
       .then((nextDevices) => {
         if (!cancelled) {
+          setListPreferences((current) => discoverNewDevices(current, nextDevices.map((device) => device.id)));
           setDevices(nextDevices);
           setPresenceChecks({});
           setApiError("");
@@ -1187,6 +1214,7 @@ function ViewerApp() {
                 storeName: input.storeName,
               }
             : {
+                businessNumber: input.businessNumber,
                 contactName: input.contactName,
                 contactPhone: input.contactPhone,
                 deviceName: input.deviceName,
@@ -1208,6 +1236,13 @@ function ViewerApp() {
 
       setDevices(nextDeviceState);
       const firstUpdated = updatedDevices[0];
+      if (firstUpdated && firstUpdated.storeName !== previousStore
+        && !nextDeviceState.some((device) => device.storeName === previousStore)) {
+        setListPreferences((current) => {
+          const groupOrder = renameStoreGroup(current.groupOrder, previousStore, firstUpdated.storeName);
+          return groupOrder === current.groupOrder ? current : { ...current, groupOrder };
+        });
+      }
       if (firstUpdated && selectedStore === previousStore) {
         setSelectedStore(firstUpdated.storeName);
       }
@@ -1301,20 +1336,43 @@ function ViewerApp() {
           <div className="group-list">
           {groups.map((group) => (
             <button
-              className={`group-button ${selectedStore === group.storeName ? "active" : ""} ${dropStore === group.storeName ? "drop-target" : ""}`}
+              className={`group-button ${selectedStore === group.storeName ? "active" : ""} ${dropStore === group.storeName ? "drop-target" : ""} ${groupDrop?.storeName === group.storeName ? groupDrop.after ? "reorder-after" : "reorder-before" : ""}`}
               key={group.storeName}
               type="button"
+              draggable
               onClick={() => setSelectedStore(group.storeName)}
+              onDragStart={(event) => {
+                event.dataTransfer.setData(GROUP_DRAG_TYPE, group.storeName);
+                event.dataTransfer.effectAllowed = "move";
+              }}
+              onDragEnd={() => setGroupDrop(null)}
               onDragOver={(event) => {
+                if (event.dataTransfer.types.includes(GROUP_DRAG_TYPE)) {
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = "move";
+                  const after = event.clientY >= event.currentTarget.getBoundingClientRect().top + event.currentTarget.clientHeight / 2;
+                  setGroupDrop((current) => current?.storeName === group.storeName && current.after === after
+                    ? current : { storeName: group.storeName, after });
+                  return;
+                }
                 if (!event.dataTransfer.types.includes(DEVICE_DRAG_TYPE)) return;
                 event.preventDefault();
                 event.dataTransfer.dropEffect = "move";
                 setDropStore(group.storeName);
               }}
-              onDragLeave={() => setDropStore(null)}
+              onDragLeave={() => { setDropStore(null); setGroupDrop(null); }}
               onDrop={async (event) => {
                 event.preventDefault();
                 setDropStore(null);
+                setGroupDrop(null);
+                const draggedGroup = event.dataTransfer.getData(GROUP_DRAG_TYPE);
+                if (draggedGroup) {
+                  const names = groups.map((item) => item.storeName);
+                  const after = event.clientY >= event.currentTarget.getBoundingClientRect().top + event.currentTarget.clientHeight / 2;
+                  const reordered = moveStoreGroup(names, draggedGroup, group.storeName, after);
+                  if (reordered !== names) setListPreferences((current) => ({ ...current, groupOrder: reordered }));
+                  return;
+                }
                 const device = devices.find((item) => item.id === event.dataTransfer.getData(DEVICE_DRAG_TYPE));
                 if (!device) return;
                 try {
@@ -1488,6 +1546,7 @@ function ViewerApp() {
             </section>
             <DeviceTable
               devices={filteredDevices}
+              newDeviceIds={listPreferences.newDeviceIds}
               connectionHistory={connectionHistory}
               observedConnections={observedConnections}
               activeDeviceIds={sessions.map((openSession) => openSession.deviceId)}
@@ -1574,6 +1633,11 @@ function ViewerApp() {
         <DeviceEditDialog
           target={editTarget}
           onClose={() => setEditTarget(null)}
+          onSaved={() => {
+            if (editTarget.mode === "device") {
+              setListPreferences((current) => acknowledgeNewDevice(current, editTarget.devices[0].id));
+            }
+          }}
           onDelete={handleDeleteDevice}
           onSaveRollout={handleSaveDeviceRollout}
           onSave={handleSaveDeviceMetadata}
@@ -1628,12 +1692,14 @@ function DeviceEditDialog({
   onClose,
   onDelete,
   onSave,
+  onSaved,
   onSaveRollout,
   target,
 }: {
   onClose: () => void;
   onDelete: () => Promise<void>;
   onSave: (input: Omit<DeviceMetadataUpdateInput, "deviceId">) => Promise<void>;
+  onSaved: () => void;
   onSaveRollout: (deviceId: string, ring: DeviceUpdateRing, paused: boolean) => Promise<void>;
   target: DeviceEditTarget;
 }) {
@@ -1687,14 +1753,16 @@ function DeviceEditDialog({
     setIsSaving(true);
     setSaveError("");
     try {
-      const { tagText, ...metadata } = form;
+      const { tagText, businessNumber, ...metadata } = form;
       await onSave({
         ...metadata,
+        ...(!isGroupEdit ? { businessNumber } : {}),
         tags: tagText.split(",").map((tag) => tag.trim()).filter(Boolean),
       });
       if (isViewerFirebaseEnabled()) {
         await Promise.all(target.devices.map((device) => onSaveRollout(device.id, updateRing, updatePaused)));
       }
+      onSaved();
       onClose();
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : "장비 정보 수정 실패");
@@ -1789,8 +1857,9 @@ function DeviceEditDialog({
           <label>
             사업자번호
             <input
-              readOnly
+              readOnly={isGroupEdit}
               value={form.businessNumber}
+              onChange={(event) => setForm((prev) => ({ ...prev, businessNumber: event.target.value }))}
               placeholder="123-45-67890"
             />
           </label>
@@ -2299,12 +2368,19 @@ function AgentFirstRunApp() {
     }
 
     let cancelled = false;
+    let stopConfigEvents: (() => void) | undefined;
+    let configRevision = 0;
+    const refreshConfig = async () => {
+      const revision = ++configRevision;
+      const config = await invoke<any>("get_agent_config");
+      if (!cancelled && revision === configRevision && config?.registeredDeviceId) setRegisteredConfig(config);
+    };
     void (async () => {
       try {
-        const config = await invoke<any>("get_agent_config");
-        if (!cancelled && config?.registeredDeviceId) {
-          setRegisteredConfig(config);
-        }
+        const stop = await listen("agent-config-changed", () => { void refreshConfig().catch(() => {}); });
+        if (cancelled) { stop(); return; }
+        stopConfigEvents = stop;
+        await refreshConfig();
         const [persistentInstallId, detectedDesktopName] = await Promise.all([
           invoke<string>("get_or_create_agent_install_id", { legacyInstallId: installId }),
           invoke<string>("get_computer_name").catch(() => ""),
@@ -2328,6 +2404,7 @@ function AgentFirstRunApp() {
 
     return () => {
       cancelled = true;
+      stopConfigEvents?.();
     };
   }, []);
 
@@ -2635,6 +2712,7 @@ function getOrCreateAgentInstallId(): string {
 function DeviceTable({
   activeDeviceIds,
   devices,
+  newDeviceIds,
   connectionHistory,
   observedConnections,
   favoriteDeviceIds,
@@ -2654,6 +2732,7 @@ function DeviceTable({
 }: {
   activeDeviceIds: string[];
   devices: ManagedDevice[];
+  newDeviceIds: string[];
   connectionHistory: ConnectionHistoryEntry[];
   observedConnections: Record<string, string>;
   favoriteDeviceIds: string[];
@@ -2752,6 +2831,7 @@ function DeviceTable({
               }}
               title="접속 시 최신 상태를 확인합니다."
             >
+              {newDeviceIds.includes(device.id) && <span className="new-device-badge" aria-label="새로 등록된 장비">NEW</span>}
               <span className="device-status-cell">
                 <input
                   checked={selectedDeviceIds.includes(device.id)}

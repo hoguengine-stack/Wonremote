@@ -332,18 +332,33 @@ async function routeRequest(
     return;
   }
 
+  if (request.method === "POST" && url.pathname === "/api/agent/device") {
+    const body = await readJson<AgentCommandPollInput>(request);
+    const device = state.devices.find(item => item.id === body.deviceId);
+    try {
+      verifyAgentInstall(state.devices, body.deviceId, body.installId);
+      if (!device) throw new Error("Device not found.");
+      writeJson(response, 200, { device });
+    } catch (error) {
+      writeJson(response, 403, { error: error instanceof Error ? error.message : "Agent identity rejected." });
+    }
+    return;
+  }
+
   if (request.method === "PATCH" && url.pathname.startsWith("/api/devices/")) {
     const match = url.pathname.match(/^\/api\/devices\/(.+)$/);
     if (match) {
       const deviceId = decodeURIComponent(match[1]);
       const body = await readJson<Omit<DeviceMetadataUpdateInput, "deviceId">>(request);
       try {
+        const previousBusinessNumber = state.devices.find(device => device.id === deviceId)?.businessNumber;
         const result = updateDeviceMetadata(state.devices, {
           ...body,
           deviceId,
         });
         state.devices = result.devices;
         await state.deviceStore.writeDevices(state.devices);
+        if (previousBusinessNumber !== result.device.businessNumber) enqueueAgentCommand(state, deviceId, "sync-business-number");
         writeJson(response, 200, {
           device: result.device,
           devices: state.devices,

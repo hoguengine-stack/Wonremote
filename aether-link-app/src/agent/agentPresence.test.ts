@@ -18,6 +18,43 @@ const compile = (text: string) => ts.transpile(text, { target: ts.ScriptTarget.E
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
 
 describe("Windows Agent refresh-only heartbeat runtime", () => {
+  it("keeps live same-monitor capture and retains monitor-change and failed-capture recovery", async () => {
+    const handler = findNode(node => ts.isPropertyAssignment(node) && node.name.getText(source) === "switchMonitor") as ts.PropertyAssignment;
+    const context = {
+      console: { log: vi.fn() }, deviceId: "device", activeSessionId: "session",
+      currentOutputIndex: 0, currentLoopSleepMs: 16, streamDesired: true, streamRestartTimer: null as unknown,
+      streamProcess: { killed: false, exitCode: null as number | null, signalCode: null as string | null } as any,
+      startStreaming: vi.fn(async () => undefined),
+    };
+    const switchMonitor = runInNewContext(compile(`const handler = ${handler.initializer.getText(source)}; handler;`), context);
+    await switchMonitor(0); await switchMonitor(0);
+    expect(context.startStreaming).not.toHaveBeenCalled();
+    await switchMonitor(1);
+    expect(context.startStreaming).toHaveBeenLastCalledWith("device", "session", 1, 16);
+    expect(context.currentOutputIndex).toBe(1);
+    for (const process of [null, { killed: true, exitCode: null, signalCode: null }, { killed: false, exitCode: 1, signalCode: null }, { killed: false, exitCode: null, signalCode: "SIGTERM" }]) {
+      context.streamProcess = process;
+      context.startStreaming.mockClear();
+      await switchMonitor(1);
+      expect(context.startStreaming).toHaveBeenCalledOnce();
+    }
+    context.streamProcess = { killed: false, exitCode: null, signalCode: null };
+    context.streamRestartTimer = 1;
+    context.startStreaming.mockClear();
+    await switchMonitor(1);
+    expect(context.startStreaming).toHaveBeenCalledOnce();
+    context.streamRestartTimer = null;
+    context.streamDesired = false;
+    context.startStreaming.mockClear();
+    await switchMonitor(1);
+    expect(context.startStreaming).toHaveBeenCalledOnce();
+    context.activeSessionId = "";
+    context.startStreaming.mockClear();
+    await switchMonitor(2);
+    expect(context.startStreaming).not.toHaveBeenCalled();
+    expect(context.currentOutputIndex).toBe(2);
+  });
+
   it.each([
     { code: undefined, earlyReconnect: true },
     { code: "permission-denied", earlyReconnect: false },

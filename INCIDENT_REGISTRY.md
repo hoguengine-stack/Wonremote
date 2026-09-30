@@ -1,5 +1,59 @@
 # WonRemote Incident Registry
 
+## INC-20260930-125: Initial same-monitor selection restarted live capture
+
+- Detected: 2026-09-30 user reported picture appearing, disappearing and returning immediately after remote connect.
+- Severity: Medium; unnecessary capture interruption. Exact visible black interval not independently reproduced.
+- Affected: Windows Agent switch-monitor handler shared by Firebase/WebRTC and local command delivery; same-monitor startup and duplicate selections.
+- Status: Source repaired and focused checks passed; v0.1.110 build and public delivery requested and in preparation.
+- User-visible symptom: The first remote picture can be interrupted during initial monitor synchronization.
+- Minimal trigger: A desired live capture on output 0 receives switch-monitor 0 after the Viewer control channel opens.
+- Root cause and contributors: Viewer always synchronizes selected output after channel readiness; Agent unconditionally called startStreaming, which kills the previous capture. v0.1.107 and v0.1.109 both contain this behavior, so no new version regression or known-good baseline is established. Existing 82220F6D log shows capture start followed roughly 1.1 seconds later by another capture start for output 0.
+- Fix commit(s): Upcoming normal v0.1.110 main preparation commit; no workflow or gate bypass.
+- Permanent guard: Skip only unchanged output with desired capture, no pending restart, and a non-killed child with null exit/signal codes. Changed output or non-live capture retains recovery. Test executes the production callback, not a duplicated policy implementation.
+- Regression proof: RED observed two startStreaming calls for duplicate same-output commands. GREEN plus monitor-change, missing/killed/exited/signalled child, undesired capture and pending restart passed. Nine focused suites 121/121 and TypeScript passed; isolated Chromium 3/3 and device-organization browser flow passed for included preceding work.
+- Release proof: Pending normal CI x86 installers, signed manifest and independent live download verification. Existing published assets and agent1 trial are retained.
+- Remaining blocker: A new installed Agent and another-PC Viewer must still confirm no visible first-frame blink. Publication does not prove fleet installation, physical pixels or exact cause of every transient black screen.
+
+## INC-20260930-124: Viewer business-number edits had no Agent synchronization path
+
+- Detected: 2026-09-30 user requested that an individual device business-number edit also update its Agent.
+- Classification: Missing capability, not a confirmed version regression. No previously working business-number editing version was identified.
+- Root cause: Device editor was read-only, App save mapping and both metadata backends ignored businessNumber, and Agent configuration had no synchronization command. Original Firebase credentials and document IDs derive from the registration number, so replacing all number uses would break authentication or create another device.
+- Repair: Validate and normalize the number; atomically update the existing Firebase device and queue a payload-free sync command. Agent reads the current owned device, persists the display number while retaining original authBusinessNumber and identity, then notifies its open native window. Startup registration merge retains the edited cloud number. Local API uses the existing installation-identity check.
+- Permanent guard: Actual right-click save/browser checks include the App forwarding boundary and group edits must not change individual numbers. Request tests cover one atomic batch, unchanged values and denied writes; real local HTTP tests cover queued stale commands and persisted config; restart checks retain original authentication and ID. Firestore emulator rejects invalid numbers, Agent self-edit, unauthorized Viewer and owner/installation changes.
+- Verification: Focused Firebase/Agent/domain suites passed 50/50. Selected Chromium cases passed 7/7, including native-event Agent display and 24h without cloud polling. TypeScript and offline Windows x86 native library check passed. Local Firestore rules emulator passed. Browser and native callbacks use isolated fixtures, not installed runtime or production Firebase.
+- Development check: The extended browser fixture initially used ES2022 Object.hasOwn despite the existing TypeScript library target. Replaced it with Object.prototype.hasOwnProperty.call; retained the target and assertion instead of expanding build configuration.
+- Status: Source checks complete; build, release, rules deployment and installed cross-PC confirmation are not performed or claimed.
+- Remaining: Viewer and Agent need a later updated build plus live rule deployment. Existing Agents without this command cannot immediately update their open window. Network/disk sync failure is logged without automatic retries; restart reconciliation reads the current cloud value. This change does not replace original registration-derived IDs or credentials.
+
+## INC-20260930-123: Known-device checks still waited for the server list read
+
+- Detected: 2026-09-30 performance inspection after the user requested faster refresh and authorized parallel execution.
+- Severity: Medium latency limitation; not a newly identified version regression. The v0.1.109 early-list display repair remains valid.
+- Affected: Firebase Viewer manual device-list refresh. Agent binaries, local API response format, connection-time validation and releases are unchanged.
+- Root cause: `fetchFirebaseDevices` awaited `getDocsFromServer` before subscribing and dispatching presence commands. List-read latency was added to known-Agent response/timeout latency.
+- Repair: Pass the displayed snapshot through the existing API; use one refresh owner/listener to check known IDs during the read, then reconcile with the authoritative fresh list and dispatch only newly discovered manual IDs. Each target gets five seconds from initial dispatch, without resending expired targets.
+- Permanent guard: Deferred server-read tests must observe commands and a confirmed row before list resolution. Keep one command per distinct prior/fresh ID, fresh metadata, removed-row exclusion, neutral pending states, terminal errors and late-callback cancellation. Removed prior IDs can receive one already-started command; that bounded union cost is explicitly budgeted rather than described as zero increase.
+- Verification: RED produced two expected failures (zero early commands); GREEN Firebase/domain/connection tests passed 22/22. Chromium exercised early status display, authoritative list replacement, added/removed rows, existing NEW badges, duplicate clicks, rerender, per-target timeout, 24h idle and logout. Initial TypeScript check found undeclared counters in the new browser fixture; declaring those counters in the fixture state restored type safety without weakening checks.
+- Status: Source verified: Firebase/domain/connection 22/22, selected Chromium refresh 9/9, TypeScript, diff checks and `change:verify` passed. No build, publication or installation requested.
+- Remaining: Installed Viewer and production Firebase latency need a live measurement; controlled browser clocks do not establish actual WAN speed or billing.
+
+## INC-20260930-122: New UI test was invisible to the worktree change gate
+
+- Detected: 2026-09-30 during local verification of Viewer group ordering and NEW badges.
+- Severity: Low; product behavior was unaffected, but the required development gate could not pass.
+- Affected: Local change-contract verification for a new Viewer feature.
+- Status: Resolved in the workspace; no commit or release was requested.
+- User-visible symptom: None; the failure occurred before build or deployment.
+- Minimal trigger: Name a browser script or an untracked new test file as the only changed contract test.
+- Root cause and contributors: The gate recognizes tracked changed files with test filename patterns; it does not include untracked files or a `verify-*.mjs` script in that check.
+- Fix commit(s): Not committed; moved the focused checks into the existing tracked `deviceOrganization.test.ts` and updated the current contract.
+- Permanent guard: Use a tracked test file matching the gate's test filename pattern for the current contract; keep the browser script as additional UI evidence.
+- Regression proof: Focused domain tests passed 8/8 and `npm run change:verify` passed after the correction.
+- Release proof: Not applicable; no installer build or publication was requested for this feature.
+- Remaining blocker: None for this gate. Installed WebView2 behavior remains a separate physical check after a future build.
+
 ## INC-20260929-121: Viewer device refresh waited for every manual Agent before painting the new list
 
 - Detected: 2026-09-29 user reported slow Viewer device-list refresh.

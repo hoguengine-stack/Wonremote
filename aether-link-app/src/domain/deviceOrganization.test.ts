@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ManagedDevice } from "./types";
 import { createDeviceGroupMover, organizeDevices } from "./deviceOrganization";
+import {
+  acknowledgeNewDevice,
+  discoverNewDevices,
+  moveStoreGroup,
+  orderStoreGroups,
+  readDeviceListPreferences,
+  renameStoreGroup,
+} from "./deviceListPreferences";
 import { registerAgentFirstRun, applyAgentHeartbeat, updateDeviceMetadata } from "./agentRegistry";
 
 const device = (id: string, storeName = "상호명 미설정", businessNumber = "123-45-67890"): ManagedDevice => ({
@@ -8,6 +16,28 @@ const device = (id: string, storeName = "상호명 미설정", businessNumber = 
 });
 afterEach(() => vi.useRealTimers());
 describe("device organization", () => {
+  it("baselines existing devices and keeps a new device marked until acknowledged", () => {
+    const initial = readDeviceListPreferences(null);
+    const baseline = discoverNewDevices(initial, ["old"]);
+    expect(baseline.newDeviceIds).toEqual([]);
+    const discovered = discoverNewDevices(baseline, ["old", "new"]);
+    expect(discovered.newDeviceIds).toEqual(["new"]);
+    expect(discoverNewDevices(discovered, ["old", "new"])).toBe(discovered);
+    expect(acknowledgeNewDevice(discovered, "new").newDeviceIds).toEqual([]);
+    expect(discoverNewDevices(acknowledgeNewDevice(discovered, "new"), ["old", "new"]).newDeviceIds).toEqual([]);
+  });
+  it("persists group order while appending new groups and preserving renamed positions", () => {
+    const names = ["A", "B", "C"];
+    const reordered = moveStoreGroup(names, "C", "A", false);
+    expect(reordered).toEqual(["C", "A", "B"]);
+    expect(moveStoreGroup(names, "A", "A", false)).toBe(names);
+    const renamed = renameStoreGroup(reordered, "C", "Z");
+    const groups = ["A", "B", "Z", "D"].map((storeName) => ({ storeName, devices: [] }));
+    expect(orderStoreGroups(groups, renamed).map((group) => group.storeName)).toEqual(["Z", "A", "B", "D"]);
+  });
+  it("ignores malformed stored preferences", () => {
+    expect(readDeviceListPreferences("not-json")).toEqual({ groupOrder: [], knownDeviceIds: null, newDeviceIds: [] });
+  });
   it("groups newly loaded same-business tablets without changing explicit names or raw state", () => {
     const source = [device("pos", "매장 A"), device("tablet"), device("other", "매장 B", "999-99-99999")];
     const result = organizeDevices(source);

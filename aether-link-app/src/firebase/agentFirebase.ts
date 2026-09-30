@@ -4,6 +4,7 @@ import {
   collection,
   doc,
   getDoc,
+  getDocFromServer,
   getDocs,
   getDocsFromServer,
   limit,
@@ -240,6 +241,12 @@ function canRetirePreviousDevice(
     && typeof previous.installId === "string"
     && previous.installId.trim() !== installId.trim()
     && (previous.deletedAt === undefined || previous.deletedAt === null);
+}
+
+export async function fetchAgentBusinessNumberWithFirebase(deviceId: string): Promise<string> {
+  const snapshot = await getDocFromServer(doc(getAgentFirebaseServices(process.env).db, "devices", deviceId));
+  if (!snapshot.exists()) throw new Error("Agent device not found.");
+  return String(snapshot.data().businessNumber ?? "");
 }
 
 export async function sendAgentHeartbeatWithFirebase(

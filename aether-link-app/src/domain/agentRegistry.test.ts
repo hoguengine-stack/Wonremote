@@ -132,7 +132,7 @@ describe("agent registry domain", () => {
     ]);
   });
 
-  it("updates display metadata without changing the agent connection identity or business number", () => {
+  it("edits the business number while retaining the agent connection identity", () => {
     const registered = registerAgentFirstRun([], {
       businessNumber: "1234567890",
       password: "1234",
@@ -149,7 +149,7 @@ describe("agent registry domain", () => {
 
     expect(result.device).toMatchObject({
       id: "123-45-67890:AGENT-EDIT-META",
-      businessNumber: "123-45-67890",
+      businessNumber: "999-88-77777",
       storeName: "Won Chicken Gangnam",
       deviceNumber: "AGENT-EDIT-META",
       deviceName: "Main POS",

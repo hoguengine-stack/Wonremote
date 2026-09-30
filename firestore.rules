@@ -112,10 +112,12 @@ service cloud.firestore {
           || (request.resource.data.contactPhone is string && request.resource.data.contactPhone.size() <= 40))
         && resource.data.ownerUid is string
         && request.resource.data.ownerUid == resource.data.ownerUid
-        && request.resource.data.businessNumber == resource.data.businessNumber
+        && request.resource.data.businessNumber is string
+        && request.resource.data.businessNumber.matches('^[0-9]{3}-[0-9]{2}-[0-9]{5}$')
         && request.resource.data.deviceNumber == resource.data.deviceNumber
         && request.resource.data.installId == resource.data.installId
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "businessNumber",
           "storeName",
           "storeNameSource",
           "deviceName",

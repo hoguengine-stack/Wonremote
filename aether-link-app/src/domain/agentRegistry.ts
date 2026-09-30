@@ -301,6 +301,7 @@ export function updateDeviceMetadata(
 
   const device: ManagedDevice = {
     ...currentDevice,
+    businessNumber: typeof input.businessNumber === "string" ? normalizeBusinessNumber(input.businessNumber) : currentDevice.businessNumber,
     storeName: nextStoreName,
     storeNameSource: nextStoreNameSource,
     deviceName: nextDeviceName,

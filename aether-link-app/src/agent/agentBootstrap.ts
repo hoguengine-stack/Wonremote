@@ -10,6 +10,7 @@ export interface AgentCredentials {
 export interface AgentLocalConfig {
   apiUrl?: string;
   businessNumber?: string;
+  authBusinessNumber?: string;
   desktopName?: string;
   installId: string;
   registeredAt?: string;

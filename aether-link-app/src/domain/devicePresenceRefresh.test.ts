@@ -79,6 +79,81 @@ describe("on-demand Agent presence", () => {
     expect(stop).toHaveBeenCalledTimes(2); expect(send).toHaveBeenCalledOnce();
   });
 
+  it("drops removed targets, preserves fresh metadata and gives newly discovered targets five seconds", async () => {
+    vi.useFakeTimers();
+    let finishRead!: (devices: ManagedDevice[]) => void;
+    const read = new Promise<ManagedDevice[]>(resolve => { finishRead = resolve; });
+    let next!: (device: ManagedDevice) => void;
+    const stop = vi.fn(); const send = vi.fn().mockResolvedValue(undefined); const progress = vi.fn();
+    const removed = { ...device, id: "removed" }; const added = { ...device, id: "new" };
+    const result = collectDevicePresence([device, removed], "nonce", callback => { next = callback; return stop; }, send, undefined, progress, read);
+    expect(send).toHaveBeenCalledTimes(2);
+    next({ ...device, heartbeatRequestId: "nonce" });
+    await vi.advanceTimersByTimeAsync(2_000);
+    finishRead([{ ...device, desktopName: "Renamed" }, added]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(progress.mock.lastCall?.[0].map((d: ManagedDevice) => d.id)).toEqual([device.id, added.id]);
+    expect(progress.mock.lastCall?.[0][0].desktopName).toBe("Renamed");
+    expect(progress.mock.lastCall?.[1]).toEqual([added.id]);
+    next({ ...removed, heartbeatRequestId: "nonce" });
+    expect(send).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(stop).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect((await result).map(d => [d.id, d.status])).toEqual([[device.id, "online"], [added.id, "offline"]]);
+    expect(stop).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(["read", "command", "listener"])("closes parallel refresh on %s failure without retries", async (failure) => {
+    vi.useFakeTimers();
+    let finishRead!: (devices: ManagedDevice[]) => void;
+    let failRead!: (error: Error) => void;
+    const read = new Promise<ManagedDevice[]>((resolve, reject) => { finishRead = resolve; failRead = reject; });
+    let failListener!: (error: Error) => void;
+    const stop = vi.fn(); const progress = vi.fn();
+    const send = vi.fn(() => failure === "command" ? Promise.reject(new Error("Quota")) : Promise.resolve());
+    const result = collectDevicePresence([device], "nonce", (_next, fail) => { failListener = fail; return stop; }, send, undefined, progress, read);
+    const rejected = expect(result).rejects.toThrow("Quota");
+    if (failure === "read") failRead(new Error("Quota"));
+    if (failure === "listener") failListener(new Error("Quota"));
+    await vi.advanceTimersByTimeAsync(0);
+    if (failure !== "read") finishRead([device]);
+    await rejected;
+    const updates = progress.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(86_400_000);
+    expect(progress).toHaveBeenCalledTimes(updates);
+    expect(stop).toHaveBeenCalledOnce(); expect(send).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("does not recheck expired known targets when a slow list read finally finishes", async () => {
+    vi.useFakeTimers();
+    let finishRead!: (devices: ManagedDevice[]) => void;
+    const read = new Promise<ManagedDevice[]>(resolve => { finishRead = resolve; });
+    const stop = vi.fn(); const send = vi.fn().mockResolvedValue(undefined);
+    const result = collectDevicePresence([device], "nonce", () => stop, send, undefined, undefined, read);
+    await vi.advanceTimersByTimeAsync(5_000);
+    finishRead([device]);
+    expect((await result)[0].status).toBe("offline");
+    expect(send).toHaveBeenCalledOnce(); expect(stop).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("does not let a removed device error or an old manual timeout override the fresh list", async () => {
+    vi.useFakeTimers();
+    let finishRead!: (devices: ManagedDevice[]) => void;
+    const read = new Promise<ManagedDevice[]>(resolve => { finishRead = resolve; });
+    const removed = { ...device, id: "removed" };
+    const stop = vi.fn();
+    const result = collectDevicePresence([device, removed], "nonce", () => stop,
+      async item => { if (item.id === removed.id) throw new Error("Permission denied"); }, undefined, undefined, read);
+    await vi.advanceTimersByTimeAsync(5_000);
+    finishRead([{ ...device, presenceMode: undefined }]);
+    expect(await result).toEqual([{ ...device, presenceMode: undefined }]);
+    expect(stop).toHaveBeenCalledOnce(); expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("does not require timer freshness for manual Agents, but keeps legacy freshness checks", () => {
     expect(resolveDeviceStatuses([device])[0].status).toBe("online");
     expect(resolveDeviceStatuses([{ ...device, presenceMode: undefined }])[0].status).toBe("offline");

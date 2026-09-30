@@ -105,6 +105,9 @@ export function mergeFirstRunDeviceDocument(
   if (!existing) {
     return merged;
   }
+  if (existing.ownerUid === device.ownerUid && typeof existing.businessNumber === "string") {
+    merged.businessNumber = existing.businessNumber;
+  }
   if (typeof existing.desktopNameOverride === "string" && existing.desktopNameOverride.trim()) {
     merged.desktopNameOverride = existing.desktopNameOverride.trim().slice(0, 255);
   }

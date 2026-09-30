@@ -98,6 +98,19 @@ try {
 
   // This seed is emulator-only: exercise a long-idle Agent without waiting a minute.
   const contactRef = doc(viewer.db, "devices", DEVICE_ID);
+  const businessBatch = writeBatch(viewer.db);
+  businessBatch.update(contactRef, {businessNumber:"987-65-43210"});
+  businessBatch.set(doc(viewer.db,"devices",DEVICE_ID,"commands","business-sync"), {action:"sync-business-number",state:"pending",createdAt:serverTimestamp()});
+  await businessBatch.commit();
+  if ((await getDoc(doc(agent.db,"devices",DEVICE_ID))).data().businessNumber !== "987-65-43210") throw new Error("Agent cannot read edited business number");
+  await setDoc(doc(agent.db,"devices",DEVICE_ID), {lastSeenAtServer:serverTimestamp()}, {merge:true});
+  await expectPermissionDenied(() => setDoc(contactRef,{businessNumber:"bad"},{merge:true}),"Invalid business number");
+  await expectPermissionDenied(() => setDoc(doc(agent.db,"devices",DEVICE_ID),{businessNumber:"123-45-67890"},{merge:true}),"Agent cannot change business number");
+  await expectPermissionDenied(() => setDoc(doc(unauthorized.db,"devices",DEVICE_ID),{businessNumber:"123-45-67890"},{merge:true}),"Unauthorized business edit");
+  await expectPermissionDenied(() => setDoc(contactRef,{ownerUid:UNAUTHORIZED_UID},{merge:true}),"Business edit cannot change owner");
+  await expectPermissionDenied(() => setDoc(contactRef,{installId:"changed"},{merge:true}),"Business edit cannot change install identity");
+  await setDoc(contactRef,{businessNumber:"123-45-67890"},{merge:true});
+  await deleteDoc(doc(viewer.db,"devices",DEVICE_ID,"commands","business-sync"));
   await setDoc(contactRef, { contactPhone: "010-1234-5678" }, { merge: true });
   if ((await getDoc(contactRef)).data().contactPhone !== "010-1234-5678") throw new Error("Contact phone roundtrip failed");
   await expectPermissionDenied(() => setDoc(contactRef, { contactPhone: "1".repeat(41) }, { merge: true }), "Contact phone length");

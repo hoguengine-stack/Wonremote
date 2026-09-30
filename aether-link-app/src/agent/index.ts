@@ -12,11 +12,13 @@ import { subscribeLocalSessionData } from "../api/sessionData";
 import { firebaseCommandListenerRetryDelayMs, firebaseRequestRetryDelayMs } from "../firebase/requestRetryPolicy";
 import type { SessionData } from "../domain/sessionData";
 import { parseAgentConfigJson } from "./agentConfigJson";
-import { pollAgentCommands, postAgentSessionApproval, sendAgentHeartbeat } from "./agentClient";
+import { fetchAgentBusinessNumber, pollAgentCommands, postAgentSessionApproval, sendAgentHeartbeat } from "./agentClient";
 import { waitForApiHealth } from "./agentHealth";
 import { createAgentHealthReporter } from "./agentUpdateHealth";
 import {
   canRecoverMissingAgentRegistration,
+  agentAuthBusinessNumber,
+  synchronizeAgentBusinessNumber,
   reconcileAgentRegistration,
   recoverMissingAgentRegistration,
 } from "./agentRegistrationRecovery";
@@ -2035,7 +2037,7 @@ async function ensureFirebaseAgentAuth(config: AgentLocalConfig): Promise<void> 
     throw new Error("Firebase Agent auth requires businessNumber in local config.");
   }
   await authenticateAgentWithFirebase({
-    businessNumber: config.businessNumber,
+    businessNumber: agentAuthBusinessNumber(config),
     password: "1234",
   });
 }
@@ -2088,6 +2090,14 @@ async function pollCommands(config: AgentLocalConfig): Promise<void> {
 
 async function executeReceivedCommands(config: AgentLocalConfig, commands: AgentCommand[]): Promise<void> {
   for (const command of commands) {
+    if (command.action === "sync-business-number") {
+      try {
+        await synchronizeAgentBusinessNumber(config,
+          () => fetchAgentBusinessNumber({ apiBaseUrl: API_BASE_URL, deviceId: config.registeredDeviceId!, installId: config.installId }),
+          next => writeAgentConfig(getAgentConfigPath(), next));
+      } catch (error) { console.error("[Agent] Business number sync failed:", error); }
+      continue;
+    }
     if (command.action.startsWith("agent-health-check ")) {
       await agentHealthReporter.commandRoundTripVerified(config, command.action);
       continue;
@@ -2226,6 +2236,11 @@ function createAgentCommandRuntime(deviceId: string): AgentCommandRuntime {
       await stopSessionPolling();
     },
     switchMonitor: async (outputIndex) => {
+      if (outputIndex === currentOutputIndex && streamDesired && !streamRestartTimer
+        && streamProcess && !streamProcess.killed
+        && streamProcess.exitCode === null && streamProcess.signalCode === null) {
+        return;
+      }
       currentOutputIndex = outputIndex;
       console.log(`Switching monitor to output-index: ${currentOutputIndex}`);
       if (activeSessionId) {
@@ -2470,6 +2485,7 @@ async function readAgentConfig(configPath: string): Promise<AgentLocalConfig | n
 async function writeAgentConfig(configPath: string, config: AgentLocalConfig): Promise<void> {
   await mkdir(path.dirname(configPath), { recursive: true });
   await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  console.log("[AgentConfig] Changed");
 }
 
 function getAgentConfigPath(): string {

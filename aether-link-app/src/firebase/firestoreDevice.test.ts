@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 import { buildFirestoreDevice, mapFirestoreDevice, mergeFirstRunDeviceDocument } from "./firestoreDevice";
 
 describe("firestore device mapping", () => {
+  it("keeps a Viewer-edited business number during same-owner registration reconciliation", () => {
+    const original = buildFirestoreDevice({businessNumber:"1234567890",installId:"test",ownerUid:"owner",nowIso:"now"});
+    const merged = mergeFirstRunDeviceDocument(original, {...original,businessNumber:"987-65-43210"});
+    expect(merged).toMatchObject({businessNumber:"987-65-43210",id:original.id,ownerUid:"owner"});
+    expect(mergeFirstRunDeviceDocument(original, {...original,ownerUid:"other",businessNumber:"987-65-43210"}).businessNumber).toBe(original.businessNumber);
+  });
   it("keeps only a version-shaped selected rollout capability", () => {
     const device=buildFirestoreDevice({businessNumber:'1234567890',installId:'test',ownerUid:'owner',nowIso:'2026-09-14T00:00:00Z',version:'1.2.3'});
     expect(mapFirestoreDevice(device.id,{...device,selectedRolloutVersion:'1.2.3'}).selectedRolloutVersion).toBe('1.2.3');
