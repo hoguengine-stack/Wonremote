@@ -164,6 +164,12 @@ jobs:
           npx playwright install chromium
           npx vitest run src/viewerDeviceRefresh.test.ts -t 'device access lock modal|toolbar shortcuts keep|browser edition shortcuts also'
 
+      - name: Select Java for Firestore rules verification
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
       - name: Verify device access with actual Firestore rules
         working-directory: .
         run: npx --yes firebase-tools@14.22.0 emulators:exec --only firestore --project wonremote-a7fd3 "node aether-link-app/scripts/verify-firestore-rules.mjs"
