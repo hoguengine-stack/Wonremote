@@ -174,11 +174,15 @@ jobs:
         working-directory: .
         run: npx --yes firebase-tools@14.22.0 emulators:exec --only firestore --project wonremote-a7fd3 "node aether-link-app/scripts/verify-firestore-rules.mjs"
 
-      - name: Verify fixed remote browser targets
-        run: cargo test --manifest-path ../aether-link-poc/Cargo.toml --target i686-pc-windows-msvc --bin wonremote-poc remote_browser_shortcuts_allow_only_fixed_targets
-
       - name: Build two x86 installers
         run: npm run release:exes
+
+      - name: Verify fixed remote browser targets
+        run: |
+          $cmake = (Resolve-Path .local-run/cmake/cmake-3.31.8-windows-x86_64/bin).Path
+          $nasm = (Resolve-Path .local-run/nasm/nasm-2.16.03).Path
+          $env:PATH = "$cmake;$nasm;$env:PATH"
+          cargo test --manifest-path ../aether-link-poc/Cargo.toml --target i686-pc-windows-msvc --release --locked --bin wonremote-poc remote_browser_shortcuts_allow_only_fixed_targets
 
       - name: Verify Agent startup with installed NSIS toolchain
         run: npm test -- src/agentStartup.test.ts
