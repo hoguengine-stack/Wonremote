@@ -1,5 +1,8 @@
+import { beginConnectionTiming, markConnectionTiming } from "../domain/connectionTiming";
 import { createUserWithEmailAndPassword, signInWithEmailAndPassword } from "firebase/auth";
 import { subscribeFirebaseSessionData } from "./sessionData";
+import { DEVICE_ACCESS_TTL_MS, type DeviceAccessRequest, type DeviceAccessState } from "../domain/deviceAccessLock";
+import type { AgentDeviceAccessLock } from "../agent/deviceAccessLock";
 import {
   collection,
   doc,
@@ -53,7 +56,7 @@ import {
   bindAgentFileMessages,
   createAgentPeerConnection,
   dataChannelBufferedAmount,
-  resolveAgentLocalDescription,
+  publishAnswerDuringGathering,
   routeAgentDataChannel,
   sendFrameWithBackpressure,
   resolveWebRtcMaxBufferedAmount,
@@ -164,6 +167,7 @@ export async function registerAgentFirstRunWithFirebase(
 
   const nowIso = new Date().toISOString();
   const device = buildFirestoreDevice({
+    storeName: input.storeName, deviceName: input.deviceName, notes: input.notes,
     businessNumber: input.businessNumber,
     desktopName: input.desktopName,
     installId: input.installId,
@@ -192,6 +196,11 @@ export async function registerAgentFirstRunWithFirebase(
     if (previousSnapshot?.exists()) {
       const previous = previousSnapshot.data() as Record<string, unknown>;
       if (canRetirePreviousDevice(previous, device, credential.user.uid, input.installId)) {
+        if (!existingSnapshot.exists()) {
+          const firstRegisteredAt = mapFirestoreDevice(previousDeviceId!, previous).firstRegisteredAt;
+          if (firstRegisteredAt) deviceDocument.firstRegisteredAt = firstRegisteredAt;
+          else delete deviceDocument.firstRegisteredAt;
+        }
         const previousStoreName = typeof previous.storeName === "string" ? previous.storeName.trim() : "";
         if (deviceDocument.storeNameSource !== "user" && previous.storeNameSource === "user" && previousStoreName) {
           deviceDocument = {
@@ -249,6 +258,12 @@ export async function fetchAgentBusinessNumberWithFirebase(deviceId: string): Pr
   return String(snapshot.data().businessNumber ?? "");
 }
 
+export async function fetchAgentZookNumberWithFirebase(deviceId: string): Promise<string> {
+  const snapshot = await getDocFromServer(doc(getAgentFirebaseServices(process.env).db, "devices", deviceId));
+  if (!snapshot.exists()) throw new Error("Agent device not found.");
+  return String(snapshot.data().zookNumber ?? "");
+}
+
 export async function sendAgentHeartbeatWithFirebase(
   input: AgentHeartbeatInput,
   env: AgentFirebaseEnv = process.env,
@@ -260,6 +275,7 @@ export async function sendAgentHeartbeatWithFirebase(
   try {
     // Firestore rules keep installId immutable; a mismatched Agent update is rejected there.
     await safeUpdateDoc(deviceRef, {
+      ...(input.accessPublicKey !== undefined ? {accessPublicKey:input.accessPublicKey, accessLockUnavailable:input.accessLockUnavailable === true} : {}),
       selectedRolloutVersion: input.version && /^\d+\.\d+\.\d+$/.test(input.version) ? input.version : null,
       rollbackSupportVersion: input.version && /^\d+\.\d+\.\d+$/.test(input.version) ? input.version : null,
       presenceMode: input.presenceMode,
@@ -281,6 +297,7 @@ export async function sendAgentHeartbeatWithFirebase(
       version: input.version,
       ...(desktopName ? { desktopName } : {}),
       ...(input.updateTelemetry ? updateTelemetryDocument(input.updateTelemetry) : {}),
+      ...(input.zookResult ? { zookAppliedNumber: input.zookResult.appliedNumber ?? "", ...(input.zookResult.error !== undefined ? {zookError: input.zookResult.error.slice(0,500)} : {}) } : {}),
     });
   } catch (error) {
     if (isFirebaseNotFoundError(error)) {
@@ -312,6 +329,65 @@ export async function sendAgentHeartbeatWithFirebase(
     devices: [device],
     device,
   };
+}
+
+export async function readAgentDeviceAccessState(deviceId: string, env: AgentFirebaseEnv = process.env): Promise<{enabled: boolean; version: string}> {
+  const snapshot = await getDocFromServer(doc(getAgentFirebaseServices(env).db, "deviceAccessLocks", deviceId));
+  const value = snapshot.data();
+  return {enabled:value?.enabled === true, version:typeof value?.version === "string" ? value.version : ""};
+}
+
+export async function publishAgentDeviceAccessCapability(deviceId: string, publicKey: string | null, env: AgentFirebaseEnv = process.env): Promise<void> {
+  await safeUpdateDoc(doc(getAgentFirebaseServices(env).db, "devices", deviceId), {accessPublicKey:publicKey, accessLockUnavailable:publicKey === null});
+}
+
+export async function processAgentDeviceAccessRequest(
+  deviceId: string, requestId: string, lock: AgentDeviceAccessLock, stopActiveSession: () => Promise<void>, env: AgentFirebaseEnv = process.env,
+): Promise<void> {
+  if (!/^[a-f0-9-]{36}$/.test(requestId)) throw new Error("잘못된 잠금 요청 번호입니다.");
+  const {db} = getAgentFirebaseServices(env);
+  const requestRef = doc(db, "deviceAccessRequests", requestId);
+  const snapshot = await getDocFromServer(requestRef);
+  const data = snapshot.data();
+  if (!data || data.state !== "pending") return;
+  const request = data as DeviceAccessRequest & {createdAt: {toMillis(): number}};
+  try {
+    const createdAt = request.createdAt?.toMillis?.();
+    if (!Number.isFinite(createdAt) || createdAt > Date.now() + 5_000 || createdAt < Date.now() - DEVICE_ACCESS_TTL_MS) throw new Error("접속 잠금 요청 시간이 만료되었습니다.");
+    if (request.deviceId !== deviceId || request.id !== requestId) throw new Error("다른 장비의 잠금 요청입니다.");
+    const previous = await readAgentDeviceAccessState(deviceId, env);
+    if (request.lockVersion !== previous.version) throw new Error("잠금 설정이 변경되었습니다. 장비 목록을 새로고침하세요.");
+    if (previous.enabled && !lock.publicState.enabled && request.operation !== "reset") throw new Error("잠금 설정 복구가 필요합니다. 관리자 비밀번호로 재설정하세요.");
+    await lock.authorize(request, Date.now(), async (state: DeviceAccessState) => {
+      if (request.operation !== "connect") await stopActiveSession();
+      await runTransaction(db, async transaction => {
+        const currentRequest = await transaction.get(requestRef);
+        const lockRef = doc(db, "deviceAccessLocks", deviceId);
+        const currentLock = await transaction.get(lockRef);
+        if (currentRequest.data()?.state !== "pending" || (currentLock.data()?.version ?? "") !== previous.version) throw new Error("잠금 요청이 이미 처리되었거나 설정이 변경되었습니다.");
+        if (request.operation !== "connect") {
+          transaction.set(lockRef, {enabled:state.enabled, version:state.version, updatedAt:serverTimestamp()});
+          transaction.update(doc(db, "devices", deviceId), {accessLocked:state.enabled, accessLockVersion:state.version});
+        }
+        transaction.update(requestRef, {state:"approved", approvedVersion:state.version, approvalSignature:lock.signApproval(request, state.version), updatedAt:serverTimestamp()});
+      });
+    });
+  } catch (error) {
+    await safeUpdateDoc(requestRef, {state:"denied", error:error instanceof Error ? error.message : "접속 잠금 요청을 처리하지 못했습니다.", updatedAt:serverTimestamp()});
+  }
+}
+
+export async function isAgentDeviceAccessSessionAllowed(deviceId: string, sessionId: string, lock: AgentDeviceAccessLock, env: AgentFirebaseEnv = process.env): Promise<boolean> {
+  const {db} = getAgentFirebaseServices(env);
+  const current = await readAgentDeviceAccessState(deviceId, env);
+  if (!current.enabled) return !lock.publicState.enabled;
+  if (!lock.publicState.enabled || lock.publicState.version !== current.version) return false;
+  const session = (await getDocFromServer(doc(db, "sessions", sessionId))).data();
+  if (session?.deviceId !== deviceId || session.state !== "connected" || session.accessLockVersion !== current.version || typeof session.accessRequestId !== "string") return false;
+  const request = (await getDocFromServer(doc(db, "deviceAccessRequests", session.accessRequestId))).data();
+  return request?.state === "approved" && request.operation === "connect" && request.sessionId === sessionId
+    && request.deviceId === deviceId && request.ownerUid === session.ownerUid && request.approvedVersion === current.version
+    && lock.verifyApproval(request as DeviceAccessRequest, current.version, request.approvalSignature);
 }
 
 export async function reportAgentUpdateTelemetryWithFirebase(
@@ -428,6 +504,7 @@ async function acknowledgeAgentCommands(
       deviceId,
       ...(typeof data.sessionId === "string" ? { sessionId: data.sessionId } : {}),
     } : undefined;
+    if (action.startsWith("start-stream ") && command?.sessionId) beginConnectionTiming(command.sessionId, "agent");
     return {
       ref: document.ref,
       update: { state: command ? "delivered" : "ignored", deliveredAt: serverTimestamp() },
@@ -438,6 +515,7 @@ async function acknowledgeAgentCommands(
   for (const entry of entries) safeBatchUpdate(batch, entry.ref, entry.update);
   try {
     await batch.commit();
+    for (const entry of entries) if (entry.command?.action.startsWith("start-stream ") && entry.command.sessionId) markConnectionTiming(entry.command.sessionId, "command-acknowledged");
     return entries.flatMap((entry) => entry.command ? [entry.command] : []);
   } catch (error) {
     if (!allowRecovery || !isFirebaseNotFoundError(error)) throw error;
@@ -949,22 +1027,22 @@ export async function startAgentWebRtcTransportWithFirebase(
         );
       });
     const answer = await peer.createAnswer();
-    await peer.setLocalDescription(answer);
-    const localAnswer = resolveAgentLocalDescription(peer, answer);
-    await safeSetDoc(
-      signalRef,
-      {
-        answer: {
+    await publishAnswerDuringGathering(peer, answer, async localAnswer => {
+      await safeSetDoc(
+        signalRef,
+        {
+          answer: {
+            negotiationId: offer.negotiationId,
+            type: localAnswer.type,
+            sdp: localAnswer.sdp,
+          },
           negotiationId: offer.negotiationId,
-          type: localAnswer.type,
-          sdp: localAnswer.sdp,
+          state: "agent-answer",
+          updatedAt: serverTimestamp(),
         },
-        negotiationId: offer.negotiationId,
-        state: "agent-answer",
-        updatedAt: serverTimestamp(),
-      },
-      { merge: true },
-    );
+        { merge: true },
+      );
+    }, () => !closedByCaller && activeNegotiationId === offer.negotiationId);
     if (!channelOpened) {
       connectWatchdog = setTimeout(() => {
         failNegotiation(

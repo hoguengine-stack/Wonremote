@@ -80,6 +80,25 @@ vi.mock("./agentPeerConnection", async (importOriginal) => ({
 }));
 
 describe("Agent WebRTC Firebase signaling", () => {
+  it("writes one answer and all candidates before delayed gathering completes", async () => {
+    let finish!: () => void;
+    const gathering = new Promise<void>(resolve => { finish = resolve; });
+    mocks.peer.setLocalDescription.mockImplementationOnce(async () => {
+      mocks.peer.onicecandidate?.({ candidate: { toJSON: () => ({ candidate: "host" }) } });
+      mocks.peer.onicecandidate?.({ candidate: { toJSON: () => ({ candidate: "srflx" }) } });
+      await gathering;
+    });
+    const { startAgentWebRtcTransportWithFirebase } = await import("./agentFirebase");
+    const pending = startAgentWebRtcTransportWithFirebase("slow-gather", {}, firebaseEnv());
+    try {
+      await vi.waitFor(() => expect(mocks.safeSetDoc).toHaveBeenCalledTimes(1));
+      expect(mocks.safeAddDoc).toHaveBeenCalledTimes(2);
+    } finally { finish(); }
+    const transport = await pending;
+    expect(mocks.safeSetDoc).toHaveBeenCalledTimes(1);
+    await transport?.close();
+  });
+
   it("advertises reverse file capability once on the current open file channel", async () => {
     const { startAgentWebRtcTransportWithFirebase } = await import("./agentFirebase");
     const transport = await startAgentWebRtcTransportWithFirebase("session-1", {}, firebaseEnv());

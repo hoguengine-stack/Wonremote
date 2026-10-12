@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { WONREMOTE_APP_VERSION } from "../domain/appVersion";
 import type { AgentFirstRunInput, ManagedDevice } from "../domain/types";
 import { createApiServer } from "../server/apiServer";
-import { fetchAgentBusinessNumber, pollAgentCommands } from "./agentClient";
+import { fetchAgentBusinessNumber, fetchAgentZookNumber, pollAgentCommands, sendAgentHeartbeat } from "./agentClient";
+import { synchronizeZookNumber } from "./zookSettings";
 import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -28,6 +29,59 @@ const recoveredDevice: ManagedDevice = {
 };
 
 describe("agent registration recovery", () => {
+  it("edits running Agent metadata through owned HTTP without re-registering or changing auth identity", async () => {
+    const server=createApiServer([recoveredDevice]);
+    await new Promise<void>(resolve=>server.listen(0,"127.0.0.1",resolve));
+    const apiBaseUrl=`http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const identity={apiBaseUrl,deviceId:recoveredDevice.id,installId:"82220F6D"};
+    const save=(input:unknown)=>fetch(`${apiBaseUrl}/api/agent/device`,{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({...identity,...input as object})});
+    try {
+      expect((await save({businessNumber:"9876543210",storeName:"실행 중 수정",deviceName:"키오스크",installId:"wrong"})).status).toBe(400);
+      expect((await pollAgentCommands(identity)).commands).toEqual([]);
+      const input={businessNumber:"9876543210",storeName:"실행 중 수정",deviceName:"키오스크",notes:"do not change",ownerUid:"attacker"};
+      const response=await save(input); expect(response.status).toBe(200);
+      expect((await response.json()).device).toMatchObject({id:recoveredDevice.id,deviceNumber:recoveredDevice.deviceNumber,businessNumber:"987-65-43210",storeName:"실행 중 수정",deviceName:"키오스크"});
+      expect((await pollAgentCommands(identity)).commands.map(c=>c.action)).toEqual(["sync-business-number"]);
+      const config={businessNumber:recoveredDevice.businessNumber,registeredDeviceId:recoveredDevice.id,installId:identity.installId};
+      const write=vi.fn(async()=>{});
+      await synchronizeAgentBusinessNumber(config,()=>fetchAgentBusinessNumber(identity),write);
+      expect(config).toMatchObject({registeredDeviceId:recoveredDevice.id,businessNumber:"987-65-43210",authBusinessNumber:"123-45-67890"});
+      await save(input);expect((await pollAgentCommands(identity)).commands).toEqual([]);
+      expect((await save({...input,businessNumber:"invalid"})).status).toBe(400);
+      const loaded=await fetch(`${apiBaseUrl}/api/agent/device`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(identity)});
+      const device=(await loaded.json()).device;
+      expect(device.businessNumber).toBe("987-65-43210"); expect(device.notes).not.toBe("do not change");
+      expect(device).not.toHaveProperty("ownerUid");
+    } finally {server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));}
+  });
+  it("delivers the latest ZOOK number over the real local HTTP command/owned-device/heartbeat path", async () => {
+    const server = createApiServer([recoveredDevice]);
+    await new Promise<void>(resolve => server.listen(0,"127.0.0.1",resolve));
+    const apiBaseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const identity = {apiBaseUrl,deviceId:recoveredDevice.id,installId:"82220F6D"};
+    const save = (zookNumber: string) => fetch(`${apiBaseUrl}/api/devices/${encodeURIComponent(recoveredDevice.id)}`,{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({zookNumber})});
+    let applied = "";
+    const apply = vi.fn(async number=>{applied=number;});
+    try {
+      expect((await save("00123456")).status).toBe(200);
+      expect((await pollAgentCommands(identity)).commands.map(c=>c.action)).toEqual(["configure-zook"]);
+      expect((await save("00876543")).status).toBe(200);
+      const report = async (zookResult: {appliedNumber?:string;error?:string}) => {
+        const result = await sendAgentHeartbeat({...identity,zookResult});
+        expect(result.device).toMatchObject({id:recoveredDevice.id,businessNumber:recoveredDevice.businessNumber,zookAppliedNumber:"00876543"});
+      };
+      const deps = {load:()=>fetchAgentZookNumber(identity),readApplied:async()=>applied,apply,report};
+      expect(await synchronizeZookNumber(deps)).toBe(true);
+      expect(apply).toHaveBeenCalledWith("00876543");
+      await synchronizeZookNumber(deps);
+      expect(apply).toHaveBeenCalledTimes(1);
+      await expect(fetchAgentZookNumber({...identity,installId:"another-pc"})).rejects.toThrow();
+      await pollAgentCommands(identity);
+      await save("00876543");
+      expect((await pollAgentCommands(identity)).commands).toEqual([]);
+      expect((await save("invalid")).status).toBe(404);
+    } finally { server.closeAllConnections(); await new Promise<void>(resolve=>server.close(()=>resolve())); }
+  });
   it("propagates a real local Viewer edit through the owned command queue into persisted Agent config", async () => {
     const server = createApiServer([recoveredDevice]);
     await new Promise<void>(resolve => server.listen(0,"127.0.0.1",resolve));

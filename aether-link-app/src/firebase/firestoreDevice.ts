@@ -11,6 +11,7 @@ import {
   DEVICE_NOTES_MAX_LENGTH,
   sanitizeDeviceOperationalMetadataText,
   sanitizeDeviceTags,
+  initialAgentMetadata,
 } from "../domain/agentRegistry";
 import {
   buildAgentDeviceNumber,
@@ -20,6 +21,12 @@ import {
 } from "./firebaseIdentity";
 
 export interface FirestoreDeviceDocument {
+  accessPublicKey?: unknown;
+  accessLocked?: unknown;
+  accessLockVersion?: unknown;
+  zookNumber?: unknown;
+  zookAppliedNumber?: unknown;
+  zookError?: unknown;
   selectedRolloutVersion?: unknown;
   rollbackSupportVersion?: unknown;
   presenceMode?: "manual";
@@ -31,6 +38,7 @@ export interface FirestoreDeviceDocument {
   deviceName: string;
   deviceNumber: string;
   lastSeenAt: string;
+  firstRegisteredAt?: unknown;
   ownerUid?: string;
   status: DeviceStatus;
   storeName: string;
@@ -60,6 +68,9 @@ export interface FirestoreDeviceDocument {
 }
 
 interface BuildFirestoreDeviceInput {
+  storeName?: string;
+  deviceName?: string;
+  notes?: string;
   businessNumber: string;
   desktopName?: string;
   installId: string;
@@ -71,19 +82,22 @@ interface BuildFirestoreDeviceInput {
 }
 
 export function buildFirestoreDevice(input: BuildFirestoreDeviceInput): ManagedDevice & { ownerUid: string } {
+  const metadata = initialAgentMetadata(input);
   const businessNumber = formatBusinessNumber(input.businessNumber);
   const deviceNumber = buildAgentDeviceNumber(input.installId);
   const device: ManagedDevice & { ownerUid: string } = {
     id: buildFirebaseDeviceId(businessNumber, input.installId),
     businessNumber,
-    storeName: DEFAULT_STORE_NAME,
+    storeName: metadata.storeName,
     deviceNumber,
-    deviceName: DEFAULT_DEVICE_TYPE,
+    deviceName: metadata.deviceName,
+    notes: metadata.notes,
     desktopName: input.desktopName?.trim().slice(0, 255)
       || buildDesktopName(businessNumber, input.installId),
     status: "online",
     lastSeenAt: input.nowIso,
-    storeNameSource: "default",
+    firstRegisteredAt: input.nowIso,
+    storeNameSource: metadata.storeName === DEFAULT_STORE_NAME ? "default" : "user",
     ownerUid: input.ownerUid,
     platform: normalizeDevicePlatform(input.platform),
   };
@@ -105,8 +119,19 @@ export function mergeFirstRunDeviceDocument(
   if (!existing) {
     return merged;
   }
+  // Re-registration is not a new installation; legacy records stay undated.
+  const firstRegisteredAt = coerceOptionalTimestamp(existing.firstRegisteredAt);
+  if (firstRegisteredAt) merged.firstRegisteredAt = firstRegisteredAt;
+  else delete merged.firstRegisteredAt;
+  for (const key of ["zookNumber", "zookAppliedNumber"] as const) {
+    if (typeof existing[key] === "string" && /^([0-9]{8})?$/.test(existing[key])) merged[key] = existing[key];
+  }
+  if (typeof existing.zookError === "string") merged.zookError = existing.zookError.slice(0, 500);
   if (existing.ownerUid === device.ownerUid && typeof existing.businessNumber === "string") {
     merged.businessNumber = existing.businessNumber;
+    if (typeof existing.accessLocked === "boolean") merged.accessLocked = existing.accessLocked;
+    if (typeof existing.accessLockVersion === "string") merged.accessLockVersion = existing.accessLockVersion;
+    if (typeof existing.accessPublicKey === "string") merged.accessPublicKey = existing.accessPublicKey;
   }
   if (typeof existing.desktopNameOverride === "string" && existing.desktopNameOverride.trim()) {
     merged.desktopNameOverride = existing.desktopNameOverride.trim().slice(0, 255);
@@ -173,11 +198,19 @@ export function mapFirestoreDevice(id: string, data: Partial<FirestoreDeviceDocu
     platform: normalizeDevicePlatform(data.platform),
   };
   assignIfDefined(device, "storeNameSource", sanitizeOptionalString(data.storeNameSource));
+  if (typeof data.accessPublicKey === "string" && data.accessPublicKey.length >= 300 && data.accessPublicKey.length <= 800) device.accessPublicKey = data.accessPublicKey;
+  if (typeof data.accessLocked === "boolean") device.accessLocked = data.accessLocked;
+  if (typeof data.accessLockVersion === "string" && data.accessLockVersion.length <= 64) device.accessLockVersion = data.accessLockVersion;
+  assignIfDefined(device, "firstRegisteredAt", coerceOptionalTimestamp(data.firstRegisteredAt));
   assignIfDefined(device, "desktopNameOverride", sanitizeOptionalString(data.desktopNameOverride));
   assignIfDefined(device, "connectionCode", sanitizeOptionalString(data.connectionCode));
   assignIfDefined(device, "presenceMode", data.presenceMode === "manual" ? "manual" : undefined);
   assignIfDefined(device, "heartbeatRequestId", sanitizeOptionalString(data.heartbeatRequestId));
   assignIfDefined(device, "version", sanitizeOptionalString(data.version));
+  for (const key of ["zookNumber", "zookAppliedNumber"] as const) {
+    if (typeof data[key] === "string" && /^([0-9]{8})?$/.test(data[key])) device[key] = data[key];
+  }
+  assignIfDefined(device, "zookError", sanitizeOptionalString(data.zookError, 500));
   assignIfDefined(
     device,
     "protocolVersion",

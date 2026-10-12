@@ -25,6 +25,12 @@ export interface AgentUpdateTelemetry {
 }
 
 export interface ManagedDevice {
+  accessPublicKey?: string;
+  accessLocked?: boolean;
+  accessLockVersion?: string;
+  zookNumber?: string;
+  zookAppliedNumber?: string;
+  zookError?: string;
   selectedRolloutVersion?: string;
   rollbackSupportVersion?: string;
   presenceMode?: "manual";
@@ -40,6 +46,7 @@ export interface ManagedDevice {
   platform?: DevicePlatform;
   status: DeviceStatus;
   lastSeenAt: string;
+  firstRegisteredAt?: string;
   connectionCode?: string;
   version?: string;
   protocolVersion?: number;
@@ -110,6 +117,9 @@ export interface AgentConnectionInput {
 }
 
 export interface AgentFirstRunInput {
+  storeName?: string;
+  deviceName?: string;
+  notes?: string;
   businessNumber: string;
   password: string;
   installId: string;
@@ -121,6 +131,9 @@ export interface AgentFirstRunInput {
 }
 
 export interface AgentHeartbeatInput {
+  accessPublicKey?: string | null;
+  accessLockUnavailable?: boolean;
+  zookResult?: { appliedNumber?: string; error?: string };
   presenceMode?: "manual";
   heartbeatRequestId?: string;
   deviceId: string;
@@ -152,6 +165,7 @@ export interface AgentCommandPollInput {
 }
 
 export interface DeviceMetadataUpdateInput {
+  zookNumber?: string;
   deviceId: string;
   businessNumber?: string;
   storeName?: string;

@@ -67,6 +67,7 @@ export async function executeAgentCommand(
   runtime: AgentCommandRuntime,
 ): Promise<AgentCommandExecutionResult> {
   const normalizedAction = action.trim();
+  if ((normalizedAction === "system edge-download" || normalizedAction === "system asp-login") && !runtime.getActiveSessionId()) return "ignored";
   if (source === "webrtc" && !isAllowedWebRtcAgentControlAction(normalizedAction)) {
     runtime.warn?.(`[WebRTC] Rejected non-control Agent command: ${normalizedAction || "<empty>"}`);
     return "rejected";

@@ -34,12 +34,32 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/sessions/$(sessionId));
     }
 
+    function deviceAccessLocked(deviceId) {
+      return exists(/databases/$(database)/documents/deviceAccessLocks/$(deviceId))
+        && get(/databases/$(database)/documents/deviceAccessLocks/$(deviceId)).data.enabled == true;
+    }
+
+    function protectedSessionAllows(deviceId, session) {
+      return !deviceAccessLocked(deviceId)
+        || (session.get("accessLockVersion", "") == get(/databases/$(database)/documents/deviceAccessLocks/$(deviceId)).data.version
+          && session.state == "connected"
+          && session.get("accessRequestId", "") is string
+          && exists(/databases/$(database)/documents/deviceAccessRequests/$(session.get("accessRequestId", "")))
+          && get(/databases/$(database)/documents/deviceAccessRequests/$(session.get("accessRequestId", ""))).data.state == "approved"
+          && get(/databases/$(database)/documents/deviceAccessRequests/$(session.get("accessRequestId", ""))).data.operation == "connect"
+          && get(/databases/$(database)/documents/deviceAccessRequests/$(session.get("accessRequestId", ""))).data.ownerUid == session.ownerUid
+          && get(/databases/$(database)/documents/deviceAccessRequests/$(session.get("accessRequestId", ""))).data.deviceId == deviceId
+          && get(/databases/$(database)/documents/deviceAccessRequests/$(session.get("accessRequestId", ""))).data.sessionId == session.id
+          && get(/databases/$(database)/documents/deviceAccessRequests/$(session.get("accessRequestId", ""))).data.approvedVersion == session.accessLockVersion);
+    }
+
     function ownsSession(sessionId) {
       return signedIn() && sessionDoc(sessionId).data.ownerUid == request.auth.uid;
     }
 
     function canAccessSession(sessionId) {
       return signedIn()
+        && protectedSessionAllows(sessionDoc(sessionId).data.deviceId, sessionDoc(sessionId).data)
         && (
           sessionDoc(sessionId).data.ownerUid == request.auth.uid
           || (
@@ -70,6 +90,9 @@ service cloud.firestore {
         && deviceDoc(request.resource.data.deviceId).data.status == "online"
         && (deviceDoc(request.resource.data.deviceId).data.get("presenceMode", "periodic") == "manual"
           || hasFreshDeviceHeartbeat(request.resource.data.deviceId))
+        && protectedSessionAllows(request.resource.data.deviceId, request.resource.data)
+        && (!deviceAccessLocked(request.resource.data.deviceId)
+          || get(/databases/$(database)/documents/deviceAccessRequests/$(request.resource.data.accessRequestId)).data.createdAt >= request.time - duration.value(120, "s"))
         && deviceDoc(request.resource.data.deviceId).data.ownerUid is string;
     }
 
@@ -95,6 +118,7 @@ service cloud.firestore {
       return ownsDevice(deviceId)
         && request.resource.data.ownerUid == resource.data.ownerUid
         && request.resource.data.businessNumber == resource.data.businessNumber
+        && request.resource.data.get("zookNumber", null) == resource.data.get("zookNumber", null)
         && request.resource.data.deviceNumber == resource.data.deviceNumber
         && request.resource.data.installId == resource.data.installId
         && request.resource.data.get("updateRing", null) == resource.data.get("updateRing", null)
@@ -105,8 +129,24 @@ service cloud.firestore {
         );
     }
 
+    function isOwnDeviceMetadataUpdate(deviceId) {
+      return ownsDevice(deviceId)
+        && request.resource.data.businessNumber is string
+        && request.resource.data.businessNumber.matches('^[0-9]{3}-[0-9]{2}-[0-9]{5}$')
+        && request.resource.data.storeName is string
+        && request.resource.data.storeName.size() > 0 && request.resource.data.storeName.size() <= 255
+        && request.resource.data.deviceName is string
+        && request.resource.data.deviceName.size() > 0 && request.resource.data.deviceName.size() <= 100
+        && request.resource.data.storeNameSource in ["user", "default"]
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "businessNumber", "storeName", "storeNameSource", "deviceName", "updatedAt"
+        ]);
+    }
+
     function isCentralViewerDeviceUpdate() {
       return isCentralViewer()
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(["zookNumber"])
+          || (request.resource.data.zookNumber is string && request.resource.data.zookNumber.matches('^([0-9]{8})?$')))
         && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(["contactPhone"])
           || !("contactPhone" in request.resource.data)
           || (request.resource.data.contactPhone is string && request.resource.data.contactPhone.size() <= 40))
@@ -118,6 +158,8 @@ service cloud.firestore {
         && request.resource.data.installId == resource.data.installId
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           "businessNumber",
+          "zookNumber",
+          "zookError",
           "storeName",
           "storeNameSource",
           "deviceName",
@@ -139,6 +181,12 @@ service cloud.firestore {
     function isOwnDeviceCommandCreate(deviceId) {
       return (isCentralViewer() || ownsDevice(deviceId))
         && request.resource.data.action is string
+        && (ownsDevice(deviceId) || !deviceAccessLocked(deviceId)
+          || request.resource.data.action.matches('^(device-access [a-f0-9-]{36}|refresh-status [a-f0-9-]{36}|request-update .*|request-rollback .*|wake-on-lan .*|configure-zook|sync-business-number|security-code [^ ]+ [0-9]{3} [0-9]{3})$')
+          || (request.resource.data.get("sessionId", "") is string
+            && getAfter(/databases/$(database)/documents/sessions/$(request.resource.data.get("sessionId", ""))).data.deviceId == deviceId
+            && getAfter(/databases/$(database)/documents/sessions/$(request.resource.data.get("sessionId", ""))).data.ownerUid == request.auth.uid
+            && protectedSessionAllows(deviceId, getAfter(/databases/$(database)/documents/sessions/$(request.resource.data.get("sessionId", ""))).data)))
         && request.resource.data.state == "pending";
     }
 
@@ -228,8 +276,8 @@ service cloud.firestore {
         ));
       allow list: if isCentralViewer() || (signedIn() && resource.data.ownerUid == request.auth.uid);
       allow create: if isOwnDeviceCreate();
-      allow update: if isCentralViewerDeviceUpdate() || isOwnDeviceUpdate(deviceId);
-      allow delete: if isCentralViewer();
+      allow update: if isCentralViewerDeviceUpdate() || isOwnDeviceUpdate(deviceId) || isOwnDeviceMetadataUpdate(deviceId);
+      allow delete: if isCentralViewer() && !deviceAccessLocked(deviceId);
 
       match /commands/{commandId} {
         allow create: if isOwnDeviceCommandCreate(deviceId);
@@ -237,6 +285,38 @@ service cloud.firestore {
         allow update: if ownsDevice(deviceId);
         allow delete: if isCentralViewer();
       }
+    }
+
+    match /deviceAccessLocks/{deviceId} {
+      allow read: if ownsDevice(deviceId);
+      allow create, update: if ownsDevice(deviceId)
+        && request.resource.data.keys().hasOnly(["enabled", "version", "updatedAt"])
+        && request.resource.data.enabled is bool
+        && request.resource.data.version is string
+        && request.resource.data.version.size() == 36
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if false;
+    }
+
+    match /deviceAccessRequests/{requestId} {
+      allow create: if isCentralViewer()
+        && request.resource.data.keys().hasOnly(["id", "deviceId", "ownerUid", "operation", "sessionId", "lockVersion", "key", "iv", "ciphertext", "state", "createdAt"])
+        && request.resource.data.id == requestId && requestId.matches('^[a-f0-9-]{36}$')
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.deviceId is string
+        && request.resource.data.operation in ["connect", "set", "disable", "reset"]
+        && request.resource.data.sessionId is string && request.resource.data.sessionId.size() <= 200
+        && request.resource.data.lockVersion is string && request.resource.data.lockVersion.size() <= 64
+        && request.resource.data.key is string && request.resource.data.key.size() <= 400
+        && request.resource.data.iv is string && request.resource.data.iv.size() <= 32
+        && request.resource.data.ciphertext is string && request.resource.data.ciphertext.size() <= 2048
+        && request.resource.data.state == "pending" && request.resource.data.createdAt == request.time;
+      allow read: if signedIn() && (resource.data.ownerUid == request.auth.uid || ownsDevice(resource.data.deviceId));
+      allow update: if ownsDevice(resource.data.deviceId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["state", "approvedVersion", "approvalSignature", "error", "updatedAt"])
+        && resource.data.state == "pending" && request.resource.data.state in ["approved", "denied"]
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if signedIn() && resource.data.ownerUid == request.auth.uid && resource.data.state == "pending";
     }
 
     match /configuration/{configId} {

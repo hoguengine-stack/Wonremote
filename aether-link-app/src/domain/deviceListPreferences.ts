@@ -1,4 +1,5 @@
-import type { DeviceGroup } from "./types";
+import type { DeviceGroup, ManagedDevice } from "./types";
+import { readViewerGroups, type ViewerGroup } from "./viewerGroups";
 
 export const VIEWER_LIST_STORAGE_KEY = "wonremote-viewer-list-v1";
 export const GROUP_DRAG_TYPE = "application/x-wonremote-group";
@@ -7,6 +8,8 @@ export interface DeviceListPreferences {
   groupOrder: string[];
   knownDeviceIds: string[] | null;
   newDeviceIds: string[];
+  baselineAt?: string;
+  customGroups?: ViewerGroup[];
 }
 
 export function readDeviceListPreferences(value: string | null): DeviceListPreferences {
@@ -15,27 +18,36 @@ export function readDeviceListPreferences(value: string | null): DeviceListPrefe
     const strings = (items: unknown): string[] => Array.isArray(items)
       ? [...new Set(items.filter((item): item is string => typeof item === "string" && item.length > 0))]
       : [];
+    const baselineAt = typeof parsed?.baselineAt === "string" && Number.isFinite(Date.parse(parsed.baselineAt))
+      ? parsed.baselineAt : undefined;
     return {
       groupOrder: strings(parsed?.groupOrder),
-      knownDeviceIds: Array.isArray(parsed?.knownDeviceIds) ? strings(parsed.knownDeviceIds) : null,
-      newDeviceIds: strings(parsed?.newDeviceIds),
+      knownDeviceIds: baselineAt && Array.isArray(parsed?.knownDeviceIds) ? strings(parsed.knownDeviceIds) : null,
+      newDeviceIds: baselineAt ? strings(parsed?.newDeviceIds) : [],
+      ...(baselineAt ? { baselineAt } : {}),
+      ...(Array.isArray(parsed?.customGroups) ? {customGroups:readViewerGroups(parsed.customGroups)} : {}),
     };
   } catch {
     return { groupOrder: [], knownDeviceIds: null, newDeviceIds: [] };
   }
 }
 
-export function discoverNewDevices(preferences: DeviceListPreferences, deviceIds: string[]): DeviceListPreferences {
+export function discoverNewDevices(preferences: DeviceListPreferences, devices: ManagedDevice[], nowIso = new Date().toISOString()): DeviceListPreferences {
+  const deviceIds = devices.map(device => device.id);
   if (preferences.knownDeviceIds === null) {
-    return { ...preferences, knownDeviceIds: [...new Set(deviceIds)] };
+    return { ...preferences, knownDeviceIds: [...new Set(deviceIds)], newDeviceIds: [], baselineAt: nowIso };
   }
   const known = new Set(preferences.knownDeviceIds);
   const arrivals = deviceIds.filter((id) => !known.has(id));
   if (!arrivals.length) return preferences;
+  const newIds = devices.filter(device => {
+    const registeredAt = Date.parse(device.firstRegisteredAt ?? "");
+    return !known.has(device.id) && registeredAt > Date.parse(preferences.baselineAt ?? "") && registeredAt <= Date.parse(nowIso);
+  }).map(device => device.id);
   return {
     ...preferences,
     knownDeviceIds: [...known, ...new Set(arrivals)],
-    newDeviceIds: [...new Set([...preferences.newDeviceIds, ...arrivals])],
+    newDeviceIds: [...new Set([...preferences.newDeviceIds, ...newIds])],
   };
 }
 
@@ -44,9 +56,11 @@ export function acknowledgeNewDevice(preferences: DeviceListPreferences, deviceI
   return { ...preferences, newDeviceIds: preferences.newDeviceIds.filter((id) => id !== deviceId) };
 }
 
-export function orderStoreGroups(groups: DeviceGroup[], order: string[]): DeviceGroup[] {
+export function orderStoreGroups(groups: DeviceGroup[], order: string[], newDeviceIds: string[] = []): DeviceGroup[] {
   const ranks = new Map(order.map((name, index) => [name, index]));
-  return [...groups].sort((left, right) => (ranks.get(left.storeName) ?? Infinity) - (ranks.get(right.storeName) ?? Infinity));
+  const newIds = new Set(newDeviceIds);
+  const hasNew = (group: DeviceGroup) => group.devices.some(device => newIds.has(device.id));
+  return [...groups].sort((left, right) => Number(hasNew(right)) - Number(hasNew(left)) || (ranks.get(left.storeName) ?? Infinity) - (ranks.get(right.storeName) ?? Infinity));
 }
 
 export function moveStoreGroup(names: string[], source: string, target: string, after: boolean): string[] {

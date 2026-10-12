@@ -1,3 +1,6 @@
+import { markConnectionTiming } from "../domain/connectionTiming";
+import { normalizeZookNumber } from "../domain/zookNumber";
+import { DEVICE_ACCESS_TTL_MS, encryptDeviceAccessRequest, type DeviceAccessCredentials, type DeviceAccessOperation } from "../domain/deviceAccessLock";
 import {
   browserLocalPersistence,
   createUserWithEmailAndPassword,
@@ -12,6 +15,7 @@ import {
 import {
   collection,
   deleteField,
+  deleteDoc,
   doc,
   getDoc,
   getDocFromServer,
@@ -105,6 +109,8 @@ import { getWonRemoteFirebaseServices } from "./firebaseServices";
 import { throwExplainedFirebaseAuthError } from "./firebaseError";
 import { safeAddDoc, safeBatchSet, safeBatchUpdate, safeSetDoc, safeUpdateDoc } from "./firestoreWrite";
 import { normalizeBusinessNumber } from "../domain/agentRegistry";
+import { normalizeAgentMetadataUpdate } from "../domain/agentRegistry";
+import type { AgentLocalConfig } from "../agent/agentBootstrap";
 import type { UpdateFleetRollout } from "../domain/updateFleetPolicy";
 import { parseRolloutSelection } from "../domain/updateFleetPolicy";
 import { isHigherVersion } from "../domain/versioning";
@@ -427,6 +433,24 @@ export function subscribeFirebaseConnectionHistory(
   );
 }
 
+export async function fetchFirebaseAgentDevice(config: AgentLocalConfig, env: ViewerFirebaseEnv = import.meta.env): Promise<ManagedDevice> {
+  if (!config.registeredDeviceId?.trim() || !config.installId?.trim()) throw new Error("등록된 Agent 정보가 없습니다.");
+  const services = getViewerFirebaseServices(env);
+  const business = normalizeBusinessNumber(config.authBusinessNumber ?? config.businessNumber ?? "");
+  const credential = await signInWithEmailAndPassword(services.auth, buildAgentAuthEmail(business), buildAgentAuthPassword(business, "1234"));
+  const snapshot = await getDocFromServer(doc(services.db, "devices", config.registeredDeviceId));
+  if (!snapshot.exists()) throw new Error("등록된 장비를 찾지 못했습니다.");
+  const data = snapshot.data();
+  if (data.ownerUid !== credential.user.uid || data.installId !== config.installId || data.deletedAt) throw new Error("이 Agent의 장비 정보만 수정할 수 있습니다.");
+  return mapFirestoreDevice(snapshot.id, data);
+}
+
+export async function updateFirebaseAgentDevice(config: AgentLocalConfig, input: Pick<ManagedDevice, "businessNumber" | "storeName" | "deviceName">, env: ViewerFirebaseEnv = import.meta.env): Promise<ManagedDevice> {
+  const metadata = normalizeAgentMetadataUpdate(input);
+  await fetchFirebaseAgentDevice(config, env);
+  return updateFirebaseDeviceMetadata(config.registeredDeviceId!, metadata, env);
+}
+
 export async function updateFirebaseDeviceMetadata(
   deviceId: string,
   input: Omit<DeviceMetadataUpdateInput, "deviceId">,
@@ -445,6 +469,9 @@ export async function updateFirebaseDeviceMetadata(
   const businessNumber = typeof input.businessNumber === "string" ? normalizeBusinessNumber(input.businessNumber) : currentDevice.businessNumber;
   const businessNumberChanged = businessNumber !== currentDevice.businessNumber;
   if (businessNumberChanged) update.businessNumber = businessNumber;
+  const zookNumber = input.zookNumber === undefined ? undefined : normalizeZookNumber(input.zookNumber);
+  const zookChanged = zookNumber !== undefined && zookNumber !== (currentDevice.zookNumber ?? currentDevice.zookAppliedNumber ?? "");
+  if (zookChanged) { update.zookNumber = zookNumber; update.zookError = deleteField(); }
 
   if (typeof input.storeName === "string" && input.storeName.trim()) {
     const storeName = normalizeStoreNameForDisplay(input.storeName, currentDevice.businessNumber);
@@ -479,11 +506,14 @@ export async function updateFirebaseDeviceMetadata(
     update.notes = sanitizeDeviceOperationalMetadataText(input.notes, DEVICE_NOTES_MAX_LENGTH) ?? deleteField();
   }
 
-  if (businessNumberChanged) {
+  if (businessNumberChanged || zookChanged) {
     const batch = writeBatch(services.db);
     safeBatchUpdate(batch, deviceRef, update);
-    safeBatchSet(batch, doc(collection(services.db, "devices", deviceId, "commands")), {
+    if (businessNumberChanged) safeBatchSet(batch, doc(collection(services.db, "devices", deviceId, "commands")), {
       action: "sync-business-number", createdAt: serverTimestamp(), state: "pending",
+    });
+    if (zookChanged && zookNumber) safeBatchSet(batch, doc(collection(services.db, "devices", deviceId, "commands")), {
+      action: "configure-zook", createdAt: serverTimestamp(), state: "pending",
     });
     await batch.commit();
   } else await safeUpdateDoc(deviceRef, update);
@@ -569,6 +599,7 @@ export async function registerFirstRunAgentWithFirebase(
   }
 
   const device = buildFirestoreDevice({
+    storeName: input.storeName, deviceName: input.deviceName, notes: input.notes,
     businessNumber: input.businessNumber,
     desktopName: input.desktopName,
     installId: input.installId,
@@ -610,6 +641,7 @@ export async function openFirebaseSession(
   deviceId: string,
   env: ViewerFirebaseEnv = import.meta.env,
   refreshPresence = false,
+  password?: string,
 ): Promise<{ session: RemoteSession; inputLog: string[] }> {
   if (refreshPresence) {
     const services = getViewerFirebaseServices(env);
@@ -623,10 +655,54 @@ export async function openFirebaseSession(
       (target, action) => enqueueFirebaseDeviceCommandDirect(target.id, action, env));
     if (refreshed[0]?.status !== "online") throw new Error("원격 PC가 응답하지 않습니다. 다시 시도하세요.");
   }
+  if (password !== undefined) return openFirebaseSessionDirect(deviceId, env, password);
   return callViewerFunctionWithFirestoreFallback<
     { deviceId: string },
     { session: RemoteSession; inputLog: string[] }
   >("openSession", { deviceId }, env, () => openFirebaseSessionDirect(deviceId, env));
+}
+
+export async function requestFirebaseDeviceAccess(
+  deviceId: string, operation: DeviceAccessOperation, credentials: DeviceAccessCredentials,
+  sessionId = "", signal?: AbortSignal, env: ViewerFirebaseEnv = import.meta.env,
+): Promise<{requestId: string; version: string}> {
+  const {db, auth} = getViewerFirebaseServices(env);
+  const ownerUid = requireCurrentUserId(auth.currentUser?.uid);
+  const device = await getDocFromServer(doc(db, "devices", deviceId));
+  const data = device.data();
+  if (data?.accessLockUnavailable === true) throw new Error("원격 에이전트의 잠금 저장소를 사용할 수 없습니다. 에이전트 재시작 또는 설정 복구가 필요합니다.");
+  if (typeof data?.accessPublicKey !== "string") throw new Error("이 장비의 에이전트를 최신 버전으로 업데이트해야 접속 잠금을 사용할 수 있습니다.");
+  const id = crypto.randomUUID();
+  const encrypted = await encryptDeviceAccessRequest({id, deviceId, ownerUid, operation, sessionId, lockVersion:data.accessLockVersion ?? ""}, data.accessPublicKey, credentials);
+  if (signal?.aborted) throw new Error("접속 잠금 요청이 취소되었습니다.");
+  const requestRef = doc(db, "deviceAccessRequests", id);
+  const batch = writeBatch(db);
+  safeBatchSet(batch, requestRef, {...encrypted, state:"pending", createdAt:serverTimestamp()});
+  safeBatchSet(batch, doc(collection(db, "devices", deviceId, "commands")), {action:`device-access ${id}`, createdAt:serverTimestamp(), state:"pending"});
+  await batch.commit();
+  return new Promise((resolve, reject) => {
+    let unsubscribe: Unsubscribe = () => undefined;
+    let finished = false;
+    const finish = (error?: Error, version?: string) => {
+      if (finished) return;
+      finished = true;
+      unsubscribe(); clearTimeout(timeout); signal?.removeEventListener("abort", abort);
+      if (error) reject(error); else resolve({requestId:id, version:version!});
+    };
+    const cancel = (message: string) => { void deleteDoc(requestRef).catch(() => undefined); finish(new Error(message)); };
+    const abort = () => cancel("접속 잠금 요청이 취소되었습니다.");
+    const timeout = setTimeout(() => cancel("원격 에이전트가 잠금 요청에 응답하지 않습니다."), DEVICE_ACCESS_TTL_MS);
+    signal?.addEventListener("abort", abort, {once:true});
+    try {
+      unsubscribe = onSnapshot(requestRef, snapshot => {
+        const response = snapshot.data();
+        if (response?.state === "approved" && typeof response.approvedVersion === "string") finish(undefined, response.approvedVersion);
+        if (response?.state === "denied") finish(new Error(typeof response.error === "string" ? response.error : "잠금 요청이 거부되었습니다."));
+      }, error => finish(error));
+      if (finished) unsubscribe();
+    } catch (error) { finish(error instanceof Error ? error : new Error("잠금 응답을 확인하지 못했습니다.")); }
+    if (signal?.aborted) abort();
+  });
 }
 
 export async function wakeFirebaseDevice(
@@ -651,9 +727,10 @@ export async function requestFirebaseSecureSession(
 }
 
 export async function connectFirebaseSecureSession(
-  input: { challengeId: string; code: string; deviceId: string },
+  input: { challengeId: string; code: string; deviceId: string; password?: string },
   env: ViewerFirebaseEnv = import.meta.env,
 ): Promise<{ session: RemoteSession; inputLog: string[] }> {
+  if (input.password !== undefined) return connectFirebaseSecureSessionDirect(input, env);
   return callViewerFunctionWithFirestoreFallback<
     { challengeId: string; code: string; deviceId: string },
     { session: RemoteSession; inputLog: string[] }
@@ -1592,13 +1669,22 @@ export function resolveViewerFunctionMode(env: Partial<Record<string, string | u
 async function openFirebaseSessionDirect(
   deviceId: string,
   env: ViewerFirebaseEnv,
+  password?: string,
 ): Promise<{ session: RemoteSession; inputLog: string[] }> {
   const services = getViewerFirebaseServices(env);
   const userId = requireCurrentUserId(services.auth.currentUser?.uid);
-  await requireFirebaseOnlineCompatibleDeviceDirect(deviceId, env);
+  const device = await requireFirebaseOnlineCompatibleDeviceDirect(deviceId, env);
+  markConnectionTiming(deviceId, "device-validated");
   const session = buildConnectedSession(deviceId);
+  let access: {accessRequestId: string; accessLockVersion: string} | undefined;
+  if (device.accessLocked) {
+    if (password === undefined) throw new Error("잠금 비밀번호를 입력해야 이 장비에 접속할 수 있습니다.");
+    const authorization = await requestFirebaseDeviceAccess(deviceId, "connect", {password}, session.id, undefined, env);
+    access = {accessRequestId:authorization.requestId, accessLockVersion:authorization.version};
+  }
   const batch = writeBatch(services.db);
   safeBatchSet(batch, doc(services.db, "sessions", session.id), {
+    ...access,
     ...session,
     ownerUid: userId,
     createdAt: serverTimestamp(),
@@ -1611,6 +1697,7 @@ async function openFirebaseSessionDirect(
     sessionId: session.id,
   });
   await batch.commit();
+  markConnectionTiming(deviceId, "command-dispatched");
   return {
     inputLog: [`${new Date().toLocaleTimeString()} start-stream queued via Firestore fallback`],
     session,
@@ -1698,7 +1785,7 @@ async function requestFirebaseSecureSessionDirect(
 }
 
 async function connectFirebaseSecureSessionDirect(
-  input: { challengeId: string; code: string; deviceId: string },
+  input: { challengeId: string; code: string; deviceId: string; password?: string },
   env: ViewerFirebaseEnv,
 ): Promise<{ session: RemoteSession; inputLog: string[] }> {
   const services = getViewerFirebaseServices(env);
@@ -1735,7 +1822,7 @@ async function connectFirebaseSecureSessionDirect(
     updatedAt: serverTimestamp(),
     usedAt: serverTimestamp(),
   });
-  return openFirebaseSessionDirect(input.deviceId, env);
+  return openFirebaseSessionDirect(input.deviceId, env, input.password);
 }
 
 async function recordFirebaseInputDirect(

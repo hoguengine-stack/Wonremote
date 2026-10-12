@@ -27,6 +27,8 @@ export const SUPPORTED_SYSTEM_COMMANDS = [
   "logoff",
   "restart",
   "shutdown",
+  "edge-download",
+  "asp-login",
 ] as const;
 
 export type SupportedSystemCommand = (typeof SUPPORTED_SYSTEM_COMMANDS)[number];

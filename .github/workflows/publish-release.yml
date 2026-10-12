@@ -156,6 +156,21 @@ jobs:
       - name: Verify installer update E2E
         run: npm run test:update-e2e
 
+      - name: Verify encrypted device access and input lifecycle
+        run: npx vitest run --maxWorkers=1 src/agent/deviceAccessLock.test.ts src/firebase/deviceAccessLock.test.ts src/agent/agentSessionLifecycle.test.ts src/agent/agentCommandExecution.test.ts
+
+      - name: Verify password modal and remote toolbar in Chromium
+        run: |
+          npx playwright install chromium
+          npx vitest run src/viewerDeviceRefresh.test.ts -t 'device access lock modal|toolbar shortcuts keep|browser edition shortcuts also'
+
+      - name: Verify device access with actual Firestore rules
+        working-directory: .
+        run: npx --yes firebase-tools@14.22.0 emulators:exec --only firestore --project wonremote-a7fd3 "node aether-link-app/scripts/verify-firestore-rules.mjs"
+
+      - name: Verify fixed remote browser targets
+        run: cargo test --manifest-path ../aether-link-poc/Cargo.toml --target i686-pc-windows-msvc --bin wonremote-poc remote_browser_shortcuts_allow_only_fixed_targets
+
       - name: Build two x86 installers
         run: npm run release:exes
 

@@ -8,10 +8,20 @@ import {
   shouldDeferAgentUpdateForSession,
   shouldStartStreamForCommand,
   shouldStopActiveSession,
+  shouldCheckDeviceAccessSession,
   stopStreamTargetFromCommand,
 } from "./agentSessionLifecycle";
 
 describe("Agent session lifecycle commands", () => {
+  it("reuses authorization only for the same live session and unchanged lock version", () => {
+    const authorization = {id:"session-1",version:"lock-1"};
+    expect(shouldCheckDeviceAccessSession(null,"session-1",null,"lock-1")).toBe(true);
+    for (let restart=0;restart<100;restart++) expect(shouldCheckDeviceAccessSession("session-1","session-1",authorization,"lock-1")).toBe(false);
+    expect(shouldCheckDeviceAccessSession(null,"session-1",authorization,"lock-1")).toBe(true);
+    expect(shouldCheckDeviceAccessSession("session-1","session-2",authorization,"lock-1")).toBe(true);
+    expect(shouldCheckDeviceAccessSession("session-1","session-1",authorization,"lock-2")).toBe(true);
+    expect(shouldCheckDeviceAccessSession("session-1","session-1",{id:"session-1",version:null},null)).toBe(false);
+  });
   it("uses the explicit Firebase session ID from start-stream", () => {
     expect(
       sessionIdFromStartStreamCommand("start-stream firebase-session-2", {

@@ -22,6 +22,9 @@ import {
   fetchTiles,
   logoutAdmin,
   recordInput,
+  registerFirstRunAgent,
+  fetchRegisteredAgentDevice,
+  updateRegisteredAgentDevice,
   uploadFileChunk,
   uploadFileToStorage,
 } from "./viewerApi";
@@ -69,6 +72,8 @@ vi.mock("../firebase/viewerFirebase", () => ({
   openFirebaseSession: vi.fn(),
   recordFirebaseInput: vi.fn(),
   registerFirstRunAgentWithFirebase: vi.fn(),
+  fetchFirebaseAgentDevice: vi.fn(),
+  updateFirebaseAgentDevice: vi.fn(),
   requestFirebaseSecureSession: vi.fn(),
   sendFirebaseChatMessage: vi.fn(),
   sendFirebaseClipboardText: vi.fn(),
@@ -78,6 +83,28 @@ vi.mock("../firebase/viewerFirebase", () => ({
 }));
 
 describe("viewer API routing", () => {
+  it("running Agent edits route to its configured local server with only the allowed metadata", async () => {
+    mockState.firebaseEnabled=false;
+    const localFetch=vi.fn(async()=>({ok:true,json:async()=>({device:mockState.firebaseDevices[0]})}));
+    vi.stubGlobal("fetch",localFetch);
+    const config={apiUrl:"http://localhost:9999",registeredDeviceId:"device-1",installId:"same-install",businessNumber:"123-45-67890"};
+    await fetchRegisteredAgentDevice(config);
+    await updateRegisteredAgentDevice(config,{businessNumber:"9876543210",storeName:"매장",deviceName:"오더포스",ownerUid:"attacker"} as any);
+    expect(localFetch).toHaveBeenCalledTimes(2);
+    const calls=localFetch.mock.calls as unknown as [string,{method:string;body:string}][];
+    expect(calls[0][0]).toBe("http://localhost:9999/api/agent/device");
+    expect(calls.map(c=>c[1].method)).toEqual(["POST","PATCH"]);
+    expect(JSON.parse(calls[1][1].body)).toEqual({deviceId:"device-1",installId:"same-install",businessNumber:"987-65-43210",storeName:"매장",deviceName:"오더포스"});
+  });
+  it("includes initial metadata in one custom-server registration request", async () => {
+    mockState.firebaseEnabled=false;
+    const localFetch=vi.fn(async()=>({ok:true,json:async()=>({device:{id:"registered"},devices:[]})}));
+    vi.stubGlobal("fetch",localFetch);
+    await registerFirstRunAgent({apiUrl:"http://localhost:8787",businessNumber:"1234567890",password:"1234",installId:"new",storeName:"매장",deviceName:"오더포스",notes:"설치 메모"});
+    expect(localFetch).toHaveBeenCalledTimes(1);
+    const options=(localFetch.mock.calls[0] as unknown as [string,{body:string}])[1];
+    expect(JSON.parse(options.body)).toMatchObject({storeName:"매장",deviceName:"오더포스",notes:"설치 메모"});
+  });
   beforeEach(() => {
     mockState.firebaseEnabled = true;
     vi.clearAllMocks();

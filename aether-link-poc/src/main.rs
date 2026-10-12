@@ -5,13 +5,14 @@ mod secure_capture;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use capturer::{CaptureFrameStatus, DesktopCapturer, DxgiCapturer};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 use turbojpeg::{Compressor, Decompressor, Image, PixelFormat, Subsamp};
-use windows::Win32::Foundation::{CloseHandle, BOOL, E_ACCESSDENIED, HANDLE, LPARAM, RECT};
+use windows::Win32::Foundation::{CloseHandle, BOOL, E_ACCESSDENIED, HANDLE, HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
 };
@@ -19,7 +20,9 @@ use windows::Win32::Security::{
     GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TokenElevation,
     TokenIntegrityLevel, TOKEN_ELEVATION, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
 };
-use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+use windows::Win32::System::Threading::{
+    GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+};
 use windows::Win32::UI::Input::Ime::{
     ImmGetContext, ImmGetOpenStatus, ImmReleaseContext, ImmSetOpenStatus,
 };
@@ -31,7 +34,11 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL,
     MOUSEINPUT, VIRTUAL_KEY,
 };
-use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetForegroundWindow, GetSystemMetrics, GetWindowThreadProcessId, SetProcessDPIAware,
+    WindowFromPoint, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOWNORMAL,
+};
+use windows::Win32::UI::Shell::ShellExecuteW;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct BenchmarkReport {
@@ -1743,6 +1750,15 @@ fn inject_input(action: &str) -> std::result::Result<(), String> {
                 return Err("Usage: system <command>".to_string());
             }
             let spec = system_command_spec(parts[1])?;
+            if matches!(parts[1], "edge-download" | "asp-login") {
+                if secure_capture::active_input_desktop_is_secure()? || process_integrity(unsafe { GetCurrentProcess() }).is_none_or(|level| level >= 0x4000) {
+                    return Err("Remote browser shortcuts require the ordinary user's desktop.".to_string());
+                }
+                let url: Vec<u16> = spec.args[0].encode_utf16().chain(Some(0)).collect();
+                let result = unsafe { ShellExecuteW(HWND(0), windows::core::w!("open"), windows::core::PCWSTR(url.as_ptr()), None, None, SW_SHOWNORMAL) };
+                if result.0 <= 32 { return Err(format!("Remote default browser launch failed: {}", result.0)); }
+                return Ok(());
+            }
             let mut command = Command::new(spec.program);
             command
                 .args(spec.args)
@@ -1907,6 +1923,16 @@ struct SystemCommandSpec {
 
 fn system_command_spec(command: &str) -> std::result::Result<SystemCommandSpec, String> {
     match command {
+        "edge-download" => Ok(SystemCommandSpec {
+            program: "explorer.exe",
+            args: &["https://c2rsetup.officeapps.live.com/c2r/downloadEdge.aspx?platform=Default&source=EdgeStablePage&Channel=Stable&language=ko&Consent=0&brand=M100"],
+            run_as_invoker: true,
+        }),
+        "asp-login" => Ok(SystemCommandSpec {
+            program: "explorer.exe",
+            args: &["https://asp.firstpos.co.kr/login/login_form.do"],
+            run_as_invoker: true,
+        }),
         // These tools normally auto-elevate and then reject the medium-integrity Agent's
         // SendInput events through UIPI. RunAsInvoker keeps their viewing UI controllable;
         // operations that genuinely require elevation remain intentionally unavailable.
@@ -2193,6 +2219,10 @@ fn query_token_elevated(token: HANDLE) -> Option<bool> {
 }
 
 fn query_token_integrity_level(token: HANDLE) -> Option<String> {
+    query_token_integrity_rid(token).map(|rid| integrity_label_from_rid(rid).to_string())
+}
+
+fn query_token_integrity_rid(token: HANDLE) -> Option<u32> {
     let mut returned = 0_u32;
     let _ = unsafe { GetTokenInformation(token, TokenIntegrityLevel, None, 0, &mut returned) };
     if returned == 0 {
@@ -2231,7 +2261,7 @@ fn query_token_integrity_level(token: HANDLE) -> Option<String> {
         *rid_ptr
     };
 
-    Some(integrity_label_from_rid(rid).to_string())
+    Some(rid)
 }
 
 fn integrity_label_from_rid(rid: u32) -> &'static str {
@@ -2593,13 +2623,100 @@ where
     }
 }
 
+fn needs_broker_input(
+    secure_worker: bool,
+    secure_desktop: bool,
+    current: Option<u32>,
+    target: Option<u32>,
+) -> bool {
+    !secure_worker
+        && (secure_desktop
+            || match (current, target) {
+                (Some(current), Some(target)) => target > current,
+                _ => true,
+            })
+}
+
+fn process_integrity(process: HANDLE) -> Option<u32> {
+    let mut token = HANDLE::default();
+    unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token).ok()?; }
+    let integrity = query_token_integrity_rid(token);
+    unsafe { let _ = CloseHandle(token); }
+    integrity
+}
+
+fn window_integrity(window: HWND) -> Option<u32> {
+    let mut pid = 0;
+    unsafe { GetWindowThreadProcessId(window, Some(&mut pid)); }
+    if pid == 0 {
+        return None;
+    }
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()? };
+    let integrity = process_integrity(process);
+    unsafe { let _ = CloseHandle(process); }
+    integrity
+}
+
+fn absolute_pointer_pixel(coordinate: i32, origin: i32, extent: i32) -> i32 {
+    origin + ((i64::from(coordinate) * i64::from(extent.max(1))) / 65_536) as i32
+}
+
+fn input_target_window(action: &str) -> std::result::Result<Option<HWND>, String> {
+    let parts: Vec<_> = action.split_whitespace().collect();
+    let window = match parts.first().copied() {
+        Some("click" | "move" | "mouse-down" | "mouse-up" | "mouse-wheel") if parts.len() >= 3 => {
+            let dx = parse_absolute_pointer_coordinate(parts[1], "dx")?;
+            let dy = parse_absolute_pointer_coordinate(parts[2], "dy")?;
+            unsafe { WindowFromPoint(POINT {
+                x: absolute_pointer_pixel(
+                    dx, GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_CXVIRTUALSCREEN),
+                ),
+                y: absolute_pointer_pixel(
+                    dy, GetSystemMetrics(SM_YVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN),
+                ),
+            }) }
+        }
+        Some("keypress" | "key-down" | "key-up" | "text-base64" | "text-replace-base64" | "paste" | "ping-color-change") => unsafe { GetForegroundWindow() },
+        _ => return Ok(None),
+    };
+    Ok((window.0 != 0).then_some(window))
+}
+
+fn held_input_change(action: &str) -> Option<(u32, bool)> {
+    let parts: Vec<_> = action.split_whitespace().collect();
+    match parts.as_slice() {
+        [command @ ("key-down" | "key-up"), key] => Some((u32::from(virtual_key_from_token(key).ok()?.0), *command == "key-down")),
+        [command @ ("mouse-down" | "mouse-up"), _, _, button] => Some((65_536 + mouse_button_from_token(button).ok()? as u32, *command == "mouse-down")),
+        _ => None,
+    }
+}
+
+fn retain_broker_press(held: &mut HashSet<u32>, action: &str, succeeded: bool) {
+    if succeeded {
+        if let Some((input, down)) = held_input_change(action) {
+            if down {
+                held.insert(input);
+            } else {
+                held.remove(&input);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod protected_input_test;
+
 async fn run_input_server(secure_worker: bool) -> std::result::Result<(), String> {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
+    // This headless input process must hit-test in SendInput's physical screen coordinates.
+    unsafe { let _ = SetProcessDPIAware(); }
     let stdin = tokio::io::stdin();
     let mut lines = BufReader::new(stdin).lines();
     let mut _desktop_attachment = None;
     let mut broker_input: Option<secure_capture::InputClient> = None;
+    let current_integrity = process_integrity(unsafe { GetCurrentProcess() });
+    let mut broker_held_inputs = HashSet::new();
     loop {
         let line = lines
             .next_line()
@@ -2616,18 +2733,32 @@ async fn run_input_server(secure_worker: bool) -> std::result::Result<(), String
             }
         } else {
             process_input_server_line(&line, |action| {
-                if !secure_worker && secure_capture::active_input_desktop_is_secure()? {
+                let secure_desktop =
+                    !secure_worker && secure_capture::active_input_desktop_is_secure()?;
+                let target = if secure_worker || secure_desktop {
+                    None
+                } else {
+                    input_target_window(action)?
+                };
+                let use_broker = !secure_worker
+                    && (secure_desktop
+                        || (!broker_held_inputs.is_empty()
+                            && (target.is_some() || held_input_change(action).is_some()))
+                        || target.is_some_and(|window| {
+                            needs_broker_input(false, false, current_integrity, window_integrity(window))
+                        }));
+                if use_broker {
                     if broker_input.is_none() {
                         broker_input = Some(secure_capture::InputClient::connect()?);
                     }
                     let result = broker_input.as_mut().unwrap().inject(action);
+                    retain_broker_press(&mut broker_held_inputs, action, result.is_ok());
                     if result.is_err() {
                         // Never replay an action after an ambiguous broker failure.
                         broker_input = None;
                     }
                     return result;
                 }
-                broker_input = None;
                 let desktop =
                     secure_capture::attach_current_thread_to_active_input_desktop_for_input()?;
                 if !secure_worker && desktop.is_secure() {

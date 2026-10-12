@@ -72,6 +72,41 @@ export interface AgentPeerConnectionLike {
   setRemoteDescription: (description: { sdp: string; type: "offer" }) => Promise<unknown>;
 }
 
+// Candidate events expose a usable local SDP before Werift finishes STUN gathering.
+// Publish once while gathering continues; keep the original candidate writer intact.
+export async function publishAnswerDuringGathering(
+  peer: AgentPeerConnectionLike,
+  answer: { sdp: string; type: string },
+  publish: (description: { sdp: string; type: string }) => Promise<void>,
+  isCurrent: () => boolean,
+): Promise<void> {
+  const previous = peer.onicecandidate;
+  let publication: Promise<void> | undefined;
+  let publicationError: unknown;
+  const publishOnce = () => {
+    if (publication || !isCurrent()) return;
+    const description = peer.localDescription;
+    if (!description?.sdp || description.type !== "answer") return;
+    publication = Promise.resolve().then(() => isCurrent() ? publish(description) : undefined).catch(error => { publicationError = error; });
+  };
+  const onCandidate: NonNullable<AgentPeerConnectionLike["onicecandidate"]> = event => {
+    previous?.(event);
+    publishOnce();
+  };
+  peer.onicecandidate = onCandidate;
+  try {
+    await peer.setLocalDescription(answer);
+    publishOnce();
+    if (!publication && isCurrent()) {
+      publication = publish(resolveAgentLocalDescription(peer, answer)).catch(error => { publicationError = error; });
+    }
+    await publication;
+    if (publicationError !== undefined) throw publicationError;
+  } finally {
+    if (peer.onicecandidate === onCandidate) peer.onicecandidate = previous;
+  }
+}
+
 export function resolveAgentLocalDescription(
   peer: AgentPeerConnectionLike,
   fallback: { sdp: string; type: string },

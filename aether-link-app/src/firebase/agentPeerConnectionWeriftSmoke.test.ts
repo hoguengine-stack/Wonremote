@@ -20,6 +20,8 @@ import {
 import {
   bindAgentFileMessages,
   createAgentPeerConnection,
+  publishAnswerDuringGathering,
+  type AgentPeerConnectionLike,
   type AgentDataChannelLike,
 } from "./agentPeerConnection";
 
@@ -62,10 +64,26 @@ describe("installed x86 werift runtime smoke", () => {
       expect(offer?.sdp).toContain("a=candidate:");
       await answerer.setRemoteDescription(offer!);
 
-      await answerer.setLocalDescription(await answerer.createAnswer());
-      const answer = answerer.localDescription;
-      expect(answer?.sdp).toContain("a=candidate:");
-      await offerer.setRemoteDescription(answer!);
+      let publications = 0;
+      let answerApplied = false;
+      const pendingCandidates: unknown[] = [];
+      answerer.onicecandidate = event => {
+        if (!event.candidate) return;
+        const candidate = event.candidate.toJSON();
+        if (answerApplied) void offerer.addIceCandidate(candidate);
+        else pendingCandidates.push(candidate);
+      };
+      await publishAnswerDuringGathering(answerer as unknown as AgentPeerConnectionLike,
+        await answerer.createAnswer(), async answer => {
+          publications++;
+          // Werift exposes SDP before embedding candidates; production trickles them separately.
+          expect(answer.sdp).toContain("a=ice-ufrag:");
+          expect(answer.sdp).toContain("a=ice-options:trickle");
+          await offerer.setRemoteDescription({ type: "answer", sdp: answer.sdp });
+          answerApplied = true;
+          for (const candidate of pendingCandidates.splice(0)) await offerer.addIceCandidate(candidate as any);
+        }, () => true);
+      expect(publications).toBe(1);
 
       const [answerTile, answerControl, answerFile] = await Promise.all([
         answerTilePromise,

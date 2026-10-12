@@ -1,4 +1,5 @@
 import { deleteApp, initializeApp } from "firebase/app";
+import { randomUUID } from "node:crypto";
 import {
   collection,
   connectFirestoreEmulator,
@@ -91,6 +92,7 @@ try {
     businessNumber: "123-45-67890",
     deviceNumber: "AGENT-RULESTEST",
     installId: "rules-test-install",
+    storeName: "규칙 테스트 매장", storeNameSource: "user", deviceName: "메인포스",
     status: "online",
     presenceMode: "manual",
     lastSeenAtServer: serverTimestamp(),
@@ -105,12 +107,34 @@ try {
   if ((await getDoc(doc(agent.db,"devices",DEVICE_ID))).data().businessNumber !== "987-65-43210") throw new Error("Agent cannot read edited business number");
   await setDoc(doc(agent.db,"devices",DEVICE_ID), {lastSeenAtServer:serverTimestamp()}, {merge:true});
   await expectPermissionDenied(() => setDoc(contactRef,{businessNumber:"bad"},{merge:true}),"Invalid business number");
-  await expectPermissionDenied(() => setDoc(doc(agent.db,"devices",DEVICE_ID),{businessNumber:"123-45-67890"},{merge:true}),"Agent cannot change business number");
+  const selfRef=doc(agent.db,"devices",DEVICE_ID);
+  const selfBatch=writeBatch(agent.db);
+  selfBatch.update(selfRef,{businessNumber:"111-22-33333",storeName:"Agent 수정 매장",storeNameSource:"user",deviceName:"오더포스",updatedAt:serverTimestamp()});
+  selfBatch.set(doc(agent.db,"devices",DEVICE_ID,"commands","self-business-sync"),{action:"sync-business-number",state:"pending",createdAt:serverTimestamp()});
+  await selfBatch.commit();
+  const selfDevice=(await getDoc(selfRef)).data();
+  if(selfDevice.businessNumber!=="111-22-33333" || selfDevice.ownerUid!==AGENT_UID || selfDevice.installId!=="rules-test-install" || selfDevice.deviceName!=="오더포스") throw new Error("Owned Agent metadata update lost identity");
+  for(const [label,patch] of [["invalid number",{businessNumber:"invalid"}],["owner",{businessNumber:"123-45-67890",ownerUid:UNAUTHORIZED_UID}],["install",{businessNumber:"123-45-67890",installId:"other"}],["update policy",{businessNumber:"123-45-67890",updatePaused:true}],["ZOOK",{businessNumber:"123-45-67890",zookNumber:"00123456"}],["oversized type",{businessNumber:"123-45-67890",deviceName:"x".repeat(101)}]]) {
+    await expectPermissionDenied(()=>setDoc(selfRef,patch,{merge:true}),`Agent metadata rejects ${label}`);
+  }
+  await expectPermissionDenied(()=>setDoc(doc(otherAgent.db,"devices",DEVICE_ID),{businessNumber:"123-45-67890"},{merge:true}),"Different Agent cannot edit device");
+  await deleteDoc(doc(viewer.db,"devices",DEVICE_ID,"commands","self-business-sync"));
   await expectPermissionDenied(() => setDoc(doc(unauthorized.db,"devices",DEVICE_ID),{businessNumber:"123-45-67890"},{merge:true}),"Unauthorized business edit");
   await expectPermissionDenied(() => setDoc(contactRef,{ownerUid:UNAUTHORIZED_UID},{merge:true}),"Business edit cannot change owner");
   await expectPermissionDenied(() => setDoc(contactRef,{installId:"changed"},{merge:true}),"Business edit cannot change install identity");
   await setDoc(contactRef,{businessNumber:"123-45-67890"},{merge:true});
   await deleteDoc(doc(viewer.db,"devices",DEVICE_ID,"commands","business-sync"));
+  const zookBatch=writeBatch(viewer.db);
+  zookBatch.update(contactRef,{zookNumber:"00123456",zookError:deleteField()});
+  zookBatch.set(doc(viewer.db,"devices",DEVICE_ID,"commands","zook-setting"),{action:"configure-zook",state:"pending",createdAt:serverTimestamp()});
+  await zookBatch.commit();
+  if ((await getDoc(doc(agent.db,"devices",DEVICE_ID))).data().zookNumber !== "00123456") throw new Error("ZOOK number read failed");
+  await setDoc(doc(agent.db,"devices",DEVICE_ID),{zookAppliedNumber:"00123456",zookError:""},{merge:true});
+  await expectPermissionDenied(()=>setDoc(contactRef,{zookNumber:"1234abcd"},{merge:true}),"Invalid ZOOK number");
+  await expectPermissionDenied(()=>setDoc(doc(unauthorized.db,"devices",DEVICE_ID),{zookNumber:"87654321"},{merge:true}),"Unauthorized ZOOK number");
+  await expectPermissionDenied(()=>setDoc(doc(agent.db,"devices",DEVICE_ID),{zookNumber:"87654321"},{merge:true}),"Agent cannot replace Viewer requested number");
+  await expectPermissionDenied(()=>setDoc(contactRef,{zookAppliedNumber:"87654321"},{merge:true}),"Viewer cannot fake ZOOK native success");
+  await deleteDoc(doc(viewer.db,"devices",DEVICE_ID,"commands","zook-setting"));
   await setDoc(contactRef, { contactPhone: "010-1234-5678" }, { merge: true });
   if ((await getDoc(contactRef)).data().contactPhone !== "010-1234-5678") throw new Error("Contact phone roundtrip failed");
   await expectPermissionDenied(() => setDoc(contactRef, { contactPhone: "1".repeat(41) }, { merge: true }), "Contact phone length");
@@ -248,7 +272,47 @@ try {
     throw new Error("Central Viewer device deletion did not remove the device.");
   }
 
+  const lockedDevice = `${DEVICE_ID}-LOCK`;
+  const lockVersion = randomUUID();
+  const lockedSession = `${SESSION_ID}-locked`;
+  const lockRef = doc(agent.db, "deviceAccessLocks", lockedDevice);
+  await setDoc(doc(agent.db, "devices", lockedDevice), {
+    id:lockedDevice, ownerUid:AGENT_UID, businessNumber:"123-45-67890", deviceNumber:"LOCK",
+    installId:"lock-install", status:"online", presenceMode:"manual", lastSeenAtServer:serverTimestamp(),
+    accessLocked:true, accessLockVersion:lockVersion, accessPublicKey:"A".repeat(392),
+  });
+  await setDoc(lockRef, {enabled:true, version:lockVersion, updatedAt:serverTimestamp()});
+  await expectPermissionDenied(()=>setDoc(doc(viewer.db,"deviceAccessLocks",lockedDevice), {enabled:false,version:lockVersion,updatedAt:serverTimestamp()}), "Viewer cannot disable authoritative lock directly");
+  await expectPermissionDenied(()=>getDoc(doc(viewer.db,"deviceAccessLocks",lockedDevice)), "Viewer cannot read private access state");
+  const sessionBody = {id:lockedSession,ownerUid:CENTRAL_VIEWER_UID,deviceId:lockedDevice,state:"connected"};
+  await expectPermissionDenied(()=>setDoc(doc(viewer.db,"sessions",lockedSession),sessionBody), "Old Viewer cannot connect locked device");
+  await expectPermissionDenied(()=>setDoc(doc(viewer.db,"devices",lockedDevice,"commands","bypass-start"),{action:`start-stream ${lockedSession}`,state:"pending"}), "Raw stream command cannot bypass lock");
+  await expectPermissionDenied(()=>setDoc(doc(viewer.db,"devices",lockedDevice,"commands","bypass-system"),{action:"system cmd",state:"pending"}), "Sessionless command cannot bypass lock");
+  await expectPermissionDenied(()=>deleteDoc(doc(viewer.db,"devices",lockedDevice)), "Device deletion cannot remove a locked target");
+  const accessId = randomUUID();
+  const accessRef = doc(viewer.db,"deviceAccessRequests",accessId);
+  await setDoc(accessRef,{id:accessId,deviceId:lockedDevice,ownerUid:CENTRAL_VIEWER_UID,operation:"connect",sessionId:lockedSession,
+    lockVersion,key:"A".repeat(344),iv:"A".repeat(16),ciphertext:"A".repeat(160),state:"pending",createdAt:serverTimestamp()});
+  await expectPermissionDenied(()=>setDoc(accessRef,{state:"approved",approvedVersion:lockVersion,updatedAt:serverTimestamp()},{merge:true}), "Viewer cannot approve own password request");
+  await expectPermissionDenied(()=>setDoc(doc(viewer.db,"sessions",lockedSession),{...sessionBody,accessRequestId:accessId,accessLockVersion:lockVersion}), "Pending proof is not authorization");
+  await setDoc(doc(agent.db,"deviceAccessRequests",accessId),{state:"approved",approvedVersion:lockVersion,approvalSignature:"A".repeat(344),updatedAt:serverTimestamp()},{merge:true});
+  await expectPermissionDenied(()=>setDoc(doc(managedViewer.db,"sessions",`${lockedSession}-other`),{...sessionBody,id:`${lockedSession}-other`,ownerUid:"rules-test-managed-viewer",accessRequestId:accessId,accessLockVersion:lockVersion}), "Different Viewer cannot reuse grant");
+  await expectPermissionDenied(()=>setDoc(doc(viewer.db,"sessions",`${lockedSession}-replay`),{...sessionBody,id:`${lockedSession}-replay`,accessRequestId:accessId,accessLockVersion:lockVersion}), "Different session cannot replay grant");
+  const accepted = writeBatch(viewer.db);
+  accepted.set(doc(viewer.db,"sessions",lockedSession), {...sessionBody,accessRequestId:accessId,accessLockVersion:lockVersion});
+  accepted.set(doc(viewer.db,"devices",lockedDevice,"commands","authorized-start"),{action:`start-stream ${lockedSession}`,sessionId:lockedSession,state:"pending"});
+  await accepted.commit();
+  await setDoc(doc(viewer.db,"sessions",lockedSession,"chat","before-change"),{text:"authorized"});
+  await setDoc(lockRef,{enabled:true,version:randomUUID(),updatedAt:serverTimestamp()});
+  await expectPermissionDenied(()=>setDoc(doc(viewer.db,"sessions",lockedSession,"chat","after-change"),{text:"old grant"}), "Password change revokes previous session data authorization");
+  await expectPermissionDenied(()=>setDoc(doc(viewer.db,"devices",lockedDevice,"commands","after-change"),{action:"system cmd",sessionId:lockedSession,state:"pending"}), "Password change revokes previous input authorization");
+  await setDoc(lockRef,{enabled:false,version:randomUUID(),updatedAt:serverTimestamp()});
+  await setDoc(doc(viewer.db,"sessions",`${lockedSession}-unlocked`),{...sessionBody,id:`${lockedSession}-unlocked`});
+
   console.log(JSON.stringify({
+    deviceAccessLockOldViewerAndCommandBypassDenied:true,
+    deviceAccessLockViewerAndSessionBinding:true,
+    deviceAccessLockPasswordChangeRevokesOldGrant:true,
     agentSessionAccess: true,
     centralViewerDeviceAccess: true,
     managedViewerDeviceAccess: true,

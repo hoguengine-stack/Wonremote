@@ -11,6 +11,7 @@ import type {
   ManagedDevice,
 } from "./types";
 import { DEFAULT_STORE_NAME, normalizeStoreNameForDisplay } from "./deviceDefaults";
+import { normalizeZookNumber } from "./zookNumber";
 import { DEFAULT_DEVICE_TYPE, isGeneratedAgentDeviceName } from "./deviceType";
 import { sanitizeDeviceSystemInfo } from "./deviceSystemInfo";
 import { normalizeDevicePlatform } from "./devicePlatform";
@@ -81,6 +82,7 @@ export function registerAgentConnection(
     platform: normalizeDevicePlatform(input.platform),
     status: "online",
     lastSeenAt: nowIso,
+    ...(!existing ? { firstRegisteredAt: nowIso } : existing.firstRegisteredAt ? { firstRegisteredAt: existing.firstRegisteredAt } : {}),
     connectionCode: generateConnectionCode(),
     version: input.version,
     ...sanitizeExistingDeviceOperationalMetadata(existing),
@@ -116,12 +118,13 @@ export function registerAgentFirstRun(
   const deviceNumber = buildFirstRunDeviceNumber(input.installId);
   const deviceId = `${businessNumber}:${deviceNumber}`;
   const existingDevice = devices.find((device) => device.id === deviceId);
+  const metadata = initialAgentMetadata(input);
   const derivedInput: AgentConnectionInput = {
     businessNumber,
     password,
-    storeName: DEFAULT_STORE_NAME,
+    storeName: metadata.storeName,
     deviceNumber,
-    deviceName: DEFAULT_DEVICE_TYPE,
+    deviceName: metadata.deviceName,
     desktopName: input.desktopName,
     platform: input.platform,
     version: input.version,
@@ -133,6 +136,7 @@ export function registerAgentFirstRun(
   }
   const device: ManagedDevice = {
     ...registeredDevice,
+    notes: typeof existingDevice?.notes === "string" ? existingDevice.notes : metadata.notes,
     protocolVersion: sanitizeProtocolVersion(input.protocolVersion) ?? existingDevice?.protocolVersion,
     platform: normalizeDevicePlatform(input.platform ?? existingDevice?.platform),
     deviceName:
@@ -150,6 +154,22 @@ export function registerAgentFirstRun(
     devices: nextDevices,
     device,
   };
+}
+
+export function initialAgentMetadata(input: Pick<AgentFirstRunInput, "storeName" | "deviceName" | "notes">) {
+  for (const [key, max] of [["storeName", 255], ["deviceName", 100], ["notes", DEVICE_NOTES_MAX_LENGTH]] as const) {
+    const value = input[key];
+    if (value !== undefined && (typeof value !== "string" || value.length > max)) throw new Error("등록 정보의 형식 또는 길이가 올바르지 않습니다.");
+  }
+  return {storeName: input.storeName?.trim() || DEFAULT_STORE_NAME, deviceName: input.deviceName?.trim() || DEFAULT_DEVICE_TYPE, notes: input.notes?.trim() || ""};
+}
+
+export function normalizeAgentMetadataUpdate(input: Pick<ManagedDevice, "businessNumber" | "storeName" | "deviceName">) {
+  if (typeof input.businessNumber !== "string" || typeof input.storeName !== "string" || typeof input.deviceName !== "string") {
+    throw new Error("장비 정보를 확인해 주세요.");
+  }
+  const { storeName, deviceName } = initialAgentMetadata(input);
+  return { businessNumber: normalizeBusinessNumber(input.businessNumber), storeName, deviceName };
 }
 
 export function applyAgentHeartbeat(
@@ -203,6 +223,7 @@ export function applyAgentHeartbeat(
     systemInfo: sanitizeDeviceSystemInfo(input.systemInfo) ?? currentDevice.systemInfo,
     controlDiagnostics: sanitizeControlDiagnostics(input.controlDiagnostics) ?? currentDevice.controlDiagnostics,
     streamDiagnostics: sanitizeStreamDiagnostics(input.streamDiagnostics) ?? currentDevice.streamDiagnostics,
+    ...(input.zookResult ? { zookAppliedNumber: normalizeZookNumber(input.zookResult.appliedNumber ?? "") || undefined, ...(input.zookResult.error !== undefined ? {zookError: input.zookResult.error.slice(0, 500) || undefined} : {}) } : {}),
   };
   const nextDevices = devices.map((item, itemIndex) => (itemIndex === index ? device : item));
 
@@ -308,6 +329,13 @@ export function updateDeviceMetadata(
     desktopName: nextDesktopName,
   };
   applyOperationalMetadataUpdate(device, input);
+  if (input.zookNumber !== undefined) {
+    const number = normalizeZookNumber(input.zookNumber);
+    if (number !== (currentDevice.zookNumber ?? currentDevice.zookAppliedNumber ?? "")) {
+      device.zookNumber = number;
+      device.zookError = undefined;
+    }
+  }
   if (typeof input.desktopName === "string") {
     device.desktopNameOverride = input.desktopName.trim().slice(0, 255) || undefined;
   }

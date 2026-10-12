@@ -14,6 +14,7 @@ import {
   resolveDeviceStatuses,
   updateDeviceMetadata,
   verifyAgentInstall,
+  normalizeAgentMetadataUpdate,
 } from "../domain/agentRegistry";
 import type {
   AgentCommand,
@@ -345,6 +346,22 @@ async function routeRequest(
     return;
   }
 
+  if (request.method === "PATCH" && url.pathname === "/api/agent/device") {
+    const body = await readJson<AgentCommandPollInput & Pick<ManagedDevice, "businessNumber" | "storeName" | "deviceName">>(request);
+    try {
+      verifyAgentInstall(state.devices, body.deviceId, body.installId);
+      const previous = state.devices.find(device => device.id === body.deviceId)!;
+      const result = updateDeviceMetadata(state.devices, {deviceId: body.deviceId, ...normalizeAgentMetadataUpdate(body)});
+      await state.deviceStore.writeDevices(result.devices);
+      state.devices = result.devices;
+      if (previous.businessNumber !== result.device.businessNumber) enqueueAgentCommand(state, body.deviceId, "sync-business-number");
+      writeJson(response, 200, {device: result.device});
+    } catch (error) {
+      writeJson(response, 400, {error: error instanceof Error ? error.message : "Agent 정보 수정 실패"});
+    }
+    return;
+  }
+
   if (request.method === "PATCH" && url.pathname.startsWith("/api/devices/")) {
     const match = url.pathname.match(/^\/api\/devices\/(.+)$/);
     if (match) {
@@ -352,6 +369,7 @@ async function routeRequest(
       const body = await readJson<Omit<DeviceMetadataUpdateInput, "deviceId">>(request);
       try {
         const previousBusinessNumber = state.devices.find(device => device.id === deviceId)?.businessNumber;
+        const previousZookNumber = state.devices.find(device => device.id === deviceId)?.zookNumber ?? state.devices.find(device => device.id === deviceId)?.zookAppliedNumber ?? "";
         const result = updateDeviceMetadata(state.devices, {
           ...body,
           deviceId,
@@ -359,6 +377,7 @@ async function routeRequest(
         state.devices = result.devices;
         await state.deviceStore.writeDevices(state.devices);
         if (previousBusinessNumber !== result.device.businessNumber) enqueueAgentCommand(state, deviceId, "sync-business-number");
+        if (result.device.zookNumber && previousZookNumber !== result.device.zookNumber) enqueueAgentCommand(state, deviceId, "configure-zook");
         writeJson(response, 200, {
           device: result.device,
           devices: state.devices,

@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getDoc, getDocs, getDocsFromServer, onSnapshot } from "firebase/firestore";
+import { getDoc, getDocFromServer, getDocs, getDocsFromServer, onSnapshot } from "firebase/firestore";
 import {
   fetchActiveFirebaseSessionsForAgent,
+  fetchAgentZookNumberWithFirebase,
   pollAgentCommandsWithFirebase,
   queueAgentHealthChallengeWithFirebase,
   subscribeAgentCommandsWithFirebase,
@@ -27,6 +28,7 @@ vi.mock("firebase/firestore", () => ({
   collection: vi.fn((_db: unknown, ...segments: string[]) => ({ path: segments.join("/") })),
   doc: vi.fn((_db: unknown, ...segments: string[]) => ({ path: segments.join("/") })),
   getDoc: vi.fn(async () => ({ exists: () => true, data: () => ({ installId: "install-1" }) })),
+  getDocFromServer: vi.fn(),
   getDocs: vi.fn(),
   getDocsFromServer: vi.fn(),
   limit: vi.fn((value: number) => ({ limit: value })),
@@ -69,6 +71,15 @@ describe("Agent Firebase command subscription", () => {
     vi.mocked(getDocsFromServer).mockReset().mockResolvedValue(snapshot([]) as any);
   });
   afterEach(() => vi.useRealTimers());
+  it("reads one fresh ZOOK request document only on explicit command, with no retry", async () => {
+    vi.mocked(getDocFromServer).mockResolvedValueOnce({exists:()=>true,data:()=>({zookNumber:"00123456"})} as any);
+    expect(await fetchAgentZookNumberWithFirebase("device-1")).toBe("00123456");
+    expect(getDocFromServer).toHaveBeenCalledOnce();
+    vi.mocked(getDocFromServer).mockRejectedValueOnce(new Error("quota"));
+    await expect(fetchAgentZookNumberWithFirebase("device-1")).rejects.toThrow("quota");
+    expect(getDocFromServer).toHaveBeenCalledTimes(2);
+    expect(state.update).not.toHaveBeenCalled();
+  });
 
   it("validates the device once and delivers pending commands after marking them delivered", async () => {
     const onCommands = vi.fn(async () => undefined);
@@ -365,6 +376,7 @@ describe("Agent Firebase command subscription", () => {
       activeDisplayIndex: 1,
       displays: [],
       streamDiagnostics: { desired: true, running: true } as any,
+      zookResult: {appliedNumber:"00123456",error:"cancel failed"},
     });
 
     expect(getDoc).not.toHaveBeenCalled();
@@ -377,6 +389,8 @@ describe("Agent Firebase command subscription", () => {
         rollbackSupportVersion: "0.1.44",
         desktopName: "DESKTOP-CADI3TD",
         status: "online",
+        zookAppliedNumber:"00123456",
+        zookError:"cancel failed",
       }),
     );
     expect(result.device).toMatchObject({

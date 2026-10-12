@@ -1,3 +1,4 @@
+import { markConnectionTiming } from "../domain/connectionTiming";
 import { randomUUID } from "node:crypto";
 import { appendCaptureDiagnostic } from "./captureDiagnostics";
 import { observeCaptureControlErrors, writeCaptureControl } from "./captureControl";
@@ -12,7 +13,8 @@ import { subscribeLocalSessionData } from "../api/sessionData";
 import { firebaseCommandListenerRetryDelayMs, firebaseRequestRetryDelayMs } from "../firebase/requestRetryPolicy";
 import type { SessionData } from "../domain/sessionData";
 import { parseAgentConfigJson } from "./agentConfigJson";
-import { fetchAgentBusinessNumber, pollAgentCommands, postAgentSessionApproval, sendAgentHeartbeat } from "./agentClient";
+import { fetchAgentBusinessNumber, fetchAgentZookNumber, pollAgentCommands, postAgentSessionApproval, sendAgentHeartbeat } from "./agentClient";
+import { applyZookNumber, readLocalZookNumber, synchronizeZookNumber } from "./zookSettings";
 import { waitForApiHealth } from "./agentHealth";
 import { createAgentHealthReporter } from "./agentUpdateHealth";
 import {
@@ -40,6 +42,7 @@ import {
   prepareAgentUpdateSession,
   shouldDeferAgentUpdateForSession,
   shouldStartStreamForCommand,
+  shouldCheckDeviceAccessSession,
 } from "./agentSessionLifecycle";
 import {
   createAgentCommandPollGate,
@@ -93,6 +96,7 @@ import { loadSelectedViewerUpdate } from "./selectedViewerUpdate";
 import { sendWakeOnLanMagicPacket } from "./wakeOnLan";
 import { parseAgentDisplayInventory } from "./agentDisplayInventory";
 import { PersistentInputInjector } from "./persistentInputInjector";
+import { AgentDeviceAccessLock } from "./deviceAccessLock";
 import {
   AGENT_UPDATE_HANDOFF_EXIT_CODE,
   formatPreparedUpdateHandoff,
@@ -120,6 +124,10 @@ import {
 } from "../domain/streamPerformanceMode";
 import {
   authenticateAgentWithFirebase,
+  processAgentDeviceAccessRequest,
+  isAgentDeviceAccessSessionAllowed,
+  readAgentDeviceAccessState,
+  publishAgentDeviceAccessCapability,
   type AgentWebRtcTransport,
   fetchActiveFirebaseSessionsForAgent,
   subscribeAgentSessionData,
@@ -300,6 +308,25 @@ const diagnosticFailureCache = new Map<string, { loggedAtMs: number; message: st
 
 let isApprovalPending = false;
 let activeSessionId: string | null = null;
+let deviceAccessLock: Promise<AgentDeviceAccessLock> | null = null;
+let readyDeviceAccessLock: AgentDeviceAccessLock | null = null;
+let deviceAccessCapability: {accessPublicKey:string|null;accessLockUnavailable:boolean} | undefined;
+let authorizedAccessSession: {id:string;version:string|null} | null = null;
+function getDeviceAccessLock(deviceId: string): Promise<AgentDeviceAccessLock> {
+  if (!deviceAccessLock) {
+    deviceAccessLock = AgentDeviceAccessLock.load(path.join(path.dirname(getAgentConfigPath()), "device-access-lock.dat"), deviceId);
+    deviceAccessLock.then(lock => {
+      readyDeviceAccessLock = lock;
+      deviceAccessCapability = {accessPublicKey:lock.publicState.publicKey, accessLockUnavailable:false};
+      return publishAgentDeviceAccessCapability(deviceId, lock.publicState.publicKey);
+    }, async () => {
+      deviceAccessCapability = {accessPublicKey:null, accessLockUnavailable:true};
+      console.error("[Agent] Device access storage is unavailable; locked sessions remain blocked.");
+      await publishAgentDeviceAccessCapability(deviceId, null);
+    }).catch(() => console.error("[Agent] Device access capability publication failed; no automatic retry."));
+  }
+  return deviceAccessLock;
+}
 const reverseFileRequest = createReverseFileRequest({
   context: () => activeSessionId && webRtcTransport ? {
     key: `${activeSessionId}:${sessionGeneration}`,
@@ -324,6 +351,7 @@ function flushPendingInitialKeyframe(expectedSessionGeneration: number): boolean
   if (sendResult !== "sent") {
     return false;
   }
+  if (activeSessionId) markConnectionTiming(activeSessionId, "first-frame-sent");
   pendingInitialKeyframe = null;
   streamTransport = "webrtc";
   streamBackpressured = false;
@@ -365,6 +393,24 @@ async function startStreaming(
   loopSleepMs = 33,
   backend: StreamCaptureBackend = streamBackend,
 ) {
+  if (!USE_FIREBASE && process.platform === "win32") {
+    const file = path.join(path.dirname(getAgentConfigPath()), "device-access-lock.dat");
+    let exists = false;
+    try { await access(file); exists = true; } catch (error) { if (!isNotFoundError(error)) throw error; }
+    if (exists && (await getDeviceAccessLock(deviceId)).publicState.enabled) throw new Error("잠금 장비는 Firebase 접속 승인 경로로 연결해야 합니다.");
+  }
+  if (USE_FIREBASE && process.platform === "win32"
+    && shouldCheckDeviceAccessSession(activeSessionId, sessionId, authorizedAccessSession, readyDeviceAccessLock?.publicState.version ?? null)) {
+    const accessState = await readAgentDeviceAccessState(deviceId);
+    if (accessState.enabled) {
+      const lock = await getDeviceAccessLock(deviceId);
+      if (!await isAgentDeviceAccessSessionAllowed(deviceId, sessionId, lock)) throw new Error("이 장비는 잠금 비밀번호로 승인된 원격 접속만 허용합니다.");
+    } else if (readyDeviceAccessLock?.publicState.enabled) {
+      throw new Error("잠금 설정과 서버 상태가 다릅니다. 관리자 비밀번호로 복구하세요.");
+    }
+    // Capture/profile/desktop restarts keep the same approved session; lock changes stop it.
+    authorizedAccessSession = {id:sessionId, version:readyDeviceAccessLock?.publicState.version ?? null};
+  }
   const previousSessionId = activeSessionId;
   const generationTransition = beginAgentCaptureGeneration({
     activeSessionId,
@@ -449,6 +495,7 @@ async function startStreaming(
     streamSecureDesktop,
   );
   console.log(`Starting capture stream from: ${pocPath} (monitor: ${outputIndex}, mode: ${currentStreamMode}, sleep: ${loopSleepMs}ms, quality: ${streamProfile.jpegQuality}, merge: ${streamProfile.maxMergeWidth}px, backend: ${backend}, secure: ${capturePlan.secure})`);
+  markConnectionTiming(sessionId, "capture-start");
   const child = spawn(pocPath, capturePlan.args, {
     env,
     windowsHide: true,
@@ -518,6 +565,7 @@ async function startStreaming(
           pendingInitialKeyframe = null;
         }
       } else if (data.type === "frame") {
+        markConnectionTiming(sessionId, "capture-first-frame");
         if (currentStreamMode === "auto") adaptiveCapture.observe(data.processingMs);
         streamFrameSequence += 1;
         streamFailureCount = 0;
@@ -542,6 +590,7 @@ async function startStreaming(
             : { sessionGeneration: transportGeneration, frame: framePayload };
         }
         if (sendResult === "sent") {
+          if (framePayload.keyframe) markConnectionTiming(sessionId, "first-frame-sent");
           streamTransport = "webrtc";
           streamBackpressured = false;
           streamBufferedAmount = webRtcTransport?.getBufferedAmount() ?? 0;
@@ -787,6 +836,7 @@ function ensureSessionWebRtcTransport(
         return;
       }
       if (state === "open") {
+        markConnectionTiming(sessionId, "channel-open");
         rtcState = "ready";
         rtcError = undefined;
         synchronizeInitialFrame();
@@ -2042,7 +2092,7 @@ async function ensureFirebaseAgentAuth(config: AgentLocalConfig): Promise<void> 
   });
 }
 
-async function sendHeartbeat(config: AgentLocalConfig, heartbeatRequestId?: string): Promise<void> {
+async function sendHeartbeat(config: AgentLocalConfig, heartbeatRequestId?: string, zookResult?: { appliedNumber?: string; error?: string }): Promise<void> {
   if (!config.registeredDeviceId) {
     throw new Error("Agent registered device ID is missing.");
   }
@@ -2051,7 +2101,16 @@ async function sendHeartbeat(config: AgentLocalConfig, heartbeatRequestId?: stri
   const macAddresses = discoverMacAddresses();
   const controlDiagnostics = await discoverControlDiagnostics();
   const streamDiagnostics = buildStreamDiagnostics();
+  if (!zookResult && process.platform === "win32") {
+    try { const appliedNumber = await readLocalZookNumber(getAgentConfigPath()); if (appliedNumber) zookResult = {appliedNumber}; }
+    catch (error) { console.warn("[Agent] ZOOK number read failed:", error); }
+  }
+  if (USE_FIREBASE && process.platform === "win32") {
+    // Optional lock provisioning must not delay the Agent's first online/installer-health receipt.
+    void getDeviceAccessLock(config.registeredDeviceId);
+  }
   const result = await sendAgentHeartbeat({
+    ...deviceAccessCapability,
     presenceMode: "manual",
     heartbeatRequestId,
     apiBaseUrl: API_BASE_URL,
@@ -2067,6 +2126,7 @@ async function sendHeartbeat(config: AgentLocalConfig, heartbeatRequestId?: stri
     controlDiagnostics,
     streamDiagnostics,
     updateTelemetry: currentUpdateTelemetry,
+    zookResult,
   });
   console.log(`Heartbeat accepted: ${result.device.id}`);
   await agentHealthReporter.heartbeatAccepted(config, result.device.id).catch((error) => {
@@ -2090,6 +2150,27 @@ async function pollCommands(config: AgentLocalConfig): Promise<void> {
 
 async function executeReceivedCommands(config: AgentLocalConfig, commands: AgentCommand[]): Promise<void> {
   for (const command of commands) {
+    if (command.action.startsWith("device-access ")) {
+      if (USE_FIREBASE && process.platform === "win32") {
+        await agentCommandQueue.enqueue(async () => {
+          await processAgentDeviceAccessRequest(config.registeredDeviceId!, command.action.slice(14), await getDeviceAccessLock(config.registeredDeviceId!), async () => { if (activeSessionId) await stopSessionPolling(); });
+        }).catch(() => console.error("[Agent] Device access request failed."));
+      }
+      continue;
+    }
+    if (command.action === "configure-zook") {
+      try {
+        await synchronizeZookNumber({
+          load: () => fetchAgentZookNumber({apiBaseUrl: API_BASE_URL, deviceId: config.registeredDeviceId!, installId: config.installId}),
+          readApplied: () => readLocalZookNumber(getAgentConfigPath()), apply: applyZookNumber,
+          report: result => {
+            if (!result.error) console.log("[ZookConfig] Changed");
+            return sendHeartbeat(config, undefined, result);
+          },
+        });
+      } catch (error) { console.error("[Agent] ZOOK setting failed:", error); }
+      continue;
+    }
     if (command.action === "sync-business-number") {
       try {
         await synchronizeAgentBusinessNumber(config,

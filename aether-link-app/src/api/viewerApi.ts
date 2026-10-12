@@ -36,6 +36,8 @@ import {
   openFirebaseSession,
   recordFirebaseInput,
   registerFirstRunAgentWithFirebase,
+  fetchFirebaseAgentDevice,
+  updateFirebaseAgentDevice,
   requestFirebaseSecureSession,
   sendFirebaseChatMessage,
   sendFirebaseClipboardText,
@@ -44,6 +46,8 @@ import {
   uploadFirebaseFileChunk,
   uploadFirebaseFileToStorage,
 } from "../firebase/viewerFirebase";
+import type { AgentLocalConfig } from "../agent/agentBootstrap";
+import { normalizeAgentMetadataUpdate } from "../domain/agentRegistry";
 
 const API_BASE_URL = import.meta.env.VITE_WONREMOTE_API_URL ?? "http://127.0.0.1:8787";
 import { subscribeLocalSessionData } from "./sessionData";
@@ -154,6 +158,23 @@ export async function deleteRemoteDevice(deviceId: string): Promise<void> {
   });
 }
 
+export async function fetchRegisteredAgentDevice(config: AgentLocalConfig): Promise<ManagedDevice> {
+  if (isViewerFirebaseEnabled()) return fetchFirebaseAgentDevice(config);
+  const result = await request<{device: ManagedDevice}>("/api/agent/device", {
+    method: "POST", body: {deviceId: config.registeredDeviceId, installId: config.installId}, baseUrl: config.apiUrl,
+  });
+  return result.device;
+}
+
+export async function updateRegisteredAgentDevice(config: AgentLocalConfig, input: Pick<ManagedDevice, "businessNumber" | "storeName" | "deviceName">): Promise<ManagedDevice> {
+  const metadata = normalizeAgentMetadataUpdate(input);
+  if (isViewerFirebaseEnabled()) return updateFirebaseAgentDevice(config, metadata);
+  const result = await request<{device: ManagedDevice}>("/api/agent/device", {
+    method: "PATCH", body: {deviceId: config.registeredDeviceId, installId: config.installId, ...metadata}, baseUrl: config.apiUrl,
+  });
+  return result.device;
+}
+
 export async function registerFirstRunAgent(input: AgentFirstRunInput & { apiUrl?: string }): Promise<AgentFirstRunResult> {
   if (isViewerFirebaseEnabled()) {
     return registerFirstRunAgentWithFirebase(input);
@@ -171,6 +192,7 @@ export async function registerFirstRunAgent(input: AgentFirstRunInput & { apiUrl
           password: input.password,
           installId: input.installId,
           desktopName: input.desktopName,
+          storeName: input.storeName, deviceName: input.deviceName, notes: input.notes,
           version: input.version,
         }),
       });
@@ -191,12 +213,12 @@ export async function registerFirstRunAgent(input: AgentFirstRunInput & { apiUrl
   });
 }
 
-export async function openSession(deviceId: string, refreshPresence = false): Promise<{
+export async function openSession(deviceId: string, refreshPresence = false, password?: string): Promise<{
   session: RemoteSession;
   inputLog: string[];
 }> {
   if (isViewerFirebaseEnabled()) {
-    return openFirebaseSession(deviceId, undefined, refreshPresence);
+    return openFirebaseSession(deviceId, undefined, refreshPresence, password);
   }
 
   return request("/api/sessions", {
@@ -220,6 +242,7 @@ export async function connectSecureSession(input: {
   challengeId: string;
   code: string;
   deviceId: string;
+  password?: string;
 }): Promise<{
   session: RemoteSession;
   inputLog: string[];
@@ -416,10 +439,10 @@ export async function fetchSessionStatus(sessionId: string): Promise<"pending" |
 }
 
 
-async function request<T>(path: string, options: { method?: string; body?: unknown; signal?: AbortSignal } = {}): Promise<T> {
+async function request<T>(path: string, options: { method?: string; body?: unknown; signal?: AbortSignal; baseUrl?: string } = {}): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(`${API_BASE_URL}${path}`, {
+    response = await fetch(`${options.baseUrl || API_BASE_URL}${path}`, {
       method: options.method ?? "GET",
       headers: options.body ? { "content-type": "application/json" } : undefined,
       body: options.body ? JSON.stringify(options.body) : undefined,

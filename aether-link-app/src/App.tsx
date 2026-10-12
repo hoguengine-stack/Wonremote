@@ -1,3 +1,4 @@
+import { beginConnectionTiming, bindConnectionTiming, markConnectionTiming } from "./domain/connectionTiming";
 import {
   CircleDot,
   LogIn,
@@ -9,6 +10,7 @@ import {
   ShieldCheck,
   MessageSquare,
   Clipboard,
+  ClipboardList,
   FileUp,
   Download,
   ExternalLink,
@@ -40,11 +42,15 @@ import {
   Pause,
   Columns2,
   GripVertical,
+  Bell,
+  LockKeyhole,
 } from "lucide-react";
 import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
+import edgeLogo from "./assets/microsoft-edge.png";
+import aspLogo from "./assets/firstpos-kpn.png";
 import {
   closeSession,
   fetchDevices,
@@ -53,6 +59,8 @@ import {
   openSession,
   recordInput,
   registerFirstRunAgent,
+  fetchRegisteredAgentDevice,
+  updateRegisteredAgentDevice,
   fetchSessionStatus,
   sendChatMessage,
   subscribeSessionData,
@@ -85,6 +93,9 @@ import {
   type ViewerWebRtcTransport,
 } from "./firebase/viewerFirebase";
 import { ViewerAccountManager } from "./components/ViewerAccountManager";
+import { DeviceAccessLockDialog } from "./components/DeviceAccessLockDialog";
+import { ViewerGroups } from "./components/ViewerGroups";
+import { groupDeviceIds } from "./domain/viewerGroups";
 import { IosCapabilityProbe } from "./components/IosCapabilityProbe";
 import { isMobileViewerPath } from "./domain/mobileViewer";
 import { MobileRemoteControls, useMobileRemoteHeight } from "./components/MobileRemoteControls";
@@ -433,6 +444,21 @@ function ViewerApp() {
   const closingDeviceIdsRef = useRef<Set<string>>(new Set());
   const sessionShutdownInProgressRef = useRef(false);
   const [editTarget, setEditTarget] = useState<DeviceEditTarget | null>(null);
+  const [deviceAccessDialog, setDeviceAccessDialog] = useState<{device: ManagedDevice; connect: boolean} | null>(null);
+  const devicePasswordResolver = useRef<((password: string | null) => void) | null>(null);
+  useEffect(() => () => { devicePasswordResolver.current?.(null); devicePasswordResolver.current = null; }, []);
+  function closeDeviceAccessDialog(password: string | null = null) {
+    const resolve = devicePasswordResolver.current;
+    devicePasswordResolver.current = null;
+    setDeviceAccessDialog(null);
+    resolve?.(password);
+  }
+  function requireDevicePassword(deviceId: string): Promise<string | undefined | null> {
+    const device = devices.find(item => item.id === deviceId);
+    if (!device?.accessLocked) return Promise.resolve(undefined);
+    if (devicePasswordResolver.current) return Promise.resolve(null);
+    return new Promise(resolve => { devicePasswordResolver.current = resolve; setDeviceAccessDialog({device, connect:true}); });
+  }
   const [secureConnect, setSecureConnect] = useState<SecureConnectState | null>(null);
   const [rolloutDraft, setRolloutDraft] = useState<UpdateFleetRollout | null>(null);
   const [isRolloutOpen, setIsRolloutOpen] = useState(false);
@@ -641,23 +667,25 @@ function ViewerApp() {
       : device));
   };
 
-  const groups = useMemo(() => orderStoreGroups(groupDevicesByStore(devices), listPreferences.groupOrder), [devices, listPreferences.groupOrder]);
+  const groups = useMemo(() => orderStoreGroups(groupDevicesByStore(devices), listPreferences.groupOrder, listPreferences.newDeviceIds), [devices, listPreferences.groupOrder, listPreferences.newDeviceIds]);
   const filteredDevices = useMemo(() => {
-    return filterDeviceWorkspace(devices, {
+    const custom = selectedStore.startsWith("custom:") ? groupDeviceIds(listPreferences.customGroups ?? [], selectedStore.slice(7)) : null;
+    return filterDeviceWorkspace(custom ? devices.filter(d => custom.has(d.id)) : devices, {
       favoriteDeviceIds,
+      newDeviceIds: listPreferences.newDeviceIds,
       favoriteOnly,
       query,
-      selectedStore,
+      selectedStore: custom ? "전체" : selectedStore,
       status: statusFilter,
     });
-  }, [devices, favoriteDeviceIds, favoriteOnly, query, selectedStore, statusFilter]);
+  }, [devices, favoriteDeviceIds, favoriteOnly, query, selectedStore, statusFilter, listPreferences]);
 
   useEffect(() => {
     window.localStorage.setItem("wonremote-favorite-devices", serializeFavoriteDeviceIds(favoriteDeviceIds));
   }, [favoriteDeviceIds]);
 
   useEffect(() => {
-    if (listPreferences.knownDeviceIds === null && !listPreferences.groupOrder.length && !listPreferences.newDeviceIds.length) return;
+    if (listPreferences.knownDeviceIds === null && !listPreferences.groupOrder.length && !listPreferences.newDeviceIds.length && !listPreferences.customGroups?.length) return;
     try {
       const serialized = JSON.stringify(listPreferences);
       if (window.localStorage.getItem(VIEWER_LIST_STORAGE_KEY) !== serialized) {
@@ -742,7 +770,7 @@ function ViewerApp() {
     setIsLoadingDeviceList(true);
     const request = fetchDevices(true, abort.signal, (nextDevices, pendingIds) => {
       if (cancelled) return;
-      setListPreferences((current) => discoverNewDevices(current, nextDevices.map((device) => device.id)));
+      setListPreferences((current) => discoverNewDevices(current, nextDevices));
       setDevices(nextDevices);
       setPresenceChecks(Object.fromEntries(pendingIds.map((id) => [id, "checking" as const])));
       setIsLoadingDeviceList(false);
@@ -752,7 +780,7 @@ function ViewerApp() {
     void request
       .then((nextDevices) => {
         if (!cancelled) {
-          setListPreferences((current) => discoverNewDevices(current, nextDevices.map((device) => device.id)));
+          setListPreferences((current) => discoverNewDevices(current, nextDevices));
           setDevices(nextDevices);
           setPresenceChecks({});
           setApiError("");
@@ -905,7 +933,7 @@ function ViewerApp() {
 
   async function runTrackedSessionOpen(
     deviceId: string,
-    openRequest: () => Promise<{ session: RemoteSession }>,
+    openRequest: (password?: string) => Promise<{ session: RemoteSession }>,
     failureMessage: string,
   ): Promise<RemoteSession | null> {
     if (selectedUpdateInstallingRef.current) { setApiError("뷰어 업데이트 적용 중입니다. 완료 후 다시 접속하세요."); return null; }
@@ -916,6 +944,7 @@ function ViewerApp() {
       return null;
     }
     pendingConnectDeviceIdsRef.current.add(deviceId);
+    beginConnectionTiming(deviceId, "viewer");
     const connectionEpoch = connectionEpochRef.current;
     const connectionTask = (async (): Promise<{
       cleanupSucceeded: boolean;
@@ -924,8 +953,12 @@ function ViewerApp() {
     }> => {
       let createdSessionId: string | null = null;
       try {
-        const result = await openRequest();
+        const password = await requireDevicePassword(deviceId);
+        if (password === null || sessionShutdownInProgressRef.current || connectionEpoch !== connectionEpochRef.current || selectedUpdateInstallingRef.current) return {cleanupSucceeded:true, connected:false, session:null};
+        const result = await openRequest(password);
         createdSessionId = result.session.id;
+        bindConnectionTiming(deviceId, result.session.id);
+        markConnectionTiming(result.session.id, "session-ready");
         if (
           sessionShutdownInProgressRef.current ||
           connectionEpoch !== connectionEpochRef.current
@@ -940,6 +973,7 @@ function ViewerApp() {
         setApiError("");
         return { cleanupSucceeded: true, connected: true, session: result.session };
       } catch (error) {
+        markConnectionTiming(createdSessionId ?? deviceId, "failed");
         if (
           !sessionShutdownInProgressRef.current &&
           connectionEpoch === connectionEpochRef.current
@@ -979,11 +1013,11 @@ function ViewerApp() {
       return;
     }
     setSplitSessionIds(null);
-    await runTrackedSessionOpen(device.id, () => openSession(device.id), "세션 연결 실패");
+    await runTrackedSessionOpen(device.id, password => openSession(device.id, false, password), "세션 연결 실패");
   }
 
   async function handleReconnectSession(previous: RemoteSession) {
-    const replacement = await runTrackedSessionOpen(previous.deviceId, () => openSession(previous.deviceId, true), "재접속 실패");
+    const replacement = await runTrackedSessionOpen(previous.deviceId, password => openSession(previous.deviceId, true, password), "재접속 실패");
     if (!replacement) throw new Error("재접속하지 못했습니다. 연결 상태를 확인하고 다시 시도하세요.");
     if (replacement.id !== previous.id) {
       setSessions(current => current.filter(item => item.id !== previous.id));
@@ -1012,10 +1046,14 @@ function ViewerApp() {
       }
     }
 
-    const openedSessions = await Promise.all(selectedDevices.map(async (device) => (
+    const openSelected = async (device: ManagedDevice) => (
       sessions.find((item) => item.deviceId === device.id)
-      ?? runTrackedSessionOpen(device.id, () => openSession(device.id), "분할 세션 연결 실패")
-    )));
+      ?? runTrackedSessionOpen(device.id, password => openSession(device.id, false, password), "분할 세션 연결 실패")
+    );
+    const openedSessions: Array<RemoteSession | null> = [];
+    if (selectedDevices.some(device => device.accessLocked)) {
+      for (const device of selectedDevices) { const opened = await openSelected(device); if (!opened) return; openedSessions.push(opened); }
+    } else openedSessions.push(...await Promise.all(selectedDevices.map(openSelected)));
     if (!openedSessions[0] || !openedSessions[1]) {
       return;
     }
@@ -1134,10 +1172,11 @@ function ViewerApp() {
     setSecureConnect({ ...secureConnect, isSubmitting: true });
     const connected = await runTrackedSessionOpen(
       secureConnect.device.id,
-      () => connectSecureSession({
+      password => connectSecureSession({
         challengeId: secureConnect.challengeId,
         code: secureConnect.code,
         deviceId: secureConnect.device.id,
+        password,
       }),
       "보안접속 실패",
     );
@@ -1215,6 +1254,7 @@ function ViewerApp() {
               }
             : {
                 businessNumber: input.businessNumber,
+                zookNumber: input.zookNumber,
                 contactName: input.contactName,
                 contactPhone: input.contactPhone,
                 deviceName: input.deviceName,
@@ -1328,6 +1368,10 @@ function ViewerApp() {
           <b>{devices.length}</b>
         </button>
 
+        <ViewerGroups groups={listPreferences.customGroups ?? []} devices={devices}
+          selected={selectedStore.startsWith("custom:") ? selectedStore.slice(7) : null}
+          select={id=>setSelectedStore(id ? `custom:${id}` : "전체")}
+          change={customGroups=>setListPreferences(current=>({...current,customGroups}))}/>
         <section className="sidebar-section" aria-label="매장 그룹">
           <div className="sidebar-section-heading">
             <span>매장 그룹</span>
@@ -1409,12 +1453,12 @@ function ViewerApp() {
         </button>
       </aside>
 
-      <main className="workspace" inert={editTarget !== null}>
+      <main className="workspace" inert={editTarget !== null || deviceAccessDialog !== null}>
         <header className="topbar viewer-command-header" data-testid="viewer-command-header">
           <div className="workspace-title">
             <span className="eyebrow">DEVICE OPERATIONS</span>
             <div className="workspace-heading-line">
-              <h1>{selectedStore === "전체" ? "전체 장비" : selectedStore}</h1>
+              <h1>{selectedStore === "전체" ? "전체 장비" : selectedStore.startsWith("custom:") ? listPreferences.customGroups?.find(g=>g.id===selectedStore.slice(7))?.name ?? "그룹" : selectedStore}</h1>
               <span className="workspace-live-status">
                 <i aria-hidden="true" />
                 {fleetSummary.online}대 온라인
@@ -1641,8 +1685,13 @@ function ViewerApp() {
           onDelete={handleDeleteDevice}
           onSaveRollout={handleSaveDeviceRollout}
           onSave={handleSaveDeviceMetadata}
+          onAccessLock={() => { const device = editTarget.devices[0]; setEditTarget(null); setDeviceAccessDialog({device, connect:false}); }}
         />
       )}
+      {deviceAccessDialog && <DeviceAccessLockDialog key={`${deviceAccessDialog.device.id}:${deviceAccessDialog.connect}`}
+        device={deviceAccessDialog.device} connect={deviceAccessDialog.connect} onClose={() => closeDeviceAccessDialog()}
+        onPassword={password => closeDeviceAccessDialog(password)}
+        onSaved={(enabled, version) => setDevices(current => current.map(device => device.id === deviceAccessDialog.device.id ? {...device, accessLocked:enabled, accessLockVersion:version} : device))}/>}
       {secureConnect && (
         <SecureConnectDialog
           state={secureConnect}
@@ -1695,6 +1744,7 @@ function DeviceEditDialog({
   onSaved,
   onSaveRollout,
   target,
+  onAccessLock,
 }: {
   onClose: () => void;
   onDelete: () => Promise<void>;
@@ -1702,6 +1752,7 @@ function DeviceEditDialog({
   onSaved: () => void;
   onSaveRollout: (deviceId: string, ring: DeviceUpdateRing, paused: boolean) => Promise<void>;
   target: DeviceEditTarget;
+  onAccessLock?: () => void;
 }) {
   useModalEscape(onClose);
   const primaryDevice = target.devices[0];
@@ -1709,6 +1760,7 @@ function DeviceEditDialog({
   const initialDeviceType = resolveDeviceTypeEditor(primaryDevice.deviceName);
   const [form, setForm] = useState({
     businessNumber: primaryDevice.businessNumber,
+    zookNumber: primaryDevice.zookNumber ?? primaryDevice.zookAppliedNumber ?? "",
     contactName: primaryDevice.contactName ?? "",
     contactPhone: primaryDevice.contactPhone ?? "",
     desktopName: primaryDevice.desktopName,
@@ -1730,6 +1782,7 @@ function DeviceEditDialog({
     const nextDeviceType = resolveDeviceTypeEditor(primaryDevice.deviceName);
     setForm({
       businessNumber: primaryDevice.businessNumber,
+      zookNumber: primaryDevice.zookNumber ?? primaryDevice.zookAppliedNumber ?? "",
       contactName: primaryDevice.contactName ?? "",
       contactPhone: primaryDevice.contactPhone ?? "",
       desktopName: primaryDevice.desktopName,
@@ -1753,10 +1806,10 @@ function DeviceEditDialog({
     setIsSaving(true);
     setSaveError("");
     try {
-      const { tagText, businessNumber, ...metadata } = form;
+      const { tagText, businessNumber, zookNumber, ...metadata } = form;
       await onSave({
         ...metadata,
-        ...(!isGroupEdit ? { businessNumber } : {}),
+        ...(!isGroupEdit ? { businessNumber, zookNumber } : {}),
         tags: tagText.split(",").map((tag) => tag.trim()).filter(Boolean),
       });
       if (isViewerFirebaseEnabled()) {
@@ -1865,6 +1918,14 @@ function DeviceEditDialog({
           </label>
           {!isGroupEdit && (
             <>
+              <label>
+                ZOOK 고유번호
+                <input aria-label="ZOOK 고유번호" inputMode="numeric" maxLength={8} autoComplete="off" pattern="[0-9]{8}|" placeholder="014 뒤 8자리 숫자"
+                  value={form.zookNumber} onChange={event => setForm(prev => ({...prev, zookNumber: event.target.value}))} />
+                {primaryDevice.zookError ? <span role="alert">ZOOK 적용 실패: {primaryDevice.zookError}</span>
+                  : primaryDevice.zookAppliedNumber ? <span>마지막 적용: 014-{primaryDevice.zookAppliedNumber.slice(0,4)}-{primaryDevice.zookAppliedNumber.slice(4)}{primaryDevice.zookNumber && primaryDevice.zookNumber !== primaryDevice.zookAppliedNumber ? " · 변경 적용 대기" : ""}</span>
+                  : primaryDevice.zookNumber ? <span>Agent 적용 대기</span> : null}
+              </label>
               <label>
                 장비 종류
                 <select
@@ -1986,6 +2047,7 @@ function DeviceEditDialog({
               {isDeleting ? "삭제 중..." : isDeleteArmed ? "한 번 더 눌러 삭제" : "장비 삭제"}
             </button>
           )}
+          {!isGroupEdit && onAccessLock && <button className="secondary-button" type="button" disabled={isSaving || isDeleting || !isViewerFirebaseEnabled()} onClick={onAccessLock}><LockKeyhole size={16}/><span>접속 잠금</span></button>}
           <button className="secondary-button" type="button" onClick={onClose}>
             취소
           </button>
@@ -2347,6 +2409,10 @@ function AgentFirstRunApp() {
   const agentVersion = getViewerVersion(import.meta.env);
   const [businessNumber, setBusinessNumber] = useState("");
   const [password, setPassword] = useState("");
+  const [storeName, setStoreName] = useState("");
+  const [deviceTypeChoice, setDeviceTypeChoice] = useState<DeviceTypeChoice>("메인포스");
+  const [customDeviceType, setCustomDeviceType] = useState("");
+  const [notes, setNotes] = useState("");
   const [apiUrl, setApiUrl] = useState("http://127.0.0.1:8787");
   const [installId, setInstallId] = useState(getOrCreateAgentInstallId);
   const [desktopName, setDesktopName] = useState("");
@@ -2361,6 +2427,67 @@ function AgentFirstRunApp() {
   const [isRestarting, setIsRestarting] = useState(false);
   const [isAgentUpdateChecking, setIsAgentUpdateChecking] = useState(false);
   const [agentUpdateDialog, setAgentUpdateDialog] = useState<ViewerUpdateDialogState | null>(null);
+  const [zookNumber, setZookNumber] = useState("");
+  const [zookStatus, setZookStatus] = useState("");
+  const [zookError, setZookError] = useState(false);
+  const [isConfiguringZook, setIsConfiguringZook] = useState(false);
+  const [isMetadataOpen, setIsMetadataOpen] = useState(false);
+  const [isMetadataPasswordOpen, setIsMetadataPasswordOpen] = useState(false);
+  const [metadataPassword, setMetadataPassword] = useState("");
+  const [isMetadataBusy, setIsMetadataBusy] = useState(false);
+  const [metadataError, setMetadataError] = useState("");
+  const [metadataStatus, setMetadataStatus] = useState("");
+  const metadataBusy = useRef(false);
+  const metadataDialog = useRef<HTMLDialogElement>(null);
+  const zookBusy = useRef(false);
+  const zookEdited = useRef(false);
+  const zookMounted = useRef(true);
+
+  useEffect(() => {
+    zookMounted.current = true;
+    return () => { zookMounted.current = false; };
+  }, []);
+
+  useEffect(() => { if (isMetadataOpen || isMetadataPasswordOpen) metadataDialog.current?.showModal(); }, [isMetadataOpen, isMetadataPasswordOpen]);
+
+  async function openMetadataEditor(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (metadataBusy.current || !registeredConfig) return;
+    if (metadataPassword !== "4401") { setMetadataError("비밀번호가 일치하지 않습니다."); return; }
+    setMetadataPassword(""); setIsMetadataPasswordOpen(false);
+    metadataBusy.current = true; setIsMetadataBusy(true); setMetadataStatus(""); setError("");
+    try {
+      const device = await fetchRegisteredAgentDevice(registeredConfig);
+      if (!zookMounted.current) return;
+      const type = resolveDeviceTypeEditor(device.deviceName);
+      setBusinessNumber(device.businessNumber); setStoreName(device.storeName);
+      setDeviceTypeChoice(type.choice); setCustomDeviceType(type.value);
+      setMetadataError(""); setIsMetadataOpen(true);
+    } catch (cause) {
+      if (zookMounted.current) setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      metadataBusy.current = false; if (zookMounted.current) setIsMetadataBusy(false);
+    }
+  }
+
+  async function saveMetadata(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (metadataBusy.current || !registeredConfig) return;
+    metadataBusy.current = true; setIsMetadataBusy(true); setMetadataError("");
+    try {
+      const device = await updateRegisteredAgentDevice(registeredConfig, {
+        businessNumber, storeName, deviceName: resolveDeviceTypeValue(deviceTypeChoice, customDeviceType),
+      });
+      if (!zookMounted.current) return;
+      // Preserve the original account until the existing sync command updates the local config.
+      setRegisteredConfig((current: any) => ({...current, authBusinessNumber: current.authBusinessNumber ?? current.businessNumber, businessNumber: device.businessNumber}));
+      setIsMetadataOpen(false); setMetadataStatus("장비 정보를 저장했습니다.");
+    } catch (cause) {
+      if (zookMounted.current) setMetadataError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      metadataBusy.current = false; if (zookMounted.current) setIsMetadataBusy(false);
+    }
+  }
 
   useEffect(() => {
     if (!(window as any).__TAURI_INTERNALS__) {
@@ -2370,14 +2497,23 @@ function AgentFirstRunApp() {
     let cancelled = false;
     let stopConfigEvents: (() => void) | undefined;
     let configRevision = 0;
-    const refreshConfig = async () => {
+    const refreshConfig = async (zookChanged = false) => {
       const revision = ++configRevision;
       const config = await invoke<any>("get_agent_config");
       if (!cancelled && revision === configRevision && config?.registeredDeviceId) setRegisteredConfig(config);
+      try {
+        const number = await invoke<string>("load_zook_number");
+        if (!cancelled && revision === configRevision && !zookEdited.current) {
+          setZookNumber(number);
+          if (zookChanged) {setZookStatus(""); setZookError(false);}
+        }
+      } catch (cause) {
+        if (!cancelled && revision === configRevision) { setZookError(true); setZookStatus(String(cause)); }
+      }
     };
     void (async () => {
       try {
-        const stop = await listen("agent-config-changed", () => { void refreshConfig().catch(() => {}); });
+        const stop = await listen<{scope?:string}>("agent-config-changed", event => { void refreshConfig(event.payload?.scope === "zook").catch(() => {}); });
         if (cancelled) { stop(); return; }
         stopConfigEvents = stop;
         await refreshConfig();
@@ -2418,6 +2554,7 @@ function AgentFirstRunApp() {
     try {
       const result = await registerFirstRunAgent({
         businessNumber,
+        storeName, deviceName: resolveDeviceTypeValue(deviceTypeChoice,customDeviceType), notes,
         password,
         installId,
         desktopName: desktopName || undefined,
@@ -2458,6 +2595,44 @@ function AgentFirstRunApp() {
       setIsSubmitting(false);
     }
   }
+
+  async function handleZookSetup() {
+    if (zookBusy.current || !/^[0-9]{8}$/.test(zookNumber)) return;
+    zookBusy.current = true;
+    setIsConfiguringZook(true);
+    setZookStatus("");
+    try {
+      const number = await invoke<string>("configure_zook_agent", { number: zookNumber });
+      if (zookMounted.current) { zookEdited.current = false; setZookError(false); setZookStatus(`${number} · ZOOK 접속 대기 중`); }
+    } catch (cause) {
+      if (zookMounted.current) { setZookError(true); setZookStatus(cause instanceof Error ? cause.message : String(cause)); }
+    } finally {
+      zookBusy.current = false;
+      if (zookMounted.current) setIsConfiguringZook(false);
+    }
+  }
+
+  const zookSetup = (
+    <div className="agent-zook-setup">
+      <label htmlFor="agent-zook-number">ZOOK 고유번호 (선택)</label>
+      <div className="agent-zook-row">
+        <span>014</span>
+        <input id="agent-zook-number" inputMode="numeric" maxLength={8} autoComplete="off" placeholder="8자리 숫자"
+          value={zookNumber} disabled={isConfiguringZook} onChange={(event) => {
+            zookEdited.current = true; setZookNumber(event.target.value); setZookStatus("");
+          }} />
+        <button className="secondary-button" type="button" disabled={!(window as any).__TAURI_INTERNALS__ || !/^[0-9]{8}$/.test(zookNumber) || isConfiguringZook}
+          onClick={() => void handleZookSetup()}>
+          <PlugZap size={15} /><span>{isConfiguringZook ? "설정 중" : "ZOOK 대기"}</span>
+        </button>
+        <button className="secondary-button" type="button" title="ZOOK Windows 알림 설정" aria-label="ZOOK Windows 알림 설정"
+          disabled={!(window as any).__TAURI_INTERNALS__} onClick={() => {
+            void invoke("open_zook_notification_settings").catch(cause => { if (zookMounted.current) {setZookError(true); setZookStatus(String(cause));} });
+          }}><Bell size={15} /></button>
+      </div>
+      {zookStatus && <p className={`agent-zook-status ${zookError ? "is-error" : ""}`} role={zookError ? "alert" : "status"}>{zookStatus}</p>}
+    </div>
+  );
 
   async function handleRestartAgent() {
     if (isRestarting) return;
@@ -2534,6 +2709,11 @@ function AgentFirstRunApp() {
                 <code title={registeredConfig.installId}>{registeredConfig.installId}</code>
               </div>
             </div>
+            <button className="secondary-button" type="button" disabled={isMetadataBusy} onClick={() => {setMetadataPassword("");setMetadataError("");setIsMetadataPasswordOpen(true);}}>
+              <Pencil size={15}/><span>{isMetadataBusy ? "정보 확인 중..." : "장비 정보 수정"}</span>
+            </button>
+            {metadataStatus && <p className="agent-status-copy" role="status">{metadataStatus}</p>}
+            {zookSetup}
             <p className="agent-status-copy">
               원격 제어 대기 중 · 트레이에서 관리
             </p>
@@ -2548,6 +2728,25 @@ function AgentFirstRunApp() {
             </div>
           </div>
         </main>
+        {(isMetadataOpen || isMetadataPasswordOpen) && <dialog ref={metadataDialog} className="custom-group-dialog" aria-label={isMetadataPasswordOpen ? "장비 정보 수정 비밀번호" : "Agent 장비 정보 수정"}
+          onCancel={event => {if (metadataBusy.current) event.preventDefault(); else {setIsMetadataOpen(false);setIsMetadataPasswordOpen(false);setMetadataPassword("");}}}>
+          {isMetadataPasswordOpen ? <form className="modal-panel agent-metadata-editor" onSubmit={event => void openMetadataEditor(event)}>
+            <div className="section-heading"><h2>비밀번호 확인</h2></div>
+            <label>비밀번호<input autoFocus required type="password" inputMode="numeric" autoComplete="off" maxLength={4} value={metadataPassword} onChange={event => {setMetadataPassword(event.target.value);setMetadataError("");}}/></label>
+            {metadataError && <p className="error-text" role="alert">{metadataError}</p>}
+            <div className="modal-actions"><button className="secondary-button" type="button" onClick={() => {setIsMetadataPasswordOpen(false);setMetadataPassword("");}}>취소</button><button className="primary-button compact" type="submit">확인</button></div>
+          </form> : <form className="modal-panel agent-metadata-editor" onSubmit={event => void saveMetadata(event)}>
+            <div className="section-heading"><h2>장비 정보 수정</h2><button className="custom-group-tool" type="button" aria-label="장비 정보 수정 닫기" disabled={isMetadataBusy} onClick={() => setIsMetadataOpen(false)}><X size={18}/></button></div>
+            <div className="agent-metadata-fields" role="group" aria-label="장비 정보">
+              <label>상호<input autoFocus disabled={isMetadataBusy} maxLength={255} value={storeName} onChange={event => {setStoreName(event.target.value);setMetadataError("");}}/></label>
+              <label>사업자번호<input required disabled={isMetadataBusy} inputMode="numeric" maxLength={12} value={businessNumber} onChange={event => {setBusinessNumber(event.target.value);setMetadataError("");}}/></label>
+              <label>장비 구분<select disabled={isMetadataBusy} aria-label="장비 구분" value={deviceTypeChoice} onChange={event => {setDeviceTypeChoice(event.target.value as DeviceTypeChoice);setMetadataError("");}}>{DEVICE_TYPE_PRESETS.map(type => <option key={type} value={type}>{type}</option>)}<option value="custom">직접입력</option></select></label>
+              {deviceTypeChoice === "custom" && <label>장비 구분 직접입력<input required disabled={isMetadataBusy} maxLength={100} value={customDeviceType} onChange={event => {setCustomDeviceType(event.target.value);setMetadataError("");}}/></label>}
+            </div>
+            {metadataError && <p className="error-text" role="alert">{metadataError}</p>}
+            <div className="modal-actions"><button className="secondary-button" type="button" disabled={isMetadataBusy} onClick={() => setIsMetadataOpen(false)}>취소</button><button className="primary-button compact" type="submit" disabled={isMetadataBusy}>{isMetadataBusy ? "저장 중..." : "저장"}</button></div>
+          </form>}
+        </dialog>}
         {isRestartDialogOpen && (
           <AgentRestartDialog
             isRestarting={isRestarting}
@@ -2602,6 +2801,11 @@ function AgentFirstRunApp() {
             value={password}
           />
         </label>
+        <label>상호<input maxLength={255} value={storeName} onChange={event=>setStoreName(event.target.value)}/></label>
+        <label>장비 구분<select aria-label="장비 구분" value={deviceTypeChoice} onChange={event=>setDeviceTypeChoice(event.target.value as DeviceTypeChoice)}>{DEVICE_TYPE_PRESETS.map(type=><option key={type} value={type}>{type}</option>)}<option value="custom">직접입력</option></select></label>
+        {deviceTypeChoice === "custom" && <label>장비 구분 직접입력<input required maxLength={100} value={customDeviceType} onChange={event=>setCustomDeviceType(event.target.value)}/></label>}
+        <label>메모<textarea className="agent-first-run-notes" rows={2} maxLength={2000} value={notes} onChange={event=>setNotes(event.target.value)}/></label>
+        {zookSetup}
         {error && <p className="error-text">{error}</p>}
         {registeredDevice && (
           <div className="agent-result">
@@ -3828,6 +4032,7 @@ function RemoteSessionPanel({
             }
           }
           if (visibleContext) {
+            markConnectionTiming(sessionId, "first-picture");
             hasPresentedBaseline = true;
             baselineRevision++;
             if (decodedTiles.some(({ img }) => img && img.naturalWidth > 0)) {
@@ -3887,7 +4092,7 @@ function RemoteSessionPanel({
         let failed = false;
         try {
           const transport = await startFirebaseViewerWebRtcTransport(sessionId, {
-            onFrame: drawTileFrame,
+            onFrame: frame => { markConnectionTiming(sessionId, "frame-received"); drawTileFrame(frame); },
             onReverseFileSupport: resumeSupported => { if (active) { setReverseFileSupported(true); setReverseResumeSupported(resumeSupported === true); } },
             onFileStatus: status => {
               if (!active) return;
@@ -3944,9 +4149,11 @@ function RemoteSessionPanel({
               }
             },
             onState: (state) => {
+              if (state === "webrtc-offer-sent") markConnectionTiming(sessionId, "offer-sent");
               if (!active) return;
               if (state === "webrtc-file-closed") { markReceiveInterrupted(); setReverseFileSupported(false); setReverseResumeSupported(false); }
               if (state === "webrtc-open") {
+                markConnectionTiming(sessionId, "channel-open");
                 webRtcConnectionOpen = true;
                 setNeedsManualReconnect(false);
                 setIsWebRtcConnectionReady(true);
@@ -5538,6 +5745,18 @@ function RemoteSessionPanel({
         </div>
 
         <div className="session-command-actions">
+          {[
+            {id:"edge", label:"Download", name:"Microsoft Edge 다운로드", logo:edgeLogo, url:"https://c2rsetup.officeapps.live.com/c2r/downloadEdge.aspx?platform=Default&source=EdgeStablePage&Channel=Stable&language=ko&Consent=0&brand=M100"},
+            {id:"asp", label:"ASP", name:"FirstPOS ASP 열기", logo:aspLogo, url:"https://asp.firstpos.co.kr/login/login_form.do"},
+          ].map(shortcut => <button key={shortcut.id} type="button" className="viewer-shortcut"
+            disabled={!remoteInputAvailable} title={`${shortcut.name} · 원격 PC 기본 브라우저`} aria-label={shortcut.name}
+            onClick={() => onInputEvent(`system ${shortcut.id === "edge" ? "edge-download" : "asp-login"}`)}>
+            <img src={shortcut.logo} alt=""/><span>{shortcut.label}</span></button>)}
+          <button className="secondary-button" type="button" disabled={!remoteInputAvailable} title="원격 클립보드 열기 (Win+V)" aria-label="원격 클립보드 열기 (Win+V)" onClick={()=>{
+            commitImeBeforeRemoteKey();
+            for(const modifier of releaseTrackedModifierKeys(pressedKeysRef.current)) onInputEvent(`key-up ${modifier}`);
+            onInputEvent("key-down Win"); onInputEvent("keypress V"); onInputEvent("key-up Win");
+          }}><ClipboardList size={17}/></button>
           <button className="secondary-button" type="button" onClick={handleSendClipboard} title="클립보드 동기화: 내 PC → 원격 PC" aria-label="클립보드 동기화: 내 PC → 원격 PC">
             <Clipboard size={17} />
             {mobileRemote && <span>클립보드 보내기</span>}

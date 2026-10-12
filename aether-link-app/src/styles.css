@@ -99,6 +99,29 @@ button:disabled {
   align-content: start;
 }
 
+.custom-group-row { display: flex; align-items: center; min-width: 0; }
+.custom-group-row .group-button { flex: 1; min-width: 0; }
+.custom-group-tool { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 28px; width: 28px; height: 32px; border: 0; background: transparent; color: inherit; cursor: pointer; }
+.custom-group-dialog { padding: 0; border: 0; background: transparent; max-width: calc(100vw - 24px); max-height: calc(100vh - 24px); }
+.custom-group-dialog::backdrop { background: rgba(12,24,36,.45); }
+.custom-group-editor { width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 40px); overflow-y: auto; color: #142b43; gap: 12px; }
+.custom-group-editor > label { display: grid; gap: 6px; margin: 0; }
+.custom-group-members { max-height: 280px; overflow-y: auto; margin: 12px 0; }
+.custom-group-members label { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+.custom-group-members input { width: 16px; height: 16px; flex: 0 0 16px; }
+.custom-group-members span { overflow-wrap: anywhere; }
+.custom-group-members small { display: block; color: #52657b; }
+.agent-first-run-notes { resize: vertical; min-height: 56px; white-space: pre-wrap; }
+.modal-panel.agent-metadata-editor { display: flex; flex-direction: column; width: min(400px, calc(100vw - 24px)); max-height: calc(100vh - 24px); overflow: hidden; box-sizing: border-box; padding: 16px; gap: 10px; }
+.agent-metadata-fields { display: grid; gap: 10px; min-width: 0; min-height: 0; overflow-y: auto; flex: 1 1 auto; }
+.agent-metadata-editor .section-heading, .agent-metadata-editor .modal-actions { flex-shrink: 0; }
+.agent-metadata-editor .section-heading { margin-bottom: 0; }
+.agent-metadata-editor label { display: grid; gap: 4px; }
+.agent-metadata-editor h2 { font-size: 18px; }
+.agent-metadata-editor select { font: inherit; color: #142b43; background: #fff; border: 1px solid #c4d0df; border-radius: 4px; padding: 9px 10px; width: 100%; box-sizing: border-box; }
+.agent-metadata-editor .error-text { white-space: normal; overflow-wrap: anywhere; margin: 0; max-height: 64px; overflow-y: auto; flex-shrink: 0; }
+.agent-screen select, .agent-screen textarea, .custom-group-editor select { font: inherit; color: #142b43; background: #fff; border: 1px solid #c4d0df; border-radius: 4px; padding: 9px 10px; width: 100%; box-sizing: border-box; }
+
 .agent-screen {
   align-items: stretch;
   background: #ffffff;
@@ -199,6 +222,14 @@ button:disabled {
   grid-template-columns: 1fr 1fr;
   width: 100%;
 }
+
+.agent-zook-setup { display: grid; gap: 4px; min-width: 0; }
+.agent-zook-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.agent-zook-row > span { color: #526075; font-size: 13px; }
+.agent-zook-row input { flex: 1; width: 0; min-width: 0; }
+.agent-zook-row button { flex: none; display: inline-flex; align-items: center; padding: 8px; }
+.agent-zook-status { color: #176d62; font-size: 12px; line-height: 1.4; margin: 0; overflow-wrap: anywhere; white-space: normal; }
+.agent-zook-status.is-error { color: #b42335; }
 
 .agent-action-row button {
   align-items: center;
@@ -3124,6 +3155,34 @@ input:focus {
   gap: 6px;
   justify-content: flex-end;
 }
+
+.viewer-shortcut {
+  background: transparent;
+  border: 0;
+  align-items: center;
+  border-radius: 4px;
+  color: #dbe6ee;
+  display: inline-flex;
+  flex: 0 0 58px;
+  flex-direction: column;
+  gap: 1px;
+  height: 42px;
+  justify-content: center;
+  padding: 2px;
+  text-decoration: none;
+  width: 58px;
+}
+.viewer-shortcut img { height: 24px; object-fit: contain; width: 28px; }
+.viewer-shortcut span { font-size: 10px; line-height: 12px; white-space: nowrap; }
+.viewer-shortcut:hover { background: #243640; }
+.viewer-shortcut:focus-visible { outline: 2px solid #5ed7c5; outline-offset: 2px; }
+.viewer-shortcut:disabled { opacity: 0.45; cursor: not-allowed; }
+.device-access-dialog { width: min(440px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); overflow: auto; }
+.device-access-dialog h2 { display: flex; align-items: center; gap: 8px; font-size: 18px; }
+.device-access-dialog fieldset { border: 0; padding: 0; margin: 0; display: grid; gap: 14px; }
+.device-access-dialog label { display: grid; gap: 6px; font-size: 13px; }
+.device-access-dialog input { width: 100%; min-width: 0; padding: 10px; border: 1px solid #c4d3e0; border-radius: 4px; }
+.device-access-dialog .modal-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 
 .session-tool-menu {
   margin-left: 0;

@@ -26,6 +26,12 @@ function device(
 }
 
 describe("device workspace", () => {
+  it("keeps offline NEW devices above online favorites after every filter/snapshot sort", () => {
+    const devices=[device("favorite"),device("new",{status:"offline"}),device("normal")];
+    expect(filterDeviceWorkspace(devices,{favoriteDeviceIds:["favorite"],newDeviceIds:["new"]}).map(d=>d.id)).toEqual(["new","favorite","normal"]);
+    expect(filterDeviceWorkspace([...devices].reverse(),{query:"서울",newDeviceIds:["new"]})[0].id).toBe("new");
+    expect(filterDeviceWorkspace(devices,{favoriteDeviceIds:["favorite"],newDeviceIds:[]})[0].id).toBe("favorite");
+  });
   it.each(["01012345678", "010-1234", "1234 5678"])("finds formatted contact phone with %s", query => {
     expect(filterDeviceWorkspace([device("phone", { contactPhone: "010-1234-5678" }), device("other")], { query }).map(item => item.id)).toEqual(["phone"]);
   });

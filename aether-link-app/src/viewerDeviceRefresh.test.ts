@@ -15,6 +15,7 @@ beforeAll(async () => {
       resolveDir: process.cwd(), loader: "tsx",
     },
     bundle: true, write: false, outfile: "viewer-test.js", platform: "browser", format: "iife",
+    loader: { ".png": "dataurl" },
     define: { "import.meta.env": "{}", "process.env.NODE_ENV": '"development"' },
     plugins: [{ name: "offline-firebase-boundary", setup(builder) {
       builder.onLoad({ filter: /[\\/]firebase[\\/]viewerFirebase\.ts$/ }, ({ path }) => {
@@ -31,7 +32,7 @@ beforeAll(async () => {
 }, 30_000);
 afterAll(async () => { await browser?.close(); });
 
-async function openViewer(options: { agent?: boolean; manual?: boolean; slow?: boolean; fail?: boolean; local?: boolean; connected?: boolean; mobile?: boolean; emulateMobile?: boolean; rolloutSupported?: boolean; nativeAndroid?: boolean; desktop?: boolean; accountManager?: boolean; viewport?: { width: number; height: number }; storeName?: string } = {}) {
+async function openViewer(options: { firstRun?: boolean; agent?: boolean; manual?: boolean; slow?: boolean; fail?: boolean; local?: boolean; connected?: boolean; mobile?: boolean; emulateMobile?: boolean; rolloutSupported?: boolean; nativeAndroid?: boolean; desktop?: boolean; accountManager?: boolean; viewport?: { width: number; height: number }; storeName?: string } = {}) {
   const page = await browser.newPage({ viewport: options.viewport ?? (options.mobile ? { width: 390, height: 844 } : { width: 1440, height: 900 }), ...(options.emulateMobile ? { isMobile: true, hasTouch: true } : {}), ...(options.nativeAndroid ? { userAgent: "Android WonRemoteViewer/1" } : {}) });
   const origin = options.nativeAndroid ? "https://wonremote-a7fd3.web.app" : "http://viewer.test";
   page.setDefaultTimeout(3_000);
@@ -67,7 +68,14 @@ async function openViewer(options: { agent?: boolean; manual?: boolean; slow?: b
           w.nativeCalls.push({command,args});
           if (command === "plugin:event|listen") { w.nativeEvents[args.event]=w.nativeCallbacks[args.handler]; return args.handler; }
           if (command === "get_app_mode") return opts.agent ? "agent" : "viewer";
-          if (command === "get_agent_config") return w.agentConfig ?? {businessNumber:"123-45-67890",registeredDeviceId:"123-45-67890:AGENT-0",installId:"test-agent"};
+          if (command === "get_agent_config") return opts.firstRun ? null : w.agentConfig ?? {businessNumber:"123-45-67890",registeredDeviceId:"123-45-67890:AGENT-0",installId:"test-agent"};
+          if (command === "load_zook_number") return w.zookNumber ?? (opts.agent && !opts.firstRun ? "00123456" : "");
+          if (command === "configure_zook_agent") {
+            await new Promise<void>(resolve => { w.finishZook = resolve; });
+            if (w.zookFailure) throw w.zookFailure;
+            w.zookNumber = args.number;
+            return `014-${args.number.slice(0,4)}-${args.number.slice(4)}`;
+          }
           if (command === "get_or_create_agent_install_id") return "test-agent";
           if (command === "get_computer_name") return "PC";
           if (command === "begin_viewer_download") return "local-save";
@@ -166,6 +174,428 @@ const counts = (page: Page) => page.evaluate(() => {
 const refresh = (page: Page) => page.getByRole("button", { name: "장비 목록 새로고침", exact: true });
 
 describe("manual Viewer device list in a real browser", () => {
+  it("device access lock modal blocks connection until password and supports settings/reset with no idle requests", async () => {
+    const page = await openViewer({connected:true, desktop:true});
+    try {
+      await page.evaluate(() => {
+        const w = window as any;
+        w.testState.devices[0].accessLocked = true;
+        w.testState.devices[0].accessLockVersion = "version-1";
+        w.testState.devices[0].accessPublicKey = "A".repeat(392);
+        const original = w.testApi.openFirebaseSession;
+        w.testApi.openFirebaseSession = (...args: any[]) => { w.enteredPassword = args[3]; return original(...args); };
+        w.accessCalls = [];
+        w.testApi.requestFirebaseDeviceAccess = async (...args: any[]) => {
+          w.accessCalls.push(args.slice(0, 3));
+          if (w.accessFailure) throw Error("Agent rejected password");
+          return {requestId:"request-1", version:"version-2"};
+        };
+      });
+      await refresh(page).click();
+      const row = page.locator('.table-row').filter({has:page.getByText('PC-0',{exact:true})});
+      await row.getByRole('button',{name:'접속',exact:true}).click();
+      await page.getByRole('dialog',{name:'잠금 장비 접속'}).waitFor();
+      expect(await page.evaluate(()=>(window as any).testState.connections)).toEqual([]);
+      await page.getByRole('button',{name:'잠금 창 닫기'}).click();
+      expect(await page.evaluate(()=>(window as any).testState.connections)).toEqual([]);
+      await row.getByRole('button',{name:'장비 정보 수정',exact:true}).click();
+      await page.getByRole('button',{name:'접속 잠금',exact:true}).click();
+      await page.getByRole('button',{name:'비밀번호 분실',exact:true}).click();
+      const admin = page.getByLabel('관리자 비밀번호',{exact:true});
+      expect(await admin.getAttribute('type')).toBe('password');
+      await admin.fill('test admin');
+      await page.getByLabel('새 비밀번호',{exact:true}).fill('new-password');
+      await page.getByLabel('새 비밀번호 확인',{exact:true}).fill('not-the-same');
+      await page.screenshot({path:'../.codex-tmp/device-access-lock-modal.png'});
+      await page.getByRole('button',{name:'재설정',exact:true}).click();
+      expect(await page.evaluate(()=>(window as any).accessCalls)).toEqual([]);
+      await page.getByLabel('새 비밀번호 확인',{exact:true}).fill('new-password');
+      await page.evaluate(()=>{(window as any).accessFailure=true;});
+      await page.getByRole('button',{name:'재설정',exact:true}).click();
+      await page.getByRole('alert').filter({hasText:'Agent rejected password'}).waitFor();
+      expect(await page.getByLabel('새 비밀번호',{exact:true}).inputValue()).toBe('new-password');
+      await page.evaluate(()=>{(window as any).accessFailure=false;});
+      await page.getByRole('button',{name:'재설정',exact:true}).click();
+      await expect.poll(()=>page.getByRole('dialog',{name:'접속 비밀번호 재설정'}).count()).toBe(0);
+      expect(await page.evaluate(()=>(window as any).accessCalls.map((call:any[])=>call.slice(0,2)))).toEqual([['device-0','reset'],['device-0','reset']]);
+      await row.getByRole('button',{name:'접속',exact:true}).click();
+      await page.getByLabel('접속 비밀번호',{exact:true}).fill('new-password');
+      await page.getByRole('dialog',{name:'잠금 장비 접속'}).getByRole('button',{name:'접속',exact:true}).click();
+      await expect.poll(()=>page.evaluate(()=>(window as any).testState.connections)).toEqual(['device-0']);
+      expect(await page.evaluate(()=>(window as any).enteredPassword)).toBe('new-password');
+      expect(await page.locator('input[type=password]').count()).toBe(0);
+      await page.screenshot({path:'../.codex-tmp/device-access-lock-browser.png'});
+    } finally {await page.close();}
+  });
+  it("running Agent metadata editor saves without restart, preserves failed drafts and has no idle requests", async () => {
+    const page=await openViewer({desktop:true,agent:true,viewport:{width:360,height:420}});
+    try {
+      await page.getByRole('heading',{name:'Agent 가동 중',exact:true}).waitFor();
+      await page.evaluate(()=>{
+        const w=window as any;w.metadataLoads=0;w.metadataSaves=[];
+        w.metadataDevice={id:'123-45-67890:AGENT-0',businessNumber:'123-45-67890',storeName:'현재 매장',deviceName:'메인포스'};
+        w.testApi.fetchFirebaseAgentDevice=async()=>{w.metadataLoads++;return structuredClone(w.metadataDevice);};
+        w.testApi.updateFirebaseAgentDevice=async(config:any,input:any)=>{
+          w.metadataSaves.push({config,input});await new Promise<void>(resolve=>{w.finishMetadataSave=resolve;});
+          if(w.metadataFailure)throw Error(w.metadataFailure);
+          Object.assign(w.metadataDevice,input);return structuredClone(w.metadataDevice);
+        };
+      });
+      await page.getByRole('button',{name:'장비 정보 수정',exact:true}).click();
+      const passwordDialog=page.getByRole('dialog',{name:'장비 정보 수정 비밀번호',exact:true});
+      await passwordDialog.waitFor();
+      expect(await passwordDialog.evaluate(e=>{const r=e.getBoundingClientRect();return r.left>=0&&r.top>=0&&r.right<=innerWidth&&r.bottom<=innerHeight;})).toBe(true);
+      expect(await passwordDialog.getByLabel('비밀번호',{exact:true}).getAttribute('type')).toBe('password');
+      expect(await passwordDialog.getByLabel('비밀번호',{exact:true}).evaluate(e=>e===document.activeElement)).toBe(true);
+      await passwordDialog.getByLabel('비밀번호',{exact:true}).fill('1234');
+      await passwordDialog.getByRole('button',{name:'확인',exact:true}).click();
+      await passwordDialog.getByRole('alert').filter({hasText:'비밀번호가 일치하지 않습니다'}).waitFor();
+      await page.screenshot({path:'../.codex-tmp/agent-metadata-password.png'});
+      expect(await page.evaluate(()=>(window as any).metadataLoads)).toBe(0);
+      expect(await page.getByRole('dialog',{name:'Agent 장비 정보 수정',exact:true}).count()).toBe(0);
+      await passwordDialog.getByRole('button',{name:'취소',exact:true}).click();
+      await page.getByRole('button',{name:'장비 정보 수정',exact:true}).click();
+      expect(await passwordDialog.getByLabel('비밀번호',{exact:true}).inputValue()).toBe('');
+      await passwordDialog.getByRole('button',{name:'확인',exact:true}).click();
+      expect(await page.evaluate(()=>(window as any).metadataLoads)).toBe(0);
+      await page.keyboard.press('Escape');
+      expect(await passwordDialog.count()).toBe(0);
+      await page.getByRole('button',{name:'장비 정보 수정',exact:true}).click();
+      await passwordDialog.getByLabel('비밀번호',{exact:true}).fill('4401');
+      await passwordDialog.getByRole('button',{name:'확인',exact:true}).evaluate(e=>{for(let i=0;i<3;i++)e.dispatchEvent(new MouseEvent('click',{bubbles:true}));});
+      const dialog=page.getByRole('dialog',{name:'Agent 장비 정보 수정',exact:true});
+      await dialog.waitFor();expect(await dialog.getByLabel('상호',{exact:true}).inputValue()).toBe('현재 매장');
+      expect(await page.evaluate(()=>(window as any).metadataLoads)).toBe(1);
+      await dialog.getByLabel('상호',{exact:true}).fill('변경 매장');
+      await dialog.getByLabel('사업자번호',{exact:true}).fill('123');
+      await dialog.getByRole('button',{name:'저장',exact:true}).click();
+      await dialog.getByRole('alert').filter({hasText:'10자리'}).waitFor();
+      expect(await page.evaluate(()=>(window as any).metadataSaves.length)).toBe(0);
+      await dialog.getByLabel('사업자번호',{exact:true}).fill('9876543210');
+      await dialog.getByLabel('장비 구분',{exact:true}).selectOption('custom');
+      await dialog.getByLabel('장비 구분 직접입력',{exact:true}).fill('키오스크');
+      await page.screenshot({path:'../.codex-tmp/agent-live-metadata.png'});
+      expect(await dialog.evaluate(e=>{const r=e.getBoundingClientRect();return r.left>=0&&r.top>=0&&r.right<=innerWidth&&r.bottom<=innerHeight;})).toBe(true);
+      expect(await dialog.getByRole('button',{name:'저장',exact:true}).evaluate(e=>{const r=e.getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight;})).toBe(true);
+      expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+      await dialog.getByRole('button',{name:'저장',exact:true}).evaluate(e=>{for(let i=0;i<3;i++)e.dispatchEvent(new MouseEvent('click',{bubbles:true}));});
+      await expect.poll(()=>page.evaluate(()=>(window as any).metadataSaves.length)).toBe(1);
+      expect(await dialog.getByRole('button',{name:'취소',exact:true}).isDisabled()).toBe(true);
+      await page.evaluate(()=>{const w=window as any;w.metadataFailure='permission-denied';w.finishMetadataSave();});
+      await dialog.getByRole('alert').filter({hasText:'permission-denied'}).waitFor();
+      expect(await dialog.evaluate(e=>e.querySelector('.agent-metadata-fields')!.getBoundingClientRect().bottom<=e.querySelector('[role="alert"]')!.getBoundingClientRect().top)).toBe(true);
+      await page.screenshot({path:'../.codex-tmp/agent-live-metadata-failure.png'});
+      expect(await dialog.getByLabel('상호',{exact:true}).inputValue()).toBe('변경 매장');
+      await page.evaluate(()=>{(window as any).metadataFailure='';});
+      await dialog.getByRole('button',{name:'저장',exact:true}).click();
+      await page.evaluate(()=>(window as any).finishMetadataSave());
+      await page.getByRole('status').filter({hasText:'장비 정보를 저장'}).waitFor();
+      expect(await dialog.count()).toBe(0);
+      expect(await page.getByText('987-65-43210',{exact:true}).count()).toBe(1);
+      expect(await page.getByText('123-45-67890:AGENT-0',{exact:true}).count()).toBe(1);
+      const last=await page.evaluate(()=>(window as any).metadataSaves.at(-1));
+      expect(last).toMatchObject({config:{registeredDeviceId:'123-45-67890:AGENT-0',installId:'test-agent'},input:{businessNumber:'987-65-43210',storeName:'변경 매장',deviceName:'키오스크'}});
+      await page.getByRole('button',{name:'장비 정보 수정',exact:true}).click();
+      await passwordDialog.waitFor();
+      expect(await passwordDialog.getByLabel('비밀번호',{exact:true}).inputValue()).toBe('');
+      expect(await dialog.count()).toBe(0);
+      await passwordDialog.getByLabel('비밀번호',{exact:true}).fill('4401');
+      await passwordDialog.getByRole('button',{name:'확인',exact:true}).click();
+      await dialog.waitFor();expect(await dialog.getByLabel('장비 구분 직접입력',{exact:true}).inputValue()).toBe('키오스크');
+      await dialog.getByLabel('상호',{exact:true}).fill('취소할 변경');
+      await dialog.getByRole('button',{name:'취소',exact:true}).click();
+      const before=await page.evaluate(()=>({loads:(window as any).metadataLoads,saves:(window as any).metadataSaves.length}));
+      await page.clock.runFor(86_400_000);
+      expect(await page.evaluate(()=>({loads:(window as any).metadataLoads,saves:(window as any).metadataSaves.length}))).toEqual(before);
+      expect(await page.evaluate(()=>(window as any).nativeCalls.filter((c:any)=>['save_agent_config','restart_agent_process'].includes(c.command)).length)).toBe(0);
+    } finally {await page.close();}
+  });
+  it("running Agent editor ignores a late read after unmount and reports load failure", async () => {
+    const page=await openViewer({desktop:true,agent:true});
+    try {
+      await page.getByRole('heading',{name:'Agent 가동 중',exact:true}).waitFor();
+      await page.evaluate(()=>{const w=window as any;w.testApi.fetchFirebaseAgentDevice=async()=>{throw Error('장비 조회 실패');};});
+      await page.getByRole('button',{name:'장비 정보 수정',exact:true}).click();
+      await page.getByRole('dialog',{name:'장비 정보 수정 비밀번호',exact:true}).getByLabel('비밀번호',{exact:true}).fill('4401');
+      await page.getByRole('dialog',{name:'장비 정보 수정 비밀번호',exact:true}).getByRole('button',{name:'확인',exact:true}).click();
+      await page.getByText('장비 조회 실패',{exact:true}).waitFor();
+      expect(await page.getByRole('dialog').count()).toBe(0);
+      await page.evaluate(()=>{const w=window as any;w.testApi.fetchFirebaseAgentDevice=()=>new Promise(resolve=>{w.finishMetadataRead=resolve;});});
+      await page.getByRole('button',{name:'장비 정보 수정',exact:true}).click();
+      await page.getByRole('dialog',{name:'장비 정보 수정 비밀번호',exact:true}).getByLabel('비밀번호',{exact:true}).fill('4401');
+      await page.getByRole('dialog',{name:'장비 정보 수정 비밀번호',exact:true}).getByRole('button',{name:'확인',exact:true}).click();
+      await page.evaluate(()=>{const w=window as any;w.root.unmount();w.finishMetadataRead({businessNumber:'123-45-67890',storeName:'late',deviceName:'메인포스'});});
+      expect(await page.getByRole('dialog').count()).toBe(0);
+    } finally {await page.close();}
+  });
+  it("initial registration metadata is usable in the compact Agent form and reaches the existing request", async () => {
+    const page=await openViewer({desktop:true,agent:true,firstRun:true,viewport:{width:360,height:420}});
+    try {
+      await page.getByRole('heading',{name:'Agent 최초 실행',exact:true}).waitFor();
+      await page.evaluate(()=>{const w=window as any;w.testApi.registerFirstRunAgentWithFirebase=async (input:any)=>{w.registrationInput=input;return {device:{id:'123-45-67890:AGENT-test-agent',businessNumber:'123-45-67890',...input},devices:[]};};});
+      await page.getByLabel('아이디',{exact:true}).fill('1234567890');
+      await page.getByLabel('비밀번호',{exact:true}).fill('1234');
+      await page.getByLabel('상호',{exact:true}).fill('테스트 매장');
+      await page.getByLabel('장비 구분',{exact:true}).selectOption('custom');
+      await page.getByLabel('장비 구분 직접입력',{exact:true}).fill('키오스크');
+      await page.getByLabel('메모',{exact:true}).fill('카운터 오른쪽\n설치 메모');
+      await page.getByRole('button',{name:'등록',exact:true}).scrollIntoViewIfNeeded();
+      await page.screenshot({path:'../.codex-tmp/agent-initial-metadata.png'});
+      expect(await page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await page.getByRole('button',{name:'등록',exact:true}).click();
+      await page.getByRole('heading',{name:'Agent 가동 중',exact:true}).waitFor();
+      expect(await page.evaluate(()=>(window as any).registrationInput)).toMatchObject({storeName:'테스트 매장',deviceName:'키오스크',notes:'카운터 오른쪽\n설치 메모',installId:'test-agent'});
+      expect(await page.evaluate(()=>(window as any).nativeCalls.filter((c:any)=>c.command==='save_agent_config').length)).toBe(1);
+    } finally {await page.close();}
+  });
+  it("hierarchical groups include mixed-business devices, persist locally and never rewrite metadata", async () => {
+    const page=await openViewer();
+    try {
+      await page.getByText('PC-0',{exact:true}).waitFor();
+      await page.evaluate(()=>{const w=window as any;w.testState.devices[1].storeName='다른 상호';w.testState.devices[1].businessNumber='999-99-99999';w.metadataChanges=[];w.testApi.updateFirebaseDeviceMetadata=(...args:any[])=>{w.metadataChanges.push(args);throw Error('unexpected metadata update');};});
+      await refresh(page).click();
+      await page.getByRole('button',{name:'대그룹 생성',exact:true}).click();
+      let dialog=page.getByRole('dialog',{name:'그룹 편집',exact:true});
+      await dialog.getByLabel('그룹 이름',{exact:true}).fill('운영 그룹');
+      await dialog.getByRole('button',{name:'저장',exact:true}).click();
+      await page.getByRole('button',{name:'운영 그룹 하위 그룹 생성',exact:true}).click();
+      dialog=page.getByRole('dialog',{name:'그룹 편집',exact:true});
+      await dialog.getByLabel('그룹 이름',{exact:true}).fill('매장 단말');
+      await dialog.getByRole('checkbox').filter({hasText:''}).nth(0).check();
+      await dialog.getByRole('checkbox').nth(1).check();
+      await page.screenshot({path:'../.codex-tmp/viewer-hierarchical-group-editor.png'});
+      await dialog.getByRole('button',{name:'저장',exact:true}).click();
+      await page.locator('.custom-group-row .group-button').filter({hasText:'운영 그룹'}).click();
+      expect(await page.locator('.device-table .table-row:not(.table-head)').count()).toBe(2);
+      expect(await page.getByText('PC-1',{exact:true}).count()).toBe(1);
+      expect(await page.evaluate(()=>(window as any).metadataChanges.length)).toBe(0);
+      await page.screenshot({path:'../.codex-tmp/viewer-hierarchical-groups.png'});
+      await page.evaluate(()=>(window as any).root.unmount());
+      await page.addScriptTag({content:bundle});
+      await page.locator('.custom-group-row .group-button').filter({hasText:'운영 그룹'}).click();
+      expect(await page.locator('.device-table .table-row:not(.table-head)').count()).toBe(2);
+      const before=await counts(page);await page.clock.runFor(86_400_000);expect(await counts(page)).toEqual(before);
+      await page.getByRole('button',{name:'운영 그룹 그룹 수정',exact:true}).click();
+      dialog=page.getByRole('dialog',{name:'그룹 편집',exact:true});
+      const childId=await page.evaluate(()=>JSON.parse(localStorage.getItem('wonremote-viewer-list-v1')!).customGroups.find((g:any)=>g.name==='매장 단말').id);
+      await dialog.getByLabel('상위 그룹',{exact:true}).selectOption(childId);
+      await dialog.getByRole('button',{name:'저장',exact:true}).click();
+      await dialog.getByRole('alert').filter({hasText:'하위 그룹'}).waitFor();
+      await page.keyboard.press('Escape');
+      expect(await dialog.count()).toBe(0);
+      await page.getByRole('button',{name:'매장 단말 그룹 수정',exact:true}).click();
+      dialog=page.getByRole('dialog',{name:'그룹 편집',exact:true});
+      await dialog.getByLabel('그룹 이름',{exact:true}).fill('단말 묶음');
+      await dialog.getByLabel('상위 그룹',{exact:true}).selectOption('');
+      await dialog.getByRole('button',{name:'저장',exact:true}).click();
+      await page.getByRole('button',{name:'운영 그룹 그룹 수정',exact:true}).click();
+      await page.getByRole('dialog',{name:'그룹 편집',exact:true}).getByRole('button',{name:'그룹 삭제',exact:true}).click();
+      await page.locator('.custom-group-row .group-button').filter({hasText:'단말 묶음'}).click();
+      expect(await page.locator('.device-table .table-row:not(.table-head)').count()).toBe(2);
+      await page.setViewportSize({width:390,height:844});
+      await page.getByRole('button',{name:'단말 묶음 그룹 수정',exact:true}).click();
+      await page.screenshot({path:'../.codex-tmp/viewer-group-editor-narrow.png'});
+      expect(await page.getByRole('dialog',{name:'그룹 편집',exact:true}).evaluate(e=>{const r=e.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth;})).toBe(true);
+      expect(await page.evaluate(()=>(window as any).metadataChanges.length)).toBe(0);
+    } finally {await page.close();}
+  });
+  it("NEW rows always precede online rows after refresh and search", async () => {
+    const page=await openViewer();
+    try {
+      await page.getByText('PC-0',{exact:true}).waitFor();
+      await page.clock.runFor(1_000);
+      await page.evaluate(()=>{const w=window as any;w.testState.devices.push({...w.testState.devices[0],id:'new-device',desktopName:'ZZZ-New-PC',status:'offline',firstRegisteredAt:new Date().toISOString()});});
+      await refresh(page).click();await page.getByText('NEW',{exact:true}).waitFor();
+      expect(await page.locator('.device-table .table-row:not(.table-head)').first().innerText()).toContain('ZZZ-New-PC');
+      await page.getByPlaceholder('매장, 장비, 담당자, 연락처, 메모 검색').fill('PC');
+      expect(await page.locator('.device-table .table-row:not(.table-head)').first().innerText()).toContain('ZZZ-New-PC');
+    } finally {await page.close();}
+  });
+  it("does not mark unseen existing devices NEW and keeps multiple real arrivals together on top across restart", async () => {
+    const page=await openViewer();
+    try {
+      await page.getByText('PC-0',{exact:true}).waitFor();
+      await page.clock.runFor(1_000);
+      await page.evaluate(()=>{
+        const w=window as any;
+        const base=w.testState.devices[0];
+        w.testState.devices.push({...base,id:'old-unseen',desktopName:'Old-PC'});
+        w.testState.devices.push({...base,id:'new-offline',desktopName:'ZZZ-New-PC',status:'offline',firstRegisteredAt:new Date().toISOString()});
+        w.testState.devices.push({...base,id:'new-online',desktopName:'YYY-New-PC',status:'online',firstRegisteredAt:new Date().toISOString()});
+      });
+      await refresh(page).click();
+      await page.getByText('Old-PC',{exact:true}).waitFor();
+      expect(await page.getByText('NEW',{exact:true}).count()).toBe(2);
+      const rows=page.locator('.device-table .table-row:not(.table-head)');
+      for(let i=0;i<2;i++) expect(await rows.nth(i).getByText('NEW',{exact:true}).count()).toBe(1);
+      expect(await rows.filter({has:page.getByText('Old-PC',{exact:true})}).getByText('NEW',{exact:true}).count()).toBe(0);
+      await page.getByPlaceholder('매장, 장비, 담당자, 연락처, 메모 검색').fill('PC');
+      for(let i=0;i<2;i++) expect(await rows.nth(i).getByText('NEW',{exact:true}).count()).toBe(1);
+      const before=await counts(page);
+      await page.clock.runFor(86_400_000);
+      expect(await counts(page)).toEqual(before);
+      await page.evaluate(()=>{
+        const w=window as any; w.root.unmount();
+        w.root=null;
+      });
+      await page.addScriptTag({content:bundle});
+      await page.getByText('Old-PC',{exact:true}).waitFor();
+      expect(await page.getByText('NEW',{exact:true}).count()).toBe(2);
+      for(let i=0;i<2;i++) expect(await rows.nth(i).getByText('NEW',{exact:true}).count()).toBe(1);
+      await page.screenshot({path:'../.codex-tmp/viewer-new-first.png'});
+      await rows.first().getByRole('button',{name:'장비 정보 수정',exact:true}).click();
+      const dialog=page.getByRole('dialog',{name:'등록 장비 수정',exact:true});
+      await dialog.getByRole('button',{name:'취소',exact:true}).click();
+      expect(await page.getByText('NEW',{exact:true}).count()).toBe(2);
+      await page.evaluate(()=>{
+        const w=window as any;
+        w.testApi.updateFirebaseDeviceMetadata=async(id:string,input:any)=>{
+          if(w.failMetadata) throw Error('Save failed');
+          const index=w.testState.devices.findIndex((d:any)=>d.id===id);
+          return w.testState.devices[index]={...w.testState.devices[index],...Object.fromEntries(Object.entries(input).filter(([,value])=>value!==undefined))};
+        };
+        w.failMetadata=true;
+      });
+      await rows.first().getByRole('button',{name:'장비 정보 수정',exact:true}).click();
+      await dialog.getByRole('button',{name:'저장',exact:true}).click();
+      await dialog.getByText('Save failed',{exact:false}).waitFor();
+      expect(await page.getByText('NEW',{exact:true}).count()).toBe(2);
+      await page.evaluate(()=>(window as any).failMetadata=false);
+      await dialog.getByRole('button',{name:'저장',exact:true}).click();
+      await dialog.waitFor({state:'hidden'});
+      expect(await page.getByText('NEW',{exact:true}).count()).toBe(1);
+      expect(await rows.first().getByText('NEW',{exact:true}).count()).toBe(1);
+    } finally {await page.close();}
+  });
+  it("repairs legacy badges once in the actual Viewer while preserving group and favorite preferences", async () => {
+    const page=await openViewer();
+    try {
+      await page.getByText('PC-0',{exact:true}).waitFor();
+      await page.evaluate(()=>{
+        const w=window as any; w.root.unmount();
+        localStorage.setItem('wonremote-viewer-list-v1',JSON.stringify({groupOrder:['Store'],knownDeviceIds:['device-0'],newDeviceIds:['device-0','device-9'],customGroups:[{id:'saved',name:'Saved group',parentId:null,deviceIds:['device-0']}]}));
+        localStorage.setItem('wonremote-favorite-devices',JSON.stringify(['device-0']));
+      });
+      await page.addScriptTag({content:bundle});
+      await page.getByText('PC-0',{exact:true}).waitFor();
+      expect(await page.getByText('NEW',{exact:true}).count()).toBe(0);
+      expect(await page.getByRole('button',{name:'PC-0 즐겨찾기',exact:true}).getAttribute('aria-pressed')).toBe('true');
+      const prefs=await page.evaluate(()=>JSON.parse(localStorage.getItem('wonremote-viewer-list-v1')!));
+      expect(prefs.groupOrder).toEqual(['Store']);
+      expect(prefs.customGroups[0].deviceIds).toEqual(['device-0']);
+      expect(prefs.knownDeviceIds).toHaveLength(10);
+      expect(prefs.baselineAt).toBeTruthy();
+      await refresh(page).click();
+      expect(await page.getByText('NEW',{exact:true}).count()).toBe(0);
+    } finally {await page.close();}
+  });
+  it("clipboard history sends remote Win+V to the left of transfer without copying clipboard data", async () => {
+    const page=await openViewer({connected:true});
+    try {
+      await page.locator('.table-row').filter({has:page.getByText('PC-0',{exact:true})}).getByRole('button',{name:'접속',exact:true}).click();
+      await page.locator('[data-remote-ime-input="true"]').waitFor({state:'attached'});
+      await page.evaluate(()=>(window as any).testState.controls=[]);
+      const history=page.getByRole('button',{name:'원격 클립보드 열기 (Win+V)',exact:true});
+      await history.click();
+      expect(await page.evaluate(()=>(window as any).testState.controls)).toEqual(['key-down Win','keypress V','key-up Win']);
+      expect(await history.evaluate(element=>element.nextElementSibling?.getAttribute('aria-label'))).toBe('클립보드 동기화: 내 PC → 원격 PC');
+      expect(await page.evaluate(()=>(window as any).testState.auxiliaryReads)).toBe(0);
+    } finally {await page.close();}
+  });
+  it("toolbar shortcuts keep logos and labels and send fixed remote browser commands without local launch", async () => {
+    const page=await openViewer({desktop:true,connected:true});
+    try {
+      await page.locator('.table-row').filter({has:page.getByText('PC-0',{exact:true})}).getByRole('button',{name:'접속',exact:true}).click();
+      const edge=page.getByRole('button',{name:'Microsoft Edge 다운로드',exact:true});
+      const asp=page.getByRole('button',{name:'FirstPOS ASP 열기',exact:true});
+      await edge.waitFor();
+      expect(await edge.innerText()).toBe('Download'); expect(await asp.innerText()).toBe('ASP');
+      expect(await edge.getAttribute('href')).toBe(null);
+      expect(await asp.getAttribute('href')).toBe(null);
+      expect(await edge.evaluate(e=>e.nextElementSibling?.getAttribute('aria-label'))).toBe('FirstPOS ASP 열기');
+      expect(await asp.evaluate(e=>e.nextElementSibling?.getAttribute('aria-label'))).toBe('원격 클립보드 열기 (Win+V)');
+      for(const link of [edge,asp]) {
+        expect(await link.locator('img').evaluate((e:HTMLImageElement)=>e.complete&&e.naturalWidth>0)).toBe(true);
+        await link.click();
+      }
+      expect(await page.evaluate(()=>(window as any).nativeCalls.filter((c:any)=>c.command==='open_viewer_shortcut'))).toEqual([]);
+      await expect.poll(()=>page.evaluate(()=>(window as any).testState.controls)).toEqual(['system edge-download','system asp-login']);
+      await page.setViewportSize({width:1024,height:768});
+      for(const link of [edge,asp]) expect(await link.evaluate(e=>{const r=e.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth;})).toBe(true);
+      await page.screenshot({path:'../.codex-tmp/viewer-browser-shortcuts.png'});
+      expect(await page.context().pages()).toHaveLength(1);
+    } finally {await page.close();}
+  });
+  it("browser edition shortcuts also send remote commands and never open a local tab", async () => {
+    const page=await openViewer({connected:true});
+    try {
+      await page.context().route(/https:\/\/(asp\.firstpos\.co\.kr|c2rsetup\.officeapps\.live\.com)\//,route=>route.fulfill({contentType:'text/html',body:'<title>Shortcut target</title>'}));
+      await page.locator('.table-row').filter({has:page.getByText('PC-0',{exact:true})}).getByRole('button',{name:'접속',exact:true}).click();
+      for(const name of ['Microsoft Edge 다운로드','FirstPOS ASP 열기']) {
+        await page.getByRole('button',{name,exact:true}).click();
+      }
+      await expect.poll(()=>page.evaluate(()=>(window as any).testState.controls)).toEqual(['system edge-download','system asp-login']);
+      expect(page.context().pages()).toHaveLength(1);
+    } finally {await page.close();}
+  });
+  it("ZOOK setup preserves leading zeroes and Agent registration, deduplicates clicks and stays idle", async () => {
+    const page = await openViewer({desktop:true,agent:true,viewport:{width:360,height:420}});
+    try {
+      const input = page.getByLabel('ZOOK 고유번호 (선택)',{exact:true});
+      const button = page.getByRole('button',{name:'ZOOK 대기',exact:true});
+      await input.waitFor();
+      await page.getByText('123-45-67890',{exact:true}).waitFor();
+      await expect.poll(()=>input.inputValue()).toBe('00123456');
+      await input.fill('');
+      expect(await button.isDisabled()).toBe(true);
+      await input.fill('1234abcd');
+      expect(await button.isDisabled()).toBe(true);
+      await input.fill('00123456');
+      await button.click();
+      const pending = page.getByRole('button',{name:'설정 중',exact:true});
+      await expect.poll(()=>pending.isDisabled()).toBe(true);
+      for (let i=0;i<3;i++) await pending.dispatchEvent('click');
+      expect(await page.evaluate(()=>(window as any).nativeCalls.filter((c:any)=>c.command==='configure_zook_agent').length)).toBe(1);
+      await page.evaluate(()=>(window as any).finishZook());
+      await page.getByRole('status').filter({hasText:'014-0012-3456'}).waitFor();
+      expect(await input.inputValue()).toBe('00123456');
+      await page.clock.runFor(86_400_000);
+      const calls = await page.evaluate(()=>(window as any).nativeCalls.map((c:any)=>c.command));
+      expect(calls.filter((c:string)=>c==='configure_zook_agent').length).toBe(1);
+      expect(calls.filter((c:string)=>c==='load_zook_number').length).toBeLessThanOrEqual(2);
+      expect(calls.includes('save_agent_config')).toBe(false);
+      expect(await counts(page)).toEqual({reads:0,subscriptions:0});
+      expect(await page.getByText('123-45-67890:AGENT-0',{exact:true}).count()).toBe(1);
+      const bounds = await page.locator('.agent-zook-row').boundingBox();
+      const buttonBounds = await button.boundingBox();
+      expect(bounds!.x).toBeGreaterThanOrEqual(0);
+      expect(buttonBounds!.x + buttonBounds!.width).toBeLessThanOrEqual(360);
+      const updateBounds = await page.getByRole('button',{name:'업데이트 확인',exact:true}).boundingBox();
+      expect(updateBounds!.y + updateBounds!.height).toBeLessThanOrEqual(420);
+      await page.screenshot({path:'../.codex-tmp/agent-zook-360.png'});
+    } finally { await page.close(); }
+  });
+
+  it("ZOOK failure is separate from first-run registration and ignores late completion after unmount", async () => {
+    const page = await openViewer({desktop:true,agent:true,firstRun:true});
+    try {
+      await page.getByRole('heading',{name:'Agent 최초 실행',exact:true}).waitFor();
+      const input = page.getByLabel('ZOOK 고유번호 (선택)',{exact:true});
+      await input.fill('34778178');
+      await page.getByRole('button',{name:'ZOOK 대기',exact:true}).click();
+      await page.evaluate(()=>{const w=window as any;w.zookFailure='ZOOK 대기가 취소되지 않았습니다. 입력값은 변경하지 않았습니다.';w.finishZook();});
+      await page.getByRole('alert').filter({hasText:'대기가 취소되지'}).waitFor();
+      expect(await page.getByRole('button',{name:'등록',exact:true}).isEnabled()).toBe(true);
+      expect(await input.inputValue()).toBe('34778178');
+      await page.getByRole('button',{name:'ZOOK 대기',exact:true}).click();
+      await page.evaluate(()=>{const w=window as any;w.root.unmount();w.zookFailure=null;w.finishZook();});
+      await page.clock.runFor(86_400_000);
+      expect(await page.locator('#root').innerText()).toBe('');
+      expect(await page.evaluate(()=>(window as any).nativeCalls.filter((c:any)=>c.command==='configure_zook_agent').length)).toBe(2);
+      expect(await counts(page)).toEqual({reads:0,subscriptions:0});
+    } finally { await page.close(); }
+  });
+
   it("saves a business-number edit through the right-click editor without changing device ID", async () => {
     const page = await openViewer({desktop:true});
     try {
@@ -181,11 +611,16 @@ describe("manual Viewer device list in a real browser", () => {
       await page.locator('.table-row').filter({hasText:'PC-0'}).click({button:'right'});
       const dialog = page.getByRole('dialog',{name:'등록 장비 수정',exact:true});
       await dialog.getByLabel('사업자번호',{exact:true}).fill('987-65-43210');
+      await dialog.getByLabel('ZOOK 고유번호',{exact:true}).fill('00123456');
       await dialog.getByRole('button',{name:'저장',exact:true}).click();
       await expect.poll(()=>dialog.count()).toBe(0);
       const row = page.locator('.table-row').filter({hasText:'PC-0'});
       expect(await row.innerText()).toContain('987-65-43210');
-      expect(await page.evaluate(()=>(window as any).businessEdits[0])).toMatchObject({id:'device-0',input:{businessNumber:'987-65-43210'}});
+      expect(await page.evaluate(()=>(window as any).businessEdits[0])).toMatchObject({id:'device-0',input:{businessNumber:'987-65-43210',zookNumber:'00123456'}});
+      await row.click({button:'right'});
+      expect(await dialog.getByLabel('ZOOK 고유번호',{exact:true}).inputValue()).toBe('00123456');
+      await page.screenshot({path:'../.codex-tmp/viewer-zook-number-edit.png'});
+      await dialog.getByRole('button',{name:'취소',exact:true}).click();
       await page.screenshot({path:'../.codex-tmp/viewer-business-number-edit.png'});
       await page.locator('.group-list .group-button').filter({hasText:'Store'}).click({button:'right'});
       const groupDialog = page.getByRole('dialog');
@@ -193,6 +628,7 @@ describe("manual Viewer device list in a real browser", () => {
       await groupDialog.getByRole('button',{name:'저장',exact:true}).click();
       await expect.poll(()=>groupDialog.count()).toBe(0);
       expect(await page.evaluate(()=>(window as any).businessEdits.slice(1).every((edit:any)=>!Object.prototype.hasOwnProperty.call(edit.input,'businessNumber')))).toBe(true);
+      expect(await page.evaluate(()=>(window as any).businessEdits.slice(1).every((edit:any)=>!Object.prototype.hasOwnProperty.call(edit.input,'zookNumber')))).toBe(true);
       expect(await row.innerText()).toContain('987-65-43210');
     } finally { await page.close(); }
   });
@@ -214,6 +650,24 @@ describe("manual Viewer device list in a real browser", () => {
       await page.screenshot({path:'../.codex-tmp/agent-business-number-sync.png'});
     } finally { await page.close(); }
   });
+  it("opens notification settings without applying ZOOK and refreshes a remote number without idle polling", async () => {
+    const page = await openViewer({desktop:true,agent:true,viewport:{width:360,height:420}});
+    try {
+      await page.getByLabel('ZOOK Windows 알림 설정',{exact:true}).click();
+      expect(await page.evaluate(()=>(window as any).nativeCalls.filter((c:any)=>c.command==='open_zook_notification_settings').length)).toBe(1);
+      expect(await page.evaluate(()=>(window as any).nativeCalls.filter((c:any)=>c.command==='configure_zook_agent').length)).toBe(0);
+      await page.evaluate(()=>{
+        const w=window as any;
+        w.zookNumber='00876543';
+        w.nativeEvents['agent-config-changed']({payload:null});
+      });
+      await expect.poll(()=>page.getByLabel('ZOOK 고유번호 (선택)',{exact:true}).inputValue()).toBe('00876543');
+      const box=await page.getByLabel('ZOOK Windows 알림 설정',{exact:true}).boundingBox();
+      expect(box!.x+box!.width).toBeLessThanOrEqual(360);
+      expect(box!.y+box!.height).toBeLessThanOrEqual(420);
+      await page.screenshot({path:'../.codex-tmp/agent-zook-notification-settings.png'});
+    } finally {await page.close();}
+  });
 
   it("checks the existing list during a slow read without false online or duplicate commands", async () => {
     const page = await openViewer({ manual: true });
@@ -234,7 +688,7 @@ describe("manual Viewer device list in a real browser", () => {
       await page.evaluate(() => {
         const w = window as any;
         w.testState.devices = w.testState.devices.slice(0, 9).map((d: any) => ({ ...d, desktopName: `Fresh-${d.desktopName}` }));
-        w.testState.devices.push({ ...w.testState.devices[0], id: "new", desktopName: "New-PC" });
+        w.testState.devices.push({ ...w.testState.devices[0], id: "new", desktopName: "New-PC", firstRegisteredAt: new Date().toISOString() });
         w.finishParallelRead();
       });
       await page.getByText("Fresh-PC-0", { exact: true }).waitFor();

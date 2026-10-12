@@ -1,3 +1,12 @@
+export function shouldCheckDeviceAccessSession(
+  activeSessionId: string | null,
+  sessionId: string,
+  authorization: {id:string;version:string|null} | null,
+  currentVersion: string | null,
+): boolean {
+  return activeSessionId !== sessionId || authorization?.id !== sessionId || authorization.version !== currentVersion;
+}
+
 export function sessionIdFromStartStreamCommand(
   action: string,
   input: { deviceId: string; firebaseEnabled: boolean },

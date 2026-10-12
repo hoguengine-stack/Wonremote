@@ -109,7 +109,7 @@ describe("Firebase first-run registration payloads", () => {
     });
   });
 
-  it("moves a user store name and retires only the previous Agent document during reconciliation", async () => {
+  it.each([undefined, "2026-10-01T00:00:00Z"])("preserves original registration %s and retires only the previous Agent document", async (firstRegisteredAt) => {
     mockState.transaction.get.mockImplementation(async (reference: { segments: string[] }) => {
       if (reference.segments[1] === "123-45-67890:AGENT-CBFFB65C") {
         return {
@@ -119,6 +119,7 @@ describe("Firebase first-run registration payloads", () => {
             ownerUid: "uid-1",
             storeName: "Gangnam Store",
             storeNameSource: "user",
+            ...(firstRegisteredAt ? {firstRegisteredAt} : {}),
           }),
           exists: () => true,
         };
@@ -141,6 +142,7 @@ describe("Firebase first-run registration payloads", () => {
       storeName: "Gangnam Store",
       storeNameSource: "user",
     });
+    expect(targetPayload.firstRegisteredAt).toBe(firstRegisteredAt);
     expect(mockState.transaction.update).toHaveBeenCalledWith(
       expect.objectContaining({ segments: ["devices", "123-45-67890:AGENT-CBFFB65C"] }),
       expect.objectContaining({ status: "offline" }),
@@ -160,5 +162,14 @@ describe("Firebase first-run registration payloads", () => {
       lastSeenAtServer: "server-time",
       updatedAt: "server-time",
     });
+  });
+  it("writes initial metadata in both existing registration paths without extra device writes", async () => {
+    const input={businessNumber:"3600602052",installId:"initial-metadata",password:"1234",storeName:"신규 상호",deviceName:"오더포스",notes:"카운터 오른쪽"};
+    await registerFirstRunAgentWithFirebase(input);
+    expect(vi.mocked(setDoc).mock.calls[0][1]).toMatchObject({storeName:input.storeName,storeNameSource:"user",deviceName:input.deviceName,notes:input.notes});
+    expect(setDoc).toHaveBeenCalledTimes(1);
+    await registerAgentFirstRunWithFirebase(input);
+    expect(mockState.transaction.set.mock.calls[0][1]).toMatchObject({storeName:input.storeName,deviceName:input.deviceName,notes:input.notes});
+    expect(mockState.transaction.set).toHaveBeenCalledTimes(1);
   });
 });

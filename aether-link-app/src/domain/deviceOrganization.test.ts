@@ -10,21 +10,66 @@ import {
   renameStoreGroup,
 } from "./deviceListPreferences";
 import { registerAgentFirstRun, applyAgentHeartbeat, updateDeviceMetadata } from "./agentRegistry";
+import { readViewerGroups, saveViewerGroup, deleteViewerGroup, groupDeviceIds } from "./viewerGroups";
 
 const device = (id: string, storeName = "상호명 미설정", businessNumber = "123-45-67890"): ManagedDevice => ({
   id, storeName, businessNumber, deviceNumber: id, deviceName: "태블릿", desktopName: "CTD-7000 CTD-7000", status: "offline", lastSeenAt: "",
 });
 afterEach(() => vi.useRealTimers());
 describe("device organization", () => {
+  it("creates nested groups across businesses, roundtrips membership and prevents cycles without changing devices", () => {
+    let groups = saveViewerGroup([], {id:"root",name:"대그룹",parentId:null,deviceIds:["a"]});
+    groups = saveViewerGroup(groups,{id:"child",name:"매장",parentId:"root",deviceIds:["b"]});
+    groups = saveViewerGroup(groups,{id:"leaf",name:"단말",parentId:"child",deviceIds:["c","c"]});
+    expect([...groupDeviceIds(groups,"root")]).toEqual(["a","b","c"]);
+    expect(readDeviceListPreferences(JSON.stringify({customGroups:groups})).customGroups).toEqual(groups);
+    expect(()=>saveViewerGroup(groups,{...groups[0],parentId:"leaf"})).toThrow("하위");
+    expect(deleteViewerGroup(groups,"child").find(g=>g.id==="leaf")?.parentId).toBe("root");
+    expect(readViewerGroups([{id:"a",name:"A",parentId:"b"},{id:"b",name:"B",parentId:"a"}]).filter(g=>g.parentId===null).length).toBeGreaterThan(0);
+    expect(readViewerGroups([{id:"a",name:"A",deviceIds:[1,"x","x"]}])[0].deviceIds).toEqual(["x"]);
+    expect(orderStoreGroups([{storeName:"old",devices:[device("old")]},{storeName:"new",devices:[device("new")]}],["old","new"],["new"])[0].storeName).toBe("new");
+  });
+  it("carries first-run store/type/notes and preserves edits during re-registration", () => {
+    const input={businessNumber:"1234567890",password:"1234",installId:"initial",storeName:"상호",deviceName:"오더포스",notes:"설치 메모"};
+    const initial=registerAgentFirstRun([],input);
+    expect(initial.device).toMatchObject({storeName:"상호",storeNameSource:"user",deviceName:"오더포스",notes:"설치 메모"});
+    const edited=updateDeviceMetadata(initial.devices,{deviceId:initial.device.id,storeName:"수정 상호",deviceName:"키오스크",notes:"운영 메모"});
+    expect(registerAgentFirstRun(edited.devices,input).device).toMatchObject({storeName:"수정 상호",deviceName:"키오스크",notes:"운영 메모"});
+    expect(()=>registerAgentFirstRun([],{...input,notes:"x".repeat(2001)})).toThrow("길이");
+  });
   it("baselines existing devices and keeps a new device marked until acknowledged", () => {
     const initial = readDeviceListPreferences(null);
-    const baseline = discoverNewDevices(initial, ["old"]);
+    const baseline = discoverNewDevices(initial, [device("old")], "2026-10-09T00:00:00Z");
     expect(baseline.newDeviceIds).toEqual([]);
-    const discovered = discoverNewDevices(baseline, ["old", "new"]);
+    const devices = [device("old"), {...device("new"), firstRegisteredAt:"2026-10-09T00:00:01Z"}, device("old-unseen")];
+    const discovered = discoverNewDevices(baseline, devices, "2026-10-09T00:00:02Z");
     expect(discovered.newDeviceIds).toEqual(["new"]);
-    expect(discoverNewDevices(discovered, ["old", "new"])).toBe(discovered);
+    expect(discoverNewDevices(discovered, devices)).toBe(discovered);
     expect(acknowledgeNewDevice(discovered, "new").newDeviceIds).toEqual([]);
-    expect(discoverNewDevices(acknowledgeNewDevice(discovered, "new"), ["old", "new"]).newDeviceIds).toEqual([]);
+    expect(discoverNewDevices(acknowledgeNewDevice(discovered, "new"), devices).newDeviceIds).toEqual([]);
+    expect(readDeviceListPreferences(JSON.stringify(discovered))).toEqual(discovered);
+  });
+  it("never renews first registration on local re-registration or backfills legacy devices", () => {
+    const input={businessNumber:"1234567890",password:"1234",installId:"initial"};
+    const initial=registerAgentFirstRun([],input,"2026-10-08T00:00:00Z");
+    expect(initial.device.firstRegisteredAt).toBe("2026-10-08T00:00:00Z");
+    expect(registerAgentFirstRun(initial.devices,input,"2026-10-09T00:00:00Z").device.firstRegisteredAt).toBe(initial.device.firstRegisteredAt);
+    const legacy={...initial.device}; delete legacy.firstRegisteredAt;
+    expect(registerAgentFirstRun([legacy],input,"2026-10-09T00:00:00Z").device.firstRegisteredAt).toBeUndefined();
+  });
+  it("does not infer NEW from heartbeat time, old, missing, invalid or future registration times", () => {
+    const baseline=discoverNewDevices(readDeviceListPreferences(null),[],"2026-10-09T00:00:00Z");
+    const loaded=[undefined,"invalid","2026-10-08T00:00:00Z","2026-10-10T00:00:00Z"].map((firstRegisteredAt,i)=>({...device(String(i)),firstRegisteredAt,lastSeenAt:"2026-10-09T00:00:01Z"}));
+    const result=discoverNewDevices(baseline,loaded,"2026-10-09T00:00:02Z");
+    expect(result.newDeviceIds).toEqual([]);
+    expect(result.knownDeviceIds).toEqual(["0","1","2","3"]);
+  });
+  it("repairs ambiguous legacy NEW flags without discarding saved groups", () => {
+    const prefs = readDeviceListPreferences(JSON.stringify({groupOrder:["B","A"],knownDeviceIds:["old"],newDeviceIds:["old"],customGroups:[{id:"g",name:"Group",parentId:null,deviceIds:["old"]}]}));
+    expect(prefs.knownDeviceIds).toBeNull();
+    expect(prefs.newDeviceIds).toEqual([]);
+    expect(prefs.groupOrder).toEqual(["B","A"]);
+    expect(prefs.customGroups?.[0].deviceIds).toEqual(["old"]);
   });
   it("persists group order while appending new groups and preserving renamed positions", () => {
     const names = ["A", "B", "C"];

@@ -2,6 +2,7 @@ import type {
   AgentCommandPollResult,
   AgentControlDiagnostics,
   AgentHeartbeatResult,
+  AgentHeartbeatInput,
   AgentUpdateTelemetry,
   AgentStreamDiagnostics,
   DeviceDisplayInfo,
@@ -9,12 +10,16 @@ import type {
 import {
   isAgentFirebaseEnabled,
   fetchAgentBusinessNumberWithFirebase,
+  fetchAgentZookNumberWithFirebase,
   pollAgentCommandsWithFirebase,
   sendAgentHeartbeatWithFirebase,
 } from "../firebase/agentFirebase";
 import type { DeviceSystemInfo } from "../domain/deviceSystemInfo";
 
 interface SendAgentHeartbeatOptions {
+  accessPublicKey?: string | null;
+  accessLockUnavailable?: boolean;
+  zookResult?: AgentHeartbeatInput["zookResult"];
   presenceMode?: "manual";
   heartbeatRequestId?: string;
   apiBaseUrl: string;
@@ -48,6 +53,9 @@ interface PostAgentSessionApprovalOptions {
 }
 
 export async function sendAgentHeartbeat({
+  accessPublicKey,
+  accessLockUnavailable,
+  zookResult,
   presenceMode,
   heartbeatRequestId,
   apiBaseUrl,
@@ -68,6 +76,8 @@ export async function sendAgentHeartbeat({
   if (isAgentFirebaseEnabled(process.env)) {
     return withAgentOperationContext("firebase heartbeat", () =>
       sendAgentHeartbeatWithFirebase({
+        accessPublicKey,
+        accessLockUnavailable,
         presenceMode,
         heartbeatRequestId,
         deviceId,
@@ -82,6 +92,7 @@ export async function sendAgentHeartbeat({
         protocolVersion,
         version,
         updateTelemetry,
+        zookResult,
       }),
     );
   }
@@ -104,6 +115,7 @@ export async function sendAgentHeartbeat({
         streamDiagnostics,
         protocolVersion,
         updateTelemetry,
+        zookResult,
       }),
       headers: { "content-type": "application/json" },
       method: "POST",
@@ -129,6 +141,16 @@ export async function fetchAgentBusinessNumber({ apiBaseUrl, deviceId, installId
   const payload = await response.json() as { device?: { id: string; businessNumber: string }; error?: string };
   if (!response.ok || payload.device?.id !== deviceId) throw new Error(payload.error ?? "Agent device read failed.");
   return payload.device.businessNumber;
+}
+
+export async function fetchAgentZookNumber({ apiBaseUrl, deviceId, installId, fetchImpl = fetch }: PollAgentCommandsOptions): Promise<string> {
+  if (isAgentFirebaseEnabled(process.env)) return fetchAgentZookNumberWithFirebase(deviceId);
+  const response = await fetchImpl(`${apiBaseUrl}/api/agent/device`, {
+    method: "POST", headers: {"content-type":"application/json"}, body: JSON.stringify({deviceId, installId}),
+  });
+  const payload = await response.json() as {device?: {id: string; zookNumber?: string}; error?: string};
+  if (!response.ok || payload.device?.id !== deviceId) throw new Error(payload.error ?? "Agent device read failed.");
+  return payload.device.zookNumber ?? "";
 }
 
 export async function pollAgentCommands({

@@ -8,6 +8,7 @@ export interface DeviceWorkspaceFilters {
   selectedStore?: string;
   favoriteOnly?: boolean;
   favoriteDeviceIds?: Iterable<string>;
+  newDeviceIds?: Iterable<string>;
 }
 
 const NO_STORE_FILTER = "전체";
@@ -62,15 +63,19 @@ export function filterDeviceWorkspace(
     return true;
   });
 
-  return sortDeviceWorkspace(filtered, favoriteIds);
+  return sortDeviceWorkspace(filtered, favoriteIds, filters.newDeviceIds);
 }
 
 export function sortDeviceWorkspace(
   devices: readonly ManagedDevice[],
   favoriteDeviceIds: Iterable<string> = [],
+  newDeviceIds: Iterable<string> = [],
 ): ManagedDevice[] {
   const favoriteIds = normalizeIdSet(favoriteDeviceIds);
+  const newIds = normalizeIdSet(newDeviceIds);
   return [...devices].sort((left, right) => {
+    const newCompare = Number(newIds.has(right.id)) - Number(newIds.has(left.id));
+    if (newCompare) return newCompare;
     if (left.status !== right.status) {
       return left.status === "online" ? -1 : 1;
     }

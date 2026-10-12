@@ -2,6 +2,15 @@ import { describe, expect, it } from "vitest";
 import { buildFirestoreDevice, mapFirestoreDevice, mergeFirstRunDeviceDocument } from "./firestoreDevice";
 
 describe("firestore device mapping", () => {
+  it("preserves first registration through update and leaves legacy devices undated", () => {
+    const old=buildFirestoreDevice({businessNumber:"1234567890",installId:"test",ownerUid:"owner",nowIso:"2026-10-08T00:00:00Z"});
+    const next=buildFirestoreDevice({businessNumber:"1234567890",installId:"test",ownerUid:"owner",nowIso:"2026-10-09T00:00:00Z"});
+    expect(mergeFirstRunDeviceDocument(next,old).firstRegisteredAt).toBe(old.firstRegisteredAt);
+    const legacy={...old}; delete legacy.firstRegisteredAt;
+    expect(mergeFirstRunDeviceDocument(next,legacy).firstRegisteredAt).toBeUndefined();
+    expect(mapFirestoreDevice(old.id,old).firstRegisteredAt).toBe(old.firstRegisteredAt);
+    expect(mapFirestoreDevice(old.id,legacy).firstRegisteredAt).toBeUndefined();
+  });
   it("keeps a Viewer-edited business number during same-owner registration reconciliation", () => {
     const original = buildFirestoreDevice({businessNumber:"1234567890",installId:"test",ownerUid:"owner",nowIso:"now"});
     const merged = mergeFirstRunDeviceDocument(original, {...original,businessNumber:"987-65-43210"});

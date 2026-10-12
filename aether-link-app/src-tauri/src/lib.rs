@@ -3,6 +3,8 @@ mod runtime_storage;
 mod agent_startup;
 mod update_handoff_process;
 mod viewer_downloads;
+mod viewer_shortcuts;
+mod zook_agent;
 use update_handoff_process::{
     run_agent_update_handoff_task, spawn_brokered_update_handoff, CREATE_NO_WINDOW,
 };
@@ -177,7 +179,7 @@ struct MainWindowPolicy {
 fn main_window_policy(is_agent: bool) -> Option<MainWindowPolicy> {
     is_agent.then_some(MainWindowPolicy {
         width: 360.0,
-        height: 340.0,
+        height: 420.0,
         min_width: 360.0,
         min_height: 340.0,
         resizable: false,
@@ -1104,6 +1106,9 @@ fn spawn_agent_only_process(
                 if line_str == "[AgentConfig] Changed" {
                     let _ = app_handle_clone.emit("agent-config-changed", ());
                 }
+                if line_str == "[ZookConfig] Changed" {
+                    let _ = app_handle_clone.emit("agent-config-changed", serde_json::json!({"scope":"zook"}));
+                }
                 match parse_update_handoff_request(&line_str).and_then(|request| {
                     request.map_or(Ok(false), |request| {
                         if should_attempt_update_handoff(
@@ -1673,6 +1678,7 @@ struct SaveConfigInput {
 #[serde(rename_all = "camelCase")]
 struct GetConfigOutput {
     business_number: String,
+    auth_business_number: String,
     install_id: String,
     registered_device_id: String,
     version: String,
@@ -1772,6 +1778,8 @@ fn get_agent_config() -> Option<GetConfigOutput> {
     let content = std::fs::read_to_string(config_path).ok()?;
     let json = parse_json_config(&content).ok()?;
     Some(GetConfigOutput {
+        auth_business_number: json.get("authBusinessNumber").or_else(|| json.get("businessNumber"))
+            .and_then(|v| v.as_str()).unwrap_or("").to_string(),
         business_number: json
             .get("businessNumber")
             .and_then(|v| v.as_str())
@@ -2712,6 +2720,9 @@ fn is_startup_registered(is_agent: bool) -> bool {
 }
 
 pub fn run() {
+    if let Some(code) = zook_agent::run_cli(&env::args().skip(1).collect::<Vec<_>>()) {
+        std::process::exit(code);
+    }
     install_panic_logger();
     let is_agent = launched_as_agent();
     AGENT_PROCESS_EXITING.store(false, Ordering::Release);
@@ -2775,6 +2786,7 @@ pub fn run() {
             viewer_downloads::choose_viewer_download_folder,
             viewer_downloads::open_viewer_download_folder,
             viewer_downloads::open_viewer_download_file,
+            viewer_shortcuts::open_viewer_shortcut,
             viewer_downloads::begin_viewer_download,
             viewer_downloads::write_viewer_download,
             viewer_downloads::finish_viewer_download,
@@ -2783,6 +2795,9 @@ pub fn run() {
             get_computer_name,
             save_agent_config,
             get_agent_config,
+            zook_agent::load_zook_number,
+            zook_agent::configure_zook_agent,
+            zook_agent::open_zook_notification_settings,
             get_or_create_agent_install_id,
             restart_agent_process,
             check_installer_update,
@@ -3537,7 +3552,7 @@ mod registry_tests {
         let agent = main_window_policy(true).expect("Agent mode must have a window policy");
 
         assert_eq!(agent.width, 360.0);
-        assert_eq!(agent.height, 340.0);
+        assert_eq!(agent.height, 420.0);
         assert_eq!(agent.min_width, 360.0);
         assert_eq!(agent.min_height, 340.0);
         assert!(!agent.resizable);
