@@ -6,6 +6,20 @@ it("rejects arbitrary paths and malformed rollback versions", () => {
   expect(parseAgentRollbackRequest("request-rollback 0.1.90 1700000000000")).toEqual({ version: "0.1.90", timestamp: "1700000000000" });
   for (const value of ["../latest", "01.1.90", "1.2", "1.2.3-beta", "1.2.3 ; calc"]) expect(parseAgentRollbackRequest(`request-rollback ${value} 1700000000000`)).toBeNull();
 });
+it("rejects lock-unaware rollback before lookup and when locking during download", async () => {
+  let locked = true;
+  const load = vi.fn(async () => { locked = true; return {latestVersion:"0.1.110"} as any; });
+  const launch = vi.fn();
+  const deps = {hasSession:()=>false,isPaused:async()=>true,load,minimumVersion:()=>locked ? "0.1.111" : null,
+    handoff:async (_metadata:any,guard:()=>Promise<void>) => { await guard(); launch(); }};
+  await expect(runPausedAgentRollback("0.1.110",deps)).rejects.toThrow("잠금");
+  expect(load).not.toHaveBeenCalled();
+  locked = false;
+  await expect(runPausedAgentRollback("0.1.110",deps)).rejects.toThrow("잠금");
+  expect(load).toHaveBeenCalledOnce(); expect(launch).not.toHaveBeenCalled();
+  await expect(runPausedAgentRollback("0.1.111",deps)).resolves.toBe("handoff");
+  expect(launch).toHaveBeenCalledOnce();
+});
 it("requires persisted pause before lookup and again at launch", async () => {
   const load = vi.fn(async () => ({ latestVersion: "0.1.90" }) as any);
   const launched = vi.fn();

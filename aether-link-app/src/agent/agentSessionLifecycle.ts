@@ -1,3 +1,12 @@
+export function isStaleSessionInputCommand(
+  command: {action:string;sessionId?:string}, activeSessionId: string | null, requireSessionId = false,
+): boolean {
+  const action = command.action.trim();
+  if (action.startsWith("start-stream") || action.startsWith("stop-stream")) return false;
+  if (!command.sessionId) return requireSessionId;
+  return command.sessionId !== activeSessionId;
+}
+
 export function shouldCheckDeviceAccessSession(
   activeSessionId: string | null,
   sessionId: string,

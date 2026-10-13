@@ -144,7 +144,7 @@ button:disabled {
   overflow-y: auto;
 }
 
-.agent-screen .agent-panel.active-agent-panel { gap: 8px; padding: 14px; }
+.agent-screen .agent-panel.active-agent-panel { gap: 6px; padding: 14px; }
 .agent-screen .agent-panel h1,
 .agent-screen .agent-panel label,
 .agent-screen .agent-panel button,

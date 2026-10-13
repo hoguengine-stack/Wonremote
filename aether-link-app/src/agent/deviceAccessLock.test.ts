@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -34,6 +34,14 @@ describe("installed-platform device access boundary", () => {
       expect(lock.publicState).toEqual(first);
       lock = await AgentDeviceAccessLock.load(file, "device-1");
       await expect(lock.authorize(await request("connect", "pass-1234"))).resolves.toEqual(first);
+      const beforeCleanConnect = (await stat(file)).mtimeMs;
+      const beforeCleanBytes = await readFile(file);
+      await lock.authorize(await request("connect", "pass-1234"));
+      expect((await stat(file)).mtimeMs === beforeCleanConnect).toBe(true);
+      expect(await readFile(file)).toEqual(beforeCleanBytes);
+      await expect(lock.authorize(await request("connect", "pass-1234"), Date.now(), async()=>{throw Error("connect publish failed");})).rejects.toThrow("connect publish failed");
+      expect((await stat(file)).mtimeMs === beforeCleanConnect).toBe(true);
+      expect(await readFile(file)).toEqual(beforeCleanBytes);
       await expect(lock.authorize(await request("reset", "incorrect administrator", "replacement"))).rejects.toThrow("일치하지");
       if (process.env.WONREMOTE_TEST_RECOVERY_PASSWORD) {
         await lock.authorize(await request("reset", process.env.WONREMOTE_TEST_RECOVERY_PASSWORD, "replacement"));
@@ -48,6 +56,7 @@ describe("installed-platform device access boundary", () => {
       await expect(lock.authorize(await request("set", "", "x"))).rejects.toThrow("4~64");
       expect(lock.publicState).toEqual(changed);
       for (let attempt = 0; attempt < 5; attempt++) await expect(lock.authorize(await request("reset", "incorrect", "replacement"))).rejects.toThrow();
+      lock = await AgentDeviceAccessLock.load(file, "device-1");
       await expect(lock.authorize(await request("set", "", "replacement"))).rejects.toThrow("잠시 후");
       await writeFile(file, "corrupt protected storage");
       await expect(AgentDeviceAccessLock.load(file, "device-1")).rejects.toThrow();

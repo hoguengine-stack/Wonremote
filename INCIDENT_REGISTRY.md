@@ -1,5 +1,52 @@
 # WonRemote Incident Registry
 
+## INC-20261013-139: Dirty gate rejected unchanged retained outcome evidence
+
+- Detected: 2026-10-13 explicit local trial build precommit check.
+- Severity: P2 legitimate candidate workflow blocked before build; no deployment attempted.
+- Affected: Development omission gate's dirty-worktree outcome-to-test mapping.
+- Status: Focused gate/packaging checks88/88 pass; local installation still pending.
+- User-visible symptom: Current source has changed behavioral tests, but six unchanged historical outcomes require unrelated native/ZOOK/packaging tests to be edited again.
+- Minimal trigger: Retain an identical outcome from verified HEAD and its policy-audited historical changed test while editing a new outcome's source/test. Dirty check rejects evidence that clean CI already accepts.
+- Root cause and contributors: selectContractFiles intentionally isolates current dirty files for new work but applies that selection to all retained outcome entries. Contract remains cumulative, including unchanged physical gaps. Untracked audit document also needs staging before it counts as changed evidence.
+- Fix commit(s): Current uncommitted source on94d48c0210c4d09b9f1a13a4797e78094cba2725.
+- Permanent guard: Only identical outcome objects from verified HEAD may reuse tests recorded in existing policy-audited commit history. New/modified outcomes still require a changed current boundary test. Keep all pending outcomes and actual runtime/security/build/predeploy checks; do not weaken request review or use this exception for current changes.
+- Regression proof: Actual gate rejected six historical test references and new unstaged audit evidence before repair. Focused acceptance/rejection checks preserve current-change requirements for new/modified outcomes, reject unverified history/missing historical test and missing physical gaps; packaging plus gate88/88 pass. New audit document staged as actual changed evidence. All earlier pending product outcomes remain in place.
+- Release proof: No new candidate, server rules or installation yet.
+- Remaining blocker: Gate RED/GREEN, fresh source-matched candidate, approved rules-only server publication and local trial installation/health. Subsecond physical acceptance remains separate.
+
+## INC-20261013-138: Early SDP publication still blocked first-frame transport
+
+- Detected: 2026-10-13 CodeGraph click-to-first-picture tracing and user's explicit below1000ms requirement.
+- Severity: P2 connection latency; subsecond installed acceptance remains unproven.
+- Affected: Agent initial WebRTC negotiation, sendFrame availability, late close/initialization, Windows DPAPI lock connects.
+- Status: Source fixes verified after focused failing reproductions; installed subsecond acceptance remains open.
+- User-visible symptom: A data channel can already be open while Agent cannot obtain its sendFrame handle; unchanged successful password connects rewrite protected storage.
+- Minimal trigger: Hold setLocalDescription gathering pending while opening tile channel; transport Promise remains unresolved even after500ms. Repeat valid clean lock connect and observe changed file mtime.
+- Root cause and contributors: 08342a3 added publishAnswerDuringGathering compared with5b91b35d, but helper still awaits gathering and transport awaits activation before returning. Earlier SDP-only tests did not check first frame send. authorize always saves/DPAPI-protects state even when successful connect has no counter or setting changes. No installed subsecond baseline exists; installed historical Agent receipt-to-send1.08-1.50s is not Viewer click-to-picture proof.
+- Fix commit(s): Current source on94d48c0210c4d09b9f1a13a4797e78094cba2725, uncommitted and not installed.
+- Permanent guard: Keep initial negotiation in existing owned queue but expose sendFrame before gathering settles; close must dispose peer promptly and late stage completion cannot create listeners/writes/watchdog. Keep exact SDP/candidate flow and authorization. Persist lock changes and failure/counter reset, not unchanged normal connect. Add first-send and protected-file behavioral tests, not only early-SDP assertions.
+- Regression proof: Actual shared transport test reproduced open channel with unresolved handle; real Windows protected-storage test reproduced unwanted mtime update. Nine focused files125 tests pass after repair, including local real Werift data exchange, first send during gathering, delayed-stage close/late callbacks, unchanged SDK counts and24h idle, Viewer transport, DPAPI and common command/session checks. TypeScript passes. These do not prove installed Viewer click-to-picture below1000ms.
+- Development verification correction: First TypeScript run rejected the new frame fixture's missing sequence and delayed-stage mocks returning void instead of undefined. Add the required real frame field and correctly typed return, retain assertions, then rerun TypeScript successfully; Vitest alone is not proof of fixture type correctness.
+- Release proof: No build, deployment, database migration, new relay/billing or installation performed for this target.
+- Remaining blocker: Source-matched installed Viewer click-to-first-picture trials on82220F6D/59F19451/1D42C9F9, initial/repeated/reconnect and network conditions. Password typing remains in raw timing and is separately described. Do not weaken checks or show cached pixels to claim below1000ms.
+
+## INC-20261013-137: Lock input/maintenance guards and disconnected fullscreen exit
+
+- Detected: 2026-10-13 during requested CodeGraph whole-product audit and unfinished lock work.
+- Severity: P1 locked-target command authorization gap; P2 disconnected fullscreen Viewer lacks normal window controls.
+- Affected: Firebase command rules/ACK, shared Agent poll/WebRTC execution, session binding, rollback, disconnected Viewer modal.
+- Status: Focused failures reproduced and source repairs verified; installed/production checks pending. Source audit has separate unresolved authentication, alternative server-path, relay and dependency findings.
+- User-visible symptom: Sessionless commands could operate a target independently of capture approval; disconnected fullscreen device-list action did not restore the native window.
+- Minimal trigger: Emulator Agent-owner writes keypress to locked target without session; executeAgentCommand without active Firebase session; fullscreen remote disconnect then modal device-list button.
+- Root cause and contributors: Capture authorization did not cover generic control execution. Rules exempted owner-created commands and permitted arbitrary ACK mutation and lock-unaware rollback. Modal added in 6a644a305c2790e06fa4aeac5774430efc8b9f8c called the outer list callback instead of existing release/fullscreen wrapper; parent3a9dbc33065592694ec33bebb719356f71c1c708 had normal toolbar cleanup. Last known-good installed window behavior remains unknown.
+- Fix commit(s): Current uncommitted repair on94d48c0210c4d09b9f1a13a4797e78094cba2725.
+- Permanent guard: Common Firebase control execution needs active authorized session, including native-shaped commands outside the WebRTC allowlist; locked poll inputs require matching session ID; no rule owner exemption or command rewrite/replay; locked ZOOK configuration needs approved session; rollback checks minimum lock-capable version both before download and launch; modal reuses existing fullscreen/input cleanup. Session owner can still send only the exact stop-stream command after close/revocation; another Viewer cannot stop it.
+- Regression proof: Before repair both poll/WebRTC input tests returned executed instead of ignored; actual Chromium native calls remained[true] instead of[true,false]; actual Firestore emulator allowed owner sessionless input and rejected legitimate stop after close. Eight focused files105 current relevant tests pass; final actual rules emulator, TypeScript and diff checks pass. Chromium initial72/73 with compact1 failing; fixed affected11/11 pass without relaxing assertions. Baseline normal-toolbar callbacks execute fullscreen[false]/release1/list1; not an installed baseline claim.
+- Release proof: Previous candidate CI38218211601 passed but binaries predate these repairs and cannot prove them. No installation, public release or server deployment performed.
+- Remaining blocker: Source-matched fresh candidate, server rule deployment scope and installed/other-PC acceptance. Deterministic business-based shared Agent identity remains a separate pre-existing trust limitation requiring migration, not solved by these command checks. Audit scope/findings are in CODEGRAPH_AUDIT_20261013.md; no unrelated risk was silently fixed or marked closed.
+- Additional audit regression: Existing73-test actual Chromium audit passed72 and found update-button bottom428.140625 at360x420. Metadata/ZOOK controls introduced08342a3 added vertical content without adapting active-panel gaps. Reduce only that selector from8px to6px and retain the unchanged failing bounds/duplicate-command/idle test; no font shrink, window expansion or assertion weakening. Installed OS-scale proof remains pending.
+
 ## INC-20261012-136: Remote toolbar shortcuts opened the Viewer PC browser
 
 - Detected: 2026-10-12 from the user's corrected remote-PC destination and actual toolbar handler inspection.

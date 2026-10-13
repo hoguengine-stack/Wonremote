@@ -50,6 +50,7 @@ Thumbs.db
 Desktop.ini
 
 # Temporary verification artifacts
+.codegraph/
 .codex-tmp/wonremote-backups/
 playwright-report/
 test-results/

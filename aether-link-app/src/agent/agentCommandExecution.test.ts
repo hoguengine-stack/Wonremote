@@ -21,6 +21,26 @@ import {
 } from "./agentCommandExecution";
 
 describe("Agent command execution", () => {
+  it("blocks legacy native command shapes before injecting without a Firebase session", async () => {
+    const runtime = createRuntime();
+    runtime.getActiveSessionId = () => null;
+    for (const action of ["system cmd extra", "system   taskmgr   extra", "unknown-native-command"]) {
+      await expect(executeAgentCommand(action,"poll",runtime)).resolves.toBe("ignored");
+    }
+    expect(runtime.injectAction).not.toHaveBeenCalled();
+  });
+  it.each(["poll", "webrtc"] as const)("does not execute sessionless %s control or clipboard mutations", async source => {
+    const runtime = createRuntime();
+    runtime.getActiveSessionId = () => null;
+    for (const action of ["keypress A", "mouse-down 100 200 left", "mouse-wheel 100 200 120", "paste-text-base64 aGVsbG8=", "system taskmgr", "switch-monitor 1", "set-sleep 50", "set-stream-mode fast", "ping-color-change"]) {
+      await expect(executeAgentCommand(action, source, runtime)).resolves.toBe("ignored");
+    }
+    for (const handler of [runtime.injectAction, runtime.setClipboardText, runtime.switchMonitor, runtime.setSleep, runtime.setStreamMode, runtime.triggerPingColorChange]) expect(handler).not.toHaveBeenCalled();
+    expect(runtime.pressedKeys.size).toBe(0);
+    runtime.getActiveSessionId = () => "authorized-session";
+    await expect(executeAgentCommand("keypress A", source, runtime)).resolves.toBe("executed");
+    expect(runtime.injectAction).toHaveBeenCalledExactlyOnceWith("keypress A");
+  });
   it("opens the two remote shortcuts only inside an active session", async () => {
     const runtime = createRuntime();
     runtime.getActiveSessionId = () => null;

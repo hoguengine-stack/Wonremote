@@ -1,0 +1,13 @@
+{
+  "exclude": [
+    ".codex-tmp/",
+    ".codex-remote-attachments/",
+    ".codex/",
+    "test-builds/",
+    "fdk_printsock_compare/",
+    "toss_bixolon_patch/",
+    "toss_reverse/",
+    "/main.js",
+    "/preload.js"
+  ]
+}

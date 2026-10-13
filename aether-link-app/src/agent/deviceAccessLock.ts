@@ -119,9 +119,10 @@ export class AgentDeviceAccessLock {
       next = {...next, password:null, version:randomUUID()};
     }
     const previous = this.state;
-    await this.save(next);
+    const changed = request.operation !== "connect" || previous.attempts !== 0 || previous.blockedUntil !== 0;
+    if (changed) await this.save(next);
     try { await publish?.(this.publicState); }
-    catch (error) { await this.save(previous); throw error; }
+    catch (error) { if (changed) await this.save(previous); throw error; }
     return this.publicState;
   }
 }

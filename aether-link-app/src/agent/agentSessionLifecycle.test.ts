@@ -9,10 +9,19 @@ import {
   shouldStartStreamForCommand,
   shouldStopActiveSession,
   shouldCheckDeviceAccessSession,
+  isStaleSessionInputCommand,
   stopStreamTargetFromCommand,
 } from "./agentSessionLifecycle";
 
 describe("Agent session lifecycle commands", () => {
+  it("requires the authorized session ID on locked inputs without breaking unlocked legacy inputs", () => {
+    expect(isStaleSessionInputCommand({action:"keypress A"}, "approved", true)).toBe(true);
+    expect(isStaleSessionInputCommand({action:"keypress A",sessionId:"other"}, "approved", true)).toBe(true);
+    expect(isStaleSessionInputCommand({action:"keypress A",sessionId:"approved"}, "approved", true)).toBe(false);
+    expect(isStaleSessionInputCommand({action:"keypress A"}, "unlocked", false)).toBe(false);
+    expect(isStaleSessionInputCommand({action:"start-stream requested",sessionId:"requested"}, null, true)).toBe(false);
+    expect(isStaleSessionInputCommand({action:"stop-stream approved",sessionId:"approved"}, "approved", true)).toBe(false);
+  });
   it("reuses authorization only for the same live session and unchanged lock version", () => {
     const authorization = {id:"session-1",version:"lock-1"};
     expect(shouldCheckDeviceAccessSession(null,"session-1",null,"lock-1")).toBe(true);

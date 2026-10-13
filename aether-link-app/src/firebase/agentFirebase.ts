@@ -813,7 +813,7 @@ export async function startAgentWebRtcTransportWithFirebase(
     activePeer = peer;
 
     peer.onicecandidate = (event) => {
-      if (!event.candidate || activeNegotiationId !== offer.negotiationId) {
+      if (!event.candidate || closedByCaller || activePeer !== peer || activeNegotiationId !== offer.negotiationId) {
         return;
       }
       const candidate = event.candidate.toJSON?.() ?? event.candidate;
@@ -829,7 +829,7 @@ export async function startAgentWebRtcTransportWithFirebase(
     };
 
     peer.ondatachannel = (event) => {
-      if (activeNegotiationId !== offer.negotiationId) {
+      if (closedByCaller || activePeer !== peer || activeNegotiationId !== offer.negotiationId) {
         event.channel.close?.();
         return;
       }
@@ -843,7 +843,7 @@ export async function startAgentWebRtcTransportWithFirebase(
           tileChannel = channel;
           bindAgentDataChannelStatus(channel, {
             onState: (state, error) => {
-              if (activeNegotiationId !== offer.negotiationId) {
+              if (closedByCaller || activePeer !== peer || tileChannel !== channel || activeNegotiationId !== offer.negotiationId) {
                 return;
               }
               if (state === "open") {
@@ -1008,7 +1008,7 @@ export async function startAgentWebRtcTransportWithFirebase(
     };
 
     peer.onconnectionstatechange = () => {
-      if (activeNegotiationId !== offer.negotiationId) {
+      if (closedByCaller || activePeer !== peer || activeNegotiationId !== offer.negotiationId) {
         return;
       }
       const state = String(peer.connectionState ?? "");
@@ -1018,6 +1018,7 @@ export async function startAgentWebRtcTransportWithFirebase(
     };
 
     await peer.setRemoteDescription({ type: "offer", sdp: offer.sdp });
+    if (closedByCaller || activePeer !== peer || activeNegotiationId !== offer.negotiationId) return;
     activeRemoteDescriptionSet = true;
     void getDocs(recentViewerCandidates)
       .then((snapshot) => applyViewerCandidateDocs(snapshot.docs))
@@ -1027,6 +1028,7 @@ export async function startAgentWebRtcTransportWithFirebase(
         );
       });
     const answer = await peer.createAnswer();
+    if (closedByCaller || activePeer !== peer || activeNegotiationId !== offer.negotiationId) return;
     await publishAnswerDuringGathering(peer, answer, async localAnswer => {
       await safeSetDoc(
         signalRef,
@@ -1042,7 +1044,8 @@ export async function startAgentWebRtcTransportWithFirebase(
         },
         { merge: true },
       );
-    }, () => !closedByCaller && activeNegotiationId === offer.negotiationId);
+    }, () => !closedByCaller && activePeer === peer && activeNegotiationId === offer.negotiationId);
+    if (closedByCaller || activePeer !== peer || activeNegotiationId !== offer.negotiationId) return;
     if (!channelOpened) {
       connectWatchdog = setTimeout(() => {
         failNegotiation(
@@ -1145,17 +1148,19 @@ export async function startAgentWebRtcTransportWithFirebase(
     }
   };
 
-  try {
-    await activateNegotiation(signalSnapshot);
-  } catch (error) {
-    reportTransportError("negotiation-failed", error instanceof Error ? error.message : String(error));
-    if (activeNegotiationId) {
-      await closeActivePeer(activeNegotiationId);
+  // An open channel can send the pending first frame while ICE gathering continues.
+  negotiationQueue = (async () => {
+    try {
+      await activateNegotiation(signalSnapshot);
+    } catch (error) {
+      reportTransportError("negotiation-failed", error instanceof Error ? error.message : String(error));
+      if (activeNegotiationId) await closeActivePeer(activeNegotiationId);
     }
-  }
-
-  subscribeSignalUpdates();
-  subscribeViewerCandidateUpdates();
+    if (!closedByCaller) {
+      subscribeSignalUpdates();
+      subscribeViewerCandidateUpdates();
+    }
+  })();
 
   return {
     close: async () => {
@@ -1171,7 +1176,6 @@ export async function startAgentWebRtcTransportWithFirebase(
       }
       unsubscribeSignal?.();
       unsubscribeViewerCandidates?.();
-      await negotiationQueue.catch(() => undefined);
       await closeActivePeer();
     },
     getBufferedAmount: () => dataChannelBufferedAmount(tileChannel),

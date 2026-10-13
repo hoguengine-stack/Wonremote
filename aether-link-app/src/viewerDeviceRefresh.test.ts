@@ -1051,6 +1051,20 @@ describe("manual Viewer device list in a real browser", () => {
       expect(await page.evaluate(()=>(window as any).testState.controls)).toEqual(['key-down Ctrl','key-down C','key-up C','key-up Ctrl','key-down Ctrl','key-down V','key-up V','key-up Ctrl']);
     } finally { await page.close(); }
   });
+  it("restores the native resizable window when leaving a disconnected fullscreen session", async () => {
+    const page = await openViewer({connected:true, desktop:true});
+    try {
+      await page.locator('.table-row').filter({has:page.getByText('PC-0',{exact:true})}).getByRole('button',{name:'접속',exact:true}).click();
+      await page.locator('button[title="전체화면 전환"]').click();
+      const fullscreenCalls = () => page.evaluate(() => (window as any).nativeCalls.filter((call:any) => call.command === 'plugin:window|set_fullscreen').map((call:any) => call.args.value));
+      await expect.poll(fullscreenCalls).toEqual([true]);
+      await page.evaluate(() => (window as any).rtcCallbacks.onError(new Error('Disconnected')));
+      const dialog = page.getByRole('dialog',{name:'원격 연결 끊김'});
+      await dialog.getByRole('button',{name:'장비 목록',exact:true}).click();
+      await expect.poll(fullscreenCalls).toEqual([true,false]);
+      await page.locator('.table-row').filter({has:page.getByText('PC-0',{exact:true})}).waitFor();
+    } finally { await page.close(); }
+  });
   it("releases keyboard focus and pointer capture when the live transport disconnects", async () => {
     const page = await openViewer({ connected: true });
     try {

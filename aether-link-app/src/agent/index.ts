@@ -43,6 +43,7 @@ import {
   shouldDeferAgentUpdateForSession,
   shouldStartStreamForCommand,
   shouldCheckDeviceAccessSession,
+  isStaleSessionInputCommand,
 } from "./agentSessionLifecycle";
 import {
   createAgentCommandPollGate,
@@ -1641,7 +1642,9 @@ async function rollbackAgent(config: AgentLocalConfig, version: string): Promise
   isUpdating = true;
   const retry = () => rollbackAgent(config, version);
   try {
+    const lock = USE_FIREBASE && process.platform === "win32" && config.registeredDeviceId ? await getDeviceAccessLock(config.registeredDeviceId) : null;
     const result = await runPausedAgentRollback(version, {
+      minimumVersion: () => lock?.publicState.enabled ? "0.1.111" : null,
       hasSession: () => shouldDeferAgentUpdateForSession({ activeSessionId, firebaseEnabled: USE_FIREBASE, rtcState }),
       isPaused: async () => {
         if (!USE_FIREBASE || !config.registeredDeviceId) return false;
@@ -2207,7 +2210,7 @@ async function executeReceivedCommands(config: AgentLocalConfig, commands: Agent
     console.log(`Command received: ${command.action}`);
     try {
       await agentCommandQueue.enqueue(() => {
-        if (isStaleSessionInputCommand(command)) {
+        if (isStaleSessionInputCommand(command, activeSessionId, USE_FIREBASE && readyDeviceAccessLock?.publicState.enabled === true)) {
           console.warn(
             `Ignoring stale command for session ${command.sessionId}; active session is ${activeSessionId ?? "none"}.`,
           );
@@ -2219,17 +2222,6 @@ async function executeReceivedCommands(config: AgentLocalConfig, commands: Agent
       console.error(`[Inject Failed] ${error instanceof Error ? error.message : error}`);
     }
   }
-}
-
-function isStaleSessionInputCommand(command: AgentCommand): boolean {
-  if (!command.sessionId) {
-    return false;
-  }
-  const action = command.action.trim();
-  if (action.startsWith("start-stream") || action.startsWith("stop-stream")) {
-    return false;
-  }
-  return command.sessionId !== activeSessionId;
 }
 
 function createAgentCommandRuntime(deviceId: string): AgentCommandRuntime {

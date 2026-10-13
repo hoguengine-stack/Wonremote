@@ -72,6 +72,7 @@ export async function executeAgentCommand(
     runtime.warn?.(`[WebRTC] Rejected non-control Agent command: ${normalizedAction || "<empty>"}`);
     return "rejected";
   }
+  if (runtime.firebaseEnabled && !runtime.getActiveSessionId() && isAllowedWebRtcAgentControlAction(normalizedAction)) return "ignored";
 
   if (normalizedAction === "request-approval") {
     await runtime.requestApproval();
@@ -203,6 +204,7 @@ export async function executeAgentCommand(
     return "executed";
   }
 
+  if (runtime.firebaseEnabled && !runtime.getActiveSessionId()) return "ignored";
   const resolved = resolveInjectActions(normalizedAction, runtime.pressedKeys);
   if (resolved.type === "pasteText") {
     await runtime.setClipboardText(resolved.text);

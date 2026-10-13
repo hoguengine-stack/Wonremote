@@ -217,6 +217,29 @@ describe("recurrence coverage gate", () => {
       .toContain("outcomes[0].proofLevel must prove a functional outcome");
   });
 
+  it("reuses only identical verified historical outcomes, never a new or modified outcome", () => {
+    const outcome = {
+      id:"retained-input", acceptance:"Remote input works", boundaries:["Viewer","Agent"],
+      contractTests:["src/input.test.ts"], proofLevel:"physical-required",
+      verification:"Previously passed focused input checks", physicalGap:"Installed device proof remains open",
+    };
+    const contract = {
+      status:"verified", regressionReview:{kind:"non-regression",reason:"Isolated gate fixture"},
+      requestReview:{impact:"none",reason:"Isolated gate fixture"}, intent:"New trial",
+      changeType:"build", risk:"medium", releaseImpact:"build", rollback:"Restore candidate",
+      outcomes:[outcome],
+    };
+    const retained = {contract:structuredClone(contract),files:["src/input.test.ts"]};
+    const error = "outcomes[0].contractTests must include a test changed with the implementation";
+    expect(worktreeValidationErrors(contract, ["src/new.test.ts"], registry, "complete", retained)).toEqual([]);
+    expect(worktreeValidationErrors(contract, ["src/new.test.ts"], registry, "complete", {...retained,files:[]})).toContain(error);
+    expect(worktreeValidationErrors(contract, [], registry, "complete", {...retained,contract:{...contract,status:"active"}})).toContain(error);
+    expect(worktreeValidationErrors({...contract,outcomes:[{...outcome,id:"new-input"}]}, [], registry, "complete", retained)).toContain(error);
+    expect(worktreeValidationErrors({...contract,outcomes:[{...outcome,verification:"Different current evidence"}]}, [], registry, "complete", retained)).toContain(error);
+    expect(worktreeValidationErrors({...contract,outcomes:[{...outcome,physicalGap:"none"}]}, ["src/input.test.ts"], registry, "complete", retained))
+      .toContain("outcomes[0].physicalGap must describe the remaining physical proof");
+  });
+
   it("allows only deployment outcomes to remain pending at the predeploy gate", () => {
     const contract = {
       regressionReview: { kind: "non-regression", reason: "Existing test fixture exercises a separate contract boundary." },
@@ -265,7 +288,7 @@ describe("recurrence coverage gate", () => {
     const gate = readFileSync(path.join(appRoot, "scripts", "verify-recurrence-coverage.js"), "utf8");
     expect(gate).not.toContain('git(["ls-files", "--others", "--exclude-standard"])');
     expect(gate).toContain("selectContractFiles(worktreeFiles, committedFiles)");
-    expect(gate).toContain("worktreeValidationErrors(contract, contractFiles, registry, stage)");
+    expect(gate).toContain("worktreeValidationErrors(contract, contractFiles, registry, stage, retainedEvidence)");
   });
 
   it("uses committed boundaries for clean or post-deployment proof-only changes", () => {

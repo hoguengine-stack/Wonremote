@@ -3,6 +3,7 @@ import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAgentCommandPollGate } from "./agentCommandExecution";
+import { isStaleSessionInputCommand } from "./agentSessionLifecycle";
 import { updateTelemetryStateKey } from "./agentUpdatePollPolicy";
 import { firebaseCommandListenerRetryDelayMs, firebaseRequestRetryDelayMs } from "../firebase/requestRetryPolicy";
 
@@ -120,7 +121,8 @@ describe("Windows Agent refresh-only heartbeat runtime", () => {
     const context = {
       console, Date, agentHeartbeatGate: createAgentCommandPollGate(), runAgentTick: heartbeat,
       agentCommandQueue: { enqueue: async (work: () => unknown) => work() },
-      isStaleSessionInputCommand: () => false, executeAgentCommand: input, createAgentCommandRuntime: () => ({}),
+      activeSessionId: "approved", USE_FIREBASE: true, readyDeviceAccessLock: {publicState:{enabled:false}},
+      isStaleSessionInputCommand, executeAgentCommand: input, createAgentCommandRuntime: () => ({}),
       config: { registeredDeviceId: "d" }, commands: [
         { action: "refresh-status 00000000-0000-0000-0000-000000000001", createdAt: new Date().toISOString() },
         { action: "refresh-status 00000000-0000-0000-0000-000000000002", createdAt: "2020-01-01T00:00:00Z" },
@@ -129,6 +131,15 @@ describe("Windows Agent refresh-only heartbeat runtime", () => {
     };
     await runInNewContext(compile(`${handler.getText(source)}\nexecuteReceivedCommands(config, commands);`), context);
     expect(heartbeat).toHaveBeenCalledExactlyOnceWith(context.config, "00000000-0000-0000-0000-000000000001");
+    expect(input).toHaveBeenCalledExactlyOnceWith("key-down A", "poll", {});
+    context.readyDeviceAccessLock.publicState.enabled = true;
+    context.commands = [
+      {action:"key-down A",createdAt:new Date().toISOString()},
+      {action:"key-down A",sessionId:"other",createdAt:new Date().toISOString()},
+      {action:"key-down A",sessionId:"approved",createdAt:new Date().toISOString()},
+    ] as typeof context.commands;
+    input.mockClear();
+    await runInNewContext(compile(`${handler.getText(source)}\nexecuteReceivedCommands(config, commands);`), context);
     expect(input).toHaveBeenCalledExactlyOnceWith("key-down A", "poll", {});
   });
 

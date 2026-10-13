@@ -181,8 +181,12 @@ service cloud.firestore {
     function isOwnDeviceCommandCreate(deviceId) {
       return (isCentralViewer() || ownsDevice(deviceId))
         && request.resource.data.action is string
-        && (ownsDevice(deviceId) || !deviceAccessLocked(deviceId)
-          || request.resource.data.action.matches('^(device-access [a-f0-9-]{36}|refresh-status [a-f0-9-]{36}|request-update .*|request-rollback .*|wake-on-lan .*|configure-zook|sync-business-number|security-code [^ ]+ [0-9]{3} [0-9]{3})$')
+        && (!deviceAccessLocked(deviceId)
+          || request.resource.data.action.matches('^(device-access [a-f0-9-]{36}|refresh-status [a-f0-9-]{36}|request-update .*|wake-on-lan .*|sync-business-number|agent-health-check [a-f0-9-]{36}|security-code [^ ]+ [0-9]{3} [0-9]{3})$')
+          || (request.resource.data.action == "stop-stream " + request.resource.data.get("sessionId", "")
+            && getAfter(/databases/$(database)/documents/sessions/$(request.resource.data.get("sessionId", ""))).data.deviceId == deviceId
+            && getAfter(/databases/$(database)/documents/sessions/$(request.resource.data.get("sessionId", ""))).data.ownerUid == request.auth.uid
+            && getAfter(/databases/$(database)/documents/sessions/$(request.resource.data.get("sessionId", ""))).data.state in ["connected", "closed"])
           || (request.resource.data.get("sessionId", "") is string
             && getAfter(/databases/$(database)/documents/sessions/$(request.resource.data.get("sessionId", ""))).data.deviceId == deviceId
             && getAfter(/databases/$(database)/documents/sessions/$(request.resource.data.get("sessionId", ""))).data.ownerUid == request.auth.uid
@@ -282,7 +286,15 @@ service cloud.firestore {
       match /commands/{commandId} {
         allow create: if isOwnDeviceCommandCreate(deviceId);
         allow read: if isCentralViewer() || ownsDevice(deviceId);
-        allow update: if ownsDevice(deviceId);
+        allow update: if ownsDevice(deviceId)
+          && ((resource.data.state == "pending"
+            && request.resource.data.state in ["delivered", "ignored"]
+            && request.resource.data.deliveredAt == request.time
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["state", "deliveredAt"]))
+            || (commandId == "agent-health"
+              && request.resource.data.keys().hasOnly(["action", "state", "createdAt"])
+              && request.resource.data.action.matches('^agent-health-check [a-f0-9-]{36}$')
+              && request.resource.data.state == "pending" && request.resource.data.createdAt == request.time));
         allow delete: if isCentralViewer();
       }
     }

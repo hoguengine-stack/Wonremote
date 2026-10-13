@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import { regressionReviewErrors, verifyRegressionReview } from "./verify-regression-review.js";
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -101,7 +102,7 @@ export function changeValidationErrors(commit, registry) {
   return errors;
 }
 
-export function worktreeValidationErrors(contract, changedFiles, registry, stage = "complete") {
+export function worktreeValidationErrors(contract, changedFiles, registry, stage = "complete", retainedEvidence = {}) {
   const errors = [
     ...requestReviewErrors(contract.requestReview, changedFiles),
     ...regressionReviewErrors(contract.regressionReview),
@@ -133,6 +134,10 @@ export function worktreeValidationErrors(contract, changedFiles, registry, stage
   for (const [index, outcome] of contract.outcomes.entries()) {
     const label = `outcomes[${index}]`;
     const id = String(outcome?.id ?? "").trim();
+    const previous = retainedEvidence.contract?.status === "verified"
+      ? retainedEvidence.contract.outcomes?.find((entry) => entry.id === id) : undefined;
+    const outcomeFiles = previous && isDeepStrictEqual(previous, outcome)
+      ? new Set([...changed, ...(retainedEvidence.files ?? [])]) : changed;
     if (!id) errors.push(`${label}.id is required`);
     if (outcomeIds.has(id)) errors.push(`${label}.id must be unique`);
     outcomeIds.add(id);
@@ -153,13 +158,13 @@ export function worktreeValidationErrors(contract, changedFiles, registry, stage
     if (documentationOnly) {
       if (!Array.isArray(outcome.evidenceFiles) || outcome.evidenceFiles.length === 0
           || !outcome.evidenceFiles.every((value) => typeof value === "string"
-            && /\.md$/i.test(value) && changed.has(value.replaceAll("\\", "/")))) {
+            && /\.md$/i.test(value) && outcomeFiles.has(value.replaceAll("\\", "/")))) {
         errors.push(`${label}.evidenceFiles must name changed documentation`);
       }
     } else if (!Array.isArray(outcome?.contractTests) || outcome.contractTests.length === 0) {
       errors.push(`${label}.contractTests must name a changed boundary test`);
     } else if (!outcome.contractTests.some((value) =>
-      TEST_PATH_PATTERN.test(String(value)) && changed.has(String(value).replaceAll("\\", "/")),
+      TEST_PATH_PATTERN.test(String(value)) && outcomeFiles.has(String(value).replaceAll("\\", "/")),
     )) {
       errors.push(`${label}.contractTests must include a test changed with the implementation`);
     }
@@ -304,7 +309,8 @@ export function verifyRecurrenceCoverage(stage = "complete") {
     } catch (error) {
       throw new Error(`Development omission gate failed: invalid CHANGE_CONTRACT.json (${error.message}).`);
     }
-    const contractErrors = worktreeValidationErrors(contract, contractFiles, registry, stage);
+    const retainedEvidence = {contract:JSON.parse(git(["show", "HEAD:CHANGE_CONTRACT.json"])), files:committedFiles.filter(file => existsSync(path.join(repositoryRoot,file)))};
+    const contractErrors = worktreeValidationErrors(contract, contractFiles, registry, stage, retainedEvidence);
     if (contractErrors.length > 0) {
       throw new Error(`Development omission gate failed:\n- ${contractErrors.join("\n- ")}`);
     }

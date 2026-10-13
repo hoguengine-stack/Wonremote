@@ -288,6 +288,9 @@ try {
   await expectPermissionDenied(()=>setDoc(doc(viewer.db,"sessions",lockedSession),sessionBody), "Old Viewer cannot connect locked device");
   await expectPermissionDenied(()=>setDoc(doc(viewer.db,"devices",lockedDevice,"commands","bypass-start"),{action:`start-stream ${lockedSession}`,state:"pending"}), "Raw stream command cannot bypass lock");
   await expectPermissionDenied(()=>setDoc(doc(viewer.db,"devices",lockedDevice,"commands","bypass-system"),{action:"system cmd",state:"pending"}), "Sessionless command cannot bypass lock");
+  await expectPermissionDenied(()=>setDoc(doc(agent.db,"devices",lockedDevice,"commands","owner-bypass-input"),{action:"keypress A",state:"pending"}), "Owner sessionless input cannot bypass lock");
+  await expectPermissionDenied(()=>setDoc(doc(viewer.db,"devices",lockedDevice,"commands","bypass-zook"),{action:"configure-zook",state:"pending"}), "Locked ZOOK configuration requires an approved session");
+  await expectPermissionDenied(()=>setDoc(doc(viewer.db,"devices",lockedDevice,"commands","bypass-rollback"),{action:`request-rollback 0.1.110 ${Date.now()}`,state:"pending"}), "Locked rollback cannot install a lock-unaware Agent");
   await expectPermissionDenied(()=>deleteDoc(doc(viewer.db,"devices",lockedDevice)), "Device deletion cannot remove a locked target");
   const accessId = randomUUID();
   const accessRef = doc(viewer.db,"deviceAccessRequests",accessId);
@@ -302,10 +305,20 @@ try {
   accepted.set(doc(viewer.db,"sessions",lockedSession), {...sessionBody,accessRequestId:accessId,accessLockVersion:lockVersion});
   accepted.set(doc(viewer.db,"devices",lockedDevice,"commands","authorized-start"),{action:`start-stream ${lockedSession}`,sessionId:lockedSession,state:"pending"});
   await accepted.commit();
+  await expectPermissionDenied(()=>setDoc(doc(agent.db,"devices",lockedDevice,"commands","authorized-start"),{action:"keypress A"},{merge:true}), "Agent ACK cannot rewrite command payload");
+  await setDoc(doc(agent.db,"devices",lockedDevice,"commands","authorized-start"),{state:"delivered",deliveredAt:serverTimestamp()},{merge:true});
+  await expectPermissionDenied(()=>setDoc(doc(agent.db,"devices",lockedDevice,"commands","authorized-start"),{state:"pending"},{merge:true}), "Delivered command cannot be replayed");
+  for (let health = 0; health < 2; health++) {
+    await setDoc(doc(agent.db,"devices",lockedDevice,"commands","agent-health"),{action:`agent-health-check ${randomUUID()}`,state:"pending",createdAt:serverTimestamp()});
+    await setDoc(doc(agent.db,"devices",lockedDevice,"commands","agent-health"),{state:"delivered",deliveredAt:serverTimestamp()},{merge:true});
+  }
   await setDoc(doc(viewer.db,"sessions",lockedSession,"chat","before-change"),{text:"authorized"});
   await setDoc(lockRef,{enabled:true,version:randomUUID(),updatedAt:serverTimestamp()});
   await expectPermissionDenied(()=>setDoc(doc(viewer.db,"sessions",lockedSession,"chat","after-change"),{text:"old grant"}), "Password change revokes previous session data authorization");
   await expectPermissionDenied(()=>setDoc(doc(viewer.db,"devices",lockedDevice,"commands","after-change"),{action:"system cmd",sessionId:lockedSession,state:"pending"}), "Password change revokes previous input authorization");
+  await setDoc(doc(viewer.db,"sessions",lockedSession),{state:"closed"},{merge:true});
+  await setDoc(doc(viewer.db,"devices",lockedDevice,"commands","authorized-stop"),{action:`stop-stream ${lockedSession}`,sessionId:lockedSession,state:"pending"});
+  await expectPermissionDenied(()=>setDoc(doc(managedViewer.db,"devices",lockedDevice,"commands","other-stop"),{action:`stop-stream ${lockedSession}`,sessionId:lockedSession,state:"pending"}), "Another Viewer cannot stop someone else's locked session");
   await setDoc(lockRef,{enabled:false,version:randomUUID(),updatedAt:serverTimestamp()});
   await setDoc(doc(viewer.db,"sessions",`${lockedSession}-unlocked`),{...sessionBody,id:`${lockedSession}-unlocked`});
 

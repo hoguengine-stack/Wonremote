@@ -5285,7 +5285,7 @@ function RemoteSessionPanel({
           <p>다른 기기에서 접속했거나 네트워크 연결이 종료됐습니다.</p>
           {reconnectError && <p role="alert">{reconnectError}</p>}
           <div className="button-row">
-            <button type="button" className="secondary-button" onClick={onShowDeviceList}>장비 목록</button>
+            <button type="button" className="secondary-button" onClick={showDeviceList}>장비 목록</button>
             <button type="button" className="primary-button" disabled={reconnectBusy} onClick={() => void reconnectSession()}><RotateCcw size={16} />{reconnectBusy ? "재접속 중" : "재접속"}</button>
           </div>
         </section>

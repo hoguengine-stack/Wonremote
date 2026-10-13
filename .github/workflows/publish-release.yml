@@ -157,7 +157,7 @@ jobs:
         run: npm run test:update-e2e
 
       - name: Verify encrypted device access and input lifecycle
-        run: npx vitest run --maxWorkers=1 src/agent/deviceAccessLock.test.ts src/firebase/deviceAccessLock.test.ts src/agent/agentSessionLifecycle.test.ts src/agent/agentCommandExecution.test.ts
+        run: npx vitest run --maxWorkers=1 scripts/verify-recurrence-coverage.test.js src/agent/deviceAccessLock.test.ts src/firebase/deviceAccessLock.test.ts src/agent/agentSessionLifecycle.test.ts src/agent/agentCommandExecution.test.ts src/firebase/agentWebRtcSignaling.test.ts src/firebase/firstAnswerLatency.test.ts src/firebase/agentPeerConnectionWeriftSmoke.test.ts src/firebase/viewerWebRtcTransport.test.ts src/agent/agentRollback.test.ts
 
       - name: Verify password modal and remote toolbar in Chromium
         run: |
