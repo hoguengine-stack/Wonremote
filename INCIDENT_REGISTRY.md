@@ -5,16 +5,16 @@
 - Detected: 2026-10-13 full publication preparation and Windows filesystem safety check.
 - Severity: P2 defensive cleanup boundary; no user directory loss observed.
 - Affected: GitHub publisher's temporary download verifier cleanup only, not Windows product/runtime source.
-- Status: Source guard verified; publication/live checks pending.
+- Status: Source guard and public release verification completed; global rollout live readback passed.
 - User-visible symptom: Altered verification-directory input could delete a directory outside the publisher's generated verifier namespace.
 - Minimal trigger: Execute actual parsed finally block on an explicitly owned dummy Temp directory with a non-verifier prefix; old source deletes its marker instead of rejecting the target.
 - Root cause and contributors: Normal path generation uses Temp plus GUID, but recursive cleanup does not independently normalize/check the final target or reject reparse points.
-- Fix commit(s): Current publication-tool/test-only repair on223c1e75399cdc5834417047f7d4d18e3b48b824; existing CI binaries remain unchanged.
+- Fix commit(s): dea85b29b65aa586d7d696ab29d3e3dc5159963d publication-tool/test-only repair on223c1e75399cdc5834417047f7d4d18e3b48b824; existing CI binaries remain unchanged.
 - Permanent guard: Normalize absolute path; require immediate normalized Temp parent and exact verifier GUID leaf; reject existing reparse point before recursive delete. Execute the real parsed cleanup block in a narrowly owned fixture and keep invalid marker intact.
 - Regression proof: RED normal owned verifier removed=true while invalidRejected=false and invalidPreserved=false. GREEN actual parsed cleanup preserves invalid fixture and removes only valid owned verifier; packaging/fleet77 tests, TypeScript and diff checks pass. No publishing/API/token execution is part of this filesystem fixture.
 - Stage forwarding correction: PowerShell npm shim dropped --stage, so ready-to-deploy was correctly rejected by the complete gate. Use explicit cmd argument forwarding; unchanged predeploy-stage change:verify then passed. No status/gate relaxation or publication occurred after rejection.
-- Release proof: Not yet published; reuse trusted CI38343014128 pair only after guard/gates pass, retaining source equivalence and live hash checks.
-- Remaining blocker: GREEN cleanup/packaging checks, clean source/proof commit, normal publisher and global rollout/live verification. Existing performance and other physical gaps remain separate.
+- Release proof: Clean predeploy gate and remote CI38352911012 passed. Normal publisher uploaded exact CI38343014128 pair, verified remote hashes/trusted signatures and published stable latestv0.1.111 at2026-10-13T05:45:55Z. Independent public agent/viewer/latest-manifest downloads match all three CI hashes; four standard/x86 aliases and preserved agent1 verified. Tag points todea85b29b65aa586d7d696ab29d3e3dc5159963d with unchanged application source. Single rollout CAS/readback at05:46:51.966200Z confirms0.1.111/general100/pausedfalse/selectedIDsnull, no per-device writes.
+- Remaining blocker: No publication blocker. Offline/paused/session-deferred PCs and every-PC completed installation are not verified by public delivery. Existing subsecond performance and other physical gaps remain separate; user trial confirmation has no itemized timing measurements. Authenticode NotSigned remains distinct from verified signed update manifest.
 
 ## INC-20261013-139: Dirty gate rejected unchanged retained outcome evidence
 
