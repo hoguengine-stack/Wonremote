@@ -212,7 +212,14 @@ try {
     throw "Release download verification failed with exit code $LASTEXITCODE."
   }
 } finally {
-  Remove-Item -LiteralPath $RemoteVerificationDirectory -Recurse -Force -ErrorAction SilentlyContinue
+  $CleanupPath = [System.IO.Path]::GetFullPath($RemoteVerificationDirectory)
+  $CleanupRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd([System.IO.Path]::DirectorySeparatorChar)
+  if ([System.IO.Path]::GetDirectoryName($CleanupPath) -ne $CleanupRoot `
+      -or [System.IO.Path]::GetFileName($CleanupPath) -notmatch '^wonremote-release-verify-[0-9a-f]{32}$' `
+      -or ((Test-Path -LiteralPath $CleanupPath) -and ((Get-Item -LiteralPath $CleanupPath).Attributes -band [System.IO.FileAttributes]::ReparsePoint))) {
+    throw "Refusing unsafe release verification cleanup."
+  }
+  Remove-Item -LiteralPath $CleanupPath -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 if (-not $RequestedDraft) {

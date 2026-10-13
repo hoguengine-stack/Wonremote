@@ -1,5 +1,21 @@
 # WonRemote Incident Registry
 
+## INC-20261013-140: Publisher cleanup lacked an owned-target guard
+
+- Detected: 2026-10-13 full publication preparation and Windows filesystem safety check.
+- Severity: P2 defensive cleanup boundary; no user directory loss observed.
+- Affected: GitHub publisher's temporary download verifier cleanup only, not Windows product/runtime source.
+- Status: Source guard verified; publication/live checks pending.
+- User-visible symptom: Altered verification-directory input could delete a directory outside the publisher's generated verifier namespace.
+- Minimal trigger: Execute actual parsed finally block on an explicitly owned dummy Temp directory with a non-verifier prefix; old source deletes its marker instead of rejecting the target.
+- Root cause and contributors: Normal path generation uses Temp plus GUID, but recursive cleanup does not independently normalize/check the final target or reject reparse points.
+- Fix commit(s): Current publication-tool/test-only repair on223c1e75399cdc5834417047f7d4d18e3b48b824; existing CI binaries remain unchanged.
+- Permanent guard: Normalize absolute path; require immediate normalized Temp parent and exact verifier GUID leaf; reject existing reparse point before recursive delete. Execute the real parsed cleanup block in a narrowly owned fixture and keep invalid marker intact.
+- Regression proof: RED normal owned verifier removed=true while invalidRejected=false and invalidPreserved=false. GREEN actual parsed cleanup preserves invalid fixture and removes only valid owned verifier; packaging/fleet77 tests, TypeScript and diff checks pass. No publishing/API/token execution is part of this filesystem fixture.
+- Stage forwarding correction: PowerShell npm shim dropped --stage, so ready-to-deploy was correctly rejected by the complete gate. Use explicit cmd argument forwarding; unchanged predeploy-stage change:verify then passed. No status/gate relaxation or publication occurred after rejection.
+- Release proof: Not yet published; reuse trusted CI38343014128 pair only after guard/gates pass, retaining source equivalence and live hash checks.
+- Remaining blocker: GREEN cleanup/packaging checks, clean source/proof commit, normal publisher and global rollout/live verification. Existing performance and other physical gaps remain separate.
+
 ## INC-20261013-139: Dirty gate rejected unchanged retained outcome evidence
 
 - Detected: 2026-10-13 explicit local trial build precommit check.
@@ -12,7 +28,10 @@
 - Fix commit(s): Current uncommitted source on94d48c0210c4d09b9f1a13a4797e78094cba2725.
 - Permanent guard: Only identical outcome objects from verified HEAD may reuse tests recorded in existing policy-audited commit history. New/modified outcomes still require a changed current boundary test. Keep all pending outcomes and actual runtime/security/build/predeploy checks; do not weaken request review or use this exception for current changes.
 - Regression proof: Actual gate rejected six historical test references and new unstaged audit evidence before repair. Focused acceptance/rejection checks preserve current-change requirements for new/modified outcomes, reject unverified history/missing historical test and missing physical gaps; packaging plus gate88/88 pass. New audit document staged as actual changed evidence. All earlier pending product outcomes remain in place.
-- Release proof: No new candidate, server rules or installation yet.
+- Release proof: CI38343014128/223c1e7 succeeded publish=false; publisher skipped. Both fresh0.1.111 installers and trusted signed manifest independently verified after completed download. Approved rules-only publication completed after predeploy gate. Actual82220F6D authenticated owner can read unlocked authoritative state. No installed acceptance or public latest promotion yet.
+- Artifact sequencing correction: After CI succeeded, gh run download returned a still-running session85945. Manifest/file inspection was started prematurely and rejected missing files. No installation followed. Wait for download exit0 and file existence, then run the unchanged signature/hash verifier before any installer; do not rerun or bypass the verifier on incomplete output.
+- Local wait correction: Viewer silent install auto-launched new0.1.111 PID20992, and PowerShell Start-Process -Wait waited its descendant too. Exact path/version/installer absence identified this as harness wait, not failed installation. Stop only that owned Viewer, obtain installer exit0, then reopen PID8964; native log confirms show/focus. Future local trial harness uses -PassThru and the installer's own WaitForExit rather than whole-process-tree waiting. Do not disable production automatic Viewer launch or infer failure only from the wait.
+- Installed proof: Fresh CI38343014128/223c1e7 installer pair/manifest verified and installed only on82220F6D. Both versions0.1.111 and exits0, identity/business/password retained, automatic Agent PID19680 remains alive with fresh server accepted heartbeat and exact command round trip. Viewer launch/show verified. Public latest0.1.110 unchanged; physical remote behavior/performance remains open.
 - Remaining blocker: Gate RED/GREEN, fresh source-matched candidate, approved rules-only server publication and local trial installation/health. Subsecond physical acceptance remains separate.
 
 ## INC-20261013-138: Early SDP publication still blocked first-frame transport
@@ -28,7 +47,7 @@
 - Permanent guard: Keep initial negotiation in existing owned queue but expose sendFrame before gathering settles; close must dispose peer promptly and late stage completion cannot create listeners/writes/watchdog. Keep exact SDP/candidate flow and authorization. Persist lock changes and failure/counter reset, not unchanged normal connect. Add first-send and protected-file behavioral tests, not only early-SDP assertions.
 - Regression proof: Actual shared transport test reproduced open channel with unresolved handle; real Windows protected-storage test reproduced unwanted mtime update. Nine focused files125 tests pass after repair, including local real Werift data exchange, first send during gathering, delayed-stage close/late callbacks, unchanged SDK counts and24h idle, Viewer transport, DPAPI and common command/session checks. TypeScript passes. These do not prove installed Viewer click-to-picture below1000ms.
 - Development verification correction: First TypeScript run rejected the new frame fixture's missing sequence and delayed-stage mocks returning void instead of undefined. Add the required real frame field and correctly typed return, retain assertions, then rerun TypeScript successfully; Vitest alone is not proof of fixture type correctness.
-- Release proof: No build, deployment, database migration, new relay/billing or installation performed for this target.
+- Release proof: Subsequent approved local delivery used successful CI38343014128/223c1e7 normal two-installer candidate with trusted manifest/hash verification. Rules-only publication approved and verified; both0.1.111 products installed on82220F6D with preserved identity/settings and fresh Agent online/command round trip. Public latest0.1.110 unchanged and no other-PC installation. This does not prove below1000ms or remote pixels/input. No database move/new relay/billing.
 - Remaining blocker: Source-matched installed Viewer click-to-first-picture trials on82220F6D/59F19451/1D42C9F9, initial/repeated/reconnect and network conditions. Password typing remains in raw timing and is separately described. Do not weaken checks or show cached pixels to claim below1000ms.
 
 ## INC-20261013-137: Lock input/maintenance guards and disconnected fullscreen exit

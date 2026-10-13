@@ -7,6 +7,35 @@ const projectRoot = path.resolve(__dirname, "..");
 const packageJson = JSON.parse(readFileSync(path.join(projectRoot, "package.json"), "utf8"));
 
 describe("desktop packaging scaffold", () => {
+  it.runIf(process.platform === "win32")("cleans only its owned absolute release verifier directory", () => {
+    const publisher = path.join(projectRoot, "scripts", "publish-github-release.ps1");
+    const script = `
+      $ErrorActionPreference='Stop'
+      $ast=[System.Management.Automation.Language.Parser]::ParseFile('${publisher.replace(/'/g,"''")}',[ref]$null,[ref]$null)
+      $cleanup=$ast.Find({param($n) $n -is [System.Management.Automation.Language.TryStatementAst] -and $n.Finally -and $n.Finally.Extent.Text -match 'Remove-Item'},$true).Finally
+      $run=[scriptblock]::Create(($cleanup.Statements | ForEach-Object {$_.Extent.Text}) -join "\n")
+      $temp=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar)
+      $valid=Join-Path $temp ('wonremote-release-verify-'+[guid]::NewGuid().ToString('N'))
+      $invalid=Join-Path $temp ('wonremote-publish-test-'+[guid]::NewGuid().ToString('N'))
+      try {
+        foreach($p in @($valid,$invalid)) {New-Item -ItemType Directory -Path $p | Out-Null; Set-Content -LiteralPath (Join-Path $p 'marker') -Value 'owned test'}
+        $RemoteVerificationDirectory=$valid
+        . $run
+        $removed=-not (Test-Path -LiteralPath $valid)
+        $rejected=$false
+        $RemoteVerificationDirectory=$invalid
+        try {. $run} catch {if($_.Exception.Message -notmatch 'Refusing unsafe release verification cleanup'){throw};$rejected=$true}
+        @{validRemoved=$removed;invalidRejected=$rejected;invalidPreserved=(Test-Path -LiteralPath (Join-Path $invalid 'marker'))} | ConvertTo-Json -Compress
+      } finally {
+        foreach($p in @($valid,$invalid)) {
+          if([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($p)) -ne $temp){throw 'Unexpected owned test path'}
+          if(Test-Path -LiteralPath $p){Remove-Item -LiteralPath (Join-Path $p 'marker') -Force;Remove-Item -LiteralPath $p -Force}
+        }
+      }
+    `;
+    const output = execFileSync("powershell.exe", ["-NoProfile","-NonInteractive","-EncodedCommand",Buffer.from(script,"utf16le").toString("base64")], {encoding:"utf8",windowsHide:true,timeout:15000});
+    expect(JSON.parse(output)).toEqual({validRemoved:true,invalidRejected:true,invalidPreserved:true});
+  });
   it("installs, updates and removes only the protected Agent Node firewall rule", () => {
     const helper = path.join(projectRoot, "src-tauri", "windows", "manage-agent-firewall.ps1");
     const script = `
