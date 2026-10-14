@@ -265,6 +265,20 @@ describe("recurrence coverage gate", () => {
       .toContain("outcomes[0].verification must contain fresh evidence");
   });
 
+  it("reuses identical prepared evidence only for predeploy, never completion or changed requirements", () => {
+    const outcome={id:'existing',acceptance:'Existing runtime condition',boundaries:['runtime'],contractTests:['src/prior.test.ts'],proofLevel:'physical-required',verification:'Source fixture passed',physicalGap:'Physical proof stays open'};
+    const contract={status:'ready-to-deploy',regressionReview:{kind:'non-regression',reason:'Stage isolation fixture'},requestReview:{impact:'none',reason:'Fixture only'},intent:'Prepare release',changeType:'build',risk:'medium',releaseImpact:'build',rollback:'Restore source',outcomes:[outcome]};
+    const retained={contract:structuredClone(contract),files:['src/prior.test.ts']};
+    const error='outcomes[0].contractTests must include a test changed with the implementation';
+    expect(worktreeValidationErrors(contract,['src/new.test.ts'],registry,'predeploy',retained)).toEqual([]);
+    expect(worktreeValidationErrors({...contract,status:'verified'},[],registry,'complete',retained)).toContain(error);
+    expect(worktreeValidationErrors(contract,[],registry,'predeploy',{...retained,files:[]})).toContain(error);
+    expect(worktreeValidationErrors(contract,[],registry,'predeploy',{...retained,contract:{...contract,status:'active'}})).toContain(error);
+    for(const changed of [{...outcome,id:'new'},{...outcome,verification:'New proof'},{...outcome,acceptance:'Changed requirement'}]) {
+      expect(worktreeValidationErrors({...contract,outcomes:[changed]},[],registry,'predeploy',retained)).toContain(error);
+    }
+  });
+
   it("keeps the development-wide policy wired into local and CI gates", () => {
     const entrypoint = readFileSync(path.join(repositoryRoot, "AGENTS.md"), "utf8");
     const rules = readFileSync(path.join(repositoryRoot, "work-guides", "PROJECT_POLICY.md"), "utf8");

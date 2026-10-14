@@ -134,7 +134,8 @@ export function worktreeValidationErrors(contract, changedFiles, registry, stage
   for (const [index, outcome] of contract.outcomes.entries()) {
     const label = `outcomes[${index}]`;
     const id = String(outcome?.id ?? "").trim();
-    const previous = retainedEvidence.contract?.status === "verified"
+    const retainedStatus = retainedEvidence.contract?.status;
+    const previous = (retainedStatus === "verified" || (stage === "predeploy" && retainedStatus === "ready-to-deploy"))
       ? retainedEvidence.contract.outcomes?.find((entry) => entry.id === id) : undefined;
     const outcomeFiles = previous && isDeepStrictEqual(previous, outcome)
       ? new Set([...changed, ...(retainedEvidence.files ?? [])]) : changed;

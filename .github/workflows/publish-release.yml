@@ -157,12 +157,12 @@ jobs:
         run: npm run test:update-e2e
 
       - name: Verify encrypted device access and input lifecycle
-        run: npx vitest run --maxWorkers=1 scripts/verify-recurrence-coverage.test.js src/agent/deviceAccessLock.test.ts src/firebase/deviceAccessLock.test.ts src/agent/agentSessionLifecycle.test.ts src/agent/agentCommandExecution.test.ts src/firebase/agentWebRtcSignaling.test.ts src/firebase/firstAnswerLatency.test.ts src/firebase/agentPeerConnectionWeriftSmoke.test.ts src/firebase/viewerWebRtcTransport.test.ts src/agent/agentRollback.test.ts
+        run: npx vitest run --maxWorkers=1 scripts/verify-recurrence-coverage.test.js src/agent/deviceAccessLock.test.ts src/firebase/deviceAccessLock.test.ts src/agent/agentSessionLifecycle.test.ts src/agent/agentCommandExecution.test.ts src/agent/tossEmergencyOrdersDownload.test.ts src/firebase/agentWebRtcSignaling.test.ts src/firebase/firstAnswerLatency.test.ts src/firebase/agentPeerConnectionWeriftSmoke.test.ts src/firebase/viewerWebRtcTransport.test.ts src/agent/agentRollback.test.ts
 
       - name: Verify password modal and remote toolbar in Chromium
         run: |
           npx playwright install chromium
-          npx vitest run src/viewerDeviceRefresh.test.ts -t 'device access lock modal|remembers this Viewer|isolates remembered|never remembers failed|does not revive remembered|toolbar shortcuts keep|browser edition shortcuts also'
+          npx vitest run src/viewerDeviceRefresh.test.ts -t 'device access lock modal|remembers this Viewer|isolates remembered|never remembers failed|does not revive remembered|toolbar shortcuts keep|browser edition shortcuts also|clipboard success notification'
 
       - name: Select Java for Firestore rules verification
         uses: actions/setup-java@v4

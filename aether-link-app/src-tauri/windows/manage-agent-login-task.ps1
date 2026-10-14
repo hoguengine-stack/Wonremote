@@ -147,7 +147,7 @@ function Resolve-ProtectedFile([string]$Path) {
 }
 
 function Test-AgentNodeRuntime($Runtime, [string]$Root) {
-  return $null -ne (Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+  return $null -ne (Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue | Where-Object {
     -not [string]::IsNullOrWhiteSpace($_.ExecutablePath) -and
     [System.IO.Path]::GetFileName($_.ExecutablePath) -ieq "node.exe" -and
     (Test-PathUnder $_.ExecutablePath $Root) -and

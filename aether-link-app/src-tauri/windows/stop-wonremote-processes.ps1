@@ -45,13 +45,13 @@ if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
 # An update handoff writes readiness after the installer process starts. Give the
 # Agent child time to observe it and exit with the dedicated handoff code.
 Start-Sleep -Milliseconds 500
-$self = Get-CimInstance Win32_Process -Filter ("ProcessId = " + $PID) -ErrorAction SilentlyContinue
-$installerPid = if ($null -ne $self) { [int] $self.ParentProcessId } else { -1 }
 $processes = @(Get-CimInstance Win32_Process)
 $processById = @{}
 foreach ($process in $processes) {
   $processById[[int] $process.ProcessId] = $process
 }
+$self = $processById[[int] $PID]
+$installerPid = if ($null -ne $self) { [int] $self.ParentProcessId } else { -1 }
 $targetIds = New-Object "System.Collections.Generic.HashSet[int]"
 
 foreach ($process in $processes) {
@@ -126,12 +126,17 @@ foreach ($process in $processes) {
   }
 }
 
-Start-Sleep -Milliseconds 1500
-$remainingIds = @(
-  Get-CimInstance Win32_Process |
-    Where-Object { $targetIds.Contains([int] $_.ProcessId) } |
-    ForEach-Object { [int] $_.ProcessId }
-)
+if ($targetIds.Count -eq 0) { exit 0 }
+$filter = ($targetIds | ForEach-Object { "ProcessId = $_" }) -join " OR "
+$deadline = (Get-Date).AddMilliseconds(1500)
+do {
+  $remainingIds = @(
+    Get-CimInstance Win32_Process -Filter $filter |
+      ForEach-Object { [int] $_.ProcessId }
+  )
+  if ($remainingIds.Count -eq 0) { exit 0 }
+  Start-Sleep -Milliseconds 100
+} while ((Get-Date) -lt $deadline)
 if ($remainingIds.Count -gt 0) {
   throw "WonRemote $Product process termination failed. Remaining PIDs: $($remainingIds -join ',')"
 }

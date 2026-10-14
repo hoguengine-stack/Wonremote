@@ -637,6 +637,73 @@ describe("manual Viewer device list in a real browser", () => {
       expect(await page.getByText('NEW',{exact:true}).count()).toBe(0);
     } finally {await page.close();}
   });
+  it.each(["text", "image"])("clipboard success notification is nonblocking for one second: %s", async (kind) => {
+    const page = await openViewer({connected:true});
+    const dialogs: string[] = [];
+    page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
+    try {
+      await page.locator('.table-row').filter({has:page.getByText('PC-0',{exact:true})}).getByRole('button',{name:'접속',exact:true}).click();
+      const send = page.getByRole('button',{name:'클립보드 동기화: 내 PC → 원격 PC',exact:true});
+      await send.waitFor();
+      await page.evaluate((kind) => {
+        const w = window as any; w.clipboardSends = 0;
+        Object.defineProperty(navigator, 'clipboard', {configurable:true, value:{
+          read: async () => kind === 'image' ? [{types:['image/png'],getType:async () => new Blob(['fixture'],{type:'image/png'})}] : [],
+          readText: async () => 'clipboard fixture',
+        }});
+        w.testApi.sendFirebaseClipboardText = async () => { w.clipboardSends++; if (w.clipboardFail) throw Error('Clipboard rejected'); if (w.clipboardSlow) await new Promise(resolve => {w.finishClipboard = resolve;}); };
+        w.testSendFile = async () => {w.clipboardSends++; return true;};
+      }, kind);
+      // Mocked API counters; rendering, timing and toolbar behavior are the real App.
+      const before = await counts(page);
+      await page.clock.pauseAt(new Date(Date.now() + 1000));
+      await send.click();
+      const notice = page.locator('.session-clipboard-notice');
+      await notice.waitFor();
+      expect(await notice.getAttribute('role')).toBe('status');
+      expect(await notice.innerText()).toBe(`클립보드 ${kind === 'text' ? '텍스트' : '이미지'} 전송 완료`);
+      expect(dialogs).toEqual([]);
+      await page.clock.runFor(999);
+      expect(await notice.count()).toBe(1);
+      await send.click();
+      await expect.poll(() => page.evaluate(() => (window as any).clipboardSends)).toBe(2);
+      await page.clock.runFor(1);
+      expect(await notice.count()).toBe(1);
+      await page.clock.runFor(999);
+      expect(await notice.count()).toBe(0);
+      await page.clock.runFor(86_400_000);
+      expect(await counts(page)).toEqual(before);
+      expect(await page.evaluate(() => (window as any).clipboardSends)).toBe(2);
+    } finally { await page.close(); }
+  });
+
+  it("clipboard success notification rejects failure, duplicate and late unmounted completion", async () => {
+    const page = await openViewer({connected:true});
+    const dialogs: string[] = [];
+    page.on('dialog', dialog => {dialogs.push(dialog.message()); void dialog.dismiss();});
+    try {
+      await page.locator('.table-row').filter({has:page.getByText('PC-0',{exact:true})}).getByRole('button',{name:'접속',exact:true}).click();
+      const send = page.getByRole('button',{name:'클립보드 동기화: 내 PC → 원격 PC',exact:true});
+      await send.waitFor();
+      await page.evaluate(() => {
+        const w = window as any; w.clipboardSends=0; w.clipboardFail=true;
+        Object.defineProperty(navigator,'clipboard',{configurable:true,value:{read:async()=>[],readText:async()=> 'fixture'}});
+        w.testApi.sendFirebaseClipboardText = async () => {w.clipboardSends++; if(w.clipboardFail) throw Error('Clipboard rejected'); await new Promise(resolve=>{w.finishClipboard=resolve;});};
+      });
+      await send.click();
+      await expect.poll(()=>dialogs.length).toBe(1);
+      expect(dialogs[0]).toBe('Clipboard rejected');
+      expect(await page.locator('.session-clipboard-notice').count()).toBe(0);
+      await page.evaluate(()=>{(window as any).clipboardFail=false;});
+      await send.evaluate((element:HTMLButtonElement)=>{element.click();element.click();});
+      await expect.poll(()=>page.evaluate(()=>(window as any).clipboardSends)).toBe(2);
+      await page.evaluate(()=>{const w=window as any; w.root.unmount(); w.noticeTimers=0; const timer=window.setTimeout; window.setTimeout=((callback:any,delay:number,...args:any[])=>{if(delay===1000)w.noticeTimers++;return timer(callback,delay,...args);}) as any; w.finishClipboard();});
+      await page.clock.runFor(1001);
+      expect(await page.evaluate(()=>(window as any).noticeTimers)).toBe(0);
+      expect(dialogs).toHaveLength(1);
+    } finally { await page.close(); }
+  });
+
   it("clipboard history sends remote Win+V to the left of transfer without copying clipboard data", async () => {
     const page=await openViewer({connected:true});
     try {
@@ -656,20 +723,25 @@ describe("manual Viewer device list in a real browser", () => {
       await page.locator('.table-row').filter({has:page.getByText('PC-0',{exact:true})}).getByRole('button',{name:'접속',exact:true}).click();
       const edge=page.getByRole('button',{name:'Microsoft Edge 다운로드',exact:true});
       const asp=page.getByRole('button',{name:'FirstPOS ASP 열기',exact:true});
+      const toss=page.getByRole('button',{name:'TossEmergencyOrders 다운로드',exact:true});
       await edge.waitFor();
       expect(await edge.innerText()).toBe('Download'); expect(await asp.innerText()).toBe('ASP');
+      expect(await toss.innerText()).toBe('TossEmergencyOrders');
+      expect(await toss.evaluate(e=>e.nextElementSibling?.getAttribute('aria-label'))).toBe('Microsoft Edge 다운로드');
+      expect(await toss.getAttribute('href')).toBe(null);
       expect(await edge.getAttribute('href')).toBe(null);
       expect(await asp.getAttribute('href')).toBe(null);
       expect(await edge.evaluate(e=>e.nextElementSibling?.getAttribute('aria-label'))).toBe('FirstPOS ASP 열기');
       expect(await asp.evaluate(e=>e.nextElementSibling?.getAttribute('aria-label'))).toBe('원격 클립보드 열기 (Win+V)');
+      await toss.click();
       for(const link of [edge,asp]) {
         expect(await link.locator('img').evaluate((e:HTMLImageElement)=>e.complete&&e.naturalWidth>0)).toBe(true);
         await link.click();
       }
       expect(await page.evaluate(()=>(window as any).nativeCalls.filter((c:any)=>c.command==='open_viewer_shortcut'))).toEqual([]);
-      await expect.poll(()=>page.evaluate(()=>(window as any).testState.controls)).toEqual(['system edge-download','system asp-login']);
+      await expect.poll(()=>page.evaluate(()=>(window as any).testState.controls)).toEqual(['system toss-emergency-download','system edge-download','system asp-login']);
       await page.setViewportSize({width:1024,height:768});
-      for(const link of [edge,asp]) expect(await link.evaluate(e=>{const r=e.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth;})).toBe(true);
+      for(const link of [toss,edge,asp]) expect(await link.evaluate(e=>{const r=e.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth&&e.scrollWidth<=e.clientWidth;})).toBe(true);
       await page.screenshot({path:'../.codex-tmp/viewer-browser-shortcuts.png'});
       expect(await page.context().pages()).toHaveLength(1);
     } finally {await page.close();}
@@ -679,11 +751,26 @@ describe("manual Viewer device list in a real browser", () => {
     try {
       await page.context().route(/https:\/\/(asp\.firstpos\.co\.kr|c2rsetup\.officeapps\.live\.com)\//,route=>route.fulfill({contentType:'text/html',body:'<title>Shortcut target</title>'}));
       await page.locator('.table-row').filter({has:page.getByText('PC-0',{exact:true})}).getByRole('button',{name:'접속',exact:true}).click();
-      for(const name of ['Microsoft Edge 다운로드','FirstPOS ASP 열기']) {
+      for(const name of ['TossEmergencyOrders 다운로드','Microsoft Edge 다운로드','FirstPOS ASP 열기']) {
         await page.getByRole('button',{name,exact:true}).click();
       }
-      await expect.poll(()=>page.evaluate(()=>(window as any).testState.controls)).toEqual(['system edge-download','system asp-login']);
+      await expect.poll(()=>page.evaluate(()=>(window as any).testState.controls)).toEqual(['system toss-emergency-download','system edge-download','system asp-login']);
       expect(page.context().pages()).toHaveLength(1);
+    } finally {await page.close();}
+  });
+
+  it("toolbar shortcuts keep old Agents from receiving unsupported Toss download commands", async () => {
+    const page=await openViewer({connected:true});
+    try {
+      await page.getByText('PC-0',{exact:true}).waitFor();
+      await page.evaluate(()=>{(window as any).testState.devices[0].version='0.1.111';});
+      await refresh(page).click();
+      await page.locator('.table-row').filter({has:page.getByText('PC-0',{exact:true})}).getByRole('button',{name:'접속',exact:true}).click();
+      const toss=page.getByRole('button',{name:'TossEmergencyOrders 다운로드',exact:true});
+      expect(await toss.isDisabled()).toBe(true);
+      expect(await toss.getAttribute('title')).toContain('0.1.112');
+      expect(await page.getByRole('button',{name:'Microsoft Edge 다운로드',exact:true}).isEnabled()).toBe(true);
+      expect(await page.evaluate(()=>(window as any).testState.controls)).toEqual([]);
     } finally {await page.close();}
   });
   it("ZOOK setup preserves leading zeroes and Agent registration, deduplicates clicks and stays idle", async () => {

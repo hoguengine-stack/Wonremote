@@ -151,6 +151,40 @@ exit 0
     expect(execFileSync("powershell.exe", ["-NoProfile", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { windowsHide: true, timeout: 15000, encoding: "utf8" })).toContain("registered=3;started=1");
   });
 
+  it.each(["empty", "exits", "stuck"])("bounds installer queries and waits while preserving termination failure: %s", (scenario) => {
+    const helper = path.resolve("src-tauri/windows/stop-wonremote-processes.ps1").replace(/'/g, "''");
+    const script = `
+      $global:full = 0; $global:filtered = 0; $global:stopped = $false
+      $global:clock = [datetime]'2026-10-14T00:00:00Z'
+      function Get-Date { $global:clock = $global:clock.AddMilliseconds(500); return $global:clock }
+      function Start-Sleep { param($Milliseconds); Write-Output "WAIT=$Milliseconds" }
+      function Get-CimInstance {
+        param($ClassName,$Filter)
+        if ($Filter) {
+          $global:filtered++
+          if ($Filter -ne 'ProcessId = 101') { throw "Unexpected target $Filter" }
+          if ($${scenario === "stuck"}) { return [pscustomobject]@{ProcessId=101} }
+          return
+        }
+        $global:full++
+        [pscustomobject]@{ProcessId=$PID;ParentProcessId=9000;ExecutablePath=$null}
+        [pscustomobject]@{ProcessId=9000;ParentProcessId=1;ExecutablePath='C:\\Program Files\\WonRemote Viewer\\installer.exe'}
+        if ($${scenario !== "empty"}) { [pscustomobject]@{ProcessId=101;ParentProcessId=1;ExecutablePath='C:\\Program Files\\WonRemote Viewer\\wonremote-viewer.exe'} }
+      }
+      function Stop-Process { param($Id,[switch]$Force,$ErrorAction); if ($Id -ne 101) { throw 'Unowned process stop' }; $global:stopped=$true }
+      $source = [IO.File]::ReadAllText('${helper}')
+      $source = $source.Replace('exit 0', 'return')
+      try { & ([scriptblock]::Create($source)) -Product Viewer -InstallRoot 'C:\\Program Files\\WonRemote Viewer' }
+      catch { Write-Output $_.Exception.Message }
+      Write-Output "FULL=$global:full;FILTERED=$global:filtered;STOPPED=$global:stopped"
+    `;
+    const output = execFileSync("powershell.exe", ["-NoProfile", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { windowsHide: true, timeout: 15_000, encoding: "utf8" });
+    expect(output).toContain("WAIT=500");
+    expect(output).not.toContain("WAIT=1500");
+    expect(output).toContain(`FULL=1;FILTERED=${scenario === "empty" ? 0 : scenario === "exits" ? 1 : 3};STOPPED=${scenario === "empty" ? "False" : "True"}`);
+    expect(output.includes("process termination failed")).toBe(scenario === "stuck");
+  }, 20_000);
+
   it("stops the SYSTEM broker and both protected and legacy Agent process trees before overwrite", () => {
     const helper = path.resolve("src-tauri/windows/stop-wonremote-processes.ps1").replace(/'/g, "''");
     const script = [
@@ -166,7 +200,7 @@ exit 0
       "function Stop-ScheduledTask { param($TaskName,$ErrorAction); Write-Output 'BROKER_STOPPED' }",
       "function Get-CimInstance {",
       "  param($ClassName,$Filter,$ErrorAction)",
-      "  if ($Filter) { return [pscustomobject]@{ParentProcessId=9000} }",
+      "  if ($Filter) { return @($global:processes | Where-Object { -not $global:stopped.Contains([int]$_.ProcessId) -and $Filter -match ('ProcessId = ' + $_.ProcessId + '(\\D|$)') }) }",
       "  return @($global:processes | Where-Object { -not $global:stopped.Contains([int]$_.ProcessId) })",
       "}",
       "function Stop-Process {",
@@ -203,7 +237,7 @@ exit 0
       ")",
       "function Get-CimInstance {",
       "  param($ClassName,$Filter,$ErrorAction)",
-      "  if ($Filter) { return [pscustomobject]@{ParentProcessId=9000} }",
+      "  if ($Filter) { return @($global:processes | Where-Object { -not $global:stopped.Contains([int]$_.ProcessId) -and $Filter -match ('ProcessId = ' + $_.ProcessId + '(\\D|$)') }) }",
       "  return @($global:processes | Where-Object { -not $global:stopped.Contains([int]$_.ProcessId) })",
       "}",
       "function Stop-Process {",
@@ -285,7 +319,8 @@ exit 0
       function Stop-ScheduledTask { param($TaskName,$ErrorAction); $global:events.Add("STOP:$TaskName") }
       function Unregister-ScheduledTask { param($TaskName,[switch]$Confirm,$ErrorAction); $global:registered.Remove($TaskName); $global:events.Add("UNREGISTER:$TaskName") }
       function Get-CimInstance {
-        param($ClassName,$ErrorAction)
+        param($ClassName,$Filter,$ErrorAction)
+        if ($Filter -ne "Name = 'node.exe'") { throw 'Unexpected full process table poll' }
         $global:events.Add('CHECK_RUNTIME')
         $items = @()
         if ($global:protectedStarted -and $${healthy}) { $items += [pscustomobject]@{ProcessId=201;Name='node.exe';ExecutablePath=(Join-Path $protectedRoot 'runtime\\node.exe');CommandLine=((Join-Path $protectedRoot 'agent\\index.mjs') + ' --watch')} }

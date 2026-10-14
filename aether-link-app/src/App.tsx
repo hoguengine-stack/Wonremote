@@ -116,7 +116,7 @@ import {
 import {
   scheduleVisualPingPresentedMeasurement,
 } from "./domain/visualPing";
-import { getViewerVersion } from "./domain/versioning";
+import { getViewerVersion, isHigherVersion } from "./domain/versioning";
 import {
   CURRENT_REMOTE_PROTOCOL_VERSION,
   evaluateRemoteProtocolCompatibility,
@@ -4778,13 +4778,22 @@ function RemoteSessionPanel({
   // Clipboard
   const isClipboardBusyRef = useRef(false);
   const clipboardRequestAbortRef = useRef<AbortController | null>(null);
+  const [clipboardNotice, setClipboardNotice] = useState("");
+  const clipboardNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clipboardOwnerRef = useRef<object | null>(null);
   useEffect(() => {
+    const owner = isActive && isVisible ? {} : null;
+    clipboardOwnerRef.current = owner;
+    setClipboardNotice("");
     if (!isActive || !isVisible) {
       clipboardRequestAbortRef.current?.abort();
       clipboardRequestAbortRef.current = null;
       isClipboardBusyRef.current = false;
     }
     return () => {
+      clipboardOwnerRef.current = null;
+      if (clipboardNoticeTimerRef.current !== null) clearTimeout(clipboardNoticeTimerRef.current);
+      clipboardNoticeTimerRef.current = null;
       clipboardRequestAbortRef.current?.abort();
       clipboardRequestAbortRef.current = null;
       isClipboardBusyRef.current = false;
@@ -4793,29 +4802,40 @@ function RemoteSessionPanel({
 
   const handleSendClipboard = async () => {
     if (!isActive || !sessionId || isClipboardBusyRef.current) return;
+    const owner = clipboardOwnerRef.current;
+    const notifySuccess = (message: string) => {
+      if (!owner || clipboardOwnerRef.current !== owner) return;
+      if (clipboardNoticeTimerRef.current !== null) clearTimeout(clipboardNoticeTimerRef.current);
+      setClipboardNotice(message);
+      clipboardNoticeTimerRef.current = setTimeout(() => {
+        clipboardNoticeTimerRef.current = null;
+        setClipboardNotice("");
+      }, 1000);
+    };
     isClipboardBusyRef.current = true;
     try {
       const image = await readClipboardPngBlob().catch(() => null);
       if (activeSessionIdRef.current !== sessionId) return;
       if (image) {
         await sendClipboardImage(image);
-        alert("클립보드 이미지를 원격 장비로 전송했습니다.");
+        notifySuccess("클립보드 이미지 전송 완료");
         return;
       }
       const text = await navigator.clipboard.readText();
       if (activeSessionIdRef.current !== sessionId) return;
       if (text && sessionId) {
         await sendClipboardText(sessionId, text, "viewer");
-        alert("클립보드 텍스트가 에이전트로 전송되었습니다.");
+        notifySuccess("클립보드 텍스트 전송 완료");
       }
     } catch (err) {
+      if (clipboardOwnerRef.current !== owner) return;
       if (err instanceof Error) {
         alert(err.message);
         return;
       }
       alert("클립보드 권한이 없거나 데이터가 비어있습니다.");
     } finally {
-      isClipboardBusyRef.current = false;
+      if (clipboardOwnerRef.current === owner) isClipboardBusyRef.current = false;
     }
   };
 
@@ -5446,6 +5466,7 @@ function RemoteSessionPanel({
             </div>
           )}
 
+          {clipboardNotice && <div className="session-clipboard-notice" role="status" aria-live="polite">{clipboardNotice}</div>}
           {remoteFileStatus && <div className="session-transfer-progress" role="status">{remoteFileStatus}</div>}
           {hasTransferItems && !transferPanelOpen && (
             <button
@@ -5782,6 +5803,12 @@ function RemoteSessionPanel({
         </div>
 
         <div className="session-command-actions">
+          <button type="button" className="viewer-shortcut viewer-shortcut-toss"
+            disabled={!remoteInputAvailable || Boolean(device.version && !isHigherVersion(device.version, "0.1.111"))}
+            title="TossEmergencyOrders · 원격 PC 다운로드 폴더에 저장 (Agent 0.1.112 이상 필요)" aria-label="TossEmergencyOrders 다운로드"
+            onClick={() => onInputEvent("system toss-emergency-download")}>
+            <Download size={24} aria-hidden="true" /><span>TossEmergencyOrders</span>
+          </button>
           {[
             {id:"edge", label:"Download", name:"Microsoft Edge 다운로드", logo:edgeLogo, url:"https://c2rsetup.officeapps.live.com/c2r/downloadEdge.aspx?platform=Default&source=EdgeStablePage&Channel=Stable&language=ko&Consent=0&brand=M100"},
             {id:"asp", label:"ASP", name:"FirstPOS ASP 열기", logo:aspLogo, url:"https://asp.firstpos.co.kr/login/login_form.do"},

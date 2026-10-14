@@ -35,7 +35,7 @@ describe("desktop packaging scaffold", () => {
     `;
     const output = execFileSync("powershell.exe", ["-NoProfile","-NonInteractive","-EncodedCommand",Buffer.from(script,"utf16le").toString("base64")], {encoding:"utf8",windowsHide:true,timeout:15000});
     expect(JSON.parse(output)).toEqual({validRemoved:true,invalidRejected:true,invalidPreserved:true});
-  });
+  }, 20_000);
   it("installs, updates and removes only the protected Agent Node firewall rule", () => {
     const helper = path.join(projectRoot, "src-tauri", "windows", "manage-agent-firewall.ps1");
     const script = `

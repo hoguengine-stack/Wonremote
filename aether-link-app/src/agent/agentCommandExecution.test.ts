@@ -44,14 +44,16 @@ describe("Agent command execution", () => {
   it("opens the two remote shortcuts only inside an active session", async () => {
     const runtime = createRuntime();
     runtime.getActiveSessionId = () => null;
-    for (const command of ["system edge-download", "system asp-login"]) {
+    for (const command of ["system edge-download", "system asp-login", "system toss-emergency-download"]) {
       await expect(executeAgentCommand(command, "poll", runtime)).resolves.toBe("ignored");
     }
     expect(runtime.injectAction).not.toHaveBeenCalled();
     runtime.getActiveSessionId = () => "session-1";
-    for (const command of ["system edge-download", "system asp-login"]) await expect(executeAgentCommand(command, "webrtc", runtime)).resolves.toBe("executed");
+    for (const command of ["system edge-download", "system asp-login", "system toss-emergency-download"]) await expect(executeAgentCommand(command, "webrtc", runtime)).resolves.toBe("executed");
     expect(runtime.injectAction).toHaveBeenNthCalledWith(1, "system edge-download");
     expect(runtime.injectAction).toHaveBeenNthCalledWith(2, "system asp-login");
+    expect(runtime.injectAction).toHaveBeenNthCalledWith(3, "system toss-emergency-download");
+    await expect(executeAgentCommand("system toss-emergency-download https://example.com", "webrtc", runtime)).resolves.toBe("rejected");
     await expect(executeAgentCommand("system asp-login https://example.com", "webrtc", runtime)).resolves.toBe("rejected");
   });
   it("starts/cancels file selection only for an active session without path arguments", async () => {
@@ -96,6 +98,7 @@ describe("Agent command execution", () => {
     "system taskmgr",
     "system edge-download",
     "system asp-login",
+    "system toss-emergency-download",
     "switch-monitor 2",
     "set-sleep 50",
     "set-stream-mode fast",

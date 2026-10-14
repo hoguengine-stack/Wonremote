@@ -1,5 +1,51 @@
 # WonRemote Incident Registry
 
+## INC-20261014-145: Prepared commit discarded identical historical evidence
+
+- Detected: Actual112 predeploy gate after clipboard/install/shortcut source checks on2026-10-14.
+- Severity: P2 gate false positive; no release or installation occurred.
+- Affected: Committed ready-to-deploy contract followed by another source edit before publication.
+- Status: Focused reproduction captured; limited predeploy-stage evidence reuse repaired.
+- User-visible symptom: Publication blocked by ten unchanged historical Android/ZOOK/audit outcomes unrelated to current edits.
+- Minimal trigger: HEAD64d20d0 contract is ready-to-deploy (passed CI change-guard), current dirty source has narrow changed tests, retained outcome bytes and audited files are unchanged.
+- Root cause and contributors: Worktree evidence reuse permits only verified HEAD, incorrectly discarding already prepared source evidence during another predeploy pass. This is evidence selection, not missing current tests or failed health proof.
+- Fix commit(s): Current preparation from64d20d066a597ec5d84b2db543a6ebf867c00cf8.
+- Permanent guard: Permit identical committed ready evidence only in predeploy; complete still requires verified. Deep equality, changed/new outcome fresh-test requirement, active rejection, audited file existence, pending deployment and physical gaps remain enforced.
+- Regression proof: RED real gate and new stage/identity fixture; GREEN focused gate tests required. No old outcomes moved/deleted or proof level changed.
+- Release proof: Fresh normal CI and public bytes still required; no signing-only/source substitution permitted.
+- Remaining blocker: Normal gate/CI/public proof; physical gaps preserved.
+
+## INC-20261014-144: Clipboard confirmation and avoidable installer waits
+
+- Detected: User clipboard confirmation and two slow-install screenshots on2026-10-14; real affected-PC durations/last fast version unknown.
+- Severity: P2 user friction/performance; no confirmed data loss or known update-induced regression.
+- Affected: Viewer clipboard success and shared Agent/Viewer installer stopper plus Agent startup query/stage labels.
+- Status: Focused source/browser/PowerShell verification passed; fresh release pending.
+- User-visible symptom: Confirmation required after successful clipboard send and slow installer stages reported in screenshots.
+- Minimal trigger: Explicit clipboard send; install with no owned processes or repeated protected-runtime stability checks.
+- Root cause and contributors: Success uses blocking alert; stopper always sleeps1.5s after termination and repeats a full process scan even with no owned process. Startup stability checks query the whole process table each250ms. Last visible Extract label also hides migration/firewall work. Local read-only diagnostics full CIM294/203ms, filtered node149ms, firewall query2694ms are not affected-PC total times or proof of tenfold improvement.
+- Fix commit(s): Current source from64d20d066a597ec5d84b2db543a6ebf867c00cf8; fresh112 normal build required.
+- Permanent guard: Actual Chromium text/image success/one-second/lifecycle/failure/duplicate counters, isolated real PowerShell no-target/exit/stuck/ownership fixtures and filtered runtime query checks. Preserve handoff500ms, strict online/identity/secure-broker proof, failed-stop rejection and legacy data.
+- Development fixture corrections: Script exit0 ends the enclosing PowerShell invocation, so counter fixture substitutes return only within its in-memory copy. Browser clock install continues during actions, so exact999ms expiry assertions require pausing the test clock before sending. Neither correction changes production conditions.
+- Regression proof: Chromium clipboard4 pass; Agent startup/packaging/isolation97 pass, including empty/exiting/stuck scoped termination and filtered migration query. Timed-unlock/shortcut siblings14 pass after added toolbar button; TypeScript passes. Fixture process table mocked, actual PS/NSIS control flow tested; no real Agent stopped.
+- Release proof: Normal fresh Windows0.1.112 pair CI and public-byte/signature proof pending; Agent rollout remains unchanged.
+- Remaining blocker: Fresh normal CI/public delivery; affected slow-PC total install duration/ZOOK comparison and cross-PC download are not measured.
+
+## INC-20261014-143: Cold PowerShell startup exceeded cleanup fixture deadline
+
+- Detected: 2026-10-14 normal0.1.112 CI38505841243 on64d20d066a597ec5d84b2db543a6ebf867c00cf8.
+- Severity: P2 CI harness failure; installation/publication did not start and latest0.1.111 remains intact.
+- Affected: desktopPackaging's real parsed publisher cleanup fixture on fresh Windows2022 PowerShell, not production cleanup logic or product behavior.
+- Status: CI evidence/root cause identified; focused bound correction pending.
+- User-visible symptom: Requested release stopped in contract tests before any new installer or public asset was created.
+- Minimal trigger: Cold runner emits Preparing modules for first use; cleanup fixture completes its process around5452ms but Vitest's outer default5000ms deadline fails.139 sibling release cases pass.
+- Root cause and contributors: Actual source invokes real PowerShell with15000ms child timeout but omits an outer test timeout, making cold process/module startup fail a smaller generic5s limit. Last local fixture completed under1s. Publisheddea85b2-to64d source diff shows only version assertion changes; no cleanup algorithm regression or known-good cold CI baseline claimed. Initial shorthand deadline description was corrected from20000/25000 to actual15000 child/20000 outer before execution.
+- Fix commit(s): Current focused test-only repair on64d20d066a597ec5d84b2db543a6ebf867c00cf8; retain0.1.112 because no release/tag/assets were published.
+- Permanent guard: Set only this real subprocess fixture's outer deadline to20000ms, preserving the15000ms child limit and valid removal/invalid rejection/preserved marker assertions, matching the neighboring real PowerShell fixture. No global timeout, production security predicate, release readiness or signing gate relaxed.
+- Regression proof: Actual CI timeout preserved; rerun narrow cleanup case only after the explicit deadline correction, then rerun normal CI from the repaired main commit. Other139 cases and prior timed-unlock evidence remain valid in their stated environment.
+- Release proof: Failed CI publish job skipped and no artifacts uploaded; public latest unchanged. Fresh successful normal CI and independent hash/signature/download proof remain required.
+- Remaining blocker: Focused check, source/gate commit and normal CI/public verification. Agent global rollout must remain0.1.111/general100 with zero writes.
+
 ## INC-20261014-142: Timed-unlock browser tests assumed unavailable fixture controls
 
 - Detected: 2026-10-14 new timed-unlock boundary verification.

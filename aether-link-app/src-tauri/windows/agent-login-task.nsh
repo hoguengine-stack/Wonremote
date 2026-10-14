@@ -3,6 +3,7 @@
 
 !macro WONREMOTE_MANAGE_AGENT_FIREWALL MODE
   Push $0
+  DetailPrint "Configuring WonRemote Agent firewall rule (${MODE})..."
   IfFileExists "$INSTDIR\manage-agent-firewall.ps1" +2 0
     Goto firewall_done_${MODE}
   nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\manage-agent-firewall.ps1" -Mode ${MODE} -AgentPath "$INSTDIR\wonremote-viewer.exe"'
@@ -61,6 +62,7 @@
 !macro WONREMOTE_MIGRATE_LEGACY_AGENT
   Push $0
   Push $1
+  DetailPrint "Registering WonRemote Agent and verifying protected runtime..."
   nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\manage-agent-login-task.ps1" -Mode Migrate -AgentPath "$INSTDIR\wonremote-viewer.exe"'
   Pop $1
   ${If} $1 != 0
