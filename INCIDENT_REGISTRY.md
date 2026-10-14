@@ -1,5 +1,20 @@
 # WonRemote Incident Registry
 
+## INC-20261014-141: Android delivery remained behind the Windows release
+
+- Detected: 2026-10-14 user explicitly requested Android after Windows full delivery.
+- Severity: P2 platform delivery gap; no new Android runtime defect is established.
+- Affected: Android APK discovery/downloads and the hosted Viewer, not the verified Windows installer pair.
+- Status: Existing signing baseline and old-to-current compatibility verified; fresh build/publication pending.
+- User-visible symptom: Public Android discovery still advertises0.1.103 while Windows latest is0.1.111.
+- Minimal trigger: Read public android-update.json after Windows0.1.111 publication; all three Android versionCodes remain1103.
+- Root cause and contributors: Windows GitHub release and Android Firebase Hosting delivery are independent. The previous explicitly reported Windows-only publication did not build APKs or publish the hosted Viewer, so the later Android request needs a separate delivery operation.
+- Fix commit(s): Current Android release preparation from893f9d43c0badbc01bdf3b9ac977233c8c19329d; Android runtime source matches the previous published Android source.
+- Permanent guard: Explicit Android outcomes cover all three APK IDs/versionCodes, existing signer, immutable archives, discovery/ZIP/APK bytes and hosted output. Extend existing compatibility tests to0.1.111 while retaining0.1.103; keep existing package/hash/ZIP/stale-Hosting rejection and never report Windows publication as Android delivery.
+- Regression proof: Old live discovery1103 confirmed. Updated actual UpdateClient download scenarios1093-to1103/1093-to1111/1103-to1111 and Viewer unit tasks pass; four focused release/native/mobile Vitest files18/18 and real Chromium mobile portrait/landscape1/1 pass. Existing published-matching Viewer APK signatureSHA2566ab6c18845975a7b46ba0d0b6f74a60bf8bcaf5bf318ff58a8a3bb57f6b76914 verified. Native Android runtime diff against9120174 is empty; this is delivery compatibility proof, not a newly reproduced runtime bug.
+- Release proof: Fresh APK build/package/version/JNI/certificate and Hosting-only/live verification pending. Windows latest/rollout, agent1 and server rules are outside the change.
+- Remaining blocker: Complete fresh build and predeploy/public checks. No connected phone; physical installation, IME/input/reconnect and below1s remote-picture timing are not completed by package publication.
+
 ## INC-20261013-140: Publisher cleanup lacked an owned-target guard
 
 - Detected: 2026-10-13 full publication preparation and Windows filesystem safety check.

@@ -44,15 +44,18 @@ describe("Android release discovery", () => {
       writeFileSync(target, original);
     }
   });
-  it("publishes a strictly newer discovery entry for installed Viewer 0.1.93", () => {
+  it.each(["0.1.103", "0.1.111"])("publishes %s as newer discovery for old Viewer installs", (version) => {
     const { root, app, inspect } = fixture();
-    writeFileSync(path.join(app, "package.json"), JSON.stringify({ version: "0.1.103" }));
+    const code = 1000 + Number(version.split(".")[2]);
+    writeFileSync(path.join(app, "package.json"), JSON.stringify({ version }));
     const manifest = publishAndroidManifest(root, (file: string) =>
-      inspect(file).replace("1081", "1103").replace("0.1.81", "0.1.103"));
+      inspect(file).replace("1081", String(code)).replace("0.1.81", version));
     const viewer = manifest.apps["com.wonremote.viewer"];
+    expect(viewer.versionCode).toBe(code);
     expect(viewer.versionCode).toBeGreaterThan(1093);
-    expect(viewer.versionName).toBe("0.1.103");
-    expect(viewer.url).toContain("/android/v0.1.103/viewer.zip");
+    if (version === "0.1.111") expect(viewer.versionCode).toBeGreaterThan(1103);
+    expect(viewer.versionName).toBe(version);
+    expect(viewer.url).toContain(`/android/v${version}/viewer.zip`);
     expect(() => verifyAndroidManifest(root)).not.toThrow();
   });
   it("publishes all three actual package versions and hashes with versioned payload URLs", () => {
