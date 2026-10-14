@@ -93,7 +93,7 @@ import {
   type ViewerWebRtcTransport,
 } from "./firebase/viewerFirebase";
 import { ViewerAccountManager } from "./components/ViewerAccountManager";
-import { DeviceAccessLockDialog } from "./components/DeviceAccessLockDialog";
+import { DeviceAccessLockDialog, type DeviceUnlockChoice } from "./components/DeviceAccessLockDialog";
 import { ViewerGroups } from "./components/ViewerGroups";
 import { groupDeviceIds } from "./domain/viewerGroups";
 import { IosCapabilityProbe } from "./components/IosCapabilityProbe";
@@ -445,19 +445,39 @@ function ViewerApp() {
   const sessionShutdownInProgressRef = useRef(false);
   const [editTarget, setEditTarget] = useState<DeviceEditTarget | null>(null);
   const [deviceAccessDialog, setDeviceAccessDialog] = useState<{device: ManagedDevice; connect: boolean} | null>(null);
-  const devicePasswordResolver = useRef<((password: string | null) => void) | null>(null);
-  useEffect(() => () => { devicePasswordResolver.current?.(null); devicePasswordResolver.current = null; }, []);
-  function closeDeviceAccessDialog(password: string | null = null) {
+  const devicePasswordResolver = useRef<((choice: DeviceUnlockChoice | null) => void) | null>(null);
+  const rememberedDevicePasswords = useRef(new Map<string, {password: string; lockVersion?: string; expiresAt: number; timeout: number}>());
+  const unlockContext = useRef({isAuthenticated, devices});
+  unlockContext.current = {isAuthenticated, devices};
+  function forgetDevicePassword(deviceId: string) {
+    const remembered = rememberedDevicePasswords.current.get(deviceId);
+    if (remembered) window.clearTimeout(remembered.timeout);
+    rememberedDevicePasswords.current.delete(deviceId);
+  }
+  function forgetAllDevicePasswords() {
+    for (const id of rememberedDevicePasswords.current.keys()) forgetDevicePassword(id);
+    rememberedDevicePasswords.current = new Map();
+  }
+  useEffect(() => {
+    for (const [id, remembered] of rememberedDevicePasswords.current) {
+      if (!isAuthenticated || !devices.some(device => device.id === id && device.accessLocked && device.accessLockVersion === remembered.lockVersion)) forgetDevicePassword(id);
+    }
+  }, [devices, isAuthenticated]);
+  useEffect(() => () => { devicePasswordResolver.current?.(null); devicePasswordResolver.current = null; forgetAllDevicePasswords(); }, []);
+  function closeDeviceAccessDialog(choice: DeviceUnlockChoice | null = null) {
     const resolve = devicePasswordResolver.current;
     devicePasswordResolver.current = null;
     setDeviceAccessDialog(null);
-    resolve?.(password);
+    resolve?.(choice);
   }
-  function requireDevicePassword(deviceId: string): Promise<string | undefined | null> {
+  function requireDevicePassword(deviceId: string): Promise<DeviceUnlockChoice | undefined | null> {
     const device = devices.find(item => item.id === deviceId);
     if (!device?.accessLocked) return Promise.resolve(undefined);
+    const remembered = rememberedDevicePasswords.current.get(deviceId);
+    if (remembered && remembered.expiresAt > performance.now() && remembered.lockVersion === device.accessLockVersion) return Promise.resolve({password:remembered.password});
+    forgetDevicePassword(deviceId);
     if (devicePasswordResolver.current) return Promise.resolve(null);
-    return new Promise(resolve => { devicePasswordResolver.current = resolve; setDeviceAccessDialog({device, connect:true}); });
+    return new Promise(resolve => { devicePasswordResolver.current = choice => resolve(choice ? {...choice, lockVersion:device.accessLockVersion} : null); setDeviceAccessDialog({device, connect:true}); });
   }
   const [secureConnect, setSecureConnect] = useState<SecureConnectState | null>(null);
   const [rolloutDraft, setRolloutDraft] = useState<UpdateFleetRollout | null>(null);
@@ -479,7 +499,7 @@ function ViewerApp() {
           return;
         }
         setIsAuthenticated(hasSession);
-        if (!hasSession) { setDeviceListRefreshKey(0); setIsRefreshingDevices(false); setIsLoadingDeviceList(false); setPresenceChecks({}); setDevices([]); setConnectionHistory([]); }
+        if (!hasSession) { forgetAllDevicePasswords(); closeDeviceAccessDialog(); setDeviceListRefreshKey(0); setIsRefreshingDevices(false); setIsLoadingDeviceList(false); setPresenceChecks({}); setDevices([]); setConnectionHistory([]); }
         if (hasSession) {
           setDeviceListRefreshKey((current) => current || 1);
           setLoginError("");
@@ -856,6 +876,7 @@ function ViewerApp() {
   }
 
   async function handleLogout() {
+    forgetAllDevicePasswords(); closeDeviceAccessDialog();
     sessionShutdownInProgressRef.current = true;
     connectionEpochRef.current += 1;
     try {
@@ -952,10 +973,11 @@ function ViewerApp() {
       session: RemoteSession | null;
     }> => {
       let createdSessionId: string | null = null;
+      const passwordOwner = rememberedDevicePasswords.current;
       try {
-        const password = await requireDevicePassword(deviceId);
-        if (password === null || sessionShutdownInProgressRef.current || connectionEpoch !== connectionEpochRef.current || selectedUpdateInstallingRef.current) return {cleanupSucceeded:true, connected:false, session:null};
-        const result = await openRequest(password);
+        const choice = await requireDevicePassword(deviceId);
+        if (choice === null || sessionShutdownInProgressRef.current || connectionEpoch !== connectionEpochRef.current || selectedUpdateInstallingRef.current) return {cleanupSucceeded:true, connected:false, session:null};
+        const result = await openRequest(choice?.password);
         createdSessionId = result.session.id;
         bindConnectionTiming(deviceId, result.session.id);
         markConnectionTiming(result.session.id, "session-ready");
@@ -968,11 +990,22 @@ function ViewerApp() {
           removeSessionCleanup(window.localStorage, result.session.id);
           return { cleanupSucceeded: true, connected: false, session: null };
         }
+        if (choice?.durationMinutes && passwordOwner === rememberedDevicePasswords.current && unlockContext.current.isAuthenticated
+          && unlockContext.current.devices.some(device => device.id === deviceId && device.accessLocked && device.accessLockVersion === choice.lockVersion)) {
+          forgetDevicePassword(deviceId);
+          const duration = choice.durationMinutes * 60_000;
+          const remembered = {password:choice.password, lockVersion:choice.lockVersion, expiresAt:performance.now()+duration, timeout:0};
+          remembered.timeout = window.setTimeout(() => {
+            if (rememberedDevicePasswords.current.get(deviceId) === remembered) forgetDevicePassword(deviceId);
+          }, duration);
+          rememberedDevicePasswords.current.set(deviceId, remembered);
+        }
         setSessions((current) => upsertSessionTab(current, result.session));
         setActiveSessionId(result.session.id);
         setApiError("");
         return { cleanupSucceeded: true, connected: true, session: result.session };
       } catch (error) {
+        forgetDevicePassword(deviceId);
         markConnectionTiming(createdSessionId ?? deviceId, "failed");
         if (
           !sessionShutdownInProgressRef.current &&
@@ -1690,8 +1723,12 @@ function ViewerApp() {
       )}
       {deviceAccessDialog && <DeviceAccessLockDialog key={`${deviceAccessDialog.device.id}:${deviceAccessDialog.connect}`}
         device={deviceAccessDialog.device} connect={deviceAccessDialog.connect} onClose={() => closeDeviceAccessDialog()}
-        onPassword={password => closeDeviceAccessDialog(password)}
-        onSaved={(enabled, version) => setDevices(current => current.map(device => device.id === deviceAccessDialog.device.id ? {...device, accessLocked:enabled, accessLockVersion:version} : device))}/>}
+        onPassword={choice => closeDeviceAccessDialog(choice)}
+        onSaved={(enabled, version) => {
+          forgetDevicePassword(deviceAccessDialog.device.id);
+          setDevices(current => current.map(device => device.id === deviceAccessDialog.device.id ? {...device, accessLocked:enabled, accessLockVersion:version} : device));
+        }}
+      />}
       {secureConnect && (
         <SecureConnectDialog
           state={secureConnect}

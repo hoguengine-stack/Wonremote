@@ -1,5 +1,20 @@
 # WonRemote Incident Registry
 
+## INC-20261014-142: Timed-unlock browser tests assumed unavailable fixture controls
+
+- Detected: 2026-10-14 new timed-unlock boundary verification.
+- Severity: P2 test-harness error; no deployed product or user credential change.
+- Affected: New Chromium unlock-duration tests only; not Agent authorization or existing production session controls.
+- Status: Fixture assumptions corrected; focused12 browser cases pass including final scoped layout/focus checks. Physical installed confirmation remains separate.
+- User-visible symptom: No product failure established. Tests timed out on a desktop-only session-end button in a390px viewport, a tab-close control shown only for multiple sessions, and missing fixture API after full page reload.
+- Minimal trigger: Use a single connected fixture at390px and query desktop session-end/tab close; reload an HTML fixture whose API/bundle are added by evaluate rather than initScript. Direct authChanged(true) also skips the real login handler that resets shutdown state.
+- Root cause and contributors: New tests assumed existing controls and fixture lifecycle instead of following actual helpers/UI. Product changes were not required to fix these failures.
+- Fix commit(s): Current uncommitted timed-unlock feature from3700f0c; test-only corrections keep the original behavior requirements.
+- Permanent guard: Inspect the narrow modal before returning the fixture to desktop session-end controls; use the actual single-session action. Test a fresh Viewer instance by actual React unmount/remount retaining fixture APIs, and re-login through the real form. Preserve fixed-expiry/auth/isolation assertions and reuse the existing fixture, not blank-page success or lowered expectations.
+- Regression proof: Original duration chooser absence reproduced before implementation. Corrected Chromium12 selected cases cover five time choices, fixed deadline/no renewal, duplicate submit, masked/no-persistence, version/device/Viewer-instance isolation, failed authentication, real logout/unmount timer cleanup and late authorization, plus existing modal/reset/reconnect/mobile/editor boundaries. TypeScript passes. Fixture-only timeouts are distinguished from functional regressions.
+- Release proof: No build, installer, Hosting, rollout or public release changed in this request.
+- Remaining blocker: Separately authorized future build/installed confirmation. Timed credential memory is confined to the running Viewer; complete exit/logout clears it and Agent still checks every connection. Browser virtual time is not an actual12-hour device soak.
+
 ## INC-20261014-141: Android delivery remained behind the Windows release
 
 - Detected: 2026-10-14 user explicitly requested Android after Windows full delivery.

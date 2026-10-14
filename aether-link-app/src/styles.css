@@ -3181,8 +3181,8 @@ input:focus {
 .device-access-dialog h2 { display: flex; align-items: center; gap: 8px; font-size: 18px; }
 .device-access-dialog fieldset { border: 0; padding: 0; margin: 0; display: grid; gap: 14px; }
 .device-access-dialog label { display: grid; gap: 6px; font-size: 13px; }
-.device-access-dialog input { width: 100%; min-width: 0; padding: 10px; border: 1px solid #c4d3e0; border-radius: 4px; }
-.device-access-dialog .modal-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.device-access-dialog input, .device-access-dialog select { width: 100%; min-width: 0; padding: 10px; border: 1px solid #c4d3e0; border-radius: 4px; }
+.device-access-dialog .modal-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 
 .session-tool-menu {
   margin-left: 0;

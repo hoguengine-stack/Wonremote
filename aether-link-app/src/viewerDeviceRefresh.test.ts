@@ -174,6 +174,154 @@ const counts = (page: Page) => page.evaluate(() => {
 const refresh = (page: Page) => page.getByRole("button", { name: "장비 목록 새로고침", exact: true });
 
 describe("manual Viewer device list in a real browser", () => {
+  it.each([15, 60, 180, 480, 720])("remembers this Viewer's unlock for exactly %s minutes without renewing or persisting passwords", async (minutes) => {
+    const page = await openViewer({connected:true,desktop:true,viewport:minutes===720?{width:390,height:844}:undefined});
+    try {
+      await page.evaluate(() => {
+        const w=window as any;
+        w.testState.devices[0].accessLocked=true;w.testState.devices[0].accessLockVersion='version-1';
+        const original=w.testApi.openFirebaseSession;w.unlockAttempts=[];
+        w.testApi.openFirebaseSession=(...args:any[])=>{w.unlockAttempts.push(args[3]);return original(...args);};
+      });
+      await refresh(page).click();
+      const row=page.locator('.table-row').filter({has:page.getByText('PC-0',{exact:true})});
+      const connect=async()=>{await row.getByRole('button',{name:'접속',exact:true}).click();};
+      const disconnect=async()=>{await page.getByRole('button',{name:'세션 종료',exact:true}).click();await refresh(page).waitFor();};
+      await connect();
+      const dialog=page.getByRole('dialog',{name:'잠금 장비 접속'});
+      expect(await dialog.getByLabel('이 PC의 잠금 해제 유지시간').locator('option').allTextContents()).toEqual(['15분간','1시간','3시간','8시간','12시간']);
+      expect(await dialog.getByLabel('접속 비밀번호',{exact:true}).evaluate(e=>e===document.activeElement)).toBe(true);
+      await dialog.getByLabel('이 PC의 잠금 해제 유지시간').selectOption(String(minutes));
+      if(minutes===15){
+        await dialog.getByLabel('이 PC의 잠금 해제 유지시간').focus();await page.keyboard.press('Tab');
+        expect(await dialog.getByRole('button',{name:'접속',exact:true}).evaluate(e=>e===document.activeElement)).toBe(true);
+        await page.keyboard.press('Tab');
+        expect(await dialog.getByRole('button',{name:'잠금 창 닫기'}).evaluate(e=>e===document.activeElement)).toBe(true);
+      }
+      await dialog.getByLabel('접속 비밀번호',{exact:true}).fill('remembered-test-password');
+      await page.screenshot({path:`../.codex-tmp/unlock-duration-${minutes}.png`});
+      expect(await dialog.evaluate(e=>{const r=e.getBoundingClientRect();return r.left>=0&&r.top>=0&&r.right<=innerWidth&&r.bottom<=innerHeight;})).toBe(true);
+      if (minutes===720) await page.setViewportSize({width:1440,height:900});
+      if (minutes===15) await dialog.locator('form').evaluate(form=>{(form as HTMLFormElement).requestSubmit();(form as HTMLFormElement).requestSubmit();});
+      else await dialog.getByRole('button',{name:'접속',exact:true}).click();
+      await page.getByRole('button',{name:'세션 종료',exact:true}).waitFor();
+      await disconnect();
+      await page.clock.fastForward(minutes*60_000-10_000);
+      await connect();
+      await page.getByRole('button',{name:'세션 종료',exact:true}).waitFor();
+      expect(await dialog.count()).toBe(0);
+      expect(await page.evaluate(()=>(window as any).unlockAttempts)).toEqual(['remembered-test-password','remembered-test-password']);
+      await disconnect();
+      const before=await counts(page);
+      await page.clock.fastForward(11_000);
+      expect(await counts(page)).toEqual(before);
+      await connect();await dialog.waitFor();
+      expect(await dialog.getByLabel('접속 비밀번호',{exact:true}).inputValue()).toBe('');
+      expect(await page.evaluate(()=>JSON.stringify([localStorage,sessionStorage]))).not.toContain('remembered-test-password');
+      await page.getByRole('button',{name:'잠금 창 닫기'}).click();
+      expect(await page.evaluate(()=>(window as any).unlockAttempts)).toHaveLength(2);
+    } finally {await page.close();}
+  });
+  it("isolates remembered unlock by device, Viewer and lock version", async () => {
+    const page=await openViewer({connected:true,desktop:true});
+    try {
+      await page.evaluate(()=>{const w=window as any;for(const device of w.testState.devices.slice(0,2)){device.accessLocked=true;device.accessLockVersion='version-1';}});
+      await refresh(page).click();
+      const row=(name:string)=>page.locator('.table-row').filter({has:page.getByText(name,{exact:true})});
+      await row('PC-0').getByRole('button',{name:'접속',exact:true}).click();
+      await page.getByLabel('접속 비밀번호',{exact:true}).fill('password');
+      await page.getByRole('dialog',{name:'잠금 장비 접속'}).getByRole('button',{name:'접속',exact:true}).click();
+      await page.getByRole('button',{name:'세션 종료',exact:true}).click();
+      await row('PC-1').getByRole('button',{name:'접속',exact:true}).click();
+      await page.getByRole('dialog',{name:'잠금 장비 접속'}).waitFor();
+      expect(await page.getByLabel('접속 비밀번호',{exact:true}).inputValue()).toBe('');
+      await page.getByRole('button',{name:'잠금 창 닫기'}).click();
+      await page.evaluate(()=>{(window as any).testState.devices[0].accessLockVersion='version-2';});
+      await refresh(page).click();
+      await row('PC-0').getByRole('button',{name:'접속',exact:true}).click();
+      await page.getByRole('dialog',{name:'잠금 장비 접속'}).waitFor();
+      expect(await page.getByLabel('접속 비밀번호',{exact:true}).inputValue()).toBe('');
+      await page.getByRole('button',{name:'잠금 창 닫기'}).click();
+      await row('PC-0').getByRole('button',{name:'접속',exact:true}).click();
+      await page.getByLabel('접속 비밀번호',{exact:true}).fill('new-password');
+      await page.getByRole('dialog',{name:'잠금 장비 접속'}).getByRole('button',{name:'접속',exact:true}).click();
+      await page.getByRole('button',{name:'세션 종료',exact:true}).click();
+      await page.evaluate(()=>(window as any).root.unmount());
+      await page.addScriptTag({content:bundle});
+      await page.getByText('PC-0',{exact:true}).waitFor();
+      await page.evaluate(()=>{const w=window as any;w.testState.devices[0].accessLocked=true;w.testState.devices[0].accessLockVersion='version-2';});
+      await refresh(page).click();
+      await row('PC-0').getByRole('button',{name:'접속',exact:true}).click();
+      await page.getByRole('dialog',{name:'잠금 장비 접속'}).waitFor();
+      expect(await page.getByLabel('접속 비밀번호',{exact:true}).inputValue()).toBe('');
+    } finally {await page.close();}
+  });
+  it("never remembers failed authentication and clears owned expiry timers on logout and unmount", async () => {
+    const page=await openViewer({connected:true,desktop:true});
+    try {
+      await page.evaluate(()=>{
+        const w=window as any;w.testState.devices[0].accessLocked=true;w.testState.devices[0].accessLockVersion='version-1';
+        const original=w.testApi.openFirebaseSession;w.unlockAttempts=[];w.unlockFailure=true;w.unlockTimers=new Set();
+        w.testApi.openFirebaseSession=(...args:any[])=>{w.unlockAttempts.push(args[3]);if(w.unlockFailure)throw Error('Password rejected');return original(...args);};
+        const schedule=w.setTimeout.bind(w),cancel=w.clearTimeout.bind(w);
+        w.setTimeout=(fn:any,delay:number,...args:any[])=>{const id=schedule(fn,delay,...args);if(delay===900_000)w.unlockTimers.add(id);return id;};
+        w.clearTimeout=(id:number)=>{w.unlockTimers.delete(id);cancel(id);};
+      });
+      await refresh(page).click();
+      const connect=()=>page.locator('.table-row').filter({has:page.getByText('PC-0',{exact:true})}).getByRole('button',{name:'접속',exact:true}).click();
+      const submit=async()=>{await page.getByLabel('접속 비밀번호',{exact:true}).fill('password');await page.getByRole('dialog',{name:'잠금 장비 접속'}).getByRole('button',{name:'접속',exact:true}).click();};
+      await connect();await submit();
+      await page.getByText('Password rejected',{exact:true}).waitFor();
+      expect(await page.evaluate(()=>(window as any).unlockTimers.size)).toBe(0);
+      await connect();await page.getByRole('dialog',{name:'잠금 장비 접속'}).waitFor();
+      await page.evaluate(()=>{(window as any).unlockFailure=false;});await submit();
+      await page.getByRole('button',{name:'세션 종료',exact:true}).click();
+      expect(await page.evaluate(()=>(window as any).unlockTimers.size)).toBe(1);
+      await page.evaluate(()=>{(window as any).unlockFailure=true;});await connect();
+      await expect.poll(()=>page.evaluate(()=>(window as any).unlockAttempts.length)).toBe(3);
+      expect(await page.evaluate(()=>(window as any).unlockTimers.size)).toBe(0);
+      await connect();await page.getByRole('dialog',{name:'잠금 장비 접속'}).waitFor();
+      await page.evaluate(()=>{(window as any).unlockFailure=false;});await submit();
+      await page.getByRole('button',{name:'세션 종료',exact:true}).click();
+      await page.getByRole('button',{name:'로그아웃',exact:true}).click();
+      await page.getByRole('button',{name:'로그인',exact:true}).waitFor();
+      await expect.poll(()=>page.evaluate(()=>(window as any).unlockTimers.size)).toBe(0);
+      await page.evaluate(()=>{const w=window as any;w.testApi.loginViewerWithFirebase=async()=>w.authChanged(true);});
+      await page.locator('input[name="username"]').fill('test');
+      await page.locator('input[name="password"]').fill('test');
+      await page.getByRole('button',{name:'로그인',exact:true}).click();
+      await page.getByText('PC-0',{exact:true}).waitFor();await connect();
+      await page.getByRole('dialog',{name:'잠금 장비 접속'}).waitFor();await submit();
+      await page.getByRole('button',{name:'세션 종료',exact:true}).waitFor();
+      expect(await page.evaluate(()=>(window as any).unlockTimers.size)).toBe(1);
+      const before=await page.evaluate(()=>(window as any).unlockAttempts.length);
+      await page.evaluate(()=>(window as any).root.unmount());
+      expect(await page.evaluate(()=>(window as any).unlockTimers.size)).toBe(0);
+      await page.clock.fastForward(43_200_000);
+      expect(await page.evaluate(()=>(window as any).unlockAttempts.length)).toBe(before);
+    } finally {await page.close();}
+  });
+  it("does not revive remembered unlock when authorization returns after unmount", async () => {
+    const page=await openViewer({connected:true,desktop:true});
+    try {
+      await page.evaluate(()=>{
+        const w=window as any;w.testState.devices[0].accessLocked=true;w.testState.devices[0].accessLockVersion='version-1';
+        const original=w.testApi.openFirebaseSession;w.rememberSchedules=0;
+        w.testApi.openFirebaseSession=async(...args:any[])=>{await new Promise(resolve=>{w.finishAuthorization=resolve;});const result=await original(...args);w.authorizationDone=true;return result;};
+        const schedule=w.setTimeout.bind(w);
+        w.setTimeout=(fn:any,delay:number,...args:any[])=>{if(delay===900_000)w.rememberSchedules++;return schedule(fn,delay,...args);};
+      });
+      await refresh(page).click();
+      await page.locator('.table-row').filter({has:page.getByText('PC-0',{exact:true})}).getByRole('button',{name:'접속',exact:true}).click();
+      await page.getByLabel('접속 비밀번호',{exact:true}).fill('password');
+      await page.getByRole('dialog',{name:'잠금 장비 접속'}).getByRole('button',{name:'접속',exact:true}).click();
+      await page.waitForFunction(()=>(window as any).finishAuthorization);
+      await page.evaluate(()=>(window as any).root.unmount());
+      await page.evaluate(()=>(window as any).finishAuthorization());
+      await page.waitForFunction(()=>(window as any).authorizationDone);
+      expect(await page.evaluate(()=>(window as any).rememberSchedules)).toBe(0);
+    } finally {await page.close();}
+  });
   it("device access lock modal blocks connection until password and supports settings/reset with no idle requests", async () => {
     const page = await openViewer({connected:true, desktop:true});
     try {
