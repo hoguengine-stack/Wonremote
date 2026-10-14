@@ -773,6 +773,24 @@ describe("manual Viewer device list in a real browser", () => {
       expect(await page.evaluate(()=>(window as any).testState.controls)).toEqual([]);
     } finally {await page.close();}
   });
+
+  it.each([{width:320,height:568},{width:390,height:844},{width:844,height:390}])("mobile Toss shortcut stays readable and downloads only on the remote PC at $width x $height", async viewport => {
+    const page=await openViewer({connected:true,mobile:true,emulateMobile:true,nativeAndroid:true,viewport});
+    try {
+      await page.locator('.table-row').filter({has:page.getByText('PC-0',{exact:true})}).getByRole('button',{name:'접속',exact:true}).tap();
+      await page.getByRole('button',{name:'화면 및 세션 설정',exact:true}).tap();
+      const toss=page.getByRole('button',{name:'TossEmergencyOrders 다운로드',exact:true});
+      expect(await toss.innerText()).toBe('TossEmergencyOrders');
+      expect(await toss.evaluate(e=>e.nextElementSibling?.getAttribute('aria-label'))).toBe('Microsoft Edge 다운로드');
+      expect(await toss.getAttribute('href')).toBe(null);
+      await toss.tap();
+      expect(await toss.evaluate(e=>{const r=e.getBoundingClientRect();const label=e.querySelector('span')!.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight&&e.scrollWidth<=e.clientWidth&&label.left>=r.left&&label.right<=r.right;})).toBe(true);
+      await expect.poll(()=>page.evaluate(()=>(window as any).testState.controls)).toEqual(['system toss-emergency-download']);
+      expect(page.context().pages()).toHaveLength(1);
+      expect(await page.evaluate(()=>document.activeElement?.getAttribute('data-remote-ime-input'))).not.toBe('true');
+      await page.screenshot({path:`../.codex-tmp/mobile-toss-${viewport.width}.png`});
+    } finally {await page.close();}
+  });
   it("ZOOK setup preserves leading zeroes and Agent registration, deduplicates clicks and stays idle", async () => {
     const page = await openViewer({desktop:true,agent:true,viewport:{width:360,height:420}});
     try {

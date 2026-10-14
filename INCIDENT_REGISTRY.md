@@ -1,5 +1,20 @@
 # WonRemote Incident Registry
 
+## INC-20261014-146: Mobile Toss toolbar not delivered through Hosting
+
+- Detected: User mobile link/button report after Windows112 publication on2026-10-14.
+- Severity: P2 missing mobile delivery, no data loss or published binary corruption.
+- Affected: Android Viewer hosted /viewer UI, not native APK or Windows installer.
+- Status: Runtime path/public bundle mismatch identified; Android-UA/touch three viewport cases and fresh frontend build pass, Hosting-only delivery pending.
+- User-visible symptom: New Toss shortcut missing on mobile; supplied follow-up URL also duplicates the tag suffix.
+- Minimal trigger: Open installed Android Viewer whose MainActivity loads production /viewer, still hosting111 assets after Windows-only112 publication.
+- Root cause and contributors: Mobile UI is an independently hosted frontend, not the Windows binary bundle. Prior approved Windows scope did not update Hosting; correct GitHub asset already exists at single-suffix tag and its actual bytes were verified.
+- Fix commit(s): Current targeted mobile delivery from26eee8f00818d3e7e052ffb7e2071695560f0531.
+- Permanent guard: Add actual Android-UA/touch portrait/landscape toolbar layout and remote-command assertions; before declaring mobile delivered, compare actual live HTML/JS/CSS hashes with freshly built frontend. Preserve native discovery/download archives byte-for-byte against published111 metadata; do not relabel APK111 as112 or relax native publication checks.
+- Regression proof: Actual Android-UA/touch React/Chromium320/390/844 cases pass: visible readable button in drawer, adjacent Edge, one remote command and no local page/keyboard focus. Fresh frontend/TypeScript and readiness pass; new JS/CSS hashes differ from old public111. Native111 discovery/ZIP/APK bytes unchanged and all46 Hosting download files equal source. No last-working mobile Toss baseline claimed.
+- Release proof: Hosting-only frontend112 pending. Windows112/Toss assets, Agent rollout and native111 APK/signing remain unchanged.
+- Remaining blocker: Mobile runtime/layout/build/public proof; installed phone/other-PC validation remains physical and unperformed.
+
 ## INC-20261014-145: Prepared commit discarded identical historical evidence
 
 - Detected: Actual112 predeploy gate after clipboard/install/shortcut source checks on2026-10-14.
