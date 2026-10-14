@@ -784,7 +784,7 @@ describe("manual Viewer device list in a real browser", () => {
       expect(await toss.evaluate(e=>e.nextElementSibling?.getAttribute('aria-label'))).toBe('Microsoft Edge 다운로드');
       expect(await toss.getAttribute('href')).toBe(null);
       await toss.tap();
-      expect(await toss.evaluate(e=>{const r=e.getBoundingClientRect();const label=e.querySelector('span')!.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight&&e.scrollWidth<=e.clientWidth&&label.left>=r.left&&label.right<=r.right;})).toBe(true);
+      expect(await toss.evaluate(e=>{const r=e.getBoundingClientRect();const label=e.querySelector('span')!.getBoundingClientRect();return r.width>=44&&r.height>=44&&r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight&&e.scrollWidth<=e.clientWidth&&label.left>=r.left&&label.right<=r.right;})).toBe(true);
       await expect.poll(()=>page.evaluate(()=>(window as any).testState.controls)).toEqual(['system toss-emergency-download']);
       expect(page.context().pages()).toHaveLength(1);
       expect(await page.evaluate(()=>document.activeElement?.getAttribute('data-remote-ime-input'))).not.toBe('true');

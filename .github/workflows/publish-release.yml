@@ -162,7 +162,7 @@ jobs:
       - name: Verify password modal and remote toolbar in Chromium
         run: |
           npx playwright install chromium
-          npx vitest run src/viewerDeviceRefresh.test.ts -t 'device access lock modal|remembers this Viewer|isolates remembered|never remembers failed|does not revive remembered|toolbar shortcuts keep|browser edition shortcuts also|clipboard success notification'
+          npx vitest run src/viewerDeviceRefresh.test.ts -t 'device access lock modal|remembers this Viewer|isolates remembered|never remembers failed|does not revive remembered|toolbar shortcuts keep|browser edition shortcuts also|clipboard success notification|mobile Toss shortcut'
 
       - name: Select Java for Firestore rules verification
         uses: actions/setup-java@v4
