@@ -1750,7 +1750,7 @@ fn inject_input(action: &str) -> std::result::Result<(), String> {
                 return Err("Usage: system <command>".to_string());
             }
             let spec = system_command_spec(parts[1])?;
-            if matches!(parts[1], "edge-download" | "asp-login") {
+            if matches!(parts[1], "edge-download" | "asp-login" | "toss-emergency-download") {
                 if secure_capture::active_input_desktop_is_secure()? || process_integrity(unsafe { GetCurrentProcess() }).is_none_or(|level| level >= 0x4000) {
                     return Err("Remote browser shortcuts require the ordinary user's desktop.".to_string());
                 }
@@ -1923,6 +1923,11 @@ struct SystemCommandSpec {
 
 fn system_command_spec(command: &str) -> std::result::Result<SystemCommandSpec, String> {
     match command {
+        "toss-emergency-download" => Ok(SystemCommandSpec {
+            program: "explorer.exe",
+            args: &["https://github.com/hoguengine-stack/Wonremote/releases/download/toss-emergency-orders-20261014/TossEmergencyOrders-Setup-x86.exe"],
+            run_as_invoker: true,
+        }),
         "edge-download" => Ok(SystemCommandSpec {
             program: "explorer.exe",
             args: &["https://c2rsetup.officeapps.live.com/c2r/downloadEdge.aspx?platform=Default&source=EdgeStablePage&Channel=Stable&language=ko&Consent=0&brand=M100"],

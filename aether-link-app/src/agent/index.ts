@@ -35,7 +35,6 @@ import { resolveAgentCredentials } from "./agentRuntime";
 import { resolveAgentComputerName } from "./agentComputerName";
 import { discoverAgentSystemInfo } from "./agentSystemInfo";
 import { openAgentDownloadFolder } from "./openDownloadFolder";
-import { downloadTossEmergencyOrders } from "./tossEmergencyOrdersDownload";
 import {
   beginAgentCaptureGeneration,
   currentSessionId,
@@ -2235,12 +2234,6 @@ function createAgentCommandRuntime(deviceId: string): AgentCommandRuntime {
     requestFileSend: transferId => { reverseFileRequest.request(transferId); },
     cancelFileSend: () => reverseFileRequest.cancel(),
     injectAction: async (action) => {
-      if (action === "system toss-emergency-download") {
-        // A slow download must not block the serialized keyboard/mouse queue.
-        void downloadTossEmergencyOrders().then(file => console.log(`[TossEmergencyOrders] Downloaded: ${file}`))
-          .catch(error => console.error(`[TossEmergencyOrders] ${String(error)}`));
-        return;
-      }
       recordPendingPointerAction(action, pointerState);
       await persistentInputInjector.inject(action);
       recordSuccessfulPointerAction(action, pointerState);

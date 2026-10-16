@@ -1,5 +1,20 @@
 # WonRemote Incident Registry
 
+## INC-20261016-153: Deliver the Toss default-browser correction as a matched release
+
+- Detected: User still sees Agent-managed Toss download after source-only correction and explicitly requests public build/deployment.
+- Severity: P2 remote download behavior mismatch and delivery gap.
+- Affected: Viewer fixed action, Agent dispatcher, native remote ShellExecuteW target, paired signed Windows release.
+- Status: Release113 source isolated from published74994e9; fresh normal CI/public proof required. No production identity/rules/rollout changes.
+- User-visible symptom: Installed112 intercepts Toss action to fetch files in the Agent instead of opening the remote default browser.
+- Minimal trigger: Click TossEmergencyOrders during an authorized session on Agent112.
+- Root cause and contributors: Source fix was not packaged/delivered; old Agent intercept prevents existing native browser dispatcher from receiving the action.
+- Fix commit(s): Current release113 patch removes direct downloader/intercept and registers only the fixed HTTPS installer URL alongside Edge/ASP. Existing auth/input/session/secure desktop checks retained.
+- Permanent guard: Actual Agent injector handler and native fixed-target tests reject alternate URLs and propagate failures. Existing desktop/mobile/browser toolbar CI selectors retained; normal release builds/signs the exact same main source and verifies matched payloads. Installed outcome is not claimed from source proof.
+- Regression proof: Focused source151pass, Chromium toolbar6pass, x86 release native fixed-target1pass and TypeScript pass. Broad run1201pass/6fail/3skip: five pre-existing stale assertions compared against current unchanged metadata/password/rules/recovery paths; corrected only expected current behavior. Sixth failure was missing worktree native tool cache, resolved by reusing existing compiled target. Focused failed suites76/76pass including actual two-pipe native exchange. No tests/security checks skipped or weakened; full run not repeated only for a green headline.
+- Release proof: Pending normal CI, signature/size/hash/version/download alias verification. No prebuilt binary substitution or signing-only flow.
+- Remaining blocker: Fresh delivery and actual remote user's default browser/download outcome; no remote session interrupted or customer file executed. Other audit findings remain open in original workspace and are excluded, not marked resolved here.
+
 ## INC-20261014-146: Mobile Toss toolbar not delivered through Hosting
 
 - Detected: User mobile link/button report after Windows112 publication on2026-10-14.

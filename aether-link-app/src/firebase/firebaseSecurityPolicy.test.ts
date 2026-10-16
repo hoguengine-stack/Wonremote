@@ -79,8 +79,8 @@ describe("Firebase security deployment policy", () => {
     expect(rules).not.toContain('!request.auth.token.email.matches(".*@agents[.]wonremote[.]app")');
     expect(deviceMatch?.[1]).toContain("allow get: if isCentralViewer()");
     expect(deviceMatch?.[1]).toContain("allow list: if isCentralViewer()");
-    expect(deviceMatch?.[1]).toContain("allow update: if isCentralViewerDeviceUpdate() || isOwnDeviceUpdate(deviceId);");
-    expect(deviceMatch?.[1]).toContain("allow delete: if isCentralViewer();");
+    expect(deviceMatch?.[1]).toContain("allow update: if isCentralViewerDeviceUpdate() || isOwnDeviceUpdate(deviceId) || isOwnDeviceMetadataUpdate(deviceId);");
+    expect(deviceMatch?.[1]).toContain("allow delete: if isCentralViewer() && !deviceAccessLocked(deviceId);");
     expect(rules).toContain("allow read: if isCentralViewer() || ownsDevice(deviceId);");
     expect(deviceMatch?.[1]).toContain("isOwnDeviceUpdate(deviceId)");
     expect(rules).toContain('"deletedAt",');
@@ -229,8 +229,8 @@ describe("Firebase security deployment policy", () => {
     expect(agentFirebase).toContain('where("deviceId", "==", input.deviceId)');
     expect(agentFirebase).not.toContain('where("ownerUid", "==", userId)');
     expect(agentFirebase).toContain('where("state", "==", "connected")');
-    expect(agentFirebase).toContain(".sort((left, right) => sessionStartedAtMs(right.data) - sessionStartedAtMs(left.data))");
-    expect(agentFirebase).toContain(".slice(0, 1)");
+    expect(agentFirebase).toContain("selectRecoverableAgentSession(snapshot.docs.map");
+    expect(agentFirebase).toContain("return session ? [{ id: session.id, deviceId: input.deviceId }] : [];");
   });
 
   it("normalizes Firebase device metadata store names before writing to Firestore", () => {

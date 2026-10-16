@@ -263,8 +263,8 @@ describe("connected remote session layout", () => {
       "await Promise.all(sessions.map((openSession) => closeSession(openSession.id)))",
     );
     expect(appSource.slice(logoutStart, logoutEnd)).toContain("await logoutAdmin()");
-    expect(appSource).toContain('await runTrackedSessionOpen(device.id, () => openSession(device.id), "세션 연결 실패")');
-    expect(appSource).toContain("() => connectSecureSession({");
+    expect(appSource).toContain('await runTrackedSessionOpen(device.id, password => openSession(device.id, false, password), "세션 연결 실패")');
+    expect(appSource).toContain("password => connectSecureSession({");
   });
 
   it("keeps secondary tools in one overlay menu and removes duplicate monitor buttons", () => {

@@ -1,62 +1,23 @@
-import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { downloadTossEmergencyOrders } from "./tossEmergencyOrdersDownload";
+import { readFileSync } from "node:fs";
+import ts from "typescript";
+import { describe, expect, it, vi } from "vitest";
 
-vi.mock("./tossEmergencyOrdersAsset.json", () => ({ default: {
-  url: "https://github.com/fixture/releases/download/fixed/TossEmergencyOrders-Setup-x86.exe",
-  filename: "TossEmergencyOrders-Setup-x86.exe", size: 7,
-  sha256: createHash("sha256").update("fixture").digest("hex"),
-} }));
-
-describe("remote TossEmergencyOrders download", () => {
-  afterEach(() => vi.unstubAllGlobals());
-  it("saves verified bytes only once in remote Downloads and reuses the identical file without fetching", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "wonremote-toss-"));
-    let finish!: () => void;
-    const fetcher = vi.fn(async () => { await new Promise<void>(resolve => {finish=resolve;}); return new Response("fixture"); });
-    vi.stubGlobal("fetch", fetcher);
-    try {
-      const first = downloadTossEmergencyOrders({USERPROFILE:root});
-      const second = downloadTossEmergencyOrders({USERPROFILE:root});
-      expect(second).toBe(first);
-      await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
-      finish();
-      const file = await first;
-      expect(file).toBe(path.join(root,"Downloads","TossEmergencyOrders-Setup-x86.exe"));
-      expect(await readFile(file,"utf8")).toBe("fixture");
-      expect(fetcher.mock.calls[0]).toEqual(["https://github.com/fixture/releases/download/fixed/TossEmergencyOrders-Setup-x86.exe",{signal:expect.any(AbortSignal)}]);
-      expect(await downloadTossEmergencyOrders({USERPROFILE:root})).toBe(file);
-      expect(fetcher).toHaveBeenCalledTimes(1);
-    } finally {await rm(root,{recursive:true,force:true});}
-  });
-  it.each(["hash", "oversize", "http", "timeout", "existing"])("preserves files and clears in-flight failure: %s", async failure => {
-    const root = await mkdtemp(path.join(tmpdir(),"wonremote-toss-"));
-    await mkdir(path.join(root,"Downloads"));
-    const target = path.join(root,"Downloads","TossEmergencyOrders-Setup-x86.exe");
-    if(failure==='existing') await writeFile(target,"user file");
-    const fetcher=vi.fn(async()=>{
-      if(failure==='timeout') throw new DOMException('Timeout','TimeoutError');
-      return new Response(failure==='hash'?'changed':failure==='oversize'?'too-large':'fixture',{status:failure==='http'?404:200});
-    });
-    vi.stubGlobal('fetch',fetcher);
-    try {
-      await expect(downloadTossEmergencyOrders({USERPROFILE:root})).rejects.toThrow();
-      expect(await readdir(path.join(root,"Downloads"))).toEqual(failure==='existing'?['TossEmergencyOrders-Setup-x86.exe']:[]);
-      if(failure==='existing') {
-        expect(await readFile(target,"utf8")).toBe('user file'); expect(fetcher).not.toHaveBeenCalled();
-      } else {
-        fetcher.mockImplementation(async()=>new Response('fixture'));
-        expect(await downloadTossEmergencyOrders({USERPROFILE:root})).toBe(target);
-      }
-    } finally {await rm(root,{recursive:true,force:true});}
-  });
-  it("rejects unavailable or relative remote profile before fetching", async()=>{
-    const fetcher=vi.fn();vi.stubGlobal('fetch',fetcher);
-    await expect(downloadTossEmergencyOrders({})).rejects.toThrow('profile');
-    await expect(downloadTossEmergencyOrders({USERPROFILE:'../other'})).rejects.toThrow('profile');
-    expect(fetcher).not.toHaveBeenCalled();
+describe("Toss uses the remote native browser path", () => {
+  it("passes the actual Agent runtime action to the input server without fetching or writing files", async () => {
+    const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+    const parsed = ts.createSourceFile("index.ts", source, ts.ScriptTarget.Latest, true);
+    const factory = parsed.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "createAgentCommandRuntime");
+    if (!factory || !ts.isFunctionDeclaration(factory)) throw Error("Agent command runtime not found");
+    const returned = factory.body?.statements.find(ts.isReturnStatement)?.expression;
+    if (!returned || !ts.isObjectLiteralExpression(returned)) throw Error("Agent runtime object not found");
+    const injection = returned.properties.find(node => ts.isPropertyAssignment(node) && node.name.getText(parsed) === "injectAction");
+    if (!injection || !ts.isPropertyAssignment(injection)) throw Error("Agent injector not found");
+    const compiled = ts.transpile(`const handler = ${injection.initializer.getText(parsed)};`, { target: ts.ScriptTarget.ES2022 });
+    const inject = vi.fn(async (_action: string) => {});
+    const handler = new Function("persistentInputInjector", "pointerState", "recordPendingPointerAction", "recordSuccessfulPointerAction", "console", `${compiled}; return handler;`)({ inject }, {}, vi.fn(), vi.fn(), { log: vi.fn() });
+    for (const action of ["system toss-emergency-download", "system edge-download", "system asp-login"]) await handler(action);
+    expect(inject.mock.calls).toEqual([["system toss-emergency-download"], ["system edge-download"], ["system asp-login"]]);
+    inject.mockRejectedValueOnce(new Error("browser launch failed"));
+    await expect(handler("system toss-emergency-download")).rejects.toThrow("browser launch failed");
   });
 });

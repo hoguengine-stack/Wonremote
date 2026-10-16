@@ -24,7 +24,7 @@ describe("Viewer startup session policy", () => {
     const connectBlock = appSource.slice(connectStart, connectEnd);
 
     expect(connectStart).toBeGreaterThan(-1);
-    expect(connectBlock).toContain("openSession(device.id)");
+    expect(connectBlock).toContain("openSession(device.id, false, password)");
   });
 
   it("deduplicates only the same device while allowing parallel connections to other devices", () => {

@@ -136,7 +136,7 @@ describe("WonRemote local API server", () => {
     });
   });
 
-  it("updates device metadata for sidebar grouping without changing the connection id or business number", async () => {
+  it("updates business metadata without changing the connection id", async () => {
     const registered = await postJson("/api/agent/first-run", {
       businessNumber: "2223344444",
       password: "1234",
@@ -156,7 +156,7 @@ describe("WonRemote local API server", () => {
     expect(await updated.json()).toMatchObject({
       device: {
         id: deviceId,
-        businessNumber: "222-33-44444",
+        businessNumber: "999-88-77777",
         storeName: "Won Chicken Gangnam",
         deviceNumber: "AGENT-EDIT-API",
         deviceName: "Kitchen POS",
@@ -169,7 +169,7 @@ describe("WonRemote local API server", () => {
       devices: [
         expect.objectContaining({
           id: deviceId,
-          businessNumber: "222-33-44444",
+          businessNumber: "999-88-77777",
           storeName: "Won Chicken Gangnam",
           deviceName: "Kitchen POS",
           desktopName: "KITCHEN-PC",

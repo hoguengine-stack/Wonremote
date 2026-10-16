@@ -12,7 +12,11 @@ fn remote_browser_shortcuts_allow_only_fixed_targets() {
     let asp = super::system_command_spec("asp-login").unwrap();
     assert_eq!(asp.program, "explorer.exe");
     assert_eq!(asp.args, &["https://asp.firstpos.co.kr/login/login_form.do"]);
-    for command in ["asp-login https://example.com", "edge-download & calc", "https://example.com"] {
+    let toss = super::system_command_spec("toss-emergency-download").unwrap();
+    assert_eq!(toss.program, edge.program);
+    assert_eq!(toss.args, &["https://github.com/hoguengine-stack/Wonremote/releases/download/toss-emergency-orders-20261014/TossEmergencyOrders-Setup-x86.exe"]);
+    assert!(toss.run_as_invoker);
+    for command in ["toss-emergency-download https://example.com", "asp-login https://example.com", "edge-download & calc", "https://example.com"] {
         assert!(super::system_command_spec(command).is_err());
     }
 }
