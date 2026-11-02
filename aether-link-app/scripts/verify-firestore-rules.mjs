@@ -229,6 +229,21 @@ try {
     deviceId: DEVICE_ID,
     state: "connected",
   });
+  const fileBody = { filename: "collision.txt", transferId: "collision-test", totalBytes: 1,
+    totalChunks: 1, chunkIndex: 0, isLast: true, fileData: "YQ==", delivery: "firestore-direct", sender: "viewer", target: "agent" };
+  for (const policy of [undefined, "overwrite", "rename", "skip"]) {
+    const body = { ...fileBody, ...(policy ? { collisionPolicy: policy } : {}) };
+    await setDoc(doc(viewer.db, "sessions", SESSION_ID, "files", `collision-${policy ?? "legacy"}`), body);
+    const { chunkIndex, ...storageBody } = body;
+    await setDoc(doc(viewer.db, "sessions", SESSION_ID, "files", `storage-collision-${policy ?? "legacy"}`),
+      { ...storageBody, delivery: "firebase-storage", fileData: "", storagePath: `sessions/${SESSION_ID}/files/collision/data` });
+  }
+  for (const policy of [true, "execute", null]) {
+    await expectPermissionDenied(() => setDoc(doc(viewer.db, "sessions", SESSION_ID, "files", `invalid-${policy}`),
+      { ...fileBody, collisionPolicy: policy }), "Reject invalid collision policy");
+  }
+  await expectPermissionDenied(() => setDoc(doc(unauthorized.db, "sessions", SESSION_ID, "files", "unauthorized-collision"),
+    { ...fileBody, collisionPolicy: "overwrite" }), "Collision policy cannot grant file access");
 
   await expectPermissionDenied(() => setDoc(doc(unauthorized.db, "sessions", `${SESSION_ID}-unauthorized`), {
     id: `${SESSION_ID}-unauthorized`, ownerUid: UNAUTHORIZED_UID, deviceId: DEVICE_ID, state: "connected",

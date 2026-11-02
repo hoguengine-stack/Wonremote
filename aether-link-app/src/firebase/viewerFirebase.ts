@@ -73,6 +73,7 @@ import {
   parseWebRtcFileAck,
   isReverseFileCapability,
   supportsReverseFileResume,
+  supportsFileCollisionPolicy,
   parseWebRtcFileStatus,
   type WebRtcFileStatusMessage,
   parseWebRtcFileChunk,
@@ -188,6 +189,7 @@ export interface ViewerWebRtcTransport {
   isControlReady: () => boolean;
   sendControl: (action: string) => boolean;
   sendFile: (input: {
+    collisionPolicy?: import("../domain/fileCollisionPolicy").FileCollisionPolicy;
     resume?: boolean;
     file: Blob;
     filename: string;
@@ -198,6 +200,48 @@ export interface ViewerWebRtcTransport {
     signal?: AbortSignal;
     onProgress?: (receivedBytes: number, totalBytes: number) => void;
   }) => Promise<boolean>;
+}
+
+interface PreparedViewerPeer {
+  ownerUid: string;
+  peer: RTCPeerConnection;
+  channels: RTCDataChannel[];
+  offer: RTCSessionDescriptionInit;
+  candidates: RTCIceCandidate[];
+  negotiationId: string;
+  timer?: ReturnType<typeof setTimeout>;
+}
+const preparedViewerPeers = new Map<string, PreparedViewerPeer>();
+
+function discardPreparedViewerPeer(sessionId: string): void {
+  const prepared = preparedViewerPeers.get(sessionId);
+  if (!prepared) return;
+  preparedViewerPeers.delete(sessionId);
+  clearTimeout(prepared.timer);
+  prepared.peer.close();
+}
+
+async function prepareViewerPeer(env: ViewerFirebaseEnv): Promise<PreparedViewerPeer | null> {
+  if (typeof RTCPeerConnection !== "function") return null;
+  const services = getViewerFirebaseServices(env);
+  const ownerUid = requireCurrentUserId(services.auth.currentUser?.uid);
+  const configuration = await resolveRtcConfiguration(env, async () => httpsCallable(services.functions, "getRtcConfiguration")({}));
+  const peer = new RTCPeerConnection({iceServers:configuration.iceServers,iceTransportPolicy:configuration.iceTransportPolicy});
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const candidates: RTCIceCandidate[] = [];
+    peer.onicecandidate = event => { if (event.candidate) candidates.push(event.candidate); };
+    const channels = [peer.createDataChannel(WEBRTC_TILE_CHANNEL_LABEL, viewerTileDataChannelOptions()),
+      peer.createDataChannel(WEBRTC_CONTROL_CHANNEL_LABEL, {ordered:true}), peer.createDataChannel(WEBRTC_FILE_CHANNEL_LABEL, {ordered:true})];
+    await Promise.race([
+      (async () => { const offer = await peer.createOffer(); await peer.setLocalDescription(offer); })(),
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Local RTC preparation timed out.")), resolveWebRtcConnectTimeoutMs(env)); }),
+    ]);
+    const offer = peer.localDescription;
+    if (!offer) throw new Error("Local RTC offer unavailable.");
+    return {ownerUid,peer,channels,offer,candidates,negotiationId:createFirebaseSessionId("rtc")};
+  } catch (error) { peer.close(); throw error; }
+  finally { clearTimeout(timer); }
 }
 
 // Covers the full connection watchdog window even under key repeat and pointer movement.
@@ -321,6 +365,7 @@ export async function deleteViewerAccount(
 }
 
 export async function logoutViewerWithFirebase(env: ViewerFirebaseEnv = import.meta.env): Promise<void> {
+  for (const id of preparedViewerPeers.keys()) discardPreparedViewerPeer(id);
   const services = getViewerFirebaseServices(env);
   await signOut(services.auth);
 }
@@ -373,10 +418,27 @@ export function subscribeFirebaseDevices(
   );
 }
 
-export async function fetchFirebaseDevices(env: ViewerFirebaseEnv = import.meta.env, refreshPresence = false, signal?: AbortSignal, onProgress?: (devices: ManagedDevice[], pendingIds: string[]) => void, knownDevices: ManagedDevice[] = []): Promise<ManagedDevice[]> {
+export async function fetchFirebaseDevices(env: ViewerFirebaseEnv = import.meta.env, refreshPresence = false, signal?: AbortSignal, onProgress?: (devices: ManagedDevice[], pendingIds: string[]) => void, knownDevices: ManagedDevice[] = [], targetDeviceIds?: readonly string[]): Promise<ManagedDevice[]> {
   const services = getViewerFirebaseServices(env);
   requireCurrentUserId(services.auth.currentUser?.uid);
   if (signal?.aborted) return knownDevices;
+  if (targetDeviceIds !== undefined) {
+    const ids=[...new Set(targetDeviceIds)], targets=knownDevices.filter(device=>ids.includes(device.id));
+    if (!ids.length) { onProgress?.([],[]); return []; }
+    const load=Promise.all(ids.map(id=>getDocFromServer(doc(services.db,"devices",id)))).then(snapshots=>prepareViewerDeviceList(
+      snapshots.filter(snapshot=>snapshot.exists()&&!isDeletedDeviceDocument(snapshot.data())).map(snapshot=>mapFirestoreDevice(snapshot.id,snapshot.data()!)),
+      new Date().toISOString(),resolveViewerOfflineAfterMs(env),
+    ));
+    if (!refreshPresence) return load;
+    return collectDevicePresence(targets,crypto.randomUUID(),(next,fail)=>{
+      const stops:Unsubscribe[]=[];
+      try { for (const id of ids) stops.push(onSnapshot(doc(services.db,"devices",id),snapshot=>{
+        if (snapshot.exists()&&!isDeletedDeviceDocument(snapshot.data())) next(mapFirestoreDevice(snapshot.id,snapshot.data()!));
+      },fail)); }
+      catch(error) { stops.forEach(stop=>stop()); throw error; }
+      return ()=>stops.forEach(stop=>stop());
+    },(device,action)=>enqueueFirebaseDeviceCommandDirect(device.id,action,env),signal,onProgress,load);
+  }
   const load = getDocsFromServer(collection(services.db, "devices")).then((snapshot) => prepareViewerDeviceList(
     snapshot.docs
       .filter((deviceDoc) => !isDeletedDeviceDocument(deviceDoc.data()))
@@ -753,6 +815,7 @@ export async function closeFirebaseSession(
   sessionId: string,
   env: ViewerFirebaseEnv = import.meta.env,
 ): Promise<void> {
+  discardPreparedViewerPeer(sessionId);
   await callViewerFunctionWithFirestoreFallback<{ sessionId: string }, null>(
     "closeSession",
     { sessionId },
@@ -840,6 +903,7 @@ export async function uploadFirebaseFileToStorage(
   input: {
     file: Blob;
     filename: string;
+    collisionPolicy?: import("../domain/fileCollisionPolicy").FileCollisionPolicy;
     transferId: string;
     totalBytes: number;
     fileSha256?: string;
@@ -897,6 +961,7 @@ export async function uploadFirebaseFileToStorage(
     delivery: "firebase-storage",
     fileData: "",
     fileSha256: input.fileSha256,
+    collisionPolicy: input.collisionPolicy,
     filename: input.filename,
     isLast: true,
     sender: "viewer",
@@ -990,6 +1055,7 @@ export async function startFirebaseViewerWebRtcTransport(
     onFileChunk?: (chunk: WebRtcFileChunkMessage, isCurrent: () => boolean) => Promise<WebRtcFileAckMessage | null>;
     onFileStatus?: (status: WebRtcFileStatusMessage) => void;
     onReverseFileSupport?: (resumeSupported?: boolean) => void;
+    onFileCollisionSupport?: () => void;
     onState?: (state: string) => void;
     onDiagnostic?: (message: string) => void;
     onError?: (error: Error) => void;
@@ -997,13 +1063,11 @@ export async function startFirebaseViewerWebRtcTransport(
   env: ViewerFirebaseEnv = import.meta.env,
 ): Promise<ViewerWebRtcTransport> {
   const services = getViewerFirebaseServices(env);
-  const rtcConfiguration = await resolveRtcConfiguration(env, async () =>
-    httpsCallable(services.functions, "getRtcConfiguration")({}),
-  );
-  const peer = new RTCPeerConnection({
-    iceServers: rtcConfiguration.iceServers,
-    iceTransportPolicy: rtcConfiguration.iceTransportPolicy,
-  });
+  let prepared = preparedViewerPeers.get(sessionId);
+  if (prepared && prepared.ownerUid !== services.auth.currentUser?.uid) { discardPreparedViewerPeer(sessionId); prepared = undefined; }
+  if (prepared) { preparedViewerPeers.delete(sessionId); clearTimeout(prepared.timer); }
+  const rtcConfiguration = prepared ? null : await resolveRtcConfiguration(env, async () => httpsCallable(services.functions, "getRtcConfiguration")({}));
+  const peer = prepared?.peer ?? new RTCPeerConnection({iceServers:rtcConfiguration!.iceServers,iceTransportPolicy:rtcConfiguration!.iceTransportPolicy});
   const signalRef = doc(services.db, "sessions", sessionId, "webrtc", "signal");
   const viewerCandidates = collection(services.db, "sessions", sessionId, "viewerCandidates");
   const agentCandidates = collection(services.db, "sessions", sessionId, "agentCandidates");
@@ -1016,7 +1080,7 @@ export async function startFirebaseViewerWebRtcTransport(
   const applyingCandidateIds = new Set<string>();
   const automaticallyRetriedCandidateIds = new Set<string>();
   const pendingAgentCandidates = new Map<string, RTCIceCandidateInit>();
-  const negotiationId = createFirebaseSessionId("rtc");
+  const negotiationId = prepared?.negotiationId ?? createFirebaseSessionId("rtc");
   let answerApplied = false;
   let answerApplyInFlight = false;
   let channelOpened = false;
@@ -1159,9 +1223,9 @@ export async function startFirebaseViewerWebRtcTransport(
     }
   }
 
-  const channel = peer.createDataChannel(WEBRTC_TILE_CHANNEL_LABEL, viewerTileDataChannelOptions());
-  const controlChannel = peer.createDataChannel(WEBRTC_CONTROL_CHANNEL_LABEL, { ordered: true });
-  const fileChannel = peer.createDataChannel(WEBRTC_FILE_CHANNEL_LABEL, { ordered: true });
+  const channel = prepared?.channels[0] ?? peer.createDataChannel(WEBRTC_TILE_CHANNEL_LABEL, viewerTileDataChannelOptions());
+  const controlChannel = prepared?.channels[1] ?? peer.createDataChannel(WEBRTC_CONTROL_CHANNEL_LABEL, { ordered: true });
+  const fileChannel = prepared?.channels[2] ?? peer.createDataChannel(WEBRTC_FILE_CHANNEL_LABEL, { ordered: true });
   const markConnectionReady = () => {
     if (!channelOpened || !controlChannelOpened || initialKeyframeRequested) {
       return;
@@ -1217,7 +1281,11 @@ export async function startFirebaseViewerWebRtcTransport(
   };
   fileChannel.onmessage = (event) => {
     if (closedByCaller || resourcesClosed || !fileChannelOpened) return;
-    if (isReverseFileCapability(event.data)) { handlers.onReverseFileSupport?.(supportsReverseFileResume(event.data)); return; }
+    if (isReverseFileCapability(event.data)) {
+      handlers.onReverseFileSupport?.(supportsReverseFileResume(event.data));
+      if (supportsFileCollisionPolicy(event.data)) handlers.onFileCollisionSupport?.();
+      return;
+    }
     const fileStatus = parseWebRtcFileStatus(event.data);
     if (fileStatus) { handlers.onFileStatus?.(fileStatus); return; }
     const chunk = parseWebRtcFileChunk(event.data);
@@ -1319,6 +1387,8 @@ export async function startFirebaseViewerWebRtcTransport(
     ));
   };
 
+  for (const candidate of prepared?.candidates.splice(0) ?? []) peer.onicecandidate({candidate} as RTCPeerConnectionIceEvent);
+
   unsubscribeSignal = onSnapshot(
     signalRef,
     (snapshot) => {
@@ -1396,8 +1466,8 @@ export async function startFirebaseViewerWebRtcTransport(
   }, connectTimeoutMs);
 
   void (async () => {
-    const offer = await peer.createOffer();
-    await peer.setLocalDescription(offer);
+    const offer = prepared?.offer ?? await peer.createOffer();
+    if (!prepared) await peer.setLocalDescription(offer);
     const localOffer = peer.localDescription ?? offer;
     await safeSetDoc(
       signalRef,
@@ -1459,6 +1529,7 @@ export async function startFirebaseViewerWebRtcTransport(
   };
 
   const sendFile = async (input: {
+    collisionPolicy?: import("../domain/fileCollisionPolicy").FileCollisionPolicy;
     resume?: boolean;
     file: Blob;
     filename: string;
@@ -1491,6 +1562,7 @@ export async function startFirebaseViewerWebRtcTransport(
           type: "file-chunk",
           transferId: input.transferId,
           filename: input.filename,
+          ...(input.collisionPolicy ? { collisionPolicy: input.collisionPolicy } : {}),
           chunkIndex,
           totalChunks,
           totalBytes: input.file.size,
@@ -1673,35 +1745,56 @@ async function openFirebaseSessionDirect(
 ): Promise<{ session: RemoteSession; inputLog: string[] }> {
   const services = getViewerFirebaseServices(env);
   const userId = requireCurrentUserId(services.auth.currentUser?.uid);
-  const device = await requireFirebaseOnlineCompatibleDeviceDirect(deviceId, env);
-  markConnectionTiming(deviceId, "device-validated");
-  const session = buildConnectedSession(deviceId);
-  let access: {accessRequestId: string; accessLockVersion: string} | undefined;
-  if (device.accessLocked) {
-    if (password === undefined) throw new Error("잠금 비밀번호를 입력해야 이 장비에 접속할 수 있습니다.");
-    const authorization = await requestFirebaseDeviceAccess(deviceId, "connect", {password}, session.id, undefined, env);
-    access = {accessRequestId:authorization.requestId, accessLockVersion:authorization.version};
+  // Prepare only local RTC state; no signaling/control/capture precedes authorization.
+  let readyPeer: PreparedViewerPeer | null = null;
+  let acceptingPreparation = true;
+  void prepareViewerPeer(env).then(prepared => {
+    if (!acceptingPreparation) { prepared?.peer.close(); return null; }
+    readyPeer = prepared;
+    return prepared;
+  }).catch(() => null);
+  try {
+    const device = await requireFirebaseOnlineCompatibleDeviceDirect(deviceId, env);
+    markConnectionTiming(deviceId, "device-validated");
+    const session = buildConnectedSession(deviceId);
+    let access: {accessRequestId: string; accessLockVersion: string} | undefined;
+    if (device.accessLocked) {
+      if (password === undefined) throw new Error("잠금 비밀번호를 입력해야 이 장비에 접속할 수 있습니다.");
+      const authorization = await requestFirebaseDeviceAccess(deviceId, "connect", {password}, session.id, undefined, env);
+      access = {accessRequestId:authorization.requestId, accessLockVersion:authorization.version};
+    }
+    const batch = writeBatch(services.db);
+    safeBatchSet(batch, doc(services.db, "sessions", session.id), {
+      ...access,
+      ...session,
+      ownerUid: userId,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    }, { merge: true });
+    safeBatchSet(batch, doc(collection(services.db, "devices", deviceId, "commands")), {
+      action: `start-stream ${session.id}`,
+      createdAt: serverTimestamp(),
+      state: "pending",
+      sessionId: session.id,
+    });
+    await batch.commit();
+    acceptingPreparation = false;
+    const prepared = readyPeer as PreparedViewerPeer | null;
+    if (prepared) {
+      if (preparedViewerPeers.size >= 32) discardPreparedViewerPeer(preparedViewerPeers.keys().next().value!);
+      prepared.timer = setTimeout(() => discardPreparedViewerPeer(session.id), resolveWebRtcConnectTimeoutMs(env));
+      preparedViewerPeers.set(session.id, prepared);
+    }
+    markConnectionTiming(deviceId, "command-dispatched");
+    return {
+      inputLog: [`${new Date().toLocaleTimeString()} start-stream queued via Firestore fallback`],
+      session,
+    };
+  } catch (error) {
+    acceptingPreparation = false;
+    (readyPeer as PreparedViewerPeer | null)?.peer.close();
+    throw error;
   }
-  const batch = writeBatch(services.db);
-  safeBatchSet(batch, doc(services.db, "sessions", session.id), {
-    ...access,
-    ...session,
-    ownerUid: userId,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-  }, { merge: true });
-  safeBatchSet(batch, doc(collection(services.db, "devices", deviceId, "commands")), {
-    action: `start-stream ${session.id}`,
-    createdAt: serverTimestamp(),
-    state: "pending",
-    sessionId: session.id,
-  });
-  await batch.commit();
-  markConnectionTiming(deviceId, "command-dispatched");
-  return {
-    inputLog: [`${new Date().toLocaleTimeString()} start-stream queued via Firestore fallback`],
-    session,
-  };
 }
 
 async function requireFirebaseOnlineCompatibleDeviceDirect(
@@ -1881,8 +1974,19 @@ async function readOwnedFirebaseSession(
   };
 }
 
-export async function requestFirebaseAgentUpdate(deviceId: string): Promise<void> {
-  await enqueueFirebaseDeviceCommandDirect(deviceId, `request-update ${Date.now()}`, import.meta.env);
+export async function requestFirebaseAgentUpdate(deviceId: string, requestId = String(Date.now())): Promise<void> {
+  if (!/^\d{13}$/.test(requestId)) throw new Error("Invalid update request ID");
+  await enqueueFirebaseDeviceCommandDirect(deviceId, `request-update ${requestId}`, import.meta.env);
+}
+
+export function subscribeFirebaseAgentUpdate(deviceId: string, next: (device: ManagedDevice) => void, fail: (error: Error) => void): Unsubscribe {
+  const services=getViewerFirebaseServices(import.meta.env);
+  requireCurrentUserId(services.auth.currentUser?.uid);
+  return onSnapshot(doc(services.db,"devices",deviceId), snapshot=>{
+    if(snapshot.metadata?.fromCache)return;
+    if(!snapshot.exists()||isDeletedDeviceDocument(snapshot.data())) {fail(new Error("장비가 삭제되었거나 등록되어 있지 않습니다."));return;}
+    next(mapFirestoreDevice(snapshot.id,snapshot.data()));
+  },fail);
 }
 
 export async function requestFirebaseAgentRollback(deviceId: string, version: string, env: ViewerFirebaseEnv = import.meta.env): Promise<void> {

@@ -79,5 +79,6 @@ describe("Agent update polling policy", () => {
     const state = { currentVersion: "0.1.78", progress: 100, state: "healthy" as const, updatedAt: "2026-01-01T00:00:00Z" };
     expect(updateTelemetryStateKey({ ...state, updatedAt: "2026-01-02T00:00:00Z" })).toBe(updateTelemetryStateKey(state));
     expect(updateTelemetryStateKey({ ...state, state: "failed", error: "offline" })).not.toBe(updateTelemetryStateKey(state));
+    expect(updateTelemetryStateKey({ ...state, requestId: "1700000000001" })).not.toBe(updateTelemetryStateKey(state));
   });
 });

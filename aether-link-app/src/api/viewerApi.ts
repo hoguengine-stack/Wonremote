@@ -18,6 +18,7 @@ import {
 import {
   closeFirebaseSession,
   requestFirebaseAgentUpdate,
+  subscribeFirebaseAgentUpdate,
   deleteFirebaseDevice,
   fetchFirebaseChatMessages,
   subscribeViewerSessionData,
@@ -108,18 +109,33 @@ export async function logoutAdmin(): Promise<void> {
   }
 }
 
-export async function fetchDevices(refreshPresence = false, signal?: AbortSignal, onProgress?: (devices: ManagedDevice[], pendingIds: string[]) => void, knownDevices?: ManagedDevice[]): Promise<ManagedDevice[]> {
+export async function fetchDevices(refreshPresence = false, signal?: AbortSignal, onProgress?: (devices: ManagedDevice[], pendingIds: string[]) => void, knownDevices?: ManagedDevice[], targetDeviceIds?: readonly string[]): Promise<ManagedDevice[]> {
   if (isViewerFirebaseEnabled()) {
-    return fetchFirebaseDevices(undefined, refreshPresence, signal, onProgress, knownDevices);
+    return fetchFirebaseDevices(undefined, refreshPresence, signal, onProgress, knownDevices, targetDeviceIds);
   }
 
-  const body = await request<{ devices: ManagedDevice[] }>(`/api/devices${refreshPresence ? "?refresh=1" : ""}`, { signal });
-  return body.devices;
+  const params=new URLSearchParams();
+  if (refreshPresence) params.set("refresh","1");
+  if (targetDeviceIds!==undefined) { params.set("scope","selected");targetDeviceIds.forEach(id=>params.append("deviceId",id)); }
+  const body = await request<{ devices: ManagedDevice[] }>(`/api/devices${params.size?`?${params}`:""}`, { signal });
+  return targetDeviceIds === undefined ? body.devices : body.devices.filter(device=>targetDeviceIds.includes(device.id));
 }
 
-export async function requestAgentUpdate(deviceId: string): Promise<void> {
-  if (isViewerFirebaseEnabled()) return requestFirebaseAgentUpdate(deviceId);
-  await request(`/api/devices/${encodeURIComponent(deviceId)}/request-update`, {method:"POST"});
+export async function requestAgentUpdate(deviceId: string, requestId = String(Date.now())): Promise<void> {
+  if (isViewerFirebaseEnabled()) return requestFirebaseAgentUpdate(deviceId,requestId);
+  await request(`/api/devices/${encodeURIComponent(deviceId)}/request-update`, {method:"POST",body:JSON.stringify({requestId})});
+}
+
+export function subscribeAgentUpdate(deviceId: string, next: (device: ManagedDevice)=>void, fail:(error:Error)=>void):()=>void {
+  if(isViewerFirebaseEnabled())return subscribeFirebaseAgentUpdate(deviceId,next,fail);
+  const controller=new AbortController();let timer:ReturnType<typeof setTimeout>|undefined;
+  async function read(){
+    try {const devices=await fetchDevices(false,controller.signal,undefined,undefined,[deviceId]);if(!controller.signal.aborted){if(!devices[0])throw new Error("장비를 찾을 수 없습니다.");next(devices[0]);}}
+    catch(error){if(!controller.signal.aborted)fail(error instanceof Error?error:new Error(String(error)));}
+    if(!controller.signal.aborted)timer=setTimeout(read,2000);
+  }
+  void read();
+  return()=>{controller.abort();clearTimeout(timer);};
 }
 
 export async function wakeRemoteDevice(
@@ -333,6 +349,7 @@ export async function uploadFileChunk(
   sessionId: string,
   input: {
     filename: string;
+    collisionPolicy?: import("../domain/fileCollisionPolicy").FileCollisionPolicy;
     fileData: string;
     transferId: string;
     chunkIndex: number;
@@ -368,6 +385,7 @@ export async function uploadFileToStorage(
   input: {
     file: Blob;
     filename: string;
+    collisionPolicy?: import("../domain/fileCollisionPolicy").FileCollisionPolicy;
     transferId: string;
     totalBytes: number;
     fileSha256?: string;

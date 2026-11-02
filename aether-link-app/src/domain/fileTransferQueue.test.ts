@@ -14,6 +14,14 @@ import {
 } from "./fileTransferQueue";
 
 describe("file transfer queue item", () => {
+  it("treats an explicit same-name skip as terminal, not a failed or completed overwrite", () => {
+    const item = createFileTransferQueueItem({ id: "skip", fileName: "same.txt", totalBytes: 3 });
+    const skipped = failFileTransfer(item, "File skipped: same.txt (existing file preserved)");
+    expect(skipped).toMatchObject({ status: "skipped", error: "기존 파일 유지" });
+    expect(completeFileTransfer(skipped)).toBe(skipped);
+    expect(updateFileTransferProgress(skipped, 3)).toBe(skipped);
+    expect(appendFileTransferQueueItems([skipped], [], 0)).toEqual([]);
+  });
   it("awaits remote confirmation and preserves early receipt or cancellation", () => {
     const item=createFileTransferQueueItem({id:"a",fileName:"a.txt",totalBytes:10});
     const pending=awaitFileTransferReceipt(item);

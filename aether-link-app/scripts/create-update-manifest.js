@@ -7,6 +7,7 @@ const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const packageJson = JSON.parse(fs.readFileSync(path.join(appRoot, "package.json"), "utf8"));
 const stableViewerAssetName = "WonRemote-Viewer-Setup.exe";
 const stableAgentAssetName = "WonRemote-Agent-Setup.exe";
+const stableAgentUpdateName = "WonRemote-Agent-Update.exe";
 
 function readArgs(argv) {
   const args = new Map();
@@ -111,6 +112,8 @@ const viewerPath = path.resolve(args.get("--viewer-x64") || args.get("--installe
 const viewerPathX86 = path.resolve(args.get("--viewer-x86") || args.get("--installer-x86") || viewerPath);
 const agentPath = path.resolve(args.get("--agent-x64") || defaultReleaseAssetPath(stableAgentAssetName));
 const agentPathX86 = path.resolve(args.get("--agent-x86") || agentPath);
+const agentUpdatePath = path.resolve(args.get("--agent-update-x64") || defaultReleaseAssetPath(stableAgentUpdateName));
+const agentUpdatePathX86 = path.resolve(args.get("--agent-update-x86") || agentUpdatePath);
 const outPath = path.resolve(args.get("--out") || defaultOutputPath());
 const viewerAssetName = normalizeGitHubAssetName(
   args.get("--viewer-asset-name-x64") || args.get("--asset-name") || stableViewerAssetName,
@@ -134,6 +137,8 @@ for (const [label, assetPath] of [
   ["x86 Viewer installer", viewerPathX86],
   ["x64 Agent installer", agentPath],
   ["x86 Agent installer", agentPathX86],
+  ["x64 compatible Agent file update", agentUpdatePath],
+  ["x86 Agent file update", agentUpdatePathX86],
 ]) {
   if (!fs.existsSync(assetPath)) {
     throw new Error(`${label} not found: ${assetPath}`);
@@ -184,6 +189,18 @@ const agentX64 = buildSignedAsset({
 const agentX86 = buildSignedAsset({
   arch: "x86", assetName: agentAssetNameX86, downloadUrl: agentDownloadUrlX86, filePath: agentPathX86, updateKind: "installer",
 });
+// Keep the executable handoff wire kind for existing installed readers. These
+// bytes contain file replacement only, not the first-install Setup workflow.
+const agentUpdateX64 = buildSignedAsset({
+  arch: "x64", assetName: stableAgentUpdateName,
+  downloadUrl: buildDownloadUrl(args, version, stableAgentUpdateName, "--agent-update-download-url-x64"),
+  filePath: agentUpdatePath, updateKind: "installer",
+});
+const agentUpdateX86 = buildSignedAsset({
+  arch: "x86", assetName: stableAgentUpdateName,
+  downloadUrl: buildDownloadUrl(args, version, stableAgentUpdateName, "--agent-update-download-url-x86"),
+  filePath: agentUpdatePathX86, updateKind: "installer",
+});
 
 const manifest = {
   version,
@@ -198,6 +215,14 @@ const manifest = {
     x86: viewerX86,
   },
   agentWindows: {
+    x64: agentX64,
+    x86: agentX86,
+  },
+  agentFileUpdates: {
+    x64: agentUpdateX64,
+    x86: agentUpdateX86,
+  },
+  agentInstallers: {
     x64: agentX64,
     x86: agentX86,
   },

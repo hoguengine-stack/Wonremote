@@ -58,13 +58,16 @@ $RequestedPrerelease = [bool]$Prerelease
 $ReleaseDir = Join-Path $AppRoot "release-exe"
 $StableInstallerAssetName = "WonRemote-Viewer-Setup.exe"
 $StableAgentInstallerAssetName = "WonRemote-Agent-Setup.exe"
+$AgentFileUpdateAssetName = "WonRemote-Agent-Update.exe"
 $ManifestName = "wonremote-update-manifest.json"
 $StableInstallerPath = Join-Path $ReleaseDir $StableInstallerAssetName
 $StableAgentInstallerPath = Join-Path $ReleaseDir $StableAgentInstallerAssetName
+$AgentFileUpdatePath = Join-Path $ReleaseDir $AgentFileUpdateAssetName
 $ManifestPath = Join-Path $ReleaseDir $ManifestName
 $ExpectedAssets = @(
   @{ Name = $StableInstallerAssetName; Path = $StableInstallerPath }
   @{ Name = $StableAgentInstallerAssetName; Path = $StableAgentInstallerPath }
+  @{ Name = $AgentFileUpdateAssetName; Path = $AgentFileUpdatePath }
   @{ Name = $ManifestName; Path = $ManifestPath }
 )
 
@@ -164,6 +167,7 @@ function Publish-Asset($FilePath, $AssetName, $ContentType) {
 $PublishedAssets = @(
   Publish-Asset $StableInstallerPath $StableInstallerAssetName "application/octet-stream"
   Publish-Asset $StableAgentInstallerPath $StableAgentInstallerAssetName "application/octet-stream"
+  Publish-Asset $AgentFileUpdatePath $AgentFileUpdateAssetName "application/octet-stream"
   Publish-Asset $ManifestPath $ManifestName "application/json"
 )
 

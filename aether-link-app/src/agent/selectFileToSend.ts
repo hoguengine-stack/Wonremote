@@ -1,22 +1,6 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
-
-const PICK_FILE_SCRIPT = `
-$ErrorActionPreference = 'Stop'
-[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
-if (-not [Environment]::UserInteractive -or [Security.Principal.WindowsIdentity]::GetCurrent().IsSystem) { exit 2 }
-Add-Type -AssemblyName System.Windows.Forms
-$dialog = New-Object System.Windows.Forms.OpenFileDialog
-$dialog.Title = 'WonRemote - Select a file to send'
-$dialog.CheckFileExists = $true
-$dialog.Multiselect = $false
-$dialog.RestoreDirectory = $true
-try {
-  if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-    ConvertTo-Json -InputObject $dialog.FileName -Compress
-  } else { 'null' }
-} finally { $dialog.Dispose() }
-`;
+import { resolveAgentAppDir, resolveAgentPocPath } from "./agentPaths";
 
 export async function selectFileToSend(
   signal?: AbortSignal,
@@ -25,10 +9,10 @@ export async function selectFileToSend(
 ): Promise<string | null> {
   if (signal?.aborted) throw new DOMException("File selection cancelled.", "AbortError");
   if (platform !== "win32") throw new Error("File selection requires Windows.");
-  if (!env.SystemRoot || !path.win32.isAbsolute(env.SystemRoot)) throw new Error("Windows directory is unavailable.");
+  const executable = resolveAgentPocPath(env, resolveAgentAppDir(env, process.cwd()));
+  if (!path.win32.isAbsolute(executable)) throw new Error("Native file selector is unavailable.");
   return new Promise((resolve, reject) => {
-    const child = spawn(path.win32.join(env.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
-      ["-NoProfile", "-NonInteractive", "-STA", "-WindowStyle", "Hidden", "-EncodedCommand", Buffer.from(PICK_FILE_SCRIPT, "utf16le").toString("base64")],
+    const child = spawn(executable, ["--select-file"],
       { windowsHide: true, shell: false, stdio: ["ignore", "pipe", "ignore"] });
     let settled = false;
     let output = "";

@@ -3,7 +3,7 @@ use std::os::windows::ffi::OsStrExt;
 use windows_sys::Win32::{Storage::FileSystem::MoveFileExW, UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL}};
 use std::{collections::HashMap, fs::{self, File, OpenOptions}, io::Write, path::{Path, PathBuf}, sync::{Mutex, atomic::{AtomicU64, Ordering}}};
 
-struct Download { file: File, temporary: PathBuf, destination: PathBuf, total: u64, written: u64 }
+struct Download { file: File, temporary: PathBuf, destination: PathBuf, total: u64, written: u64, collision_policy: String }
 #[derive(Default)]
 pub struct Downloads(Mutex<HashMap<String, Download>>);
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -30,14 +30,19 @@ fn valid_name(name: &str) -> bool {
         && !matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
         && !(stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && stem.as_bytes()[3].is_ascii_digit())
 }
+#[cfg(test)]
 fn begin_at(root: &Path, filename: &str, total: u64, state: &Downloads) -> Result<String, String> {
+    begin_with_policy(root, filename, total, state, "rename")
+}
+fn begin_with_policy(root: &Path, filename: &str, total: u64, state: &Downloads, policy: &str) -> Result<String, String> {
+    if !matches!(policy, "rename" | "overwrite" | "skip") { return Err("Invalid collision policy".into()); }
     if !valid_name(filename) || total > MAX_BYTES { return Err("Invalid download name or size".into()); }
     let mut active = state.0.lock().map_err(|e| e.to_string())?;
     if active.len() >= 4 { return Err("Too many active downloads".into()); }
     let id = format!("{}-{}", std::process::id(), NEXT_ID.fetch_add(1, Ordering::Relaxed));
     let temporary = root.join(format!(".wonremote-{id}.part"));
     let file = OpenOptions::new().write(true).create_new(true).open(&temporary).map_err(|e| e.to_string())?;
-    active.insert(id.clone(), Download { file, temporary, destination: root.join(filename), total, written: 0 });
+    active.insert(id.clone(), Download { file, temporary, destination: root.join(filename), total, written: 0, collision_policy: policy.into() });
     Ok(id)
 }
 fn append(state: &Downloads, id: &str, offset: u64, bytes: &[u8]) -> Result<(), String> {
@@ -48,11 +53,11 @@ fn append(state: &Downloads, id: &str, offset: u64, bytes: &[u8]) -> Result<(), 
     item.written += bytes.len() as u64;
     Ok(())
 }
-fn publish_without_overwrite(source: &Path, target: &Path) -> std::io::Result<()> {
+fn publish(source: &Path, target: &Path, overwrite: bool) -> std::io::Result<()> {
     let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
     let target: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
     // Same-folder rename: no replace/copy flags, so a racing destination is never overwritten.
-    if unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), 0) } == 0 {
+    if unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), if overwrite { 1 } else { 0 }) } == 0 {
         return Err(std::io::Error::last_os_error());
     }
     Ok(())
@@ -67,9 +72,12 @@ fn finish(state: &Downloads, id: &str) -> Result<String, String> {
     let mut final_path = None;
     for suffix in 0..1000 {
         let target = if suffix == 0 { item.destination.clone() } else { item.destination.with_file_name(format!("({suffix}) {original}")) };
-        match publish_without_overwrite(&item.temporary, &target) {
+        match publish(&item.temporary, &target, item.collision_policy == "overwrite") {
             Ok(()) => { final_path = Some(target); break; }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if item.collision_policy == "skip" { return Err(format!("File skipped: {original} (existing file preserved)")); }
+                continue;
+            },
             Err(e) => return Err(e.to_string()),
         }
     }
@@ -96,7 +104,9 @@ fn open_download_file_at(root: &Path, requested: &Path) -> Result<(), String> {
 #[tauri::command]
 pub fn viewer_download_folder() -> Result<String, String> { Ok(folder()?.to_string_lossy().into_owned()) }
 #[tauri::command]
-pub fn begin_viewer_download(filename: String, total: u64, state: tauri::State<Downloads>) -> Result<String, String> { begin_at(&folder()?, &filename, total, &state) }
+pub fn begin_viewer_download(filename: String, total: u64, collision_policy: Option<String>, state: tauri::State<Downloads>) -> Result<String, String> {
+    begin_with_policy(&folder()?, &filename, total, &state, collision_policy.as_deref().unwrap_or("rename"))
+}
 #[tauri::command]
 pub fn write_viewer_download(id: String, offset: u64, data: String, state: tauri::State<Downloads>) -> Result<(), String> {
     if data.len() > 87384 { return Err("Chunk too large".into()); }
@@ -137,6 +147,25 @@ pub async fn choose_viewer_download_folder() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn collision_choices_preserve_or_explicitly_replace_existing_bytes() {
+        let root = std::env::temp_dir().join(format!("wonremote-choice-{}-{}", std::process::id(), NEXT_ID.fetch_add(1, Ordering::Relaxed)));
+        fs::create_dir(&root).unwrap();
+        let state = Downloads::default();
+        fs::write(root.join("test.txt"), b"old").unwrap();
+        assert!(begin_with_policy(&root, "test.txt", 3, &state, "invalid").is_err());
+        let skip = begin_with_policy(&root, "test.txt", 3, &state, "skip").unwrap();
+        append(&state, &skip, 0, b"new").unwrap();
+        assert!(finish(&state, &skip).unwrap_err().starts_with("File skipped:"));
+        assert_eq!(fs::read(root.join("test.txt")).unwrap(), b"old");
+        let item = state.0.lock().unwrap().remove(&skip).unwrap();
+        drop(item.file); fs::remove_file(item.temporary).unwrap();
+        let replace = begin_with_policy(&root, "test.txt", 3, &state, "overwrite").unwrap();
+        append(&state, &replace, 0, b"new").unwrap();
+        assert_eq!(PathBuf::from(finish(&state, &replace).unwrap()), root.join("test.txt"));
+        assert_eq!(fs::read(root.join("test.txt")).unwrap(), b"new");
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn saves_exact_bytes_and_never_overwrites() {
         let root = std::env::temp_dir().join(format!("wonremote-save-{}-{}", std::process::id(), NEXT_ID.fetch_add(1, Ordering::Relaxed)));

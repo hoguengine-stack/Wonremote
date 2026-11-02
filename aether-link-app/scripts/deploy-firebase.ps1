@@ -64,6 +64,9 @@ if (-not $SkipAppBuild) {
 & node (Join-Path $RepoRoot "mobile/android/create-update-manifest.mjs") --verify-hosted
 if ($LASTEXITCODE -ne 0) { throw "Android Hosting output does not match verified release artifacts." }
 
+& node (Join-Path $RepoRoot "mobile/android/create-update-manifest.mjs") --verify-live-history
+if ($LASTEXITCODE -ne 0) { throw "Published Android archive preservation failed; do not deploy Hosting." }
+
 $DeployFunctions = $IncludeFunctions -and -not $SparkOnly
 $DeployStorage = $IncludeStorage -and -not $SkipStorage
 

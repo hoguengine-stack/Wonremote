@@ -113,7 +113,7 @@ describe("x86 release installers", () => {
     expect(command).not.toContain("tauri bundle");
   });
 
-  it("copies only the x86 Viewer and Agent installers to stable release names", () => {
+  it("copies the x86 installers and separate Agent file update to distinct stable names", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "wonremote-x86-release-"));
     temporaryDirectories.push(root);
     const source = path.join(root, "source");
@@ -121,17 +121,21 @@ describe("x86 release installers", () => {
     fs.mkdirSync(source);
     const viewerInstallerPath = path.join(source, "viewer-x86.exe");
     const agentInstallerPath = path.join(source, "agent-x86.exe");
+    const agentUpdatePath = path.join(source, "agent-update-x86.exe");
     fs.writeFileSync(viewerInstallerPath, "viewer-x86");
     fs.writeFileSync(agentInstallerPath, "agent-x86");
+    fs.writeFileSync(agentUpdatePath, "file-replacement-only");
 
-    copyStableX86Installers({ viewerInstallerPath, agentInstallerPath }, output);
+    copyStableX86Installers({ viewerInstallerPath, agentInstallerPath, agentUpdatePath }, output);
 
     expect(fs.readdirSync(output).sort()).toEqual([
       "WonRemote-Agent-Setup.exe",
+      "WonRemote-Agent-Update.exe",
       "WonRemote-Viewer-Setup.exe",
     ]);
     expect(fs.readFileSync(path.join(output, "WonRemote-Viewer-Setup.exe"), "utf8")).toBe("viewer-x86");
     expect(fs.readFileSync(path.join(output, "WonRemote-Agent-Setup.exe"), "utf8")).toBe("agent-x86");
+    expect(fs.readFileSync(path.join(output, "WonRemote-Agent-Update.exe"), "utf8")).toBe("file-replacement-only");
   });
 
   it("blocks publication unless the release source is committed and pushed to main", () => {

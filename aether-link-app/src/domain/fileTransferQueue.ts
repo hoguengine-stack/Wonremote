@@ -5,6 +5,7 @@ export type FileTransferStatus =
   | "paused"
   | "completed"
   | "failed"
+  | "skipped"
   | "cancelled";
 
 export interface FileTransferQueueItem {
@@ -121,8 +122,8 @@ export function failFileTransfer(item: FileTransferQueueItem, error: string): Fi
   }
   return {
     ...item,
-    status: "failed",
-    error: error.trim() || "File transfer failed.",
+    status: error.startsWith("File skipped:") ? "skipped" : "failed",
+    error: error.startsWith("File skipped:") ? "기존 파일 유지" : error.trim() || "File transfer failed.",
   };
 }
 
@@ -156,7 +157,7 @@ export function getFileTransferEtaSeconds(item: FileTransferQueueItem): number |
 }
 
 function isTerminal(status: FileTransferStatus): boolean {
-  return status === "completed" || status === "failed" || status === "cancelled";
+  return status === "completed" || status === "failed" || status === "cancelled" || status === "skipped";
 }
 
 function normalizeBytes(value: number): number {

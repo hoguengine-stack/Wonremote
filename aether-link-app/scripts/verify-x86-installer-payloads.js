@@ -40,7 +40,7 @@ export function createX86PayloadVerificationPlan({
 } = {}) {
   const installerDir = path.join(appRoot, "src-tauri", "target", X86_RELEASE_DIRECTORY, "bundle", "nsis");
 
-  return PRODUCTS.map((product) => {
+  const plans = PRODUCTS.map((product) => {
     const productName = product === "agent" ? "Agent" : "Viewer";
     return {
       product,
@@ -49,6 +49,13 @@ export function createX86PayloadVerificationPlan({
       expectedPeMachine: X86_PE_MACHINE,
     };
   });
+  plans.push({
+    product: "agent-update",
+    releasedInstallerPath: path.join(releaseDir, "WonRemote-Agent-Update.exe"),
+    x86InstallerPath: path.join(installerDir, "WonRemote-Agent-Update.exe"),
+    expectedPeMachine: X86_PE_MACHINE,
+  });
+  return plans;
 }
 
 export async function verifyX86InstallerPayloads(options = {}) {

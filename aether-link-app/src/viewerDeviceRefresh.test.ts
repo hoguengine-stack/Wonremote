@@ -32,7 +32,7 @@ beforeAll(async () => {
 }, 30_000);
 afterAll(async () => { await browser?.close(); });
 
-async function openViewer(options: { firstRun?: boolean; agent?: boolean; manual?: boolean; slow?: boolean; fail?: boolean; local?: boolean; connected?: boolean; mobile?: boolean; emulateMobile?: boolean; rolloutSupported?: boolean; nativeAndroid?: boolean; desktop?: boolean; accountManager?: boolean; viewport?: { width: number; height: number }; storeName?: string } = {}) {
+async function openViewer(options: { authenticated?: boolean; firstRun?: boolean; agent?: boolean; manual?: boolean; slow?: boolean; fail?: boolean; local?: boolean; connected?: boolean; mobile?: boolean; emulateMobile?: boolean; rolloutSupported?: boolean; nativeAndroid?: boolean; desktop?: boolean; accountManager?: boolean; viewport?: { width: number; height: number }; storeName?: string } = {}) {
   const page = await browser.newPage({ viewport: options.viewport ?? (options.mobile ? { width: 390, height: 844 } : { width: 1440, height: 900 }), ...(options.emulateMobile ? { isMobile: true, hasTouch: true } : {}), ...(options.nativeAndroid ? { userAgent: "Android WonRemoteViewer/1" } : {}) });
   const origin = options.nativeAndroid ? "https://wonremote-a7fd3.web.app" : "http://viewer.test";
   page.setDefaultTimeout(3_000);
@@ -68,6 +68,10 @@ async function openViewer(options: { firstRun?: boolean; agent?: boolean; manual
           w.nativeCalls.push({command,args});
           if (command === "plugin:event|listen") { w.nativeEvents[args.event]=w.nativeCallbacks[args.handler]; return args.handler; }
           if (command === "get_app_mode") return opts.agent ? "agent" : "viewer";
+          if (command === "get_login_input_state") {
+            if(w.deferInputState)return new Promise(resolve=>{w.finishInputState=resolve;});
+            return w.loginInputState ?? {capsLock:false,inputMode:"en"};
+          }
           if (command === "get_agent_config") return opts.firstRun ? null : w.agentConfig ?? {businessNumber:"123-45-67890",registeredDeviceId:"123-45-67890:AGENT-0",installId:"test-agent"};
           if (command === "load_zook_number") return w.zookNumber ?? (opts.agent && !opts.firstRun ? "00123456" : "");
           if (command === "configure_zook_agent") {
@@ -103,7 +107,7 @@ async function openViewer(options: { firstRun?: boolean; agent?: boolean; manual
     w.testApi = new Proxy({
       isViewerFirebaseEnabled: () => !opts.local,
       subscribeViewerAuthState: (next: (authenticated: boolean) => void) => {
-        w.authChanged = next; next(true); return () => {};
+        w.authChanged = next; next(opts.authenticated !== false); return () => {};
       },
       subscribeFirebaseDevices: (next: (devices: unknown[]) => void) => {
         state.subscriptions++; next(structuredClone(state.devices)); return () => {};
@@ -111,9 +115,9 @@ async function openViewer(options: { firstRun?: boolean; agent?: boolean; manual
       subscribeFirebaseConnectionHistory: (next: (history: unknown[]) => void) => { state.historySubscriptions++; next([]); return () => {}; },
       fetchFirebaseConnectionHistory: async () => { state.historyReads++; return w.historyFixture ?? []; },
       isCurrentViewerAccountManager: async () => Boolean(opts.accountManager),
-      fetchFirebaseDevices: async (_env?: unknown, refreshPresence = false, signal?: AbortSignal, onProgress?: (devices: unknown[], pendingIds: string[]) => void, knownDevices?: unknown[]) => {
+      fetchFirebaseDevices: async (_env?: unknown, refreshPresence = false, signal?: AbortSignal, onProgress?: (devices: unknown[], pendingIds: string[]) => void, knownDevices?: unknown[], targetDeviceIds?: string[]) => {
         state.reads++;
-        const devices = structuredClone(state.devices);
+        const devices = structuredClone(state.devices).filter((device:any)=>targetDeviceIds===undefined||targetDeviceIds.includes(device.id));
         if (refreshPresence && w.parallelRefresh) {
           const read = new Promise(resolve => { w.finishParallelRead = () => resolve(structuredClone(state.devices)); });
           state.presenceCommands = []; state.presenceStarts = 0; state.presenceStops = 0;
@@ -156,6 +160,11 @@ async function openViewer(options: { firstRun?: boolean; agent?: boolean; manual
       requestFirebaseSecureSession: async (id: string) => { state.connections.push(`secure:${id}`); throw new Error("Current target is offline."); },
       closeFirebaseSession: async (id: string) => { state.closedSessions.push(id); },
       logoutViewerWithFirebase: async () => { w.authChanged(false); },
+      requestFirebaseAgentUpdate: async (id:string,requestId:string) => { (w.updateRequests??=[]).push({id,requestId}); },
+      subscribeFirebaseAgentUpdate: (id:string,next:any,fail:any) => {
+        (w.updateWatchers??={})[id]={next,fail};(w.updateWatchStarts??=[]).push(id);
+        return()=>{(w.updateWatchStops??=[]).push(id);delete w.updateWatchers[id];};
+      },
     }, { get(target, key) { return (target as any)[key] ?? (async () => null); } });
   }, options);
   await page.addScriptTag({ content: bundle });
@@ -174,6 +183,157 @@ const counts = (page: Page) => page.evaluate(() => {
 const refresh = (page: Page) => page.getByRole("button", { name: "장비 목록 새로고침", exact: true });
 
 describe("manual Viewer device list in a real browser", () => {
+  it.each([1024,1920,2560])("fits below the expanded fullscreen toolbar, centers zoom and places closable PC tabs in the header at %ipx",async(width)=>{
+    const page=await openViewer({connected:true,desktop:true,viewport:{width,height:1440}});
+    try{
+      const connect=(name:string)=>page.locator('.table-row').filter({has:page.getByText(name,{exact:true})}).getByRole('button',{name:'접속',exact:true}).click();
+      await connect('PC-0');
+      const panel=page.locator('.session-panel:not(.session-panel-inactive)');
+      const tabs=panel.getByRole('navigation',{name:'열린 원격 세션',exact:true});
+      await tabs.getByRole('button',{name:'PC-0',exact:true}).waitFor();
+      expect(await tabs.evaluate(e=>Boolean(e.closest('[data-testid="remote-command-bar"]')))).toBe(true);
+      const order=await panel.locator('.session-command-actions').evaluate(e=>[...e.querySelectorAll('button[aria-label]')].map(b=>b.getAttribute('aria-label')));
+      expect(order.indexOf('클립보드 동기화: 내 PC → 원격 PC')).toBeLessThan(order.indexOf('원격 클립보드 열기 (Win+V)'));
+      await panel.locator('button[title="전체화면 전환"]').click();
+      expect(await panel.getByTestId('fullscreen-toolbar-toggle').getAttribute('aria-expanded')).toBe('true');
+      await page.evaluate(()=>{
+        const source=document.createElement('canvas');source.width=1920;source.height=1200;
+        source.getContext('2d')!.fillStyle='#157d84';source.getContext('2d')!.fillRect(0,0,1920,1200);
+        (window as any).rtcCallbacks.onFrame({keyframe:true,width:1920,height:1200,tiles:[{x:0,y:0,w:1920,h:1200,data:source.toDataURL('image/jpeg').split(',')[1]}]});
+      });
+      await expect.poll(()=>panel.locator('canvas').evaluate(e=>(e as HTMLCanvasElement).width)).toBe(1920);
+      const geometry=()=>panel.evaluate(e=>{
+        const bar=e.querySelector('[data-testid="remote-command-bar"]')!.getBoundingClientRect();
+        const viewport=e.querySelector('.remote-preview')!.getBoundingClientRect();
+        const canvas=e.querySelector('canvas')!.getBoundingClientRect();
+        return {barBottom:bar.bottom,viewTop:viewport.top,viewWidth:viewport.width,viewHeight:viewport.height,cx:canvas.x+canvas.width/2,cy:canvas.y+canvas.height/2,vx:viewport.x+viewport.width/2,vy:viewport.y+viewport.height/2,cw:canvas.width,ch:canvas.height};
+      });
+      await panel.getByRole('button',{name:'Fit',exact:true}).click();
+      const fit=await geometry();expect(fit.viewTop).toBeGreaterThanOrEqual(fit.barBottom-1);
+      expect(fit.cw/fit.ch).toBeCloseTo(1.6,2);expect(Math.min(fit.viewWidth-fit.cw,fit.viewHeight-fit.ch)).toBeLessThan(2);
+      expect(Math.abs(fit.cx-fit.vx)).toBeLessThan(1);expect(Math.abs(fit.cy-fit.vy)).toBeLessThan(1);
+      await panel.getByRole('button',{name:'화면 확대',exact:true}).click();const zoom=await geometry();
+      expect(zoom.cw).toBeGreaterThan(fit.cw);expect(Math.abs(zoom.cx-zoom.vx)).toBeLessThan(1);expect(Math.abs(zoom.cy-zoom.vy)).toBeLessThan(1);
+      expect(await panel.locator('canvas').evaluate(e=>(e as HTMLCanvasElement).getContext('2d')!.getImageData(1,1,1,1).data[3])).toBe(255);
+      await page.screenshot({path:`../.codex-tmp/fullscreen-header-${width}.png`});
+      await panel.getByRole('button',{name:'장비 목록',exact:true}).click();await connect('PC-1');
+      const active=page.locator('.session-panel:not(.session-panel-inactive)');
+      const activeTabs=active.getByRole('navigation',{name:'열린 원격 세션',exact:true});
+      await activeTabs.getByRole('button',{name:'PC-0 세션 닫기',exact:true}).click();
+      await expect.poll(()=>page.evaluate(()=>(window as any).testState.closedSessions)).toEqual(['remote-session-device-0-1']);
+      await activeTabs.getByRole('button',{name:'PC-1',exact:true}).waitFor();
+    }finally{await page.close();}
+  });
+  it("tracks a requested Agent update per device without duplicate sends, refresh clicks or stale-success claims",async()=>{
+    const page=await openViewer({desktop:true});
+    try{
+      const row=page.locator('.table-row').filter({has:page.getByText('PC-0',{exact:true})});
+      const update=row.getByRole('button',{name:'에이전트 업데이트 요청',exact:true});
+      await update.click();await update.click();
+      await page.getByText('PC-0: Agent 응답 대기 중',{exact:true}).waitFor();
+      expect(await page.evaluate(()=>(window as any).updateRequests.length)).toBe(1);
+      await page.evaluate(()=>{const w=window as any,d=w.testState.devices[0];w.updateWatchers[d.id].next({...d,updateState:'healthy',version:'0.1.115'});});
+      await page.getByText('PC-0: Agent 응답 대기 중',{exact:true}).waitFor();
+      await page.evaluate(()=>{const w=window as any,d=w.testState.devices[0];w.updateWatchers[d.id].next({...d,updateRequestId:w.updateRequests[0].requestId,updateState:'downloading',updateProgress:70});});
+      await page.getByText('PC-0: 다운로드 중 70%',{exact:true}).waitFor();
+      await page.evaluate(()=>{const w=window as any,d=w.testState.devices[0];w.updateWatchers[d.id].next({...d,updateRequestId:w.updateRequests[0].requestId,updateState:'healthy',version:'0.1.116'});});
+      await page.getByText('PC-0: 업데이트 완료 v0.1.116 · Agent 재실행 확인',{exact:true}).waitFor();
+      expect(await page.evaluate(()=>(window as any).updateWatchStops)).toEqual(['device-0']);
+      await page.clock.fastForward(86_400_000);expect(await page.evaluate(()=>(window as any).updateRequests.length)).toBe(1);
+      await row.getByRole('button',{name:'에이전트 업데이트 요청',exact:true}).click();
+      await page.getByRole('button',{name:'로그아웃',exact:true}).click();
+      expect(await page.evaluate(()=>(window as any).updateWatchStops)).toEqual(['device-0','device-0']);
+    }finally{await page.close();}
+  });
+  it("shows Caps Lock and Korean/English state, preserves the password on reveal and never submits IME composition", async () => {
+    const page=await openViewer({authenticated:false,desktop:true,viewport:{width:320,height:740}});
+    try {
+      const password=page.locator('input[name="password"]');
+      await password.fill("offline-test-password");
+      await page.getByText("입력: 영문",{exact:true}).waitFor();
+      await page.evaluate(()=>{
+        const w=window as any;w.loginAttempts=0;
+        w.testApi.loginViewerWithFirebase=async()=>{w.loginAttempts++;};
+        w.loginInputState={capsLock:true,inputMode:"ko"};
+        const event=new KeyboardEvent('keyup',{key:'HangulMode',code:'Lang1',bubbles:true});
+        Object.defineProperty(event,'getModifierState',{value:(key:string)=>key==='CapsLock'});
+        document.querySelector('input[name="password"]')!.dispatchEvent(event);
+      });
+      await page.getByText("Caps Lock: 켜짐",{exact:true}).waitFor();
+      await page.getByText("입력: 한글",{exact:true}).waitFor();
+      await page.getByRole('button',{name:'비밀번호 표시',exact:true}).click();
+      expect(await password.getAttribute('type')).toBe('text');
+      expect(await password.inputValue()).toBe('offline-test-password');
+      expect(await password.evaluate(e=>e===document.activeElement)).toBe(true);
+      await page.getByRole('button',{name:'비밀번호 숨기기',exact:true}).click();
+      expect(await password.evaluate(input=>{
+        input.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));
+        const enter=new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true,cancelable:true});
+        const accepted=input.dispatchEvent(enter);
+        (input.closest('form') as HTMLFormElement).requestSubmit();
+        return accepted;
+      })).toBe(false);
+      expect(await page.evaluate(()=>(window as any).loginAttempts)).toBe(0);
+      await password.evaluate(input=>input.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true})));
+      expect(await password.evaluate(input=>input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',repeat:true,bubbles:true,cancelable:true})))).toBe(false);
+      expect(await page.evaluate(()=>JSON.stringify([localStorage,sessionStorage,(window as any).nativeCalls]))).not.toContain('offline-test-password');
+      expect(await page.locator('.login-panel').evaluate(e=>e.getBoundingClientRect().right<=innerWidth&&document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+      await page.screenshot({path:'../.codex-tmp/login-input-mobile.png'});
+    } finally {await page.close();}
+  });
+  it("sends only one login during repeated submission and explains rate limits without a fake countdown", async () => {
+    const page=await openViewer({authenticated:false,desktop:true});
+    try {
+      await page.locator('input[name="username"]').fill('offline@example.test');
+      await page.locator('input[name="password"]').fill('offline-test-password');
+      await page.evaluate(()=>{
+        const w=window as any;w.loginAttempts=0;
+        w.testApi.loginViewerWithFirebase=async()=>{
+          w.loginAttempts++;await new Promise<void>((_resolve,reject)=>{w.rejectLogin=reject;});
+        };
+      });
+      await page.locator('.login-panel').evaluate(form=>{(form as HTMLFormElement).requestSubmit();(form as HTMLFormElement).requestSubmit();});
+      await page.getByRole('button',{name:'로그인 중',exact:true}).waitFor();
+      expect(await page.getByRole('button',{name:'로그인 중',exact:true}).isDisabled()).toBe(true);
+      expect(await page.evaluate(()=>(window as any).loginAttempts)).toBe(1);
+      await page.evaluate(()=>{(window as any).rejectLogin(new Error('로그인 시도가 너무 많아 이 기기의 로그인 요청이 일시 제한되었습니다. 인증 서버가 해제 시각이나 남은 시간을 제공하지 않아 정확한 대기 시간을 표시할 수 없습니다. 반복 시도를 멈추고 나중에 다시 시도해 주세요.'));});
+      await page.getByRole('alert').waitFor();
+      expect(await page.getByRole('alert').textContent()).toContain('정확한 대기 시간을 표시할 수 없습니다');
+      expect(await page.getByRole('button',{name:'로그인',exact:true}).isEnabled()).toBe(true);
+      await page.clock.fastForward(86_400_000);
+      expect(await page.evaluate(()=>(window as any).loginAttempts)).toBe(1);
+      for(const width of [1440,320]){
+        await page.setViewportSize({width,height:900});
+        expect(await page.getByRole('alert').evaluate(e=>e.getBoundingClientRect().right<=innerWidth&&document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+      }
+      await page.screenshot({path:'../.codex-tmp/login-rate-limit-mobile.png'});
+    } finally {await page.close();}
+  });
+  it("bounds native input queries, ignores stale replies and removes listeners on login unmount", async () => {
+    const page=await openViewer({authenticated:false,desktop:true});
+    try {
+      await page.getByText('입력: 영문',{exact:true}).waitFor();
+      const queryCount=()=>page.evaluate(()=>(window as any).nativeCalls.filter((c:any)=>c.command==='get_login_input_state').length);
+      const before=await queryCount();
+      await page.clock.fastForward(86_400_000);
+      expect(await queryCount()).toBe(before);
+      await page.evaluate(()=>{(window as any).deferInputState=true;window.dispatchEvent(new Event('focus'));});
+      await page.waitForFunction(()=>typeof (window as any).finishInputState==='function');
+      await page.evaluate(()=>{
+        const w=window as any;w.deferInputState=false;w.loginInputState={capsLock:null,inputMode:'unknown'};
+        for(let i=0;i<8;i++)window.dispatchEvent(new Event('focus'));
+        w.finishInputState({capsLock:true,inputMode:'ko'});
+      });
+      await page.getByText('입력: 확인 불가',{exact:true}).waitFor();
+      expect(await page.getByText('Caps Lock: 확인 전',{exact:true}).count()).toBe(1);
+      expect(await queryCount()).toBe(before+2);
+      await page.evaluate(()=>{(window as any).deferInputState=true;window.dispatchEvent(new Event('focus'));});
+      await page.evaluate(()=>{const w=window as any;w.root.unmount();w.finishInputState({capsLock:true,inputMode:'ko'});window.dispatchEvent(new Event('focus'));});
+      await page.clock.fastForward(86_400_000);
+      expect(await queryCount()).toBe(before+3);
+      expect(await page.locator('#root').textContent()).toBe('');
+    } finally {await page.close();}
+  });
   it.each([15, 60, 180, 480, 720])("remembers this Viewer's unlock for exactly %s minutes without renewing or persisting passwords", async (minutes) => {
     const page = await openViewer({connected:true,desktop:true,viewport:minutes===720?{width:390,height:844}:undefined});
     try {
@@ -487,12 +647,15 @@ describe("manual Viewer device list in a real browser", () => {
       await page.getByLabel('장비 구분',{exact:true}).selectOption('custom');
       await page.getByLabel('장비 구분 직접입력',{exact:true}).fill('키오스크');
       await page.getByLabel('메모',{exact:true}).fill('카운터 오른쪽\n설치 메모');
-      await page.getByRole('button',{name:'등록',exact:true}).scrollIntoViewIfNeeded();
+      expect(await page.getByRole('button',{name:'등록',exact:true}).evaluate(button=>{
+        const r=button.getBoundingClientRect();return r.bottom<=innerHeight&&button.contains(document.elementFromPoint(r.left+r.width/2,r.top+r.height/2));
+      })).toBe(true);
       await page.screenshot({path:'../.codex-tmp/agent-initial-metadata.png'});
       expect(await page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       await page.getByRole('button',{name:'등록',exact:true}).click();
       await page.getByRole('heading',{name:'Agent 가동 중',exact:true}).waitFor();
       expect(await page.evaluate(()=>(window as any).registrationInput)).toMatchObject({storeName:'테스트 매장',deviceName:'키오스크',notes:'카운터 오른쪽\n설치 메모',installId:'test-agent'});
+      expect(await page.locator('.agent-panel-footer').getByRole('button',{name:'ZOOK 대기',exact:true}).evaluate(button=>button.getBoundingClientRect().bottom<=innerHeight)).toBe(true);
       expect(await page.evaluate(()=>(window as any).nativeCalls.filter((c:any)=>c.command==='save_agent_config').length)).toBe(1);
     } finally {await page.close();}
   });
@@ -559,6 +722,51 @@ describe("manual Viewer device list in a real browser", () => {
       expect(await page.locator('.device-table .table-row:not(.table-head)').first().innerText()).toContain('ZZZ-New-PC');
     } finally {await page.close();}
   });
+  it("expires NEW at registration plus24h without network activity, keeps expiry after restart and works on mobile",async()=>{
+    for(const mobile of [false,true]){
+      const page=await openViewer({mobile});
+      try{
+        await page.getByText('PC-0',{exact:true}).waitFor();
+        await page.clock.pauseAt(new Date(Date.now()+5_000));
+        await page.evaluate(()=>{
+          const w=window as any;w.testState.devices.push({...w.testState.devices[0],id:'new-expiry',desktopName:'NEW-EXPIRY',firstRegisteredAt:new Date(Date.now()-24*60*60_000+60_000).toISOString()});
+          const prefs=JSON.parse(localStorage.getItem('wonremote-viewer-list-v1')!);prefs.baselineAt=new Date(Date.now()-25*60*60_000).toISOString();localStorage.setItem('wonremote-viewer-list-v1',JSON.stringify(prefs));w.root.unmount();
+        });
+        await page.addScriptTag({content:bundle});await page.getByText('NEW-EXPIRY',{exact:true}).waitFor();
+        await page.getByText('NEW',{exact:true}).waitFor();const before=await counts(page);
+        await page.clock.runFor(59_999);expect(await page.getByText('NEW',{exact:true}).count()).toBe(1);
+        await page.clock.runFor(1);await expect.poll(()=>page.getByText('NEW',{exact:true}).count()).toBe(0);expect(await counts(page)).toEqual(before);
+        await page.evaluate(()=>(window as any).root.unmount());await page.addScriptTag({content:bundle});await page.getByText('NEW-EXPIRY',{exact:true}).waitFor();
+        expect(await page.getByText('NEW',{exact:true}).count()).toBe(0);
+      }finally{await page.close();}
+    }
+  });
+  it("freezes searched refresh targets, retains unrelated statuses, coalesces clicks and restores full refresh after clearing search",async()=>{
+    const page=await openViewer();
+    try{
+      await page.getByText('PC-0',{exact:true}).waitFor();
+      await page.evaluate(()=>{
+        const w=window as any;w.refreshTargets=[];
+        w.testApi.fetchFirebaseDevices=async(_env:any,refresh:boolean,_signal:any,progress:any,known:any[],ids?:string[])=>{
+          w.testState.reads++;w.refreshTargets.push(ids??null);
+          const selected=w.testState.devices.filter((d:any)=>ids===undefined||ids.includes(d.id));
+          progress?.(selected,selected.map((d:any)=>d.id));
+          await new Promise(resolve=>w.finishScoped=resolve);
+          return selected.map((d:any)=>({...d,status:'online'}));
+        };
+      });
+      const search=page.getByPlaceholder('매장, 장비, 담당자, 연락처, 메모 검색');await search.fill('PC-0');
+      await refresh(page).click();await page.waitForFunction(()=>Boolean((window as any).finishScoped));
+      await search.fill('PC-1');await refresh(page).evaluate(button=>{(button as HTMLButtonElement).click();(button as HTMLButtonElement).click();});
+      expect(await page.evaluate(()=>(window as any).refreshTargets)).toEqual([['device-0']]);
+      await page.evaluate(()=>(window as any).finishScoped());await page.clock.runFor(20);
+      expect(await page.locator('.table-row').filter({hasText:'PC-1'}).getByText('오프라인',{exact:true}).count()).toBe(1);
+      await search.fill('PC-0');expect(await page.locator('.table-row').filter({hasText:'PC-0'}).getByText('온라인',{exact:true}).count()).toBe(1);
+      await search.fill('');expect(await page.getByText('PC-9',{exact:true}).count()).toBe(1);
+      await refresh(page).click();await page.waitForFunction(()=>(window as any).refreshTargets.length===2);expect(await page.evaluate(()=>(window as any).refreshTargets[1])).toBeNull();
+      await page.evaluate(()=>(window as any).finishScoped());
+    }finally{await page.close();}
+  });
   it("does not mark unseen existing devices NEW and keeps multiple real arrivals together on top across restart", async () => {
     const page=await openViewer();
     try {
@@ -580,7 +788,7 @@ describe("manual Viewer device list in a real browser", () => {
       await page.getByPlaceholder('매장, 장비, 담당자, 연락처, 메모 검색').fill('PC');
       for(let i=0;i<2;i++) expect(await rows.nth(i).getByText('NEW',{exact:true}).count()).toBe(1);
       const before=await counts(page);
-      await page.clock.runFor(86_400_000);
+      await page.clock.runFor(3_600_000);
       expect(await counts(page)).toEqual(before);
       await page.evaluate(()=>{
         const w=window as any; w.root.unmount();
@@ -704,7 +912,7 @@ describe("manual Viewer device list in a real browser", () => {
     } finally { await page.close(); }
   });
 
-  it("clipboard history sends remote Win+V to the left of transfer without copying clipboard data", async () => {
+  it("clipboard history sends remote Win+V to the right of transfer without copying clipboard data", async () => {
     const page=await openViewer({connected:true});
     try {
       await page.locator('.table-row').filter({has:page.getByText('PC-0',{exact:true})}).getByRole('button',{name:'접속',exact:true}).click();
@@ -713,7 +921,7 @@ describe("manual Viewer device list in a real browser", () => {
       const history=page.getByRole('button',{name:'원격 클립보드 열기 (Win+V)',exact:true});
       await history.click();
       expect(await page.evaluate(()=>(window as any).testState.controls)).toEqual(['key-down Win','keypress V','key-up Win']);
-      expect(await history.evaluate(element=>element.nextElementSibling?.getAttribute('aria-label'))).toBe('클립보드 동기화: 내 PC → 원격 PC');
+      expect(await history.evaluate(element=>element.previousElementSibling?.getAttribute('aria-label'))).toBe('클립보드 동기화: 내 PC → 원격 PC');
       expect(await page.evaluate(()=>(window as any).testState.auxiliaryReads)).toBe(0);
     } finally {await page.close();}
   });
@@ -732,7 +940,7 @@ describe("manual Viewer device list in a real browser", () => {
       expect(await edge.getAttribute('href')).toBe(null);
       expect(await asp.getAttribute('href')).toBe(null);
       expect(await edge.evaluate(e=>e.nextElementSibling?.getAttribute('aria-label'))).toBe('FirstPOS ASP 열기');
-      expect(await asp.evaluate(e=>e.nextElementSibling?.getAttribute('aria-label'))).toBe('원격 클립보드 열기 (Win+V)');
+      expect(await asp.evaluate(e=>e.nextElementSibling?.getAttribute('aria-label'))).toBe('클립보드 동기화: 내 PC → 원격 PC');
       await toss.click();
       for(const link of [edge,asp]) {
         expect(await link.locator('img').evaluate((e:HTMLImageElement)=>e.complete&&e.naturalWidth>0)).toBe(true);
@@ -791,6 +999,50 @@ describe("manual Viewer device list in a real browser", () => {
       await page.screenshot({path:`../.codex-tmp/mobile-toss-${viewport.width}.png`});
     } finally {await page.close();}
   });
+  it.each([true, false])("Agent standby footer stays clickable without scrolling (firstRun=%s)", async firstRun => {
+    const page = await openViewer({desktop:true,agent:true,firstRun,viewport:{width:360,height:420}});
+    try {
+      await page.getByRole('heading',{name:firstRun?'Agent 최초 실행':'Agent 가동 중',exact:true}).waitFor();
+      const standby = page.getByRole('button',{name:'ZOOK 대기',exact:true});
+      await page.getByLabel('ZOOK 고유번호 (선택)',{exact:true}).fill('00123456');
+      const visibleHitTarget = async () => standby.evaluate(button => {
+        const r=button.getBoundingClientRect();
+        const hit=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);
+        return r.left>=0&&r.top>=0&&r.right<=innerWidth&&r.bottom<=innerHeight&&Boolean(hit&&button.contains(hit));
+      });
+      for (const viewport of [{width:320,height:340},{width:360,height:340},{width:360,height:420},{width:480,height:560}]) {
+        await page.setViewportSize(viewport);
+        expect(await visibleHitTarget()).toBe(true);
+        const initial = await standby.boundingBox();
+        expect(await page.locator('.agent-panel-scroll').count()).toBe(1);
+        await page.locator('.agent-panel-scroll').evaluate(e=>{e.scrollTop=e.scrollHeight;});
+        if (viewport.height===340) {
+          expect(await page.locator('.agent-panel-scroll').evaluate(e=>getComputedStyle(e).overflowY==='auto'&&e.scrollTop>0)).toBe(true);
+        }
+        expect(await visibleHitTarget()).toBe(true);
+        expect((await standby.boundingBox())!.y).toBeCloseTo(initial!.y,1);
+        if (firstRun) {
+          expect(await page.getByRole('button',{name:'등록',exact:true}).evaluate(button=>{
+            const r=button.getBoundingClientRect();return r.bottom<=innerHeight&&button.contains(document.elementFromPoint(r.left+r.width/2,r.top+r.height/2));
+          })).toBe(true);
+        }
+        if (viewport.width===360&&viewport.height===420) {
+          await page.locator('.agent-panel-scroll').evaluate(e=>{e.scrollTop=0;});
+          await page.screenshot({path:`../.codex-tmp/agent-footer-${firstRun?'first-run':'active'}-420.png`});
+        }
+      }
+      await page.setViewportSize({width:360,height:340});
+      await page.evaluate(()=>{(window as any).zookFailure='설치 상태를 확인할 수 없습니다. '.repeat(20);});
+      await standby.click();
+      await page.evaluate(()=>(window as any).finishZook());
+      await page.getByRole('alert').filter({hasText:'설치 상태를 확인할 수 없습니다.'}).waitFor();
+      expect(await visibleHitTarget()).toBe(true);
+      expect(await page.evaluate(()=>({pageScroll:document.documentElement.scrollHeight>innerHeight,
+        calls:(window as any).nativeCalls.filter((c:any)=>c.command==='configure_zook_agent').length}))).toEqual({pageScroll:false,calls:1});
+      await page.screenshot({path:`../.codex-tmp/agent-footer-${firstRun?'first-run':'active'}-340.png`});
+    } finally {await page.close();}
+  });
+
   it("ZOOK setup preserves leading zeroes and Agent registration, deduplicates clicks and stays idle", async () => {
     const page = await openViewer({desktop:true,agent:true,viewport:{width:360,height:420}});
     try {
@@ -1064,6 +1316,31 @@ describe("manual Viewer device list in a real browser", () => {
       expect(await page.evaluate(() => (window as any).testState.controls)).toEqual(['key-down Right', 'key-up Right']);
     } finally { await page.close(); }
   });
+  it("opens video consultation without background requests and shields existing remote keyboard input until close",async()=>{
+    const page=await openViewer({desktop:true,connected:true});
+    try{
+      await page.evaluate(()=>{
+        const w=window as any,open=w.testApi.openFirebaseSession;
+        w.testApi.openFirebaseSession=(id:string)=>new Promise(resolve=>{w.releaseVideoSession=async()=>resolve(await open(id));});
+      });
+      await page.locator('.table-row').filter({hasText:'PC-0'}).getByRole('button',{name:'접속',exact:true}).click();
+      await page.waitForFunction(()=>Boolean((window as any).releaseVideoSession));
+      const before=await page.evaluate(()=>({reads:(window as any).testState.reads,rtc:(window as any).testState.rtcStarts}));
+      await page.getByRole('button',{name:'영상상담',exact:true}).click();
+      const dialog=page.getByRole('dialog',{name:'휴대폰 영상상담',exact:true});await dialog.waitFor();
+      expect(await page.evaluate(()=>({reads:(window as any).testState.reads,rtc:(window as any).testState.rtcStarts}))).toEqual(before);
+      await page.evaluate(()=>(window as any).releaseVideoSession());
+      await page.waitForFunction(()=>Boolean((window as any).rtcCallbacks));
+      await page.clock.runFor(50);
+      await page.evaluate(()=>(window as any).testState.controls=[]);
+      await page.keyboard.press('ArrowRight');await page.keyboard.press('Control+a');
+      expect(await page.evaluate(()=>(window as any).testState.controls)).toEqual([]);
+      expect(await page.locator('main.workspace').evaluate(node=>(node as HTMLElement).inert)).toBe(true);
+      await dialog.getByRole('button',{name:'영상상담 닫기',exact:true}).click();
+      await expect.poll(()=>page.locator('.remote-ime-input').evaluate(node=>document.activeElement===node)).toBe(true);
+      await page.keyboard.press('ArrowRight');expect(await page.evaluate(()=>(window as any).testState.controls)).toEqual(['key-down Right','key-up Right']);
+    }finally{await page.close();}
+  });
   it("keeps typed text in the right-click device editor and saves it", async () => {
     const page = await openViewer({ desktop: true });
     try {
@@ -1205,7 +1482,7 @@ describe("manual Viewer device list in a real browser", () => {
       await page.getByText("PC-0", { exact: true }).waitFor();
       await page.getByRole("button", { name: /김미자 본오/ }).first().click();
       await page.getByRole("button", { name: "에이전트 업데이트 요청", exact: true }).first().click();
-      const notice = page.getByText(/업데이트 요청을 전송했습니다/, { exact: false });
+      const notice = page.getByText(/PC-\d+: Agent 응답 대기 중/, { exact: false });
       await notice.waitFor();
       expect(await notice.evaluate((element) => element.closest(".viewer-command-header") === null)).toBe(true);
 
@@ -1380,6 +1657,43 @@ describe("manual Viewer device list in a real browser", () => {
       expect(result.calls.map((x:any)=>x.command)).toContain("choose_viewer_download_folder");
       expect(result.controls).not.toContain("open-download-folder");
       expect(Buffer.from(result.chunks.join(""),"base64").toString()).toBe(text);
+    } finally { await page.close(); }
+  });
+  it("negotiates collision choices without extra reads and never retries an explicit skip through Storage", async () => {
+    const page = await openViewer({ connected: true, desktop: true });
+    try {
+      await page.getByText("PC-0", { exact: true }).waitFor();
+      await page.locator(".table-row").filter({ has: page.getByText("PC-0", { exact: true }) }).getByRole("button", { name: "접속", exact: true }).click();
+      await page.waitForFunction(() => Boolean((window as any).rtcCallbacks));
+      await page.evaluate(() => {
+        const w = window as any;
+        w.sentPolicy = []; w.storageUploads = 0;
+        w.testSendFile = async (input: any) => { w.sentPolicy.push(input.collisionPolicy); throw Error("File skipped: same.txt (existing file preserved)"); };
+        w.testApi.uploadFirebaseFileToStorage = async () => { w.storageUploads++; throw Error("Unexpected fallback"); };
+        w.rtcCallbacks.onFileCollisionSupport();
+      });
+      // A completed receive exposes the existing transfer panel; its default stays safe.
+      const text = "first", sha = createHash("sha256").update(text).digest("hex");
+      await page.evaluate(chunk => (window as any).rtcCallbacks.onFileChunk(chunk, () => true), {
+        type: "file-chunk", transferId: "policy-initial", filename: "first.txt", chunkIndex: 0, totalChunks: 1,
+        totalBytes: text.length, isLast: true, fileData: Buffer.from(text).toString("base64"), chunkSha256: sha, fileSha256: sha,
+      });
+      await page.getByText("완료 · 100% · C:/Downloads/received.txt", { exact: true }).waitFor();
+      const before = await counts(page);
+      const choice = page.getByRole("combobox", { name: "동명 파일 처리" });
+      expect(await choice.inputValue()).toBe("rename");
+      await choice.selectOption("overwrite"); await choice.selectOption("rename"); await choice.selectOption("skip");
+      expect(await counts(page)).toEqual(before);
+      await page.locator(".session-panel").locator('input[type="file"]').first().setInputFiles({ name: "same.txt", mimeType: "text/plain", buffer: Buffer.from("new") });
+      await page.waitForFunction(() => (window as any).sentPolicy.length === 1);
+      expect(await page.evaluate(() => ({ policy: (window as any).sentPolicy, fallback: (window as any).storageUploads }))).toEqual({ policy: ["skip"], fallback: 0 });
+      await page.getByText("건너뜀", { exact: true }).waitFor();
+      await page.screenshot({ path: "../.codex-tmp/release-prep-collision-desktop.png" });
+      await page.setViewportSize({ width: 360, height: 800 });
+      expect(await page.locator(".session-transfer-queue-heading").evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+      await page.screenshot({ path: "../.codex-tmp/release-prep-collision-mobile.png" });
+      await page.evaluate(() => (window as any).rtcCallbacks.onState("webrtc-file-closed"));
+      await page.getByText("전송: 기존 방식", { exact: true }).waitFor();
     } finally { await page.close(); }
   });
   it("shows local HTTP tile failure and recovers only after a successful response", async () => {
@@ -1569,6 +1883,37 @@ describe("manual Viewer device list in a real browser", () => {
       const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("wonremote-device-view:device-0")!));
       expect(saved).toMatchObject({ zoom: mobile ? 1 : 2, streamPerformanceMode: "normal", inputMode: "touchpad" });
       if (mobile) await page.screenshot({ path: `.local-run/width-fit-${width}.png` });
+    } finally { await page.close(); }
+  });
+  it.each([{width:390,height:844},{width:844,height:390}])("preserves mobile magnification through IME viewport resize at $width x $height", async viewport => {
+    const page = await openViewer({connected:true,mobile:true,emulateMobile:true,viewport});
+    try {
+      await page.evaluate(portrait => Object.defineProperty(screen.orientation, "type", {configurable:true,value:portrait ? "portrait-primary" : "landscape-primary"}), viewport.height > viewport.width);
+      await page.getByText("PC-0", {exact:true}).waitFor();
+      await page.locator(".table-row").filter({has:page.getByText("PC-0", {exact:true})}).getByRole("button", {name:"접속",exact:true}).click();
+      await page.waitForFunction(() => typeof (window as any).rtcCallbacks?.onFrame === "function");
+      await page.evaluate(() => {
+        const image = document.createElement("canvas"); image.width=1920; image.height=1080;
+        const context=image.getContext("2d")!;
+        context.fillStyle="#286550";context.fillRect(0,0,1920,1080);
+        context.fillStyle="#fff";context.fillRect(320,0,32,1080);context.fillRect(0,240,1920,32);
+        (window as any).rtcCallbacks.onFrame({keyframe:true,width:1920,height:1080,tiles:[{x:0,y:0,w:1920,h:1080,data:image.toDataURL("image/jpeg").split(",")[1]}]});
+      });
+      const canvas = page.locator(".remote-canvas");
+      await expect.poll(() => canvas.evaluate(node => (node as HTMLCanvasElement).width)).toBe(1920);
+      const controls = page.locator(".mobile-remote-controls");
+      for(let i=0;i<6;i++) await controls.getByRole("button",{name:"확대",exact:true}).click();
+      const dimensions = () => canvas.evaluate(node => ({width:node.getBoundingClientRect().width,height:node.getBoundingClientRect().height,scale:new DOMMatrix(getComputedStyle(node).transform).a}));
+      const before = await dimensions();
+      expect(before.scale).toBeCloseTo(1.3);
+      await controls.getByRole("button",{name:"키보드",exact:true}).click();
+      await page.setViewportSize({width:viewport.width,height:Math.max(180,viewport.height-260)});
+      await expect.poll(dimensions).toEqual(before);
+      await page.locator('[data-remote-ime-input="true"]').evaluate(node => (node as HTMLElement).blur());
+      await page.setViewportSize(viewport);
+      await expect.poll(dimensions).toEqual(before);
+      expect(await page.evaluate(() => (window as any).testState.rtcStarts)).toBe(1);
+      await page.screenshot({path:`../.codex-tmp/ime-zoom-${viewport.width}.png`});
     } finally { await page.close(); }
   });
   it("keeps quality preferences separate for each PC", async () => {
@@ -1843,6 +2188,54 @@ describe("manual Viewer device list in a real browser", () => {
       expect(await page.getByRole("dialog", { name: "등록 장비 수정", exact: true }).getByRole("checkbox", { name: "이 장비 업데이트 일시 중지" }).isChecked()).toBe(true);
     } finally { await page.close(); }
   });
+  it("reveals mobile reverse transfer when the Android bridge attaches after the session renders", async () => {
+    const page=await openViewer({connected:true,mobile:true,nativeAndroid:true,emulateMobile:true});
+    try {
+      await page.getByText("PC-0",{exact:true}).waitFor();
+      await page.locator(".table-row").filter({has:page.getByText("PC-0",{exact:true})}).getByRole("button",{name:"접속",exact:true}).click();
+      await page.locator(".mobile-remote-controls").getByRole("button",{name:"화면 및 세션 설정",exact:true}).click();
+      await page.evaluate(()=>(window as any).rtcCallbacks.onReverseFileSupport());
+      const button=page.getByRole("button",{name:"원격 파일 가져오기",exact:true});
+      expect(await button.count()).toBe(0);
+      const before=await counts(page);
+      await page.evaluate(() => {
+        const channel=new MessageChannel();
+        window.dispatchEvent(new MessageEvent("message",{data:"wonremote:file-export:1",origin:"",source:null,ports:[channel.port2]}));
+      });
+      await expect.poll(()=>button.count()).toBe(1);
+      await page.screenshot({path:"../.codex-tmp/android-late-bridge.png"});
+      await button.waitFor();expect(await button.isEnabled()).toBe(true);
+      await button.click();
+      expect(await page.evaluate(()=>(window as any).testState.controls.filter((action:string)=>action==="request-file-send"))).toEqual(["request-file-send"]);
+      expect(await counts(page)).toEqual(before);
+    } finally {await page.close();}
+  });
+  it("uploads Android-selected binary files intact and waits for remote save confirmation", async () => {
+    const page=await openViewer({connected:true,mobile:true,nativeAndroid:true,emulateMobile:true});
+    const bytes=Buffer.alloc(70001);for(let i=0;i<bytes.length;i++)bytes[i]=i%251;
+    try {
+      await page.getByText("PC-0",{exact:true}).waitFor();
+      await page.locator(".table-row").filter({has:page.getByText("PC-0",{exact:true})}).getByRole("button",{name:"접속",exact:true}).click();
+      await page.waitForFunction(()=>Boolean((window as any).rtcCallbacks));
+      await page.evaluate(()=>{
+        const w=window as any;w.uploads=[];w.fallbacks=0;
+        w.testSendFile=async(input:any)=>{
+          const data=new Uint8Array(await input.file.arrayBuffer());
+          w.uploads.push({name:input.filename,sha:input.fileSha256,bytes:btoa(String.fromCharCode(...data))});
+          input.onProgress(input.file.size,input.file.size);
+          return await new Promise(resolve=>{w.finishMobileUpload=()=>resolve(true);});
+        };
+        w.testApi.uploadFirebaseFileToStorage=async()=>{w.fallbacks++;throw Error("Unexpected fallback");};
+      });
+      await page.locator('.session-panel input[type="file"]').first().setInputFiles({name:"전화기.bin",mimeType:"application/octet-stream",buffer:bytes});
+      await page.waitForFunction(()=>typeof (window as any).finishMobileUpload==="function");
+      expect(await page.getByText("완료",{exact:true}).count()).toBe(0);
+      expect(await page.evaluate(()=>(window as any).uploads)).toEqual([{name:"전화기.bin",sha:createHash("sha256").update(bytes).digest("hex"),bytes:bytes.toString("base64")}]);
+      await page.evaluate(()=>(window as any).finishMobileUpload());
+      await page.getByText("완료",{exact:true}).waitFor();
+      expect(await page.evaluate(()=>(window as any).fallbacks)).toBe(0);
+    } finally {await page.close();}
+  });
   it("waits for native saved confirmation from the actual Android save button", async () => {
     const page = await openViewer({ connected: true, nativeAndroid: true });
     const downloads: string[] = [];
@@ -1883,6 +2276,15 @@ describe("manual Viewer device list in a real browser", () => {
       await page.evaluate(() => (window as any).nativeSave.confirm());
       await page.getByText("파일 저장 완료", { exact: true }).waitFor();
       expect(downloads).toEqual([]);
+      await page.evaluate(() => (window as any).rtcCallbacks.onReverseFileSupport());
+      await page.getByTestId("secondary-tools").locator("summary").click();
+      expect(await page.getByRole("button",{name:"원격 파일 가져오기",exact:true}).isEnabled()).toBe(true);
+      const nextContents="second Android file", nextSha=createHash("sha256").update(nextContents).digest("hex");
+      await page.evaluate(chunk => (window as any).rtcCallbacks.onFileChunk(chunk,()=>true), {
+        type:"file-chunk", transferId:"android-next", filename:"second.txt", chunkIndex:0,totalChunks:1,
+        totalBytes:Buffer.byteLength(nextContents),isLast:true,fileData:Buffer.from(nextContents).toString("base64"),chunkSha256:nextSha,fileSha256:nextSha,
+      });
+      await page.getByText("second.txt",{exact:true}).waitFor();
     } finally { await page.close(); }
   });
   it("starts remote file selection without duplicating transfer cancellation in the PC tools menu", async () => {

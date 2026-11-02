@@ -4,6 +4,11 @@ export class AndroidFileExporter {
   private port: MessagePort | null = null;
   private pending: { resolve: (value: any) => void; reject: (error: Error) => void } | null = null;
   private saving = false;
+  private listeners = new Set<() => void>();
+  subscribe = (listener: () => void) => {
+    this.listeners.add(listener);
+    return () => { this.listeners.delete(listener); };
+  };
   attach(port: MessagePort) {
     this.pending?.reject(new Error("저장 연결이 변경되었습니다."));
     this.port?.close();
@@ -13,10 +18,11 @@ export class AndroidFileExporter {
       try { this.pending?.resolve(JSON.parse(event.data)); }
       catch { this.pending?.reject(new Error("저장 응답이 올바르지 않습니다.")); }
     };
-    port.onmessageerror = () => this.pending?.reject(new Error("저장 연결 오류"));
+    port.onmessageerror = () => { if (this.port === port) this.pending?.reject(new Error("저장 연결 오류")); };
     port.start();
+    this.listeners.forEach(listener => listener());
   }
-  available() { return this.port !== null; }
+  available = () => this.port !== null;
   async save(file: { id: string; filename: string; blob: Blob }, signal: AbortSignal): Promise<boolean> {
     if (this.saving || !this.port) throw new Error("파일 저장을 사용할 수 없습니다.");
     this.saving = true;

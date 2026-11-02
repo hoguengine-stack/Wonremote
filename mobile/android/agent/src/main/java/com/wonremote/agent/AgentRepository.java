@@ -81,6 +81,13 @@ final class AgentRepository {
             String installId = store.installId();
             String uid = auth.getCurrentUser().getUid();
             Map<String, Object> fields = onlineFields(businessNumber, installId, uid);
+            if (requestId == null) {
+                fields.put("updateState", "healthy");
+                fields.put("updateRequestId", null);
+                fields.put("updateError", "");
+                fields.put("updateCurrentVersion", BuildConfig.VERSION_NAME);
+                fields.put("updateUpdatedAt", Instant.now().toString());
+            }
             if (requestId != null) fields.put("heartbeatRequestId", requestId);
             return firestore.collection("devices").document(store.deviceId())
                 .set(fields, SetOptions.merge());
@@ -98,9 +105,14 @@ final class AgentRepository {
     }
 
     Task<Void> reportUpdate(String state, String message) {
+        return reportUpdate(state, message, null);
+    }
+
+    Task<Void> reportUpdate(String state, String message, String requestId) {
         if (store.deviceId().isEmpty()) return Tasks.forResult(null);
         Map<String,Object> fields = new HashMap<>();
         fields.put("updateState", state);
+        if (requestId != null && requestId.matches("[0-9]{13}")) fields.put("updateRequestId", requestId);
         fields.put("updateError", message);
         fields.put("updateCurrentVersion", BuildConfig.VERSION_NAME);
         fields.put("updateUpdatedAt", Instant.now().toString());

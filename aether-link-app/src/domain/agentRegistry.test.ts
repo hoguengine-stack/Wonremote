@@ -277,6 +277,14 @@ describe("agent registry domain", () => {
     });
   });
 
+  it("retains update request correlation and sanitized progress across local heartbeat", () => {
+    const registered=registerAgentFirstRun([],{businessNumber:"1234567890",password:"1234",installId:"update-local"});
+    const input={deviceId:registered.device.id,installId:"update-local",updateTelemetry:{requestId:"1700000000001",state:"downloading" as const,currentVersion:"0.1.115",targetVersion:"0.1.116",progress:110,updatedAt:new Date().toISOString()}};
+    const result=applyAgentHeartbeat(registered.devices,input);
+    expect(result.device).toMatchObject({updateRequestId:"1700000000001",updateState:"downloading",updateProgress:100,updateTargetVersion:"0.1.116"});
+    expect(applyAgentHeartbeat(result.devices,{...input,updateTelemetry:{...input.updateTelemetry,requestId:"bad",progress:NaN}}).device.updateRequestId).toBeUndefined();
+  });
+
   it("updates display inventory from agent heartbeat", () => {
     const registered = registerAgentFirstRun([], {
       businessNumber: "1234567890",

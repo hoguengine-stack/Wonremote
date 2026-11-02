@@ -64,6 +64,30 @@ describe("remote control command helpers", () => {
     ).toEqual({ dx: 32768, dy: 32768 });
   });
 
+  it.each([
+    [{x:0,y:0,width:1024,height:768},{x:1024,y:0,width:1920,height:1080}],
+    [{x:0,y:0,width:1920,height:1080},{x:-1280,y:120,width:1280,height:1024}],
+    [{x:0,y:0,width:1920,height:1080},{x:0,y:-1920,width:1080,height:1920}],
+    [{x:0,y:0,width:1920,height:1080},{x:320,y:1080,width:1024,height:768}],
+  ])("projects unequal/negative/portrait monitor geometry into physical input pixels: %j", (...displays) => {
+    const left = Math.min(...displays.map(display => display.x));
+    const top = Math.min(...displays.map(display => display.y));
+    const width = Math.max(...displays.map(display => display.x + display.width)) - left;
+    const height = Math.max(...displays.map(display => display.y + display.height)) - top;
+    for (const display of displays) {
+      for (const scale of [0.5, 1, 1.5, 2]) {
+        const rect = {left:37, top:91, width:display.width*scale, height:display.height*scale};
+        for (const fraction of [0.01, 0.5, 0.99]) {
+          const point = mapCanvasPointToVirtualDesktopAbsolute(rect.left+rect.width*fraction, rect.top+rect.height*fraction, rect, display, displays);
+          const x = left + Math.floor(point.dx * width / 65536);
+          const y = top + Math.floor(point.dy * height / 65536);
+          expect(Math.abs(x - (display.x+display.width*fraction))).toBeLessThanOrEqual(1);
+          expect(Math.abs(y - (display.y+display.height*fraction))).toBeLessThanOrEqual(1);
+        }
+      }
+    }
+  });
+
   it("normalizes browser key names to stable agent tokens", () => {
     expect(normalizeRemoteKey(" ")).toBe("Space");
     expect(normalizeRemoteKey("Control")).toBe("Ctrl");

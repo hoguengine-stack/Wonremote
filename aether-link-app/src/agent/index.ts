@@ -127,7 +127,6 @@ import {
   authenticateAgentWithFirebase,
   processAgentDeviceAccessRequest,
   isAgentDeviceAccessSessionAllowed,
-  readAgentDeviceAccessState,
   publishAgentDeviceAccessCapability,
   type AgentWebRtcTransport,
   fetchActiveFirebaseSessionsForAgent,
@@ -402,13 +401,8 @@ async function startStreaming(
   }
   if (USE_FIREBASE && process.platform === "win32"
     && shouldCheckDeviceAccessSession(activeSessionId, sessionId, authorizedAccessSession, readyDeviceAccessLock?.publicState.version ?? null)) {
-    const accessState = await readAgentDeviceAccessState(deviceId);
-    if (accessState.enabled) {
-      const lock = await getDeviceAccessLock(deviceId);
-      if (!await isAgentDeviceAccessSessionAllowed(deviceId, sessionId, lock)) throw new Error("이 장비는 잠금 비밀번호로 승인된 원격 접속만 허용합니다.");
-    } else if (readyDeviceAccessLock?.publicState.enabled) {
-      throw new Error("잠금 설정과 서버 상태가 다릅니다. 관리자 비밀번호로 복구하세요.");
-    }
+    const lock = await getDeviceAccessLock(deviceId).catch(() => null);
+    if (!await isAgentDeviceAccessSessionAllowed(deviceId, sessionId, lock)) throw new Error("이 장비는 잠금 비밀번호로 승인된 원격 접속만 허용합니다.");
     // Capture/profile/desktop restarts keep the same approved session; lock changes stop it.
     authorizedAccessSession = {id:sessionId, version:readyDeviceAccessLock?.publicState.version ?? null};
   }
@@ -1378,7 +1372,7 @@ async function checkUpdate(config: AgentLocalConfig, manual = false) {
   try {
     const retainedFailure = currentUpdateTelemetry.state === "rollback" || currentUpdateTelemetry.state === "failed";
     if (!retainedFailure) {
-      await setUpdateTelemetry(config, { error: undefined, progress: 0, state: "checking", targetVersion: undefined }, false);
+      await setUpdateTelemetry(config, { error: undefined, progress: 0, state: "checking", targetVersion: undefined }, manual);
     }
     const data = await loadUpdateCheckData();
     if (!data) {
@@ -1396,13 +1390,14 @@ async function checkUpdate(config: AgentLocalConfig, manual = false) {
         retryAfterMs: resolveAgentUpdateFailureRetryMs(UPDATE_CHECK_INTERVAL_MS),
       });
     if (failedTargetCoolingDown) {
+      if (manual) await setUpdateTelemetry(config, {error:"이전 업데이트 실패로 재시도 대기 중입니다. 잠시 후 다시 요청해 주세요."});
       console.error(`[WonRemote Agent] Automatic retry blocked for failed update ${data.latestVersion}.`);
       scheduleAgentUpdateRetry();
       isUpdating = false;
       return;
     }
     if (retainedFailure) {
-      await setUpdateTelemetry(config, { error: undefined, progress: 0, state: "checking", targetVersion: undefined }, false);
+      await setUpdateTelemetry(config, { error: undefined, progress: 0, state: "checking", targetVersion: undefined }, manual);
     }
 
     if (data.latestVersion && (data.forceUpdate || isHigherVersion(data.latestVersion, currentVersion))) {
@@ -2195,8 +2190,12 @@ async function executeReceivedCommands(config: AgentLocalConfig, commands: Agent
       continue;
     }
     if (command.action.startsWith("request-update ")) {
-      const accepted = await remoteUpdateRequest.receive(command.action, () => checkUpdate(config, true));
-      if (accepted && activeSessionId) await setUpdateTelemetry(config, {state:"idle",error:"원격 세션 종료 후 업데이트 대기"});
+      const requestId = command.action.slice("request-update ".length);
+      const accepted = await remoteUpdateRequest.receive(command.action, () => {
+        currentUpdateTelemetry = {...currentUpdateTelemetry, requestId};
+        return checkUpdate(config, true);
+      });
+      if (accepted && activeSessionId) await setUpdateTelemetry(config, {requestId,state:"idle",error:"원격 세션 종료 후 업데이트 대기"});
       continue;
     }
     if (command.action.startsWith("refresh-status ")) {

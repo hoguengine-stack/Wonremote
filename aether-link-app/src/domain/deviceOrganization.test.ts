@@ -4,6 +4,8 @@ import { createDeviceGroupMover, organizeDevices } from "./deviceOrganization";
 import {
   acknowledgeNewDevice,
   discoverNewDevices,
+  expireNewDevices,
+  NEW_DEVICE_TTL_MS,
   moveStoreGroup,
   orderStoreGroups,
   readDeviceListPreferences,
@@ -37,7 +39,8 @@ describe("device organization", () => {
     expect(registerAgentFirstRun(edited.devices,input).device).toMatchObject({storeName:"수정 상호",deviceName:"키오스크",notes:"운영 메모"});
     expect(()=>registerAgentFirstRun([],{...input,notes:"x".repeat(2001)})).toThrow("길이");
   });
-  it("baselines existing devices and keeps a new device marked until acknowledged", () => {
+  it("baselines existing devices and keeps a new device marked until acknowledged within24h", () => {
+    vi.useFakeTimers();vi.setSystemTime(new Date("2026-10-09T00:00:02Z"));
     const initial = readDeviceListPreferences(null);
     const baseline = discoverNewDevices(initial, [device("old")], "2026-10-09T00:00:00Z");
     expect(baseline.newDeviceIds).toEqual([]);
@@ -48,6 +51,17 @@ describe("device organization", () => {
     expect(acknowledgeNewDevice(discovered, "new").newDeviceIds).toEqual([]);
     expect(discoverNewDevices(acknowledgeNewDevice(discovered, "new"), devices).newDeviceIds).toEqual([]);
     expect(readDeviceListPreferences(JSON.stringify(discovered))).toEqual(discovered);
+  });
+  it("expires NEW exactly24h after first registration, never renews from updated lastSeenAt or restart",()=>{
+    const initial=discoverNewDevices(readDeviceListPreferences(null),[],"2026-10-09T00:00:00Z");
+    const registered=Date.parse("2026-10-09T00:00:01Z"),devices=[{...device("new"),firstRegisteredAt:new Date(registered).toISOString()}];
+    const preferences=discoverNewDevices(initial,devices,new Date(registered+1).toISOString());
+    expect(expireNewDevices(preferences,devices,registered+NEW_DEVICE_TTL_MS-1)).toBe(preferences);
+    const ended=expireNewDevices(preferences,[{...devices[0],lastSeenAt:new Date(registered+NEW_DEVICE_TTL_MS).toISOString()}],registered+NEW_DEVICE_TTL_MS);
+    expect(ended.newDeviceIds).toEqual([]);
+    expect(discoverNewDevices(readDeviceListPreferences(JSON.stringify(ended)),devices,new Date(registered+NEW_DEVICE_TTL_MS+1).toISOString()).newDeviceIds).toEqual([]);
+    expect(expireNewDevices(preferences,[device("new")],registered+2).newDeviceIds).toEqual([]);
+    expect(expireNewDevices(preferences,[{...devices[0],firstRegisteredAt:"bad"}],registered+2).newDeviceIds).toEqual([]);
   });
   it("never renews first registration on local re-registration or backfills legacy devices", () => {
     const input={businessNumber:"1234567890",password:"1234",installId:"initial"};

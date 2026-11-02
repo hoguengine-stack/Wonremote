@@ -223,6 +223,8 @@ service cloud.firestore {
         && request.resource.data.target == "agent"
         && request.resource.data.filename is string
         && request.resource.data.transferId is string
+        && (!request.resource.data.keys().hasAny(["collisionPolicy"])
+          || request.resource.data.collisionPolicy in ["overwrite", "rename", "skip"])
         && request.resource.data.totalBytes is number
         && request.resource.data.totalBytes <= 500 * 1024 * 1024
         && (
@@ -231,6 +233,7 @@ service cloud.firestore {
               "createdAt",
               "delivery",
               "fileData",
+              "collisionPolicy",
               "fileSha256",
               "filename",
               "isLast",
@@ -252,6 +255,7 @@ service cloud.firestore {
             request.resource.data.keys().hasOnly([
               "chunkIndex",
               "chunkSha256",
+              "collisionPolicy",
               "createdAt",
               "delivery",
               "fileData",

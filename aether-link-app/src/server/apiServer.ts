@@ -311,13 +311,20 @@ async function routeRequest(
       writeJson(response, 404, {error:"Device not found"});
       return;
     }
-    enqueueAgentCommand(state, deviceId, `request-update ${Date.now()}`);
+    const body=await readJson<{requestId?:unknown}>(request);
+    const requestId=body.requestId===undefined?String(Date.now()):body.requestId;
+    if(typeof requestId!=="string"||!/^\d{13}$/.test(requestId)){writeJson(response,400,{error:"Invalid update request ID"});return;}
+    enqueueAgentCommand(state, deviceId, `request-update ${requestId}`);
     writeJson(response, 202, {accepted:true});
     return;
   }
 
   if (request.method === "GET" && url.pathname === "/api/devices") {
     let devices = resolveDeviceStatuses(state.devices, nowIso(state), state.offlineAfterMs);
+    if (url.searchParams.get("scope")==="selected") {
+      const targets=new Set(url.searchParams.getAll("deviceId"));
+      devices=devices.filter(device=>targets.has(device.id));
+    }
     if (url.searchParams.get("refresh") === "1") {
       const abort = new AbortController();
       const onClose = () => abort.abort();
@@ -1016,6 +1023,7 @@ async function routeRequest(
         isLast?: boolean;
         chunkSha256?: string;
         fileSha256?: string;
+          collisionPolicy?: import("../domain/fileCollisionPolicy").FileCollisionPolicy;
       }>(request);
       const filename = String(body.filename ?? "").trim();
       const fileData = String(body.fileData ?? "");
@@ -1048,6 +1056,7 @@ async function routeRequest(
         isLast: typeof body.isLast === "boolean" ? body.isLast : undefined,
         chunkSha256: typeof body.chunkSha256 === "string" ? body.chunkSha256 : undefined,
         fileSha256: typeof body.fileSha256 === "string" ? body.fileSha256 : undefined,
+          collisionPolicy: body.collisionPolicy,
       };
       state.sessionFiles.set(sessionId, [...files, newFile]);
       notifySessionData(state, sessionId);

@@ -2,6 +2,11 @@ import type { ManagedDevice } from "./types";
 
 export const PRESENCE_REFRESH_TIMEOUT_MS = 5_000;
 
+export function mergeScopedDeviceRefresh(current:ManagedDevice[], updated:ManagedDevice[], targetIds:readonly string[]):ManagedDevice[] {
+  const targets=new Set(targetIds),next=new Map(updated.map(device=>[device.id,device]));
+  return current.filter(device=>!targets.has(device.id)||next.has(device.id)).map(device=>targets.has(device.id)?next.get(device.id)!:device);
+}
+
 export function collectDevicePresence(
   devices: ManagedDevice[], requestId: string,
   subscribe: (next: (device: ManagedDevice) => void, fail: (error: unknown) => void) => () => void,

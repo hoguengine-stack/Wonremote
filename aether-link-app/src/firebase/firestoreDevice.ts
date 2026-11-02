@@ -52,6 +52,7 @@ export interface FirestoreDeviceDocument {
   controlDiagnostics?: unknown;
   streamDiagnostics?: unknown;
   updateState?: unknown;
+  updateRequestId?: unknown;
   updateTargetVersion?: unknown;
   updateCurrentVersion?: unknown;
   updateProgress?: unknown;
@@ -229,6 +230,7 @@ export function mapFirestoreDevice(id: string, data: Partial<FirestoreDeviceDocu
   assignIfDefined(device, "controlDiagnostics", sanitizeControlDiagnostics(data.controlDiagnostics));
   assignIfDefined(device, "streamDiagnostics", sanitizeStreamDiagnostics(data.streamDiagnostics));
   assignIfDefined(device, "updateState", sanitizeUpdateState(data.updateState));
+  assignIfDefined(device, "updateRequestId", typeof data.updateRequestId === "string" && /^\d{13}$/.test(data.updateRequestId) ? data.updateRequestId : undefined);
   assignIfDefined(device, "updateTargetVersion", sanitizeOptionalString(data.updateTargetVersion));
   assignIfDefined(device, "updateCurrentVersion", sanitizeOptionalString(data.updateCurrentVersion));
   assignIfDefined(device, "updateProgress", sanitizeUpdateProgress(data.updateProgress));

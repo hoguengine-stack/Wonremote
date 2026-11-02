@@ -99,7 +99,8 @@ describe("Viewer WebRTC transport", () => {
   it("accepts capability only from the active open file channel with the supported protocol", async () => {
     const { startFirebaseViewerWebRtcTransport } = await import("./viewerFirebase");
     const onReverseFileSupport = vi.fn();
-    const transport = await startFirebaseViewerWebRtcTransport("capabilities", { onFrame: vi.fn(), onReverseFileSupport }, {} as ImportMetaEnv);
+    const onFileCollisionSupport = vi.fn();
+    const transport = await startFirebaseViewerWebRtcTransport("capabilities", { onFrame: vi.fn(), onReverseFileSupport, onFileCollisionSupport }, {} as ImportMetaEnv);
     const channel = FakePeerConnection.latest.channels.get("wonremote-files")!;
     const handler = channel.onmessage!;
     const payload = JSON.stringify({ type: "file-capabilities", reverseFileSend: 1 });
@@ -115,8 +116,14 @@ describe("Viewer WebRTC transport", () => {
     expect(onReverseFileSupport).toHaveBeenLastCalledWith(false);
     handler({ data: JSON.stringify({ type: "file-capabilities", reverseFileSend: 1, reverseFileResume: 1 }) });
     expect(onReverseFileSupport).toHaveBeenLastCalledWith(true);
+    expect(onFileCollisionSupport).not.toHaveBeenCalled();
+    handler({ data: JSON.stringify({ type: "file-capabilities", reverseFileSend: 1, fileCollisionPolicy: true }) });
+    expect(onFileCollisionSupport).not.toHaveBeenCalled();
+    handler({ data: JSON.stringify({ type: "file-capabilities", reverseFileSend: 1, fileCollisionPolicy: 1 }) });
+    expect(onFileCollisionSupport).toHaveBeenCalledOnce();
     transport.close(); handler({ data: payload });
-    expect(onReverseFileSupport).toHaveBeenCalledTimes(3);
+    expect(onReverseFileSupport).toHaveBeenCalledTimes(5);
+    expect(onFileCollisionSupport).toHaveBeenCalledOnce();
   });
   it("routes file status only on the active channel and drops invalid or late messages", async () => {
     const { startFirebaseViewerWebRtcTransport } = await import("./viewerFirebase");

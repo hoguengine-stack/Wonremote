@@ -53,6 +53,7 @@ export function shouldRetryFailedAgentUpdate(input: {
 
 export function updateTelemetryStateKey(telemetry: AgentUpdateTelemetry): string {
   return JSON.stringify([
+    telemetry.requestId ?? null,
     telemetry.currentVersion,
     telemetry.error ?? null,
     telemetry.progress ?? null,

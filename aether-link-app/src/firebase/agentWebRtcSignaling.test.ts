@@ -81,6 +81,104 @@ vi.mock("./agentPeerConnection", async (importOriginal) => ({
 }));
 
 describe("Agent WebRTC Firebase signaling", () => {
+  it("isolates buffered Viewer candidates across A-to-B renegotiation", async () => {
+    const {startAgentWebRtcTransportWithFirebase}=await import("./agentFirebase");
+    const transport=await startAgentWebRtcTransportWithFirebase("renegotiation-buffer",{},firebaseEnv());
+    let ready!:()=>void;
+    try {
+      await vi.waitFor(()=>expect(mocks.safeSetDoc).toHaveBeenCalledOnce());
+      const candidateListener=mocks.onSnapshot.mock.calls.find(([target])=>target.path.endsWith("viewerCandidates"))![1];
+      const signalListeners=mocks.onSnapshot.mock.calls.filter(([target])=>target.path.endsWith("webrtc/signal"));
+      const old={id:"a",data:()=>({negotiationId:"rtc-current",candidate:{candidate:"host-a"}})};
+      candidateListener({docs:[old]} as any);
+      expect(mocks.peer.addIceCandidate).toHaveBeenCalledExactlyOnceWith({candidate:"host-a"});
+      const blocked=new Promise<void>(resolve=>{ready=resolve;});
+      mocks.peer.setRemoteDescription.mockImplementationOnce(async()=>{await blocked;});
+      signalListeners[1][1]({data:()=>({negotiationId:"rtc-next",offer:{negotiationId:"rtc-next",type:"offer",sdp:"v=0\r\n"}})} as any);
+      await vi.waitFor(()=>expect(mocks.peer.setRemoteDescription).toHaveBeenCalledTimes(2));
+      const next={candidate:"host-b"};
+      const docs=[old,{id:"b",data:()=>({negotiationId:"rtc-next",candidate:next})}];
+      candidateListener({docs} as any);
+      expect(mocks.peer.addIceCandidate).toHaveBeenCalledTimes(1);
+      ready();await vi.waitFor(()=>expect(mocks.safeSetDoc).toHaveBeenCalledTimes(2));
+      expect(mocks.peer.addIceCandidate.mock.calls).toEqual([[{candidate:"host-a"}],[next]]);
+      candidateListener({docs} as any);expect(mocks.peer.addIceCandidate).toHaveBeenCalledTimes(2);
+      expect(mocks.onSnapshot.mock.calls.filter(([target])=>target.path.endsWith("viewerCandidates"))).toHaveLength(1);
+    } finally {ready?.();await transport?.close();}
+  });
+
+  it.each(["async-error","registration-throw"])("keeps candidate GET fallback and cancels early %s retries on close during gathering", async failure=>{
+    vi.useFakeTimers();
+    let finish!:()=>void;
+    const gathering=new Promise<void>(resolve=>{finish=resolve;});
+    mocks.peer.setLocalDescription.mockImplementationOnce(async()=>{await gathering;});
+    const warn=vi.spyOn(console,"warn").mockImplementation(()=>undefined);
+    let candidateSubscriptions=0;
+    mocks.onSnapshot.mockImplementation((target:any,next:(snapshot:any)=>void,error?:(error:Error)=>void)=>{
+      if(target.path.endsWith("webrtc/signal")) next({data:()=>mocks.offerSignal});
+      else {
+        candidateSubscriptions++;
+        if(failure==="registration-throw") throw Error("candidate registration failed");
+        queueMicrotask(()=>error?.(new Error("candidate listener offline")));
+      }
+      return mocks.unsubscribe;
+    });
+    const {startAgentWebRtcTransportWithFirebase}=await import("./agentFirebase");
+    const transport=await startAgentWebRtcTransportWithFirebase("early-candidate-error",{},firebaseEnv());
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.getDocs).toHaveBeenCalledOnce();expect(candidateSubscriptions).toBe(1);
+      expect(vi.getTimerCount()).toBeGreaterThan(0);
+      await transport?.close();finish();await vi.advanceTimersByTimeAsync(86_400_000);
+      expect(candidateSubscriptions).toBe(1);expect(mocks.safeSetDoc).not.toHaveBeenCalled();
+      expect(mocks.getDocs).toHaveBeenCalledOnce();expect(vi.getTimerCount()).toBe(0);
+    } finally {finish();await transport?.close();warn.mockRestore();vi.useRealTimers();}
+  });
+
+  it("replays initial candidates only after current remote SDP and ignores stale, duplicate and closed callbacks", async () => {
+    let ready!: () => void;
+    const remote=new Promise<void>(resolve=>{ready=resolve;});
+    mocks.peer.setRemoteDescription.mockImplementationOnce(async()=>{await remote;});
+    const candidate={candidate:"candidate:cached-host"};
+    const docs=[{id:"old",data:()=>({negotiationId:"rtc-old",candidate:{candidate:"stale"}})},
+      {id:"current",data:()=>({negotiationId:"rtc-current",candidate})}];
+    let deliver: ((snapshot:any)=>void) | undefined;
+    mocks.onSnapshot.mockImplementation((target:any,next:(snapshot:any)=>void)=>{
+      if(target.path.endsWith("webrtc/signal")) next({data:()=>mocks.offerSignal});
+      else {deliver=next;next({docs});}
+      return mocks.unsubscribe;
+    });
+    const {startAgentWebRtcTransportWithFirebase}=await import("./agentFirebase");
+    const transport=await startAgentWebRtcTransportWithFirebase("cached-trickle",{},firebaseEnv());
+    try {
+      await vi.waitFor(()=>expect(mocks.peer.setRemoteDescription).toHaveBeenCalledOnce());
+      expect(mocks.peer.addIceCandidate).not.toHaveBeenCalled();
+      ready();await vi.waitFor(()=>expect(mocks.peer.addIceCandidate).toHaveBeenCalledExactlyOnceWith(candidate));
+      deliver?.({docs});expect(mocks.peer.addIceCandidate).toHaveBeenCalledOnce();
+      await transport?.close();
+      deliver?.({docs:[{id:"late",data:()=>({negotiationId:"rtc-current",candidate:{candidate:"late"}})}]});
+      expect(mocks.peer.addIceCandidate).toHaveBeenCalledOnce();
+    } finally {ready();await transport?.close();}
+  });
+  it("applies late Viewer ICE within100ms while local gathering is still pending", async () => {
+    vi.useFakeTimers();
+    let finish!: () => void;
+    const gathering=new Promise<void>(resolve=>{finish=resolve;});
+    mocks.peer.setLocalDescription.mockImplementationOnce(async()=>{await gathering;});
+    const {startAgentWebRtcTransportWithFirebase}=await import("./agentFirebase");
+    const transport=await startAgentWebRtcTransportWithFirebase("trickle-latency",{},firebaseEnv());
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.peer.setLocalDescription).toHaveBeenCalledOnce();
+      expect(mocks.getDocs).toHaveBeenCalledOnce();
+      const listener=mocks.onSnapshot.mock.calls.find(([target])=>target.path.endsWith("viewerCandidates"));
+      const candidate={candidate:"candidate:late-host"};
+      listener?.[1]({docs:[{id:"late",data:()=>({negotiationId:"rtc-current",candidate})}]} as any);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(mocks.peer.addIceCandidate).toHaveBeenCalledExactlyOnceWith(candidate);
+      expect(mocks.safeSetDoc).not.toHaveBeenCalled();
+    } finally {finish();await vi.advanceTimersByTimeAsync(0);await transport?.close();vi.useRealTimers();}
+  });
   it("sends the first frame while gathering is pending without waiting for full initialization", async () => {
     let finish!: () => void;
     const gathering = new Promise<void>(resolve => { finish = resolve; });
@@ -219,7 +317,7 @@ describe("Agent WebRTC Firebase signaling", () => {
       expect(send).not.toHaveBeenCalled();
       channel.readyState = "open";
       channel.onopen?.(); channel.onopen?.();
-      expect(send).toHaveBeenCalledExactlyOnceWith('{"type":"file-capabilities","reverseFileSend":1,"reverseFileResume":1}');
+      expect(send).toHaveBeenCalledExactlyOnceWith('{"type":"file-capabilities","reverseFileSend":1,"reverseFileResume":1,"fileCollisionPolicy":1}');
       channel.onclose?.(); channel.onopen?.();
       expect(send).toHaveBeenCalledOnce();
     } finally { await transport?.close(); }

@@ -3,6 +3,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { buildAgentFileUpdate } from "./package-agent-file-update.js";
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const releaseRoot = path.join(appRoot, "src-tauri", "target");
@@ -312,7 +313,9 @@ function packageTarget(target) {
   verifyAgentRuntimeBundle(target);
   buildAgentDefaultInstaller(target);
   ensureExists(expectedAgentInstallerPath, `${target.key} Agent-default WonRemote Agent NSIS installer`);
+  const agentUpdatePath = buildAgentFileUpdate(appRoot, targetRelease, packageJson.version);
   return {
+    agentUpdatePath,
     agentInstallerPath: expectedAgentInstallerPath,
     viewerInstallerPath: expectedInstallerPath,
   };
@@ -328,9 +331,11 @@ function existingTargetPackages(target) {
     installerDir,
     `WonRemote Agent_${packageJson.version}_${target.installerArch}-setup.exe`,
   );
+  const agentUpdatePath = path.join(installerDir, "WonRemote-Agent-Update.exe");
   ensureExists(viewerInstallerPath, `${target.key} existing Viewer installer`);
   ensureExists(agentInstallerPath, `${target.key} existing Agent installer`);
-  return { agentInstallerPath, viewerInstallerPath };
+  ensureExists(agentUpdatePath, `${target.key} existing Agent file update`);
+  return { agentInstallerPath, viewerInstallerPath, agentUpdatePath };
 }
 
 function resetReleaseOutput() {
@@ -342,12 +347,13 @@ export function copyStableX86Installers(packages, destination = outputDir) {
   fs.mkdirSync(destination, { recursive: true });
   fs.copyFileSync(packages.viewerInstallerPath, path.join(destination, "WonRemote-Viewer-Setup.exe"));
   fs.copyFileSync(packages.agentInstallerPath, path.join(destination, "WonRemote-Agent-Setup.exe"));
-  const expectedOutputs = ["WonRemote-Agent-Setup.exe", "WonRemote-Viewer-Setup.exe"];
+  fs.copyFileSync(packages.agentUpdatePath, path.join(destination, "WonRemote-Agent-Update.exe"));
+  const expectedOutputs = ["WonRemote-Agent-Setup.exe", "WonRemote-Agent-Update.exe", "WonRemote-Viewer-Setup.exe"];
   const actualOutputs = fs.readdirSync(destination).filter((name) => /\.exe$/i.test(name)).sort();
   if (JSON.stringify(actualOutputs) !== JSON.stringify(expectedOutputs)) {
-    throw new Error(`Release output must contain exactly two x86 product installers; found: ${actualOutputs.join(", ")}`);
+    throw new Error(`Release output must contain two x86 installers and one Agent file update; found: ${actualOutputs.join(", ")}`);
   }
-  console.log(`Two x86 WonRemote product installers created at ${destination}`);
+  console.log(`Two x86 installers and the separate Agent file update created at ${destination}`);
 }
 
 function main() {

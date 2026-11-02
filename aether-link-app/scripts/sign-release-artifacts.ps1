@@ -4,6 +4,7 @@ $releaseDir = Join-Path $PSScriptRoot "..\release-exe"
 $installers = @(
   Join-Path $releaseDir "WonRemote-Viewer-Setup.exe"
   Join-Path $releaseDir "WonRemote-Agent-Setup.exe"
+  Join-Path $releaseDir "WonRemote-Agent-Update.exe"
 )
 $missing = @($installers | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) })
 if ($missing.Count -gt 0) {

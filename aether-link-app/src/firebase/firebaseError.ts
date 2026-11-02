@@ -38,7 +38,7 @@ export function explainFirebaseAuthError(error: unknown): string {
       case "auth/user-disabled":
         return "비활성화된 사용자 계정입니다.";
       case "auth/too-many-requests":
-        return "로그인 시도가 너무 많아 일시적으로 계정이 차단되었습니다. 잠시 후 다시 시도해 주세요.";
+        return "로그인 시도가 너무 많아 이 기기의 로그인 요청이 일시 제한되었습니다. 인증 서버가 해제 시각이나 남은 시간을 제공하지 않아 정확한 대기 시간을 표시할 수 없습니다. 반복 시도를 멈추고 나중에 다시 시도해 주세요.";
     }
   }
 
@@ -49,7 +49,7 @@ export function explainFirebaseAuthError(error: unknown): string {
 }
 
 export function throwExplainedFirebaseAuthError(error: unknown): never {
-  throw new Error(explainFirebaseAuthError(error));
+  throw Object.assign(new Error(explainFirebaseAuthError(error)), { code: readStringField(error,"code") });
 }
 
 function readStringField(error: unknown, key: "code" | "message"): string | undefined {

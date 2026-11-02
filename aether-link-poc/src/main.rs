@@ -1,6 +1,8 @@
 mod capture_orientation;
 mod capturer;
 mod secure_capture;
+mod file_picker;
+mod file_publication;
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use capturer::{CaptureFrameStatus, DesktopCapturer, DxgiCapturer};
@@ -497,6 +499,60 @@ mod tests {
     }
 
     #[test]
+    fn display_inventory_includes_desktop_monitors_outside_the_first_adapter() {
+        let primary = display_output_from_rect(0, "DISPLAY1".into(), "GPU0".into(), RECT {left:0, top:0, right:1024, bottom:768}, true);
+        let secondary = display_output_from_rect(1, "DISPLAY2".into(), "GPU1".into(), RECT {left:1024, top:0, right:2944, bottom:1080}, false);
+        let outputs = reconcile_display_outputs(vec![primary.clone()], vec![primary, secondary]);
+        assert_eq!(outputs.len(), 2);
+        assert_eq!((outputs[1].index, outputs[1].x, outputs[1].width), (1, 1024, 1920));
+    }
+
+    #[test]
+    fn display_inventory_preserves_indices_but_uses_physical_desktop_geometry() {
+        let logical = display_output_from_rect(0, "DISPLAY1".into(), "GPU0".into(), RECT {left:0, top:0, right:1280, bottom:720}, true);
+        let physical = display_output_from_rect(1, "DISPLAY1".into(), "GDI".into(), RECT {left:0, top:0, right:1920, bottom:1080}, true);
+        let left = display_output_from_rect(0, "DISPLAY2".into(), "GDI".into(), RECT {left:-1080, top:-120, right:0, bottom:1800}, false);
+        let outputs = reconcile_display_outputs(vec![logical], vec![left, physical]);
+        assert_eq!((outputs[0].index, outputs[0].width, outputs[0].height), (0, 1920, 1080));
+        assert_eq!(outputs[0].adapter_name, "GPU0");
+        assert_eq!((outputs[1].index, outputs[1].x, outputs[1].y, outputs[1].height), (1, -1080, -120, 1920));
+    }
+
+    #[test]
+    fn display_inventory_keeps_gdi_only_fallback_and_removes_non_desktop_outputs() {
+        let desktop = display_output_from_rect(0, "DISPLAY2".into(), "GDI".into(), RECT {left:0, top:-768, right:1024, bottom:0}, true);
+        let detached = display_output_from_rect(3, "OLD".into(), "GPU0".into(), RECT {left:1024, top:0, right:2048, bottom:768}, false);
+        let outputs = reconcile_display_outputs(vec![detached], vec![desktop.clone()]);
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].name, "DISPLAY2");
+        assert_eq!(outputs[0].index, 0);
+        assert_eq!(reconcile_display_outputs(vec![], vec![desktop])[0].y, -768);
+    }
+
+    #[test]
+    fn display_inventory_live_physical_desktop_is_complete_without_injecting_input() {
+        #[link(name = "user32")]
+        extern "system" { fn IsProcessDPIAware() -> BOOL; }
+        initialize_physical_coordinates();
+        assert!(unsafe { IsProcessDPIAware().as_bool() });
+        let physical = list_gdi_outputs().expect("read-only Windows monitor query");
+        let inventory = list_display_outputs().expect("complete monitor inventory");
+        for display in &physical {
+            let found = inventory.iter().find(|candidate| candidate.name.eq_ignore_ascii_case(&display.name))
+                .expect("an attached desktop monitor must not be omitted");
+            assert_eq!((found.x, found.y, found.width, found.height), (display.x, display.y, display.width, display.height));
+        }
+        let left = inventory.iter().map(|display| display.x).min().unwrap();
+        let top = inventory.iter().map(|display| display.y).min().unwrap();
+        let right = inventory.iter().map(|display| display.x + display.width as i32).max().unwrap();
+        let bottom = inventory.iter().map(|display| display.y + display.height as i32).max().unwrap();
+        assert_eq!((left, top, right-left, bottom-top), unsafe {
+            (GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN), GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN))
+        });
+        println!("Read-only physical desktop inventory: {} monitors; no capture or SendInput", inventory.len());
+    }
+
+    #[test]
     fn benchmark_output_path_defaults_to_timestamp_and_resolution() {
         assert_eq!(
             benchmark_output_path(None, 1920, 1200, 1780988270010),
@@ -989,7 +1045,10 @@ fn list_dxgi_outputs() -> std::result::Result<Vec<DxgiOutputInfo>, String> {
 
 fn list_display_outputs() -> std::result::Result<Vec<DxgiOutputInfo>, String> {
     match list_dxgi_outputs() {
-        Ok(outputs) if !outputs.is_empty() => Ok(outputs),
+        Ok(outputs) if !outputs.is_empty() => Ok(reconcile_display_outputs(
+            outputs,
+            list_gdi_outputs().unwrap_or_default(),
+        )),
         Ok(_) => list_gdi_outputs().map_err(|gdi_error| {
             format!(
                 "DXGI returned no outputs; GDI fallback failed: {}",
@@ -1003,6 +1062,28 @@ fn list_display_outputs() -> std::result::Result<Vec<DxgiOutputInfo>, String> {
             )
         }),
     }
+}
+
+fn reconcile_display_outputs(dxgi: Vec<DxgiOutputInfo>, mut desktop: Vec<DxgiOutputInfo>) -> Vec<DxgiOutputInfo> {
+    if desktop.is_empty() { return dxgi; }
+    desktop.retain(|display| display.width > 0 && display.height > 0);
+    let mut outputs = Vec::new();
+    // Keep published DXGI indices, but use the complete physical Windows desktop.
+    for preferred in dxgi {
+        if let Some(position) = desktop.iter().position(|display| display.name.eq_ignore_ascii_case(&preferred.name)) {
+            let mut display = desktop.remove(position);
+            display.index = preferred.index;
+            display.adapter_name = preferred.adapter_name;
+            outputs.push(display);
+        }
+    }
+    for mut display in desktop {
+        let mut index = 0;
+        while outputs.iter().any(|output| output.index == index) { index += 1; }
+        display.index = index;
+        outputs.push(display);
+    }
+    outputs
 }
 
 fn list_gdi_outputs() -> std::result::Result<Vec<DxgiOutputInfo>, String> {
@@ -2714,8 +2795,6 @@ mod protected_input_test;
 async fn run_input_server(secure_worker: bool) -> std::result::Result<(), String> {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
-    // This headless input process must hit-test in SendInput's physical screen coordinates.
-    unsafe { let _ = SetProcessDPIAware(); }
     let stdin = tokio::io::stdin();
     let mut lines = BufReader::new(stdin).lines();
     let mut _desktop_attachment = None;
@@ -2784,8 +2863,30 @@ async fn run_input_server(secure_worker: bool) -> std::result::Result<(), String
     }
 }
 
+fn initialize_physical_coordinates() {
+    // Inventory, DXGI/GDI capture and input must agree before any mode starts.
+    unsafe { let _ = SetProcessDPIAware(); }
+}
+
 #[tokio::main]
 async fn main() {
+    initialize_physical_coordinates();
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.len() == 3 && args[0] == "--publish-received-file" {
+        let result = match file_publication::publish(std::path::Path::new(&args[1]), std::path::Path::new(&args[2])) {
+            Ok(()) => serde_json::json!({"ok":true}),
+            Err(error) => serde_json::json!({"ok":false,"win32Error":error.raw_os_error(),"error":error.to_string()}),
+        };
+        println!("{result}");
+        return;
+    }
+    if std::env::args().skip(1).collect::<Vec<_>>() == ["--select-file"] {
+        match file_picker::select_file() {
+            Ok(selected) => println!("{}", serde_json::to_string(&selected).unwrap()),
+            Err(error) => { eprintln!("File selection failed: {error}"); std::process::exit(2); }
+        }
+        return;
+    }
     let config = match parse_benchmark_config(std::env::args()) {
         Ok(config) => config,
         Err(message) => {

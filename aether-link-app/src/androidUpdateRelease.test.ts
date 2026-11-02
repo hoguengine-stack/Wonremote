@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 // @ts-expect-error Standalone Node release script.
-import { publishAndroidManifest, verifyAndroidManifest, verifyAndroidHostingArtifacts } from "../../mobile/android/create-update-manifest.mjs";
+import { publishAndroidManifest, verifyAndroidManifest, verifyAndroidHostingArtifacts,verifyPublishedAndroidHistory } from "../../mobile/android/create-update-manifest.mjs";
 
 const roots: string[] = [];
 function fixture() {
@@ -28,6 +28,17 @@ function fixture() {
 }
 afterEach(() => roots.splice(0).forEach(root => rmSync(root, { recursive: true, force: true })));
 describe("Android release discovery", () => {
+  it("blocks removal or changed bytes of currently published versioned archives before Hosting deploy",async()=>{
+    const {root,app,inspect}=fixture();const live=publishAndroidManifest(root,inspect);
+    const load=async()=>live;
+    await expect(verifyPublishedAndroidHistory(root,load)).rejects.toThrow("Missing published Android archive");
+    cpSync(path.join(app,"public/download"),path.join(app,"dist/download"),{recursive:true});
+    await expect(verifyPublishedAndroidHistory(root,load)).resolves.toBeUndefined();
+    writeFileSync(path.join(app,"dist/download/android/v0.1.81/agent.zip"),"bad");
+    await expect(verifyPublishedAndroidHistory(root,load)).rejects.toThrow("Changed published Android archive");
+    const invalid=structuredClone(live);invalid.apps['com.wonremote.agent'].url='https://other.invalid/file.zip';
+    await expect(verifyPublishedAndroidHistory(root,async()=>invalid)).rejects.toThrow("Invalid published Android archive");
+  });
   it("blocks stale or missing Hosting copies even when public APK metadata passes", () => {
     const { root, app, inspect } = fixture();
     publishAndroidManifest(root, inspect);

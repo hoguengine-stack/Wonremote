@@ -3,6 +3,7 @@ import { readViewerGroups, type ViewerGroup } from "./viewerGroups";
 
 export const VIEWER_LIST_STORAGE_KEY = "wonremote-viewer-list-v1";
 export const GROUP_DRAG_TYPE = "application/x-wonremote-group";
+export const NEW_DEVICE_TTL_MS = 24 * 60 * 60_000;
 
 export interface DeviceListPreferences {
   groupOrder: string[];
@@ -33,6 +34,7 @@ export function readDeviceListPreferences(value: string | null): DeviceListPrefe
 }
 
 export function discoverNewDevices(preferences: DeviceListPreferences, devices: ManagedDevice[], nowIso = new Date().toISOString()): DeviceListPreferences {
+  preferences = expireNewDevices(preferences, devices, Date.parse(nowIso));
   const deviceIds = devices.map(device => device.id);
   if (preferences.knownDeviceIds === null) {
     return { ...preferences, knownDeviceIds: [...new Set(deviceIds)], newDeviceIds: [], baselineAt: nowIso };
@@ -42,13 +44,22 @@ export function discoverNewDevices(preferences: DeviceListPreferences, devices: 
   if (!arrivals.length) return preferences;
   const newIds = devices.filter(device => {
     const registeredAt = Date.parse(device.firstRegisteredAt ?? "");
-    return !known.has(device.id) && registeredAt > Date.parse(preferences.baselineAt ?? "") && registeredAt <= Date.parse(nowIso);
+    return !known.has(device.id) && registeredAt > Date.parse(preferences.baselineAt ?? "") && registeredAt <= Date.parse(nowIso) && registeredAt + NEW_DEVICE_TTL_MS > Date.parse(nowIso);
   }).map(device => device.id);
   return {
     ...preferences,
     knownDeviceIds: [...known, ...new Set(arrivals)],
     newDeviceIds: [...new Set([...preferences.newDeviceIds, ...newIds])],
   };
+}
+
+export function expireNewDevices(preferences: DeviceListPreferences, devices: ManagedDevice[], now = Date.now()): DeviceListPreferences {
+  const current = new Map(devices.map(device => [device.id, Date.parse(device.firstRegisteredAt ?? "")]));
+  const newDeviceIds = preferences.newDeviceIds.filter(id => {
+    const registeredAt = current.get(id);
+    return registeredAt !== undefined && registeredAt <= now && registeredAt + NEW_DEVICE_TTL_MS > now;
+  });
+  return newDeviceIds.length === preferences.newDeviceIds.length ? preferences : {...preferences,newDeviceIds};
 }
 
 export function acknowledgeNewDevice(preferences: DeviceListPreferences, deviceId: string): DeviceListPreferences {

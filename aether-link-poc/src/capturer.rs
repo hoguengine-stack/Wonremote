@@ -1,20 +1,20 @@
 use windows::core::{ComInterface, Error, Result, HSTRING};
-use windows::Win32::Foundation::{BOOL, E_ACCESSDENIED, E_INVALIDARG, LPARAM, RECT};
-use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_11_1};
+use windows::Win32::Foundation::{E_ACCESSDENIED, E_INVALIDARG, RECT};
+use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_11_1};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, D3D11_CPU_ACCESS_READ,
     D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_MODE_ROTATION, DXGI_MODE_ROTATION_UNSPECIFIED};
 use windows::Win32::Graphics::Dxgi::{
-    CreateDXGIFactory1, IDXGIAdapter1, IDXGIFactory1, IDXGIOutput1, IDXGIOutputDuplication,
+    CreateDXGIFactory1, IDXGIAdapter, IDXGIAdapter1, IDXGIFactory1, IDXGIOutput1, IDXGIOutputDuplication,
     DXGI_ADAPTER_DESC1, DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO,
     DXGI_OUTPUT_DESC,
 };
 use windows::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject,
-    EnumDisplayMonitors, GetDC, GetDIBits, GetMonitorInfoW, ReleaseDC, SelectObject, BITMAPINFO,
-    BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HDC, HGDIOBJ, HMONITOR, MONITORINFO, MONITORINFOEXW,
+    GetDC, GetDIBits, ReleaseDC, SelectObject, BITMAPINFO,
+    BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HGDIOBJ,
     SRCCOPY,
 };
 use crate::capture_orientation::orient_duplication_bgra;
@@ -116,7 +116,6 @@ pub struct DxgiCapturer {
     rotation: DXGI_MODE_ROTATION,
     adapter_name: String,
     output_name: String,
-    output_index: u32,
 }
 
 pub struct GdiCapturer {
@@ -127,51 +126,41 @@ pub struct GdiCapturer {
     output_name: String,
 }
 
-fn select_gdi_output(output_index: u32) -> Result<(RECT, String)> {
-    let mut outputs: Vec<(RECT, String)> = Vec::new();
-    let success = unsafe {
-        EnumDisplayMonitors(
-            HDC(0),
-            None,
-            Some(enum_gdi_output),
-            LPARAM((&mut outputs as *mut Vec<(RECT, String)>) as isize),
-        )
-    };
-    if !success.as_bool() {
-        return Err(Error::from_win32());
-    }
-    outputs.get(output_index as usize).cloned().ok_or_else(|| {
-        Error::new(
-            E_INVALIDARG,
-            HSTRING::from(format!("GDI output index {output_index} is unavailable")),
-        )
-    })
+fn select_desktop_output(output_index: u32) -> Result<(RECT, String)> {
+    let outputs = crate::list_display_outputs()
+        .map_err(|error| Error::new(E_INVALIDARG, HSTRING::from(error)))?;
+    desktop_output_for_index(output_index, &outputs)
 }
 
-unsafe extern "system" fn enum_gdi_output(
-    monitor: HMONITOR,
-    _monitor_dc: HDC,
-    _monitor_rect: *mut RECT,
-    context: LPARAM,
-) -> BOOL {
-    let outputs = &mut *(context.0 as *mut Vec<(RECT, String)>);
-    let mut info = MONITORINFOEXW::default();
-    info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
-    if GetMonitorInfoW(
-        monitor,
-        &mut info as *mut MONITORINFOEXW as *mut MONITORINFO,
-    )
-    .as_bool()
-    {
-        let name = utf16_to_string(&info.szDevice);
-        outputs.push((info.monitorInfo.rcMonitor, name));
+fn desktop_output_for_index(output_index: u32, outputs: &[crate::DxgiOutputInfo]) -> Result<(RECT, String)> {
+    let display = outputs.iter().find(|display| display.index == output_index)
+        .ok_or_else(|| Error::new(E_INVALIDARG, HSTRING::from(format!("Desktop output index {output_index} is unavailable"))))?;
+    Ok((RECT {left:display.x, top:display.y, right:display.x + display.width as i32, bottom:display.y + display.height as i32}, display.name.clone()))
+}
+
+fn find_dxgi_output(name: &str) -> Result<(IDXGIAdapter1, IDXGIOutput1)> {
+    unsafe {
+        let factory: IDXGIFactory1 = CreateDXGIFactory1()?;
+        let mut adapter_index = 0;
+        while let Ok(adapter) = factory.EnumAdapters1(adapter_index) {
+            let mut output_index = 0;
+            while let Ok(output) = adapter.EnumOutputs(output_index) {
+                let mut desc = DXGI_OUTPUT_DESC::default();
+                output.GetDesc(&mut desc)?;
+                if desc.AttachedToDesktop.as_bool() && utf16_to_string(&desc.DeviceName).eq_ignore_ascii_case(name) {
+                    return Ok((adapter, output.cast()?));
+                }
+                output_index += 1;
+            }
+            adapter_index += 1;
+        }
+        Err(Error::new(E_INVALIDARG, HSTRING::from(format!("Desktop output {name} is unavailable in DXGI"))))
     }
-    BOOL(1)
 }
 
 impl GdiCapturer {
     pub fn new(output_index: u32) -> Result<Self> {
-        let (rect, output_name) = select_gdi_output(output_index)?;
+        let (rect, output_name) = select_desktop_output(output_index)?;
         let (x, y, width, height) = gdi_capture_geometry(rect)
             .ok_or_else(|| Error::new(E_INVALIDARG, "GDI output has invalid dimensions".into()))?;
         Ok(Self {
@@ -302,13 +291,16 @@ fn gdi_capture_geometry(rect: RECT) -> Option<(i32, i32, u32, u32)> {
 impl DxgiCapturer {
     pub fn new(output_index: u32) -> Result<Self> {
         unsafe {
+            let (_, output_name) = select_desktop_output(output_index)?;
+            let (dxgi_adapter, output) = find_dxgi_output(&output_name)?;
+            let adapter: IDXGIAdapter = dxgi_adapter.cast()?;
             let mut device: Option<ID3D11Device> = None;
             let mut context: Option<ID3D11DeviceContext> = None;
             let mut feature_level = D3D_FEATURE_LEVEL_11_1;
 
             D3D11CreateDevice(
-                None,
-                D3D_DRIVER_TYPE_HARDWARE,
+                Some(&adapter),
+                D3D_DRIVER_TYPE_UNKNOWN,
                 None,
                 Default::default(),
                 None,
@@ -330,26 +322,25 @@ impl DxgiCapturer {
                 height: 0,
                 rotation: DXGI_MODE_ROTATION_UNSPECIFIED,
                 adapter_name: String::new(),
-                output_name: String::new(),
-                output_index,
+                output_name,
             };
 
-            capturer.init_duplication()?;
+            capturer.init_duplication_for_output(&dxgi_adapter, &output)?;
             Ok(capturer)
         }
     }
 
     pub fn init_duplication(&mut self) -> Result<()> {
-        unsafe {
-            let factory: IDXGIFactory1 = CreateDXGIFactory1()?;
-            let adapter: IDXGIAdapter1 = factory.EnumAdapters1(0)?;
-            let output = adapter.EnumOutputs(self.output_index)?;
-            let output1: IDXGIOutput1 = output.cast()?;
+        let (adapter, output) = find_dxgi_output(&self.output_name)?;
+        self.init_duplication_for_output(&adapter, &output)
+    }
 
+    fn init_duplication_for_output(&mut self, adapter: &IDXGIAdapter1, output1: &IDXGIOutput1) -> Result<()> {
+        unsafe {
             let mut adapter_desc = DXGI_ADAPTER_DESC1::default();
             adapter.GetDesc1(&mut adapter_desc)?;
             let mut output_desc = DXGI_OUTPUT_DESC::default();
-            output.GetDesc(&mut output_desc)?;
+            output1.GetDesc(&mut output_desc)?;
 
             let duplication = output1.DuplicateOutput(&self.device)?;
             let (_, _, display_width, display_height) =
@@ -513,6 +504,40 @@ fn bgra_to_rgb565(bgra_buffer: &[u8], width: usize, height: usize) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_selection_uses_inventory_identity_instead_of_enumeration_order() {
+        let displays = vec![
+            crate::display_output_from_rect(1, "DISPLAY2".into(), "GPU1".into(), RECT {left:-1080, top:-120, right:0, bottom:1800}, false),
+            crate::display_output_from_rect(0, "DISPLAY1".into(), "GPU0".into(), RECT {left:0, top:0, right:1920, bottom:1080}, true),
+        ];
+        let (primary, name) = desktop_output_for_index(0, &displays).unwrap();
+        assert_eq!(name, "DISPLAY1");
+        assert_eq!((primary.left, primary.top, primary.right, primary.bottom), (0,0,1920,1080));
+        let (secondary, name) = desktop_output_for_index(1, &displays).unwrap();
+        assert_eq!(name, "DISPLAY2");
+        assert_eq!((secondary.left, secondary.top, secondary.right, secondary.bottom), (-1080,-120,0,1800));
+        assert!(desktop_output_for_index(2, &displays).is_err());
+    }
+
+    #[test]
+    fn display_dxgi_lookup_preserves_desktop_device_identity_without_capture() {
+        crate::initialize_physical_coordinates();
+        let desktop = crate::list_display_outputs().unwrap();
+        let dxgi = crate::list_dxgi_outputs().unwrap_or_default();
+        let mut checked = 0;
+        for display in dxgi {
+            if desktop.iter().any(|visible| visible.name.eq_ignore_ascii_case(&display.name)) {
+                let (_, output) = find_dxgi_output(&display.name).expect("an enumerated visible DXGI output must remain selectable");
+                let mut desc = DXGI_OUTPUT_DESC::default();
+                unsafe { output.GetDesc(&mut desc).unwrap(); }
+                assert!(utf16_to_string(&desc.DeviceName).eq_ignore_ascii_case(&display.name));
+                assert!(desc.AttachedToDesktop.as_bool());
+                checked += 1;
+            }
+        }
+        println!("Read-only DXGI output identities checked: {checked}; no capture or SendInput");
+    }
 
     #[test]
     fn secure_desktop_access_denied_is_not_a_gdi_fallback_error() {

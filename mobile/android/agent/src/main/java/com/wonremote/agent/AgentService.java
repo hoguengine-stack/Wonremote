@@ -404,7 +404,10 @@ public class AgentService extends Service {
             return;
         }
         if (action.startsWith("request-update ")) {
-            if (remoteUpdate.accept(action, System.currentTimeMillis())) startRemoteUpdate();
+            if (remoteUpdate.accept(action, System.currentTimeMillis())) {
+                if (pendingSessionId != null) repository.reportUpdate("idle", "원격 세션 종료 후 업데이트 대기", remoteUpdate.requestId());
+                startRemoteUpdate();
+            }
             return;
         }
         if (action.startsWith("refresh-status ")) {
@@ -453,7 +456,7 @@ public class AgentService extends Service {
 
     private void startRemoteUpdate() {
         if (shuttingDown || !remoteUpdate.start(pendingSessionId != null)) return;
-        repository.reportUpdate("checking", "업데이트 확인 중");
+        repository.reportUpdate("checking", "업데이트 확인 중", remoteUpdate.requestId());
         remoteUpdater = new com.wonremote.update.UpdateClient(getPackageName(), BuildConfig.VERSION_CODE,
             com.wonremote.update.UpdateClient::openHttps);
         com.wonremote.update.UpdateClient client = remoteUpdater;
@@ -463,15 +466,15 @@ public class AgentService extends Service {
                 handler.post(() -> {
                     if (shuttingDown) return;
                     remoteUpdate.finish();
-                    if (release == null) { repository.reportUpdate("healthy", ""); return; }
+                    if (release == null) { repository.reportUpdate("healthy", "", remoteUpdate.requestId()); return; }
                     if (pendingSessionId != null) {
                         pendingUpdateRelease = release;
-                        repository.reportUpdate("idle", "원격 세션 종료 후 업데이트 승인 대기");
+                        repository.reportUpdate("idle", "원격 세션 종료 후 업데이트 승인 대기", remoteUpdate.requestId());
                     } else showUpdateNotification(release);
                 });
             } catch (Exception error) {
                 handler.post(() -> {
-                    if (!shuttingDown) { remoteUpdate.finish(); repository.reportUpdate("failed", "업데이트 확인 실패"); }
+                    if (!shuttingDown) { remoteUpdate.finish(); repository.reportUpdate("failed", "업데이트 확인 실패", remoteUpdate.requestId()); }
                 });
             } finally { client.close(); }
         }, "WonRemote-update-request").start();
@@ -490,7 +493,7 @@ public class AgentService extends Service {
                 .setContentTitle("WonRemote 업데이트 요청")
                 .setContentText("버전 " + release.versionName + " 설치를 승인하려면 누르세요.")
                 .setContentIntent(open).setAutoCancel(true).build());
-        repository.reportUpdate("idle", "기기에서 업데이트 알림을 눌러 설치 승인 필요");
+        repository.reportUpdate("idle", "기기에서 업데이트 알림을 눌러 설치 승인 필요", remoteUpdate.requestId());
     }
 
     private RemoteSessionController remoteController() {

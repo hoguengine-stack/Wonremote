@@ -105,6 +105,7 @@ function toTransferredFile(chunk: WebRtcFileChunkMessage): TransferredFile {
     id: `webrtc-${chunk.transferId}-${chunk.chunkIndex}`,
     filename: chunk.filename,
     fileData: chunk.fileData,
+    collisionPolicy: chunk.collisionPolicy,
     transferId: chunk.transferId,
     chunkIndex: chunk.chunkIndex,
     totalChunks: chunk.totalChunks,

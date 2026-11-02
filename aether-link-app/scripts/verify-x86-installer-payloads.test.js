@@ -43,6 +43,9 @@ function createFixture() {
     fs.writeFileSync(path.join(x86InstallerDir, `WonRemote ${product}_9.9.9_x86-setup.exe`), fixture);
     fs.writeFileSync(path.join(releaseDir, `WonRemote-${product}-Setup.exe`), fixture);
   }
+  for (const folder of [x86InstallerDir, releaseDir]) {
+    fs.writeFileSync(path.join(folder, "WonRemote-Agent-Update.exe"), createPeFixture(0x014c, "file-update"));
+  }
 
   return { appRoot, releaseDir };
 }
@@ -64,17 +67,18 @@ describe("x86 installer payload verifier", () => {
     const fixture = createFixture();
     const plans = createX86PayloadVerificationPlan(fixture);
 
-    expect(plans).toHaveLength(2);
+    expect(plans).toHaveLength(3);
     expect(plans[0].x86InstallerPath).toContain("i686-pc-windows-msvc");
     expect(plans[0].x86InstallerPath).toContain("Viewer_9.9.9_x86-setup.exe");
     expect(plans[1].x86InstallerPath).toContain("Agent_9.9.9_x86-setup.exe");
+    expect(plans[2].x86InstallerPath).toContain("WonRemote-Agent-Update.exe");
   });
 
   it("accepts only stable release files identical to the x86 build outputs", async () => {
     const fixture = createFixture();
     const results = await verifyX86InstallerPayloads(fixture);
 
-    expect(results.map((result) => result.product)).toEqual(["viewer", "agent"]);
+    expect(results.map((result) => result.product)).toEqual(["viewer", "agent", "agent-update"]);
     expect(results.every((result) => result.peMachine === 0x014c)).toBe(true);
     expect(results.every((result) => /^[a-f0-9]{64}$/.test(result.sha256))).toBe(true);
   });

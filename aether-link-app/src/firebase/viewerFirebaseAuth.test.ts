@@ -69,6 +69,15 @@ describe("Viewer Firebase authentication", () => {
     expect(signOut).toHaveBeenCalledWith(mockState.services.auth);
   });
 
+  it("returns a translated rate limit after one attempt without retrying or resetting the account", async () => {
+    vi.mocked(signInWithEmailAndPassword).mockRejectedValueOnce({code:"auth/too-many-requests"});
+    await expect(loginViewerWithFirebase("owner@example.com", "secret123")).rejects.toMatchObject({
+      code:"auth/too-many-requests",message:expect.stringContaining("정확한 대기 시간을 표시할 수 없습니다"),
+    });
+    expect(signInWithEmailAndPassword).toHaveBeenCalledTimes(1);
+    expect(sendPasswordResetEmail).not.toHaveBeenCalled();
+  });
+
   it("rejects a persisted Agent account instead of opening the central Viewer", async () => {
     vi.mocked(onAuthStateChanged).mockImplementationOnce(((_auth: unknown, onNext: (user: unknown) => void) => {
       onNext({ uid: "agent-uid", email: "1234567890@agents.wonremote.app" });

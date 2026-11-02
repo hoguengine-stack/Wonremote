@@ -23,7 +23,8 @@ $Products = @(
   }
 )
 
-if (-not (Test-Path (Join-Path $AndroidDir "keystore.properties"))) {
+$SigningProperties = if ($env:WONREMOTE_ANDROID_SIGNING_PROPERTIES) { $env:WONREMOTE_ANDROID_SIGNING_PROPERTIES } else { Join-Path $AndroidDir "keystore.properties" }
+if (-not (Test-Path -LiteralPath $SigningProperties -PathType Leaf)) {
   throw "mobile/android/keystore.properties is required. Keep the release key outside Git and reuse it for every update."
 }
 

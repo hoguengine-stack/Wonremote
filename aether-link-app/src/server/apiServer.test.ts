@@ -44,6 +44,10 @@ describe("WonRemote local API server", () => {
     const {commands} = await poll.json();
     expect(commands).toHaveLength(1);
     expect(commands[0].action).toMatch(/^request-update \d{13}$/);
+    await postJson(`/api/devices/${encodeURIComponent(device.id)}/request-update`, {requestId:"1700000000001"});
+    const correlated=await postJson("/api/agent/commands",{deviceId:device.id,installId:"agent-pos-77"});
+    expect((await correlated.json()).commands[0].action).toBe("request-update 1700000000001");
+    expect((await postJson(`/api/devices/${encodeURIComponent(device.id)}/request-update`,{requestId:"bad"})).status).toBe(400);
     expect((await postJson("/api/devices/missing/request-update",{})).status).toBe(404);
   });
 

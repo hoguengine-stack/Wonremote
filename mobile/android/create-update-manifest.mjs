@@ -105,9 +105,32 @@ export function verifyAndroidHostingArtifacts(repo) {
   }
 }
 
+export async function verifyPublishedAndroidHistory(repo, load = async () => {
+  const response = await fetch("https://wonremote-a7fd3.web.app/download/android-update.json", {signal:AbortSignal.timeout(10000)});
+  if(!response.ok)throw new Error(`Live Android discovery failed: ${response.status}`);
+  return response.json();
+}) {
+  const manifest=await load();
+  for(const [key,,packageId] of products){
+    const asset=manifest?.apps?.[packageId];
+    if(!asset||!/^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(asset.versionName)||! /^[a-f0-9]{64}$/.test(asset.zipSha256)
+      ||!Number.isSafeInteger(asset.zipSize)||asset.zipSize<1
+      ||asset.url!==`https://wonremote-a7fd3.web.app/download/android/v${asset.versionName}/${key}.zip`)throw new Error(`Invalid published Android archive: ${packageId}`);
+    for(const folder of ["public","dist"]){
+      const file=path.join(repo,"aether-link-app",folder,"download/android",`v${asset.versionName}`,`${key}.zip`);
+      if(!existsSync(file))throw new Error(`Missing published Android archive: ${file}`);
+      const bytes=readFileSync(file);
+      if(bytes.length!==asset.zipSize||hash(bytes)!==asset.zipSha256)throw new Error(`Changed published Android archive: ${file}`);
+    }
+  }
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-  if (process.argv[2] === "--verify-hosted") {
+  if (process.argv[2] === "--verify-live-history") {
+    await verifyPublishedAndroidHistory(repo);
+    console.log("Currently published Android archives preserved in Hosting output.");
+  } else if (process.argv[2] === "--verify-hosted") {
     verifyAndroidHostingArtifacts(repo);
     console.log("Android Hosting artifacts match the verified release.");
   } else if (process.argv[2] === "--verify") {

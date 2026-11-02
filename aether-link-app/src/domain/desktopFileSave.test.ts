@@ -2,6 +2,15 @@ import { describe, expect, it, vi } from "vitest";
 import { saveDesktopFile, type DownloadInvoke } from "./desktopFileSave";
 
 describe("desktop file destination", () => {
+  it("passes an explicit collision choice to native storage and cleans up a skipped save", async () => {
+    const invoke = vi.fn(async (command: string) => {
+      if (command === "begin_viewer_download") return "choice";
+      if (command === "finish_viewer_download") throw Error("File skipped: a.txt");
+    }) as DownloadInvoke;
+    await expect(saveDesktopFile({ filename: "a.txt", blob: new Blob(["a"]) }, invoke, undefined, "skip")).rejects.toThrow("File skipped:");
+    expect(invoke).toHaveBeenCalledWith("begin_viewer_download", { filename: "a.txt", total: 1, collisionPolicy: "skip" });
+    expect(invoke).toHaveBeenCalledWith("abort_viewer_download", { id: "choice" });
+  });
   it("writes exact ordered bytes and reports success only after native commit", async () => {
     const bytes = Uint8Array.from({length: 150003}, (_, i) => i % 251);
     const chunks: Buffer[] = [];

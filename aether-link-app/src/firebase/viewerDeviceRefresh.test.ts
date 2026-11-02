@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { addDoc, getDoc, getDocFromServer, getDocs, getDocsFromServer, onSnapshot, writeBatch } from "firebase/firestore";
-import { fetchFirebaseDevices, openFirebaseSession, requestFirebaseSecureSession } from "./viewerFirebase";
+import { fetchFirebaseDevices, openFirebaseSession, requestFirebaseSecureSession,subscribeFirebaseAgentUpdate } from "./viewerFirebase";
 
 const state = vi.hoisted(() => ({ set: vi.fn(), commit: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("./firebaseConfig", () => ({ resolveFirebaseConfig: () => ({ projectId: "test" }) }));
@@ -24,6 +24,44 @@ const env: ImportMetaEnv = { ...import.meta.env, VITE_WONREMOTE_FIREBASE_FUNCTIO
 describe("fresh device reads without collection listeners", () => {
   beforeEach(() => { vi.clearAllMocks(); vi.useFakeTimers(); });
   afterEach(() => vi.useRealTimers());
+
+  it("observes only the explicitly updated device, skips cached success and exposes deletion/error with owned cleanup",async()=>{
+    let reply!:(snapshot:any)=>void,fail!:(error:Error)=>void;const stop=vi.fn(),next=vi.fn(),error=vi.fn();
+    vi.mocked(onSnapshot).mockImplementation(((ref:any,n:any,f:any)=>{expect(ref.path).toBe("devices/target");reply=n;fail=f;return stop;}) as any);
+    const unsubscribe=subscribeFirebaseAgentUpdate("target",next,error);
+    reply({id:"target",metadata:{fromCache:true},exists:()=>true,data:()=>device({updateState:"healthy"})});expect(next).not.toHaveBeenCalled();
+    reply({id:"target",metadata:{fromCache:false},exists:()=>true,data:()=>device({updateRequestId:"1700000000001",updateState:"downloading",updateProgress:35})});
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({id:"target",updateRequestId:"1700000000001",updateProgress:35}));
+    reply({id:"target",exists:()=>false});expect(error).toHaveBeenCalledOnce();fail(new Error("permission-denied"));expect(error).toHaveBeenCalledTimes(2);
+    unsubscribe();await vi.advanceTimersByTimeAsync(86_400_000);expect(stop).toHaveBeenCalledOnce();expect(onSnapshot).toHaveBeenCalledOnce();expect(getDocsFromServer).not.toHaveBeenCalled();expect(addDoc).not.toHaveBeenCalled();expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("scoped refresh reads and subscribes only matching documents, sends once, deduplicates targets and remains idle after success",async()=>{
+    const record=device({presenceMode:"manual"}),known=[{id:"target",...record},{id:"outside",...record}] as any;
+    vi.mocked(getDocFromServer).mockImplementation(async(ref:any)=>({id:ref.path.split("/").at(-1),exists:()=>true,data:()=>record}) as any);
+    let reply!:(value:any)=>void;const stop=vi.fn();
+    vi.mocked(onSnapshot).mockImplementation(((ref:any,next:any)=>{expect(ref.path).toBe("devices/target");reply=next;return stop;}) as any);
+    const progress=vi.fn(),result=fetchFirebaseDevices(env,true,undefined,progress,known,["target","target"]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getDocFromServer).toHaveBeenCalledExactlyOnceWith({path:"devices/target",id:"new"});expect(getDocsFromServer).not.toHaveBeenCalled();
+    expect(onSnapshot).toHaveBeenCalledOnce();expect(addDoc).toHaveBeenCalledOnce();expect(vi.mocked(addDoc).mock.calls[0][0]).toBe("devices/target/commands");
+    const nonce=(vi.mocked(addDoc).mock.calls[0][1] as any).action.split(" ")[1];
+    reply({id:"target",exists:()=>true,data:()=>({...record,heartbeatRequestId:nonce})});
+    expect((await result).map(d=>d.id)).toEqual(["target"]);expect(stop).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(86_400_000);expect(getDocFromServer).toHaveBeenCalledOnce();expect(addDoc).toHaveBeenCalledOnce();expect(vi.getTimerCount()).toBe(0);
+  });
+  it("scoped empty results cost no reads; timeout, permission failure and abort clear only target listeners",async()=>{
+    expect(await fetchFirebaseDevices(env,true,undefined,undefined,[],[])).toEqual([]);expect(getDocFromServer).not.toHaveBeenCalled();expect(onSnapshot).not.toHaveBeenCalled();
+    const record=device({presenceMode:"manual"}),known=[{id:"target",...record}] as any,stops=[vi.fn(),vi.fn(),vi.fn()];
+    vi.mocked(getDocFromServer).mockResolvedValue({id:"target",exists:()=>true,data:()=>record} as any);
+    vi.mocked(onSnapshot).mockReturnValueOnce(stops[0]).mockReturnValueOnce(stops[1]).mockReturnValueOnce(stops[2]);
+    const timed=fetchFirebaseDevices(env,true,undefined,undefined,known,["target"]);await vi.advanceTimersByTimeAsync(5_000);expect((await timed)[0].status).toBe("offline");
+    vi.mocked(getDocFromServer).mockRejectedValueOnce(new Error("Permission denied"));
+    await expect(fetchFirebaseDevices(env,true,undefined,undefined,known,["target"])).rejects.toThrow("Permission denied");
+    const abort=new AbortController(),cancelled=fetchFirebaseDevices(env,true,abort.signal,undefined,known,["target"]);
+    const rejected=expect(cancelled).rejects.toThrow("cancelled");abort.abort();await rejected;
+    for(const stop of stops)expect(stop).toHaveBeenCalledOnce();await vi.advanceTimersByTimeAsync(86_400_000);expect(vi.getTimerCount()).toBe(0);
+  });
 
   it("performs exactly 11 server list reads for login plus 10 refreshes, none on idle", async () => {
     vi.mocked(getDocsFromServer).mockResolvedValue({ docs: Array.from({ length: 10 }, (_, i) => ({

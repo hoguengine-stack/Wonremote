@@ -91,8 +91,9 @@ describe("Viewer metadata request boundary", () => {
     expect(writeBatch).toHaveBeenCalledOnce(); expect(getDoc).toHaveBeenCalledTimes(2);
   });
   it("sends one update command without readback, polling or automatic quota retries", async () => {
-    await requestFirebaseAgentUpdate("device");
-    expect(addDoc).toHaveBeenCalledWith("devices/device/commands", expect.objectContaining({action:expect.stringMatching(/^request-update \d{13}$/),state:"pending"}));
+    await requestFirebaseAgentUpdate("device","1700000000001");
+    expect(addDoc).toHaveBeenCalledWith("devices/device/commands", expect.objectContaining({action:"request-update 1700000000001",state:"pending"}));
+    await expect(requestFirebaseAgentUpdate("device","bad")).rejects.toThrow("Invalid update request ID");
     expect(getDoc).not.toHaveBeenCalled();
     expect(addDoc).toHaveBeenCalledTimes(1);
     vi.mocked(addDoc).mockRejectedValueOnce(new Error("resource-exhausted"));

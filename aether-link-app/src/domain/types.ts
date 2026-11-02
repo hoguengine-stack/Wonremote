@@ -16,6 +16,7 @@ export type DeviceUpdateState =
 export type DeviceUpdateRing = "canary" | "pilot" | "general";
 
 export interface AgentUpdateTelemetry {
+  requestId?: string;
   state: DeviceUpdateState;
   currentVersion: string;
   targetVersion?: string;
@@ -57,6 +58,7 @@ export interface ManagedDevice {
   controlDiagnostics?: AgentControlDiagnostics;
   streamDiagnostics?: AgentStreamDiagnostics;
   updateState?: DeviceUpdateState;
+  updateRequestId?: string;
   updateTargetVersion?: string;
   updateCurrentVersion?: string;
   updateProgress?: number;
@@ -228,6 +230,7 @@ export interface ClipboardData {
 }
 
 export interface TransferredFile {
+  collisionPolicy?: import("./fileCollisionPolicy").FileCollisionPolicy;
   id: string;
   filename: string;
   fileData: string;

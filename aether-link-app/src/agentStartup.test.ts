@@ -5,6 +5,23 @@ import path from "node:path";
 import { describe, it, expect } from "vitest";
 
 describe.skipIf(process.platform !== "win32")("Agent first-run Windows boundaries", () => {
+  it("shows the Agent after registration without changing background updater or finish intent", () => {
+    const source = readFileSync(path.resolve("src-tauri/src/lib.rs"), "utf8");
+    const save = source.slice(source.indexOf("fn save_agent_config("), source.indexOf("fn restart_agent_process("));
+    expect(save).not.toContain("window.hide()");
+    expect(save).toContain('show_main_window_with_log(&app, "agent-registration-complete")');
+    const show = source.slice(source.indexOf("fn show_main_window_with_log("), source.indexOf("fn spawn_agent_only_process("));
+    expect(show).toContain("window.unminimize()");
+    expect(show.indexOf("window.unminimize()")).toBeLessThan(show.indexOf("window.show()"));
+    expect(show).toContain("window.set_focus()");
+    expect(show).not.toContain("set_always_on_top");
+    const finish = readFileSync(path.resolve("src-tauri/windows/agent-login-task.nsh"), "utf8");
+    expect(finish).toContain('"--agent --show-window"');
+    for (const name of ["agent-install-hooks.nsh","agent-install-hooks-x86.nsh"]) {
+      const hooks = readFileSync(path.resolve("src-tauri/windows",name),"utf8");
+      expect(hooks).toContain('nsis_tauri_utils::RunAsUser "$INSTDIR\\wonremote-viewer.exe" "--agent"');
+    }
+  });
   it("runs the protected updater broker from its fixed install-relative request", () => {
     const root = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "wonremote-protected-broker-")));
     const requestId = "123e4567-e89b-42d3-a456-426614174000";

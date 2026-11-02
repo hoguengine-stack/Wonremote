@@ -44,9 +44,13 @@ import {
   GripVertical,
   Bell,
   LockKeyhole,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import {useLoginInputState} from "./components/useLoginInputState";
+import {trackAgentUpdate,type AgentUpdateNotice} from "./domain/agentUpdateTracker";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import edgeLogo from "./assets/microsoft-edge.png";
@@ -69,6 +73,7 @@ import {
   uploadFileToStorage,
   fetchConnectionHistory,
   requestAgentUpdate,
+  subscribeAgentUpdate,
   fetchTiles,
   updateDeviceMetadata,
   wakeRemoteDevice,
@@ -93,6 +98,7 @@ import {
   type ViewerWebRtcTransport,
 } from "./firebase/viewerFirebase";
 import { ViewerAccountManager } from "./components/ViewerAccountManager";
+import { VideoConsultation } from "./components/VideoConsultation";
 import { DeviceAccessLockDialog, type DeviceUnlockChoice } from "./components/DeviceAccessLockDialog";
 import { ViewerGroups } from "./components/ViewerGroups";
 import { groupDeviceIds } from "./domain/viewerGroups";
@@ -108,11 +114,14 @@ import {
   VIEWER_LIST_STORAGE_KEY,
   acknowledgeNewDevice,
   discoverNewDevices,
+  expireNewDevices,
+  NEW_DEVICE_TTL_MS,
   moveStoreGroup,
   orderStoreGroups,
   readDeviceListPreferences,
   renameStoreGroup,
 } from "./domain/deviceListPreferences";
+import { mergeScopedDeviceRefresh } from "./domain/devicePresenceRefresh";
 import {
   scheduleVisualPingPresentedMeasurement,
 } from "./domain/visualPing";
@@ -371,9 +380,12 @@ export function App() {
 
 function ViewerApp() {
   const isMobileViewer = isMobileViewerPath(window.location.pathname);
+  const [isVideoConsultationOpen,setIsVideoConsultationOpen]=useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isCheckingAutoLogin, setIsCheckingAutoLogin] = useState(() => isViewerFirebaseEnabled());
   const [loginError, setLoginError] = useState("");
+  const [isLoggingIn,setIsLoggingIn]=useState(false);
+  const loginInFlight=useRef(false);
   const [rawDevices, setDevices] = useState<ManagedDevice[]>([]);
   const devices = useMemo(() => organizeDevices(rawDevices), [rawDevices]);
   const [dropStore, setDropStore] = useState<string | null>(null);
@@ -406,6 +418,7 @@ function ViewerApp() {
   const [observedConnections, setObservedConnections] = useState<Record<string, string>>({});
   useEffect(() => { if (!isAuthenticated) setObservedConnections({}); }, [isAuthenticated]);
   const deviceListRequestRef = useRef<Promise<ManagedDevice[]> | null>(null);
+  const deviceRefreshTargetIdsRef = useRef<string[]|undefined>(undefined);
   const startupSessionCleanupAttemptedRef = useRef(false);
   const connectionEpochRef = useRef(0);
   const pendingConnectAttemptsRef = useRef<Set<Promise<{ cleanupSucceeded: boolean; connected: boolean }>>>(new Set());
@@ -499,7 +512,7 @@ function ViewerApp() {
           return;
         }
         setIsAuthenticated(hasSession);
-        if (!hasSession) { forgetAllDevicePasswords(); closeDeviceAccessDialog(); setDeviceListRefreshKey(0); setIsRefreshingDevices(false); setIsLoadingDeviceList(false); setPresenceChecks({}); setDevices([]); setConnectionHistory([]); }
+        if (!hasSession) { deviceRefreshTargetIdsRef.current=undefined; forgetAllDevicePasswords(); closeDeviceAccessDialog(); setDeviceListRefreshKey(0); setIsRefreshingDevices(false); setIsLoadingDeviceList(false); setPresenceChecks({}); setDevices([]); setConnectionHistory([]); }
         if (hasSession) {
           setDeviceListRefreshKey((current) => current || 1);
           setLoginError("");
@@ -650,6 +663,7 @@ function ViewerApp() {
 
   const handleRefreshDeviceList = () => {
     if (!deviceListRequestRef.current && !isRefreshingDevices) {
+      deviceRefreshTargetIdsRef.current=query.trim()?filteredDevices.map(device=>device.id):undefined;
       setDeviceListRefreshKey((current) => current + 1);
     }
   };
@@ -699,6 +713,17 @@ function ViewerApp() {
       status: statusFilter,
     });
   }, [devices, favoriteDeviceIds, favoriteOnly, query, selectedStore, statusFilter, listPreferences]);
+
+  useEffect(()=>{
+    if (!isAuthenticated || !devices.length) return;
+    const expire=()=>setListPreferences(current=>expireNewDevices(current,devices));
+    expire();
+    const deadlines=devices.filter(device=>listPreferences.newDeviceIds.includes(device.id))
+      .map(device=>Date.parse(device.firstRegisteredAt??"")+NEW_DEVICE_TTL_MS).filter(at=>Number.isFinite(at)&&at>Date.now());
+    if (!deadlines.length) return;
+    const timer=setTimeout(expire,Math.min(...deadlines)-Date.now());
+    return ()=>clearTimeout(timer);
+  },[isAuthenticated,devices,listPreferences.newDeviceIds]);
 
   useEffect(() => {
     window.localStorage.setItem("wonremote-favorite-devices", serializeFavoriteDeviceIds(favoriteDeviceIds));
@@ -787,21 +812,24 @@ function ViewerApp() {
 
     let cancelled = false;
     const abort = new AbortController();
+    const targetIds=deviceRefreshTargetIdsRef.current;
+    const apply=(nextDevices:ManagedDevice[])=>{
+      if (targetIds===undefined) setListPreferences(current=>discoverNewDevices(current,nextDevices));
+      setDevices(current=>targetIds===undefined?nextDevices:mergeScopedDeviceRefresh(current,nextDevices,targetIds));
+    };
     setIsLoadingDeviceList(true);
     const request = fetchDevices(true, abort.signal, (nextDevices, pendingIds) => {
       if (cancelled) return;
-      setListPreferences((current) => discoverNewDevices(current, nextDevices));
-      setDevices(nextDevices);
+      apply(nextDevices);
       setPresenceChecks(Object.fromEntries(pendingIds.map((id) => [id, "checking" as const])));
       setIsLoadingDeviceList(false);
-    }, devices);
+    }, devices, targetIds);
     deviceListRequestRef.current = request;
     setIsRefreshingDevices(true);
     void request
       .then((nextDevices) => {
         if (!cancelled) {
-          setListPreferences((current) => discoverNewDevices(current, nextDevices));
-          setDevices(nextDevices);
+          apply(nextDevices);
           setPresenceChecks({});
           setApiError("");
         }
@@ -859,6 +887,8 @@ function ViewerApp() {
 
   async function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if(loginInFlight.current)return;
+    loginInFlight.current=true;setIsLoggingIn(true);setLoginError("");
     const data = new FormData(event.currentTarget);
     const username = String(data.get("username") ?? "");
     const password = String(data.get("password") ?? "");
@@ -872,6 +902,8 @@ function ViewerApp() {
       setIsAuthenticated(true);
     } catch (error) {
       setLoginError(error instanceof Error ? error.message : "관리자 로그인을 완료할 수 없습니다.");
+    } finally {
+      loginInFlight.current=false;setIsLoggingIn(false);
     }
   }
 
@@ -892,6 +924,7 @@ function ViewerApp() {
       setConnectionHistory([]);
       setIsAuthenticated(false);
       setDeviceListRefreshKey(0);
+      deviceRefreshTargetIdsRef.current=undefined;
       setIsRefreshingDevices(false);
       setIsLoadingDeviceList(false);
       setPresenceChecks({});
@@ -1221,21 +1254,29 @@ function ViewerApp() {
   }
 
   const updateRequestsRef = useRef(new Map<string, number>());
+  const updateWatchesRef = useRef(new Map<string,()=>void>());
+  const [agentUpdateNotices,setAgentUpdateNotices]=useState<Record<string,AgentUpdateNotice>>({});
   const updateRequestEpochRef = useRef(0);
-  useEffect(() => () => { updateRequestEpochRef.current++; updateRequestsRef.current.clear(); }, [isAuthenticated]);
+  useEffect(() => {
+    setAgentUpdateNotices({});
+    return()=>{updateRequestEpochRef.current++;updateRequestsRef.current.clear();updateWatchesRef.current.forEach(stop=>stop());updateWatchesRef.current.clear();};
+  }, [isAuthenticated]);
   async function handleRequestAgentUpdate(device: ManagedDevice) {
     const epoch = updateRequestEpochRef.current;
     const now = Date.now();
-    if (now - (updateRequestsRef.current.get(device.id) ?? 0) < 60_000) return;
+    if (updateWatchesRef.current.has(device.id)||now - (updateRequestsRef.current.get(device.id) ?? 0) < 60_000) return;
     updateRequestsRef.current.set(device.id, now);
-    try {
-      await requestAgentUpdate(device.id);
-      if (epoch !== updateRequestEpochRef.current) return;
-      setApiError(`${device.desktopName}: 업데이트 요청을 전송했습니다. 설치 완료는 아닙니다. 결과는 장비 새로고침으로 확인하세요. 미지원 구버전은 반응하지 않을 수 있습니다.`);
-    } catch (error) {
-      if (epoch !== updateRequestEpochRef.current) return;
-      setApiError(error instanceof Error ? error.message : "업데이트 요청 전송 실패");
-    }
+    let terminal=false;
+    const stop=trackAgentUpdate({device,requestId:String(now),
+      watch:(next,fail)=>subscribeAgentUpdate(device.id,next,fail),
+      send:()=>requestAgentUpdate(device.id,String(now)),
+      onDevice:updated=>setDevices(items=>items.map(item=>item.id===updated.id?updated:item)),
+      report:notice=>{if(epoch!==updateRequestEpochRef.current)return;terminal=!notice.active;
+        setAgentUpdateNotices(items=>({...items,[device.id]:notice}));
+        if(terminal)updateWatchesRef.current.delete(device.id);
+      },
+    });
+    if(!terminal)updateWatchesRef.current.set(device.id,stop);
   }
 
   async function handleWakeDevice(device: ManagedDevice) {
@@ -1374,7 +1415,7 @@ function ViewerApp() {
   }
 
   if (!isAuthenticated) {
-    return <><LoginScreen error={loginError} onSubmit={handleLogin} />{updateDialogOverlay}</>;
+    return <><LoginScreen error={loginError} busy={isLoggingIn} onSubmit={handleLogin} />{updateDialogOverlay}</>;
   }
 
   return (
@@ -1486,7 +1527,7 @@ function ViewerApp() {
         </button>
       </aside>
 
-      <main className="workspace" inert={editTarget !== null || deviceAccessDialog !== null}>
+      <main className="workspace" inert={editTarget !== null || deviceAccessDialog !== null || isVideoConsultationOpen}>
         <header className="topbar viewer-command-header" data-testid="viewer-command-header">
           <div className="workspace-title">
             <span className="eyebrow">DEVICE OPERATIONS</span>
@@ -1508,6 +1549,7 @@ function ViewerApp() {
               placeholder="매장, 장비, 담당자, 연락처, 메모 검색"
             />
           </label>
+          {isViewerFirebaseEnabled()&&<button className="secondary-button" type="button" onClick={()=>setIsVideoConsultationOpen(true)}><Video size={17}/><span>영상상담</span></button>}
           {!isMobileViewer && <button
             className="viewer-update-button"
             type="button"
@@ -1530,6 +1572,7 @@ function ViewerApp() {
           </button>}
           </div>
         </header>
+        {Object.entries(agentUpdateNotices).map(([id,notice])=><p key={id} className={`workspace-notice${notice.failed?" topbar-error":""}`} role="status">{rawDevices.find(device=>device.id===id)?.desktopName??id}: {notice.message}</p>)}
         {(apiError || selectedUpdateInstalling) && (
           <div className="workspace-notices" aria-live="polite">
             {apiError && <p className="workspace-notice topbar-error">{apiError}</p>}
@@ -1650,7 +1693,7 @@ function ViewerApp() {
             return (
               <RemoteSessionPanel
                 activeSessionId={activeSessionId}
-                inputSuspended={editTarget !== null}
+                inputSuspended={editTarget !== null || isVideoConsultationOpen}
                 device={devices.find((device) => device.id === openSession.deviceId) ?? null}
                 isActive={openSession.id === activeSessionId}
                 isSplit={splitIndex >= 0}
@@ -1748,6 +1791,7 @@ function ViewerApp() {
         />
       )}
       {isAccountManagerOpen && <ViewerAccountManager onClose={() => setIsAccountManagerOpen(false)} />}
+      {isVideoConsultationOpen&&<div className="video-consultation-backdrop"><VideoConsultation onClose={()=>setIsVideoConsultationOpen(false)}/></div>}
       {diagnosticTarget && (
         <DeviceDiagnosticsDialog device={diagnosticTarget} onClose={() => setDiagnosticTarget(null)} />
       )}
@@ -2722,6 +2766,7 @@ function AgentFirstRunApp() {
       <>
         <main className="login-screen agent-screen">
           <div className="login-panel agent-panel active-agent-panel">
+            <div className="agent-panel-scroll">
             <div className="login-badge active-agent-badge">
               <Monitor size={20} />
               <span>Active Agent · v{agentVersion}</span>
@@ -2750,6 +2795,8 @@ function AgentFirstRunApp() {
               <Pencil size={15}/><span>{isMetadataBusy ? "정보 확인 중..." : "장비 정보 수정"}</span>
             </button>
             {metadataStatus && <p className="agent-status-copy" role="status">{metadataStatus}</p>}
+            </div>
+            <footer className="agent-panel-footer">
             {zookSetup}
             <p className="agent-status-copy">
               원격 제어 대기 중 · 트레이에서 관리
@@ -2763,6 +2810,7 @@ function AgentFirstRunApp() {
                 <span>에이전트 재시작</span>
               </button>
             </div>
+            </footer>
           </div>
         </main>
         {(isMetadataOpen || isMetadataPasswordOpen) && <dialog ref={metadataDialog} className="custom-group-dialog" aria-label={isMetadataPasswordOpen ? "장비 정보 수정 비밀번호" : "Agent 장비 정보 수정"}
@@ -2806,6 +2854,7 @@ function AgentFirstRunApp() {
   return (
     <main className="login-screen agent-screen">
       <form className={`login-panel agent-panel ${firebaseMode ? "firebase-agent-panel" : ""}`} onSubmit={handleFirstRun}>
+        <div className="agent-panel-scroll">
         <div className="login-badge">
           <Monitor size={20} />
           <span>Agent · v{agentVersion}</span>
@@ -2842,8 +2891,6 @@ function AgentFirstRunApp() {
         <label>장비 구분<select aria-label="장비 구분" value={deviceTypeChoice} onChange={event=>setDeviceTypeChoice(event.target.value as DeviceTypeChoice)}>{DEVICE_TYPE_PRESETS.map(type=><option key={type} value={type}>{type}</option>)}<option value="custom">직접입력</option></select></label>
         {deviceTypeChoice === "custom" && <label>장비 구분 직접입력<input required maxLength={100} value={customDeviceType} onChange={event=>setCustomDeviceType(event.target.value)}/></label>}
         <label>메모<textarea className="agent-first-run-notes" rows={2} maxLength={2000} value={notes} onChange={event=>setNotes(event.target.value)}/></label>
-        {zookSetup}
-        {error && <p className="error-text">{error}</p>}
         {registeredDevice && (
           <div className="agent-result">
             <strong>{registeredDevice.deviceName}</strong>
@@ -2856,10 +2903,15 @@ function AgentFirstRunApp() {
             )}
           </div>
         )}
+        </div>
+        <footer className="agent-panel-footer">
+        {zookSetup}
+        {error && <p className="error-text">{error}</p>}
         <button className="primary-button" disabled={isSubmitting || !isInstallIdentityReady} type="submit">
           <PlugZap size={17} />
           <span>{isSubmitting ? "등록 중" : "등록"}</span>
         </button>
+        </footer>
       </form>
     </main>
   );
@@ -2867,12 +2919,16 @@ function AgentFirstRunApp() {
 
 function LoginScreen({
   error,
+  busy,
   onSubmit,
 }: {
   error: string;
+  busy:boolean;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
   const [username, setUsername] = useState("");
+  const [showPassword,setShowPassword]=useState(false);
+  const inputState=useLoginInputState();
   const [recoveryMessage, setRecoveryMessage] = useState("");
   const [isResettingPassword, setIsResettingPassword] = useState(false);
 
@@ -2890,24 +2946,31 @@ function LoginScreen({
 
   return (
     <main className="login-screen">
-      <form className="login-panel" onSubmit={onSubmit}>
+      <form className="login-panel" {...inputState.handlers} onSubmit={event=>{
+        if(inputState.isComposing.current||busy){event.preventDefault();return;}onSubmit(event);
+      }}>
         <div className="login-badge">
           <ShieldCheck size={20} />
           <span>Viewer</span>
         </div>
         <h1>Viewer 관리자 로그인</h1>
         <label>
-          아이디 <input autoComplete="username" name="username" type="text" value={username} onChange={(event) => setUsername(event.target.value)} />
+          아이디 <input autoComplete="username" autoCapitalize="none" autoCorrect="off" spellCheck={false} name="username" type="text" value={username} onChange={(event) => setUsername(event.target.value)} />
         </label>
         <label>
           비밀번호
-          <input autoComplete="current-password" name="password" type="password" />
+          <span className="login-password-field"><input autoComplete="current-password" autoCapitalize="none" autoCorrect="off" spellCheck={false} name="password" type={showPassword?"text":"password"}/>
+            <button type="button" aria-label={showPassword?"비밀번호 숨기기":"비밀번호 표시"} aria-pressed={showPassword} title={showPassword?"비밀번호 숨기기":"비밀번호 표시"} onMouseDown={event=>event.preventDefault()} onClick={()=>{setShowPassword(value=>!value);inputState.refresh();}}>{showPassword?<EyeOff size={19}/>:<Eye size={19}/>}</button></span>
         </label>
-        {error && <p className="error-text">{error}</p>}
+        <div className="login-input-state" role="status" aria-live="polite">
+          <span className={inputState.capsLock?"caps-lock-warning":""}>Caps Lock: {inputState.capsLock===null?"확인 전":inputState.capsLock?"켜짐":"꺼짐"}</span>
+          <span>입력: {inputState.inputMode==="ko"?"한글":inputState.inputMode==="en"?"영문":inputState.inputMode==="other"?"다른 언어":inputState.composing?"문자 조합 중":"확인 불가"}</span>
+        </div>
+        {error && <p className="error-text login-error" role="alert">{error}</p>}
         {recoveryMessage && <p className="login-recovery-message" role="status">{recoveryMessage}</p>}
-        <button className="primary-button" type="submit">
+        <button className="primary-button" type="submit" disabled={busy}>
           <LogIn size={17} />
-          <span>로그인</span>
+          <span>{busy?"로그인 중":"로그인"}</span>
         </button>
         <div className="login-recovery-actions">
           <button type="button" onClick={() => setRecoveryMessage("Viewer 아이디는 가입할 때 등록한 이메일 주소입니다.")}>아이디 찾기</button>
@@ -3362,11 +3425,14 @@ function RemoteSessionPanel({
   const [receivedFile, setReceivedFile] = useState<{ id: string; filename: string; blob: Blob } | null>(null);
   const [transferPanelOpen, setTransferPanelOpen] = useState(true);
   const [receivedDownloadRequested, setReceivedDownloadRequested] = useState(false);
+  const androidDownloads = React.useSyncExternalStore(androidFileExporter.subscribe, androidFileExporter.available);
   const [nativeSaveState, setNativeSaveState] = useState("");
   const [receivedSavedPath, setReceivedSavedPath] = useState("");
   const nativeSaveRef = React.useRef<AbortController | null>(null);
   const desktopDownloads = Boolean((window as any).__TAURI_INTERNALS__);
   const [downloadFolder, setDownloadFolder] = useState("");
+  const [fileCollisionPolicy, setFileCollisionPolicy] = useState<import("./domain/fileCollisionPolicy").FileCollisionPolicy>("rename");
+  const [fileCollisionSupported, setFileCollisionSupported] = useState(false);
   const autoSavedId = React.useRef<string | null>(null);
   async function saveReceivedDesktopFile(file: NonNullable<typeof receivedFile>) {
     if (nativeSaveRef.current) return;
@@ -3374,7 +3440,7 @@ function RemoteSessionPanel({
     nativeSaveRef.current = controller;
     setNativeSaveState("검증 및 저장 중 · 99%");
     try {
-      const savedPath = await saveDesktopFile(file, invoke, controller.signal);
+      const savedPath = await saveDesktopFile(file, invoke, controller.signal, fileCollisionPolicy);
       if (!controller.signal.aborted) {
         setReceivedSavedPath(savedPath);
         setNativeSaveState(`완료 · 100% · ${savedPath}`);
@@ -3385,7 +3451,10 @@ function RemoteSessionPanel({
         if (!controller.signal.aborted) setReceivedDownloadRequested(true);
       } catch { if (!controller.signal.aborted) setSessionDataError("파일은 저장됐지만 수신 기록 정리에 실패했습니다. 수신 항목을 정리해 주세요."); }
     } catch (error) {
-      if (!controller.signal.aborted) setNativeSaveState(`저장 실패 · ${error instanceof Error ? error.message : String(error)}`);
+      if (!controller.signal.aborted) {
+        const message = error instanceof Error ? error.message : String(error);
+        setNativeSaveState(message.includes("File skipped:") ? "건너뜀 · 기존 파일 유지" : `저장 실패 · ${message}`);
+      }
     } finally { if (nativeSaveRef.current === controller) nativeSaveRef.current = null; }
   }
   useEffect(() => { setNativeSaveState(""); setReceivedSavedPath(""); }, [receivedFile?.id]);
@@ -3512,7 +3581,21 @@ function RemoteSessionPanel({
     }));
   }, [zoom, mobileHeight, mobileRemote, portraitRemote]);
   const [isSessionFullscreen, setIsSessionFullscreen] = useState(initialViewPreferences.fullscreen);
-  const [isFullscreenToolbarOpen, setIsFullscreenToolbarOpen] = useState(false);
+  const [isFullscreenToolbarOpen, setIsFullscreenToolbarOpen] = useState(true);
+  useEffect(()=>{
+    if(mobileRemote||!isSessionFullscreen||!isVisible)return;
+    const canvas=canvasRef.current,preview=remotePreviewRef.current;
+    if(!canvas||!preview)return;
+    const fit=()=>{
+      if(canvas.width<=0||canvas.height<=0)return;
+      const scale=Math.min(preview.clientWidth/canvas.width,preview.clientHeight/canvas.height);
+      canvas.style.setProperty("width",`${canvas.width*scale}px`,"important");
+      canvas.style.setProperty("height",`${canvas.height*scale}px`,"important");
+    };
+    const resize=new ResizeObserver(fit),dimensions=new MutationObserver(fit);
+    resize.observe(preview);dimensions.observe(canvas,{attributes:true,attributeFilter:["width","height"]});fit();
+    return()=>{resize.disconnect();dimensions.disconnect();canvas.style.removeProperty("width");canvas.style.removeProperty("height");};
+  },[mobileRemote,isSessionFullscreen,isVisible,session?.state]);
   const [isWebRtcConnectionReady, setIsWebRtcConnectionReady] = useState(false);
   const [picturePresented, setPicturePresented] = useState(false);
   const reportedPictureSessionRef = useRef<string | null>(null);
@@ -3589,7 +3672,7 @@ function RemoteSessionPanel({
   const [isChatOpen, setIsChatOpen] = useState(false);
 
   useEffect(() => {
-    setIsFullscreenToolbarOpen(false);
+    setIsFullscreenToolbarOpen(true);
     setIsWebRtcConnectionReady(false);
     setPicturePresented(false);
     lastDisplayCommandRef.current = null;
@@ -3628,7 +3711,7 @@ function RemoteSessionPanel({
 
   async function applySessionFullscreen(nextFullscreen: boolean) {
     setIsSessionFullscreen(nextFullscreen);
-    setIsFullscreenToolbarOpen(false);
+    setIsFullscreenToolbarOpen(nextFullscreen);
 
     try {
       if ((window as any).__TAURI_INTERNALS__) {
@@ -4121,6 +4204,7 @@ function RemoteSessionPanel({
         setPicturePresented(false);
         setPictureError(false);
         setReverseFileSupported(false);
+        setFileCollisionSupported(false);
         setReverseResumeSupported(false);
         setRemoteFileStatus("");
         webRtcTransport?.close();
@@ -4131,6 +4215,7 @@ function RemoteSessionPanel({
           const transport = await startFirebaseViewerWebRtcTransport(sessionId, {
             onFrame: frame => { markConnectionTiming(sessionId, "frame-received"); drawTileFrame(frame); },
             onReverseFileSupport: resumeSupported => { if (active) { setReverseFileSupported(true); setReverseResumeSupported(resumeSupported === true); } },
+            onFileCollisionSupport: () => { if (active) setFileCollisionSupported(true); },
             onFileStatus: status => {
               if (!active) return;
               const labels = { selecting: "원격 PC에서 파일 선택 중", sending: "원격 파일 수신 중", complete: "전송 완료 · 검증 및 저장 중",
@@ -4188,7 +4273,7 @@ function RemoteSessionPanel({
             onState: (state) => {
               if (state === "webrtc-offer-sent") markConnectionTiming(sessionId, "offer-sent");
               if (!active) return;
-              if (state === "webrtc-file-closed") { markReceiveInterrupted(); setReverseFileSupported(false); setReverseResumeSupported(false); }
+              if (state === "webrtc-file-closed") { markReceiveInterrupted(); setReverseFileSupported(false); setReverseResumeSupported(false); setFileCollisionSupported(false); }
               if (state === "webrtc-open") {
                 markConnectionTiming(sessionId, "channel-open");
                 webRtcConnectionOpen = true;
@@ -4915,6 +5000,7 @@ function RemoteSessionPanel({
     }
     const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath?.trim();
     const remoteFilename = relativePath || file.name;
+    const collisionPolicy = fileCollisionSupported ? fileCollisionPolicy : undefined;
     if (!canTransferRemoteFile(file.size)) {
       throw new Error(`${remoteFilename}: file transfer limit is ${remoteFileLimitLabel()}.`);
     }
@@ -4954,6 +5040,7 @@ function RemoteSessionPanel({
       if (realtimeTransport) {
         try {
           const sentOverWebRtc = await realtimeTransport.sendFile({
+            collisionPolicy,
             resume: resumeTransferId !== undefined,
             file,
             filename: remoteFilename,
@@ -4979,12 +5066,14 @@ function RemoteSessionPanel({
             transferAbortControllersRef.current.delete(transferId);
             throw new DOMException("File transfer cancelled.", "AbortError");
           }
+          if (String(error).includes("File skipped:")) throw error;
           console.warn("WebRTC file transfer failed; trying the signed Firebase fallback.", error);
         }
       }
 
       try {
         const upload = await uploadFileToStorage(sessionId, {
+          collisionPolicy,
           file,
           fileSha256,
           filename: remoteFilename,
@@ -5039,6 +5128,7 @@ function RemoteSessionPanel({
         const fileData = arrayBufferToBase64(chunkBuffer);
         const chunkSha256 = await sha256Hex(chunkBuffer);
         await uploadFileChunk(sessionId, {
+          collisionPolicy,
           filename: remoteFilename,
           fileData,
           transferId,
@@ -5250,7 +5340,7 @@ function RemoteSessionPanel({
     }
   };
 
-  const sessionTabsBar = !isSplit && sessions.length > 1 ? (
+  const sessionTabsBar = !isSplit && sessions.length > 0 ? (
     <nav className="remote-session-tabs" aria-label="열린 원격 세션">
       {sessions.map((tabSession) => {
         const tabDevice = sessionDevices.find((candidate) => candidate.id === tabSession.deviceId);
@@ -5335,7 +5425,7 @@ function RemoteSessionPanel({
       onKeyUp={handleKeyUp}
       onPointerDownCapture={() => !isActive && onSelectSession(sessionId)}
     >
-      {sessionTabsBar}
+      {mobileRemote&&sessionTabsBar}
       {needsManualReconnect && isVisible && <div className="modal-backdrop" onKeyDown={event => event.stopPropagation()} onKeyUp={event => event.stopPropagation()}>
         <section className="modal-panel compact-modal" role="dialog" aria-modal="true" aria-label="원격 연결 끊김">
           <h2>원격 연결이 끊겼습니다</h2>
@@ -5483,6 +5573,10 @@ function RemoteSessionPanel({
             <aside className="session-transfer-queue" aria-label="파일 전송 목록">
               <div className="session-transfer-queue-heading">
                 <strong>파일 전송</strong>
+                {(desktopDownloads || fileCollisionSupported) && <select aria-label="동명 파일 처리" title="동명 파일 처리" value={fileCollisionPolicy} onChange={event => setFileCollisionPolicy(event.target.value as typeof fileCollisionPolicy)}>
+                  <option value="rename">이름 변경</option><option value="overwrite">덮어쓰기</option><option value="skip">건너뛰기</option>
+                </select>}
+                {!fileCollisionSupported && <small title="구형 Agent에 보내는 파일은 기존 Agent의 동명 파일 처리 방식을 사용합니다.">전송: 기존 방식</small>}
                 {desktopDownloads && <button type="button" title={downloadFolder || "기본 다운로드 폴더 설정"} aria-label="기본 다운로드 폴더 설정" onClick={async () => {
                   try { setDownloadFolder(await invoke<string>("choose_viewer_download_folder")); } catch (error) { setSessionDataError(String(error)); }
                 }}><SlidersHorizontal size={16} /></button>}
@@ -5549,7 +5643,20 @@ function RemoteSessionPanel({
                       setNativeSaveState("저장 중");
                       try {
                         const saved = await androidFileExporter.save(receivedFile, controller.signal);
-                        if (!controller.signal.aborted) setNativeSaveState(saved ? "파일 저장 완료" : "저장 취소됨");
+                        if (!controller.signal.aborted) {
+                          setNativeSaveState(saved ? "파일 저장 완료" : "저장 취소됨");
+                          if (saved) {
+                            try { await reverseReceiverRef.current?.discard(); }
+                            catch {
+                              if (!controller.signal.aborted) setNativeSaveState("파일 저장 완료 · 수신 기록 정리 실패");
+                              return;
+                            }
+                            if (!controller.signal.aborted) {
+                              receivedFileRef.current = null;
+                              setReceivedDownloadRequested(true);
+                            }
+                          }
+                        }
                       } catch {
                         if (!controller.signal.aborted) setNativeSaveState("저장 실패 · 다시 시도하세요");
                       } finally { if (nativeSaveRef.current === controller) nativeSaveRef.current = null; }
@@ -5578,6 +5685,7 @@ function RemoteSessionPanel({
                   : item.status === "paused" ? `일시중단됨 · ${percent}%`
                   : item.status === "transferring" ? `${percent}%${eta === null ? "" : ` · ${eta}초`}`
                     : item.status === "completed" ? "완료"
+                      : item.status === "skipped" ? "건너뜀"
                       : item.status === "cancelled" ? "취소됨" : "실패";
                 return (
                   <div className={`session-transfer-queue-item ${item.status}`} key={item.id}>
@@ -5670,7 +5778,6 @@ function RemoteSessionPanel({
           if (document.activeElement === imeInputRef.current) {
             imeInputRef.current?.blur();
           } else {
-            if (portraitRemote) setFitZoom();
             setMobileKeyboardEnabled(true);
             // Enable synchronously within this gesture before WebView requests IME.
             if (imeInputRef.current) {
@@ -5735,6 +5842,7 @@ function RemoteSessionPanel({
               </small>
             </div>
           </div>
+          {!mobileRemote&&sessionTabsBar}
         </div>
 
         <div className="session-display-controls" data-testid="display-mode-controls" role="group" aria-label="원격 화면 표시 설정">
@@ -5816,15 +5924,15 @@ function RemoteSessionPanel({
             disabled={!remoteInputAvailable} title={`${shortcut.name} · 원격 PC 기본 브라우저`} aria-label={shortcut.name}
             onClick={() => onInputEvent(`system ${shortcut.id === "edge" ? "edge-download" : "asp-login"}`)}>
             <img src={shortcut.logo} alt=""/><span>{shortcut.label}</span></button>)}
+          <button className="secondary-button" type="button" onClick={handleSendClipboard} title="클립보드 동기화: 내 PC → 원격 PC" aria-label="클립보드 동기화: 내 PC → 원격 PC">
+            <Clipboard size={17} />
+            {mobileRemote && <span>클립보드 보내기</span>}
+          </button>
           <button className="secondary-button" type="button" disabled={!remoteInputAvailable} title="원격 클립보드 열기 (Win+V)" aria-label="원격 클립보드 열기 (Win+V)" onClick={()=>{
             commitImeBeforeRemoteKey();
             for(const modifier of releaseTrackedModifierKeys(pressedKeysRef.current)) onInputEvent(`key-up ${modifier}`);
             onInputEvent("key-down Win"); onInputEvent("keypress V"); onInputEvent("key-up Win");
           }}><ClipboardList size={17}/></button>
-          <button className="secondary-button" type="button" onClick={handleSendClipboard} title="클립보드 동기화: 내 PC → 원격 PC" aria-label="클립보드 동기화: 내 PC → 원격 PC">
-            <Clipboard size={17} />
-            {mobileRemote && <span>클립보드 보내기</span>}
-          </button>
           <details className="session-tool-menu" data-testid="secondary-tools" open={mobileRemote ? mobileToolsOpen : undefined} onToggle={async event => {
             if (!event.currentTarget.open || !isViewerFirebaseEnabled()) return;
             try {
@@ -5903,7 +6011,7 @@ function RemoteSessionPanel({
                     <span>{`파일 전송 (${remoteFileLimitLabel()})`}</span>
                   </button>
                   <input multiple type="file" ref={fileInputRef} onChange={handleFileUpload} style={{ display: "none" }} />
-                  {device?.platform !== "android" && (!/\bWonRemoteViewer\/1\b/.test(navigator.userAgent) || androidFileExporter.available()) && (
+                  {device?.platform !== "android" && (!/\bWonRemoteViewer\/1\b/.test(navigator.userAgent) || androidDownloads) && (
                     <button className="secondary-button" type="button" disabled={!isWebRtcConnectionReady || !reverseFileSupported || (Boolean(receivedFile) && !receivedDownloadRequested)} onClick={() => { setTransferPanelOpen(true); onInputEvent("request-file-send"); }} title={reverseFileSupported ? "원격 PC에서 보낼 파일 선택" : "연결된 에이전트의 파일 가져오기 지원이 확인되지 않았습니다"}>
                       <Download size={17} /><span>원격 파일 가져오기</span>
                     </button>

@@ -1,0 +1,323 @@
+{
+  "date": "2026-10-30T10:52:56.4232387+09:00",
+  "scope": "Read-only comparison/catalog proof, not rival execution/functional superiority or product implementation",
+  "features": 52,
+  "classification": [
+    {
+      "kind": "보류",
+      "count": 7
+    },
+    {
+      "kind": "보완",
+      "count": 26
+    },
+    {
+      "kind": "신규",
+      "count": 11
+    },
+    {
+      "kind": "유지",
+      "count": 8
+    }
+  ],
+  "officialChecklistItems": 57,
+  "checklistCoverage": [
+    {
+      "entry": "M01",
+      "feature": "F13"
+    },
+    {
+      "entry": "M12",
+      "feature": "F15"
+    },
+    {
+      "entry": "M23",
+      "feature": "F10"
+    },
+    {
+      "entry": "M02",
+      "feature": "F05"
+    },
+    {
+      "entry": "M13",
+      "feature": "F37"
+    },
+    {
+      "entry": "M24",
+      "feature": "F19"
+    },
+    {
+      "entry": "M03",
+      "feature": "F05"
+    },
+    {
+      "entry": "M14",
+      "feature": "F30"
+    },
+    {
+      "entry": "M25",
+      "feature": "F36"
+    },
+    {
+      "entry": "M04",
+      "feature": "F09"
+    },
+    {
+      "entry": "M15",
+      "feature": "F38"
+    },
+    {
+      "entry": "M26",
+      "feature": "F39"
+    },
+    {
+      "entry": "M05",
+      "feature": "F34"
+    },
+    {
+      "entry": "M16",
+      "feature": "F02"
+    },
+    {
+      "entry": "M27",
+      "feature": "F39"
+    },
+    {
+      "entry": "M06",
+      "feature": "F32"
+    },
+    {
+      "entry": "M17",
+      "feature": "F27"
+    },
+    {
+      "entry": "M28",
+      "feature": "F05"
+    },
+    {
+      "entry": "M07",
+      "feature": "F34"
+    },
+    {
+      "entry": "M18",
+      "feature": "F35"
+    },
+    {
+      "entry": "M29",
+      "feature": "F19"
+    },
+    {
+      "entry": "M08",
+      "feature": "F33"
+    },
+    {
+      "entry": "M19",
+      "feature": "F34"
+    },
+    {
+      "entry": "M30",
+      "feature": "F32"
+    },
+    {
+      "entry": "M09",
+      "feature": "F31"
+    },
+    {
+      "entry": "M20",
+      "feature": "F32"
+    },
+    {
+      "entry": "M31",
+      "feature": "F20"
+    },
+    {
+      "entry": "M10",
+      "feature": "F19"
+    },
+    {
+      "entry": "M21",
+      "feature": "F03"
+    },
+    {
+      "entry": "M32",
+      "feature": "F38"
+    },
+    {
+      "entry": "M11",
+      "feature": "F29"
+    },
+    {
+      "entry": "M22",
+      "feature": "F35"
+    },
+    {
+      "entry": "M33",
+      "feature": "F04"
+    },
+    {
+      "entry": "C01",
+      "feature": "F11"
+    },
+    {
+      "entry": "C09",
+      "feature": "F20"
+    },
+    {
+      "entry": "C17",
+      "feature": "F35"
+    },
+    {
+      "entry": "C02",
+      "feature": "F06"
+    },
+    {
+      "entry": "C10",
+      "feature": "F17"
+    },
+    {
+      "entry": "C18",
+      "feature": "F44"
+    },
+    {
+      "entry": "C03",
+      "feature": "F45"
+    },
+    {
+      "entry": "C11",
+      "feature": "F37"
+    },
+    {
+      "entry": "C19",
+      "feature": "F40"
+    },
+    {
+      "entry": "C04",
+      "feature": "F07"
+    },
+    {
+      "entry": "C12",
+      "feature": "F07"
+    },
+    {
+      "entry": "C20",
+      "feature": "F41"
+    },
+    {
+      "entry": "C05",
+      "feature": "F18"
+    },
+    {
+      "entry": "C13",
+      "feature": "F39"
+    },
+    {
+      "entry": "C21",
+      "feature": "F28"
+    },
+    {
+      "entry": "C06",
+      "feature": "F12"
+    },
+    {
+      "entry": "C14",
+      "feature": "F47"
+    },
+    {
+      "entry": "C22",
+      "feature": "F48"
+    },
+    {
+      "entry": "C07",
+      "feature": "F10"
+    },
+    {
+      "entry": "C15",
+      "feature": "F06"
+    },
+    {
+      "entry": "C23",
+      "feature": "F46"
+    },
+    {
+      "entry": "C08",
+      "feature": "F08"
+    },
+    {
+      "entry": "C16",
+      "feature": "F47"
+    },
+    {
+      "entry": "C24",
+      "feature": "F26"
+    }
+  ],
+  "sourceFilesUnchanged": 33,
+  "comparedSourceIds": [
+    "W01",
+    "W02",
+    "W03",
+    "W04",
+    "W05",
+    "W06",
+    "W07",
+    "W08",
+    "W09",
+    "W10",
+    "W11",
+    "W12",
+    "W13",
+    "W14",
+    "W15",
+    "W16",
+    "W17",
+    "W18",
+    "W19",
+    "W20",
+    "W21",
+    "W22",
+    "W23",
+    "W24",
+    "W25",
+    "W26",
+    "W27",
+    "W28",
+    "W29",
+    "W30",
+    "W31",
+    "W32",
+    "W33"
+  ],
+  "originalAndPayloadHashesUnchanged": 21,
+  "resourceFiles": 21,
+  "resourceEntries": 1205.0,
+  "selectedFragments": 1579.0,
+  "resourceReferencesChecked": 7,
+  "helperSyntax": "pass",
+  "helperSelfCheck": "pass: ID/offset/text, truncated table, executable/outside/relative output rejection",
+  "parsedJson": [
+    "AnySupport_Setup_10.managed.rea.json",
+    "AnySupport_Setup_10.rea.json",
+    "api-evidence.json",
+    "binary-inventory.json",
+    "keyword-evidence.json",
+    "manifest-summary.json",
+    "ManualLauncher.managed.rea.json",
+    "ManualLauncher.rea.json",
+    "public-sources.json",
+    "selected-literals.json",
+    "signature-summary.json",
+    "source-evidence.json",
+    "source-gap-search.json",
+    "ui-resource-evidence.json",
+    "verification.json"
+  ],
+  "rootContractStatus": "active",
+  "scopedWhitespace": "pass",
+  "reportSha256": "37db2828be528ccd0993202d95bac5462454eefe191e9d0adcc9a4cf3eb6d2b9",
+  "limitations": [
+    "No target execution/install, native decompilation or private protocol analysis",
+    "No performance superiority or100ms proof",
+    "No WonRemote product change/build/deploy",
+    "Static file replacement risk INC-20261030-164 remains open"
+  ]
+}

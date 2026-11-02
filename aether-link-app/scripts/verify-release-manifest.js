@@ -145,21 +145,34 @@ await verifyAsset(manifest, {
 });
 await verifyAsset(manifest, {
   arch: "x64",
-  section: "agentWindows",
+  section: "agentFileUpdates",
+  filePath: path.resolve(args.get("--agent-update-x64") || path.join(path.dirname(requiredArg(args, "--agent-x64")), "WonRemote-Agent-Update.exe")),
+  expectedName: "WonRemote-Agent-Update.exe",
+});
+await verifyAsset(manifest, {
+  arch: "x86",
+  section: "agentFileUpdates",
+  filePath: path.resolve(args.get("--agent-update-x86") || args.get("--agent-update-x64") || path.join(path.dirname(requiredArg(args, "--agent-x64")), "WonRemote-Agent-Update.exe")),
+  expectedName: "WonRemote-Agent-Update.exe",
+});
+await verifyAsset(manifest, {
+  arch: "x64", section: "agentInstallers",
   filePath: path.resolve(requiredArg(args, "--agent-x64")),
   expectedName: args.get("--agent-asset-name-x64") || "WonRemote-Agent-Setup.exe",
 });
 await verifyAsset(manifest, {
-  arch: "x86",
-  section: "agentWindows",
+  arch: "x86", section: "agentInstallers",
   filePath: path.resolve(args.get("--agent-x86") || requiredArg(args, "--agent-x64")),
   expectedName: args.get("--agent-asset-name-x86") || args.get("--agent-asset-name-x64") || "WonRemote-Agent-Setup.exe",
 });
 
 for (const arch of ["x64", "x86"]) {
+  if (JSON.stringify(manifest.agentWindows?.[arch]) !== JSON.stringify(manifest.agentInstallers?.[arch])) {
+    throw new Error(`Legacy agentWindows.${arch} metadata must retain the signed Setup.`);
+  }
   if (JSON.stringify(manifest.windows?.[arch]) !== JSON.stringify(manifest.viewerWindows?.[arch])) {
     throw new Error(`Release manifest windows.${arch} compatibility metadata must match viewerWindows.${arch}.`);
   }
 }
 
-console.log(`Verified release manifest ${manifestPath} for ${version} (two x86 installers signed for x64 compatibility and x86 clients).`);
+console.log(`Verified release manifest ${manifestPath} for ${version} (two x86 installers and a separate Agent file update, including x64 compatibility signatures).`);

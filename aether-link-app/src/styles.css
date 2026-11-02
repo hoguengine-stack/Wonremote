@@ -63,7 +63,15 @@ button:disabled {
 
 .login-panel h1 {
   font-size: 24px;
+  word-break: keep-all;
 }
+
+.login-password-field { position: relative; display: flex; align-items: center; }
+.login-password-field input { width: 100%; padding-right: 48px; }
+.login-password-field button { position: absolute; right: 2px; top: 2px; bottom: 2px; width: 40px; border: 0; background: transparent; color: #43586b; display: grid; place-items: center; border-radius: 4px; }
+.login-input-state { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; color: #43586b; }
+.login-input-state .caps-lock-warning { color: #9b390a; font-weight: 700; }
+.login-error { margin: 0; line-height: 1.5; overflow-wrap: anywhere; }
 
 .login-recovery-actions {
   display: flex;
@@ -133,6 +141,8 @@ button:disabled {
 }
 
 .agent-screen .agent-panel {
+  display: flex;
+  flex-direction: column;
   border: 0;
   border-radius: 0;
   box-shadow: none;
@@ -141,7 +151,40 @@ button:disabled {
   min-height: 0;
   padding: 16px;
   width: 100%;
+  overflow: hidden;
+}
+
+.agent-panel-scroll {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  gap: 10px;
+  min-height: 0;
+  min-width: 0;
   overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.active-agent-panel .agent-panel-scroll { gap: 6px; }
+.agent-panel-scroll > * { flex-shrink: 0; }
+
+.agent-panel-footer {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 6px;
+  border-top: 1px solid #d8dee7;
+  padding-top: 8px;
+  background: #ffffff;
+  min-width: 0;
+}
+
+.agent-screen .agent-panel-footer .agent-zook-status,
+.agent-screen .agent-panel-footer .error-text {
+  margin: 0;
+  max-height: 54px;
+  overflow-y: auto;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .agent-screen .agent-panel.active-agent-panel { gap: 6px; padding: 14px; }
@@ -2933,7 +2976,7 @@ input:focus {
 
 .remote-session-tab .remote-session-tab-close {
   border-left: 1px solid rgba(255, 255, 255, 0.13);
-  color: #9fb0b8;
+  color: #ff777e;
   padding: 0 5px;
 }
 
@@ -3014,6 +3057,14 @@ input:focus {
 
 .session-command-identity {
   gap: 10px;
+}
+
+.session-command-identity > .remote-session-tabs {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
 }
 
 .session-back-button,
@@ -3372,6 +3423,21 @@ input:focus {
 
 .session-transfer-queue-heading {
   display: flex;
+  flex-wrap: wrap;
+}
+
+.session-transfer-queue-heading select {
+  max-width: 110px;
+  min-height: 28px;
+  background: #22323d;
+  border: 1px solid #405661;
+  color: #dce9e7;
+  border-radius: 4px;
+}
+
+.session-transfer-queue-heading small {
+  color: #c1cece;
+  font-size: 11px;
 }
 
 .session-transfer-queue-heading strong {
@@ -3596,10 +3662,20 @@ input:focus {
 .session-fullscreen-active.session-fullscreen-tools-open .session-actions-top {
   background: rgba(17, 26, 35, 0.98);
   display: grid !important;
-  grid-template-columns: minmax(240px, auto) minmax(360px, 1fr) auto;
+  grid-template-columns: minmax(260px, 1fr) auto auto;
   max-height: min(48vh, 380px);
   overflow: visible;
   padding: 52px 10px 10px;
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.app-shell:not(.mobile-viewer) .session-actions-top {
+  grid-template-columns: minmax(260px, 1fr) auto auto;
+}
+
+.app-shell:not(.mobile-viewer) .session-fullscreen-active .remote-work-area {
+  height: auto;
 }
 
 .session-fullscreen-active:not(.session-fullscreen-tools-open) .remote-command-bar {
@@ -3620,6 +3696,7 @@ input:focus {
 
 @media (max-width: 1380px) {
   .session-actions-top,
+  .app-shell:not(.mobile-viewer) .session-actions-top,
   .session-fullscreen-active.session-fullscreen-tools-open .session-actions-top {
     grid-template-columns: minmax(240px, 1fr) auto;
   }
@@ -3780,4 +3857,47 @@ input:focus {
   .session-panel.mobile-session:has(.mobile-pinned-keys) { --mobile-control-height: calc(100px + var(--mobile-status-height) + env(safe-area-inset-bottom)); }
   .mobile-viewer.remote-focus-mode .mobile-session.mobile-tools-open .remote-command-bar { left: auto; width: min(440px, calc(100% - 16px)); }
   .mobile-session .mobile-key-panel { max-height: calc(100dvh - 64px); }
+}
+.video-consultation-backdrop {
+  position: fixed; inset: 0; z-index: 200; background: #10171bb3;
+  display: grid; place-items: center; padding: 16px;
+}
+.video-consultation {
+  background: #f8fafb; color: #172b34; border: 1px solid #bacbd1; border-radius: 8px;
+  width: min(1120px,100%); max-height: calc(100dvh - 32px); display: flex; flex-direction: column; overflow: auto;
+}
+.video-consultation button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 44px; flex-shrink: 0; }
+.video-consultation-header { display: flex; align-items: center; gap: 12px; padding: 14px 18px; border-bottom: 1px solid #cad5da; }
+.video-consultation-header h2 { display: flex; align-items: center; gap: 8px; font-size: 18px; margin: 0; }
+.video-consultation-header > span { margin-left: auto; font-size: 13px; color: #246957; }
+.video-consultation-body { display: flex; min-height: 0; flex: 1; }
+.video-invitation { flex: 0 0 292px; padding: 18px; border-right: 1px solid #cad5da; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.video-invitation label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.video-invitation input { width: 100%; min-width: 0; height: 44px; border: 1px solid #a9bbc5; background: white; color: #172b34; border-radius: 4px; padding: 8px; }
+.video-invitation p { font-size: 13px; overflow-wrap: anywhere; margin: 0; }
+.video-invitation small { font-size: 12px; color: #526976; }
+.video-consultation-stage { flex: 1; min-width: 0; position: relative; background: #101819; min-height: 340px; display: grid; place-items: center; overflow: hidden; }
+.video-consultation-stage video { width: 100%; height: 100%; max-height: 65dvh; object-fit: contain; display: block; }
+.video-consultation-placeholder { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 12px; color: #b6ced3; pointer-events: none; }
+.video-customer-start { position: absolute; left: 16px; right: 16px; bottom: 20px; display: grid; justify-items: center; gap: 10px; color: white; }
+.video-customer-start p { margin: 0; max-width: 460px; text-align: center; font-size: 14px; line-height: 1.6; }
+.video-consultation-error { background: #fff0ee; color: #9a2834; border-top: 1px solid #e5b4b4; padding: 12px 18px; margin: 0; overflow-wrap: anywhere; font-size: 14px; }
+.video-consultation-footer { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; padding: 12px 16px; border-top: 1px solid #cad5da; }
+.video-consultation-footer > span { margin-right: auto; font-size: 13px; }
+.video-consultation .danger-button { color: #a02131; background: #fff0ef; border: 1px solid #da9b9f; border-radius: 4px; padding: 8px 14px; }
+.video-consultation-page { min-height: 100dvh; display: flex; background: #101819; color: white; }
+.video-consultation-guest { width: 100%; max-height: none; min-height: 100dvh; border: 0; border-radius: 0; }
+.video-consultation-guest .video-consultation-stage { min-height: 45dvh; }
+.video-consultation-guest .video-consultation-stage video { max-height: calc(100dvh - 150px); }
+.video-invalid-link { margin: auto; padding: 24px; text-align: center; }
+.video-invalid-link h1 { font-size: 20px; }
+@media(max-width:680px) {
+  .video-consultation-backdrop { padding: 0; }
+  .video-consultation { max-height: 100dvh; border-radius: 0; }
+  .video-consultation-header { padding: 10px; gap: 8px; flex-wrap: wrap; }
+  .video-consultation-header h2 { font-size: 16px; }
+  .video-consultation-body { flex-direction: column; }
+  .video-invitation { flex-basis: auto; border-right: 0; border-bottom: 1px solid #cad5da; padding: 12px; gap: 10px; }
+  .video-consultation-stage { min-height: 220px; }
+  .video-consultation-footer { padding: 10px; }
 }

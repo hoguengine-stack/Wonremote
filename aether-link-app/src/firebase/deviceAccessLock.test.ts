@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentDeviceAccessLock } from "../agent/deviceAccessLock";
 import { requestFirebaseDeviceAccess, openFirebaseSession } from "./viewerFirebase";
 import { isAgentDeviceAccessSessionAllowed, processAgentDeviceAccessRequest } from "./agentFirebase";
+import { getDocFromServer } from "firebase/firestore";
 
 const state = vi.hoisted(() => ({
   documents:new Map<string, any>(), listeners:new Map<string, (snapshot: any) => void>(),
@@ -52,6 +53,45 @@ beforeEach(()=>{state.documents.clear();state.listeners.clear();state.reads=0;st
 afterEach(()=>vi.useRealTimers());
 
 describe("Viewer-to-Agent encrypted device access request",()=>{
+  it.each([false,true])("preserves unavailable local lock storage only when the fresh server lock is disabled (enabled=%s)",async enabled=>{
+    state.documents.set("deviceAccessLocks/device-1",{enabled,version:"v1"});
+    expect(await isAgentDeviceAccessSessionAllowed("device-1","s1",null)).toBe(!enabled);
+    expect(state.reads).toBe(1);expect(state.writes).toBe(0);
+  });
+  it("overlaps fresh lock/session reads, keeps grant verification and uses three reads per locked start", async () => {
+    const lock = {publicState:{enabled:true,version:"v1"},verifyApproval:vi.fn(()=>true)} as unknown as AgentDeviceAccessLock;
+    state.documents.set("deviceAccessLocks/device-1",{enabled:true,version:"v1"});
+    state.documents.set("sessions/s1",{deviceId:"device-1",state:"connected",accessLockVersion:"v1",accessRequestId:"r1",ownerUid:"viewer-1"});
+    state.documents.set("deviceAccessRequests/r1",{state:"approved",operation:"connect",sessionId:"s1",deviceId:"device-1",ownerUid:"viewer-1",approvedVersion:"v1",approvalSignature:"signature"});
+    let release!:()=>void;
+    const blocked = new Promise<void>(resolve=>{release=resolve;});
+    vi.mocked(getDocFromServer).mockImplementationOnce(async ref=>{state.reads++;await blocked;return snapshot(ref as any) as any;});
+    const pending=isAgentDeviceAccessSessionAllowed("device-1","s1",lock);
+    expect(state.reads).toBe(2);
+    expect(lock.verifyApproval).not.toHaveBeenCalled();
+    release();
+    expect(await pending).toBe(true);
+    expect(state.reads).toBe(3);
+    expect(lock.verifyApproval).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({sessionId:"s1"}),"v1","signature");
+    expect(await Promise.all([isAgentDeviceAccessSessionAllowed("device-1","s1",lock),isAgentDeviceAccessSessionAllowed("device-1","s1",lock)])).toEqual([true,true]);
+    expect(state.reads).toBe(9);
+    const counts={reads:state.reads,writes:state.writes,listeners:state.listenCount};
+    vi.useFakeTimers();await vi.advanceTimersByTimeAsync(86_400_000);
+    expect({reads:state.reads,writes:state.writes,listeners:state.listenCount}).toEqual(counts);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it.each(["unlocked","local-mismatch","version","device","closed","request-owner","signature","read-error"])("preserves denial and bounded reads for %s", async scenario => {
+    const lock={publicState:{enabled:scenario!=="unlocked",version:"v1"},verifyApproval:vi.fn(()=>scenario!=="signature")} as unknown as AgentDeviceAccessLock;
+    state.documents.set("deviceAccessLocks/device-1",{enabled:scenario!=="unlocked"&&scenario!=="local-mismatch",version:scenario==="version"?"v2":"v1"});
+    state.documents.set("sessions/s1",{deviceId:scenario==="device"?"other":"device-1",state:scenario==="closed"?"closed":"connected",accessLockVersion:"v1",accessRequestId:"r1",ownerUid:"viewer-1"});
+    state.documents.set("deviceAccessRequests/r1",{state:"approved",operation:"connect",sessionId:"s1",deviceId:"device-1",ownerUid:scenario==="request-owner"?"other":"viewer-1",approvedVersion:"v1",approvalSignature:"signature"});
+    if(scenario==="read-error") vi.mocked(getDocFromServer).mockRejectedValueOnce(new Error("permission-denied"));
+    if(scenario==="read-error") await expect(isAgentDeviceAccessSessionAllowed("device-1","s1",lock)).rejects.toThrow("permission-denied");
+    else expect(await isAgentDeviceAccessSessionAllowed("device-1","s1",lock)).toBe(scenario==="unlocked");
+    expect(state.reads).toBeLessThanOrEqual(3);
+    if(scenario==="unlocked") expect(state.reads).toBe(1);
+    expect(state.writes).toBe(0);expect(state.listenCount).toBe(0);
+  });
   it.each(['cancel','timeout'])("cleans up %s without retry or late completion",async(reason)=>{
     const keys=generateKeyPairSync('rsa',{modulusLength:2048});
     state.documents.set('devices/device-1',{accessPublicKey:keys.publicKey.export({format:'der',type:'spki'}).toString('base64')});

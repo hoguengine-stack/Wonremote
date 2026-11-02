@@ -6,6 +6,7 @@ import { defineSecret, defineString } from "firebase-functions/params";
 import { generateSecurityCode } from "./securityCode.js";
 import { createTemporaryTurnCredential } from "./turnCredentials.js";
 import { normalizeWakeMac, selectWakeRelay } from "./wakeRelay.js";
+export { videoConsultation } from "./videoConsultation.js";
 
 export {
   createViewerAccount,

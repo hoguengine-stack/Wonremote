@@ -11,7 +11,7 @@ dependencies {
     testImplementation("org.robolectric:robolectric:4.14.1")
 }
 
-val releaseSigningFile = rootProject.file("keystore.properties")
+val releaseSigningFile = rootProject.file(System.getenv("WONREMOTE_ANDROID_SIGNING_PROPERTIES") ?: "keystore.properties")
 val releaseSigning = Properties().apply {
     if (releaseSigningFile.isFile) {
         releaseSigningFile.inputStream().use { load(it) }

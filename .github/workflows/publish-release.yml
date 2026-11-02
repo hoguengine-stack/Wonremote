@@ -96,7 +96,9 @@ jobs:
             wonremote-windows-${{ runner.os }}-
 
       - name: Install dependencies
-        run: npm ci
+        run: |
+          npm ci
+          npm --prefix ../functions ci --ignore-scripts
 
       - name: Install x86 Rust target
         run: rustup target add i686-pc-windows-msvc
@@ -156,13 +158,22 @@ jobs:
       - name: Verify installer update E2E
         run: npm run test:update-e2e
 
+      - name: Verify received file preservation and resume
+        run: npx vitest run --maxWorkers=1 src/agent/fileTransferFinalization.test.ts src/agent/filePublication.test.ts src/agent/fileTransferReceiver.test.ts src/agent/webrtcFileReceiver.test.ts src/agent/firebaseStorageDownload.test.ts src/agent/selectFileToSend.test.ts src/agent/reverseFileRequest.test.ts src/domain/desktopFileSave.test.ts src/domain/fileTransferQueue.test.ts
+
       - name: Verify encrypted device access and input lifecycle
-        run: npx vitest run --maxWorkers=1 scripts/verify-recurrence-coverage.test.js src/agent/deviceAccessLock.test.ts src/firebase/deviceAccessLock.test.ts src/agent/agentSessionLifecycle.test.ts src/agent/agentCommandExecution.test.ts src/agent/tossEmergencyOrdersDownload.test.ts src/firebase/agentWebRtcSignaling.test.ts src/firebase/firstAnswerLatency.test.ts src/firebase/agentPeerConnectionWeriftSmoke.test.ts src/firebase/viewerWebRtcTransport.test.ts src/agent/agentRollback.test.ts
+        run: npx vitest run --maxWorkers=1 scripts/verify-recurrence-coverage.test.js src/agent/deviceAccessLock.test.ts src/firebase/deviceAccessLock.test.ts src/agent/agentSessionLifecycle.test.ts src/agent/agentCommandExecution.test.ts src/agent/tossEmergencyOrdersDownload.test.ts src/firebase/agentWebRtcSignaling.test.ts src/firebase/firstAnswerLatency.test.ts src/firebase/agentPeerConnectionWeriftSmoke.test.ts src/firebase/viewerWebRtcTransport.test.ts src/agent/agentRollback.test.ts src/domain/remoteControlCommands.test.ts src/agent/agentDisplayInventory.test.ts src/firebase/firestoreDevice.test.ts
 
       - name: Verify password modal and remote toolbar in Chromium
         run: |
           npx playwright install chromium
-          npx vitest run src/viewerDeviceRefresh.test.ts -t 'device access lock modal|remembers this Viewer|isolates remembered|never remembers failed|does not revive remembered|toolbar shortcuts keep|browser edition shortcuts also|clipboard success notification|mobile Toss shortcut'
+          npx vitest run src/viewerDeviceRefresh.test.ts -t 'device access lock modal|remembers this Viewer|isolates remembered|never remembers failed|does not revive remembered|toolbar shortcuts keep|browser edition shortcuts also|clipboard success notification|mobile Toss shortcut|Agent standby footer|initial registration metadata|running Agent metadata|ZOOK setup|ZOOK failure|collision choices|automatically commits PC received|fits below the expanded|tracks a requested Agent|shows Caps Lock|sends only one login|bounds native input'
+
+      - name: Verify explicit Agent update feedback and login errors
+        run: npx vitest run src/domain/agentUpdateTracker.test.ts src/agent/agentUpdatePollPolicy.test.ts src/domain/agentRegistry.test.ts src/firebase/viewerDeviceMetadata.test.ts src/firebase/viewerDeviceRefresh.test.ts src/firebase/firebaseError.test.ts src/firebase/viewerFirebaseAuth.test.ts src/server/apiServer.test.ts
+
+      - name: Verify Android discovery and published archive preservation
+        run: npx vitest run src/androidUpdateRelease.test.ts
 
       - name: Select Java for Firestore rules verification
         uses: actions/setup-java@v4
@@ -177,12 +188,18 @@ jobs:
       - name: Build two x86 installers
         run: npm run release:exes
 
+      - name: Verify bundled native file publication without installation
+        run: npx tsx tests/e2e/test_file_publication.ts
+
       - name: Verify fixed remote browser targets
         run: |
           $cmake = (Resolve-Path .local-run/cmake/cmake-3.31.8-windows-x86_64/bin).Path
           $nasm = (Resolve-Path .local-run/nasm/nasm-2.16.03).Path
           $env:PATH = "$cmake;$nasm;$env:PATH"
           cargo test --manifest-path ../aether-link-poc/Cargo.toml --target i686-pc-windows-msvc --release --locked --bin wonremote-poc remote_browser_shortcuts_allow_only_fixed_targets
+          cargo test --manifest-path ../aether-link-poc/Cargo.toml --target i686-pc-windows-msvc --release --locked --bin wonremote-poc display_ -- --test-threads=1
+          cargo test --manifest-path ../aether-link-poc/Cargo.toml --target i686-pc-windows-msvc --release --locked --bin wonremote-poc file_picker:: -- --test-threads=1
+          cargo test --manifest-path ../aether-link-poc/Cargo.toml --target i686-pc-windows-msvc --release --locked --bin wonremote-poc file_publication:: -- --test-threads=1
 
       - name: Verify Agent startup with installed NSIS toolchain
         run: npm test -- src/agentStartup.test.ts
@@ -196,8 +213,19 @@ jobs:
       - name: Verify manual update task scope and launch error reporting
         run: cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc --release --lib test_manual_update
 
+      - name: Verify pinned Viewer window activation without restarting sessions
+        run: |
+          npx vitest run src/viewerTrayRestart.test.ts
+          cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc --release --locked --lib viewer_activation:: -- --test-threads=1
+          cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc --release --locked --lib login_input_state:: -- --test-threads=1
+          cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc --release --locked --lib file_update_capability -- --test-threads=1
+          cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc --release --locked --lib viewer_downloads:: -- --test-threads=1
+
       - name: Apply and verify Authenticode signatures
         run: npm run release:sign
+
+      - name: Verify Agent file replacement and signed legacy manifest compatibility
+        run: npx vitest run --maxWorkers=1 scripts/package-agent-file-update.test.js scripts/package-release-exes.test.js scripts/verify-x86-installer-payloads.test.js
 
       - name: Build signed update manifest from final installer bytes
         run: |

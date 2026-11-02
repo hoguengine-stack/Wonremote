@@ -141,6 +141,7 @@ describe("firestore device mapping", () => {
       status: "online",
       lastSeenAt: "2026-06-12T09:00:00.000Z",
       updateState: "downloading",
+      updateRequestId: "1700000000001",
       updateTargetVersion: " 1.2.0 ",
       updateCurrentVersion: " 1.1.0 ",
       updateProgress: 101.8,
@@ -153,6 +154,7 @@ describe("firestore device mapping", () => {
     expect(managed).toMatchObject({
       storeName: "Won Chicken Gangnam",
       updateState: "downloading",
+      updateRequestId: "1700000000001",
       updateTargetVersion: "1.2.0",
       updateCurrentVersion: "1.1.0",
       updateProgress: 100,
@@ -172,11 +174,13 @@ describe("firestore device mapping", () => {
       status: "online",
       lastSeenAt: "2026-06-12T09:00:00.000Z",
       updateState: "unknown",
+      updateRequestId: "bad",
       updateProgress: Number.NaN,
       updateRing: "invalid",
       updatePaused: "true" as never,
     });
     expect(invalid).not.toHaveProperty("updateState");
+    expect(invalid).not.toHaveProperty("updateRequestId");
     expect(invalid).not.toHaveProperty("updateProgress");
     expect(invalid).not.toHaveProperty("updateRing");
     expect(invalid).not.toHaveProperty("updatePaused");

@@ -377,12 +377,16 @@ export async function processAgentDeviceAccessRequest(
   }
 }
 
-export async function isAgentDeviceAccessSessionAllowed(deviceId: string, sessionId: string, lock: AgentDeviceAccessLock, env: AgentFirebaseEnv = process.env): Promise<boolean> {
+export async function isAgentDeviceAccessSessionAllowed(deviceId: string, sessionId: string, lock: AgentDeviceAccessLock | null, env: AgentFirebaseEnv = process.env): Promise<boolean> {
   const {db} = getAgentFirebaseServices(env);
-  const current = await readAgentDeviceAccessState(deviceId, env);
-  if (!current.enabled) return !lock.publicState.enabled;
-  if (!lock.publicState.enabled || lock.publicState.version !== current.version) return false;
-  const session = (await getDocFromServer(doc(db, "sessions", sessionId))).data();
+  // Both reads remain server-fresh; overlap them only for a locally locked device.
+  const [current, sessionSnapshot] = await Promise.all([
+    readAgentDeviceAccessState(deviceId, env),
+    lock?.publicState.enabled ? getDocFromServer(doc(db, "sessions", sessionId)) : undefined,
+  ]);
+  if (!current.enabled) return lock?.publicState.enabled !== true;
+  if (!lock?.publicState.enabled || lock.publicState.version !== current.version) return false;
+  const session = sessionSnapshot?.data();
   if (session?.deviceId !== deviceId || session.state !== "connected" || session.accessLockVersion !== current.version || typeof session.accessRequestId !== "string") return false;
   const request = (await getDocFromServer(doc(db, "deviceAccessRequests", session.accessRequestId))).data();
   return request?.state === "approved" && request.operation === "connect" && request.sessionId === sessionId
@@ -433,6 +437,7 @@ export async function loadAgentUpdateRolloutWithFirebase(
 function updateTelemetryDocument(telemetry: AgentUpdateTelemetry): Record<string, unknown> {
   return {
     updateCurrentVersion: telemetry.currentVersion,
+    updateRequestId: telemetry.requestId ?? null,
     updateError: telemetry.error?.trim() || null,
     updateProgress: Number.isFinite(telemetry.progress) ? Math.max(0, Math.min(100, Math.trunc(telemetry.progress!))) : null,
     updateState: telemetry.state,
@@ -685,6 +690,7 @@ export async function startAgentWebRtcTransportWithFirebase(
   );
   const recentNegotiationIds = new Set<string>();
   const appliedViewerCandidates = new Set<string>();
+  let latestViewerCandidateDocs: readonly { id: string; data: () => Record<string, any> }[] = [];
   const maxMessageBytes = resolveWebRtcMaxMessageBytes(env);
   let activeNegotiationId: string | null = null;
   let activePeer: AgentPeerConnectionLike | null = null;
@@ -1020,6 +1026,7 @@ export async function startAgentWebRtcTransportWithFirebase(
     await peer.setRemoteDescription({ type: "offer", sdp: offer.sdp });
     if (closedByCaller || activePeer !== peer || activeNegotiationId !== offer.negotiationId) return;
     activeRemoteDescriptionSet = true;
+    applyViewerCandidateDocs(latestViewerCandidateDocs);
     void getDocs(recentViewerCandidates)
       .then((snapshot) => applyViewerCandidateDocs(snapshot.docs))
       .catch((error) => {
@@ -1136,7 +1143,8 @@ export async function startAgentWebRtcTransportWithFirebase(
         recentViewerCandidates,
         (snapshot) => {
           viewerCandidateRetryAttempt = 0;
-          applyViewerCandidateDocs(snapshot.docs);
+          latestViewerCandidateDocs = snapshot.docs;
+          applyViewerCandidateDocs(latestViewerCandidateDocs);
         },
         (error) => {
           unsubscribeViewerCandidates = null;
@@ -1149,6 +1157,8 @@ export async function startAgentWebRtcTransportWithFirebase(
   };
 
   // An open channel can send the pending first frame while ICE gathering continues.
+  // Receive remote trickle candidates without waiting for local STUN gathering.
+  subscribeViewerCandidateUpdates();
   negotiationQueue = (async () => {
     try {
       await activateNegotiation(signalSnapshot);
@@ -1158,7 +1168,6 @@ export async function startAgentWebRtcTransportWithFirebase(
     }
     if (!closedByCaller) {
       subscribeSignalUpdates();
-      subscribeViewerCandidateUpdates();
     }
   })();
 
@@ -1226,6 +1235,7 @@ export async function fetchSessionDataWithFirebase(
   const files = await drainFirebaseSessionQueue(sessionId, "files", 200, "agent", (id, data) => ({
     id,
     filename: String(data.filename ?? ""),
+    collisionPolicy: data.collisionPolicy as import("../domain/fileCollisionPolicy").FileCollisionPolicy | undefined,
     fileData: String(data.fileData ?? ""),
     transferId: typeof data.transferId === "string" ? data.transferId : undefined,
     chunkIndex: typeof data.chunkIndex === "number" ? data.chunkIndex : undefined,

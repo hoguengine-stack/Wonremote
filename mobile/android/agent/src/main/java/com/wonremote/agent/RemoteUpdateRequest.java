@@ -3,6 +3,7 @@ package com.wonremote.agent;
 final class RemoteUpdateRequest {
     private long latest;
     private boolean pending, busy;
+    String requestId() { return latest == 0 ? null : Long.toString(latest); }
     boolean accept(String action, long now) {
         if (busy || !action.matches("request-update [0-9]{13}")) return false;
         long at = Long.parseLong(action.substring(15));

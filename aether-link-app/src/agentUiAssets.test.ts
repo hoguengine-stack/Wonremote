@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 const projectRoot = path.resolve(__dirname, "..");
 
 describe("Agent compact UI and product icons", () => {
-  it("keeps the active Agent screen non-scrolling with black text", () => {
+  it("keeps active Agent controls separate from scrolling information with black text", () => {
     const app = readFileSync(path.join(projectRoot, "src", "App.tsx"), "utf8");
     const styles = readFileSync(path.join(projectRoot, "src", "styles.css"), "utf8");
     const activeScreenStart = app.indexOf("if (registeredConfig)");
@@ -17,6 +17,8 @@ describe("Agent compact UI and product icons", () => {
 
     expect(activeScreen).toContain("active-agent-panel");
     expect(activeScreen).toContain("active-agent-result");
+    expect(activeScreen).toContain("agent-panel-scroll");
+    expect(activeScreen).toContain("agent-panel-footer");
     expect(activeScreen).toContain("AgentRestartDialog");
     expect(activeScreen).not.toContain("alert(");
     expect(activeScreen).not.toContain('color: "#fff"');

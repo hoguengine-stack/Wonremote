@@ -2,6 +2,7 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { isMobileViewerPath } from "./domain/mobileViewer";
+import { VideoConsultationGuest } from "./components/VideoConsultation";
 import "./styles.css";
 
 if (isMobileViewerPath(window.location.pathname) && window.isSecureContext && "serviceWorker" in navigator) {
@@ -12,6 +13,6 @@ if (isMobileViewerPath(window.location.pathname) && window.isSecureContext && "s
 
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <App />
+    {window.location.pathname.replace(/\/+$/,"")==="/video-support"?<VideoConsultationGuest/>:<App/>}
   </React.StrictMode>,
 );

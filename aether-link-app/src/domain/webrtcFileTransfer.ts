@@ -1,7 +1,12 @@
 import { REMOTE_FILE_MAX_BYTES } from "./fileTransferPolicy";
+import { isFileCollisionPolicy, type FileCollisionPolicy } from "./fileCollisionPolicy";
 
 export const WEBRTC_FILE_CHANNEL_LABEL = "wonremote-files";
-export const WEBRTC_REVERSE_FILE_CAPABILITY = '{"type":"file-capabilities","reverseFileSend":1,"reverseFileResume":1}';
+export const WEBRTC_REVERSE_FILE_CAPABILITY = '{"type":"file-capabilities","reverseFileSend":1,"reverseFileResume":1,"fileCollisionPolicy":1}';
+
+export function supportsFileCollisionPolicy(payload: unknown): boolean {
+  return isReverseFileCapability(payload) && parseJsonObject(payload)?.fileCollisionPolicy === 1;
+}
 
 export function supportsReverseFileResume(payload: unknown): boolean {
   const value = parseJsonObject(payload);
@@ -24,6 +29,7 @@ export const MAX_WEBRTC_FILE_MESSAGE_BYTES = 64 * 1024;
 export const WEBRTC_FILE_MAX_CHUNKS = Math.ceil(REMOTE_FILE_MAX_BYTES / WEBRTC_FILE_CHUNK_BYTES);
 
 export type WebRtcFileChunkMessage = {
+  collisionPolicy?: FileCollisionPolicy;
   type: "file-chunk";
   transferId: string;
   filename: string;
@@ -112,6 +118,7 @@ export function parseWebRtcFileAck(payload: unknown): WebRtcFileAckMessage | nul
 function validateFileChunk(message: WebRtcFileChunkMessage): void {
   if (
     message.type !== "file-chunk" ||
+    (message.collisionPolicy !== undefined && !isFileCollisionPolicy(message.collisionPolicy)) ||
     !isSafeTransferId(message.transferId) ||
     !isSafeText(message.filename, 1_024) ||
     !Number.isInteger(message.chunkIndex) ||

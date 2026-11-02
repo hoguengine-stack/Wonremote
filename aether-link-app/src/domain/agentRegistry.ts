@@ -214,6 +214,15 @@ export function applyAgentHeartbeat(
     protocolVersion: sanitizeProtocolVersion(input.protocolVersion) ?? currentDevice.protocolVersion,
     platform: normalizeDevicePlatform(input.platform ?? currentDevice.platform),
     version: input.version ?? currentDevice.version,
+    ...(input.updateTelemetry && ["idle","checking","downloading","installing","restarting","healthy","rollback","failed"].includes(input.updateTelemetry.state) ? {
+      updateState: input.updateTelemetry.state,
+      updateRequestId: typeof input.updateTelemetry.requestId==="string"&&/^\d{13}$/.test(input.updateTelemetry.requestId)?input.updateTelemetry.requestId:undefined,
+      updateCurrentVersion: typeof input.updateTelemetry.currentVersion==="string"?input.updateTelemetry.currentVersion.slice(0,50):undefined,
+      updateTargetVersion: typeof input.updateTelemetry.targetVersion==="string"?input.updateTelemetry.targetVersion.slice(0,50):undefined,
+      updateProgress: typeof input.updateTelemetry.progress==="number"&&Number.isFinite(input.updateTelemetry.progress)?Math.max(0,Math.min(100,input.updateTelemetry.progress)):undefined,
+      updateError: typeof input.updateTelemetry.error==="string"?input.updateTelemetry.error.slice(0,500):undefined,
+      updateUpdatedAt: typeof input.updateTelemetry.updatedAt==="string"&&Number.isFinite(Date.parse(input.updateTelemetry.updatedAt))?input.updateTelemetry.updatedAt:undefined,
+    }:{}),
     displays: sanitizeDisplays(input.displays) ?? currentDevice.displays,
     activeDisplayIndex:
       typeof input.activeDisplayIndex === "number"

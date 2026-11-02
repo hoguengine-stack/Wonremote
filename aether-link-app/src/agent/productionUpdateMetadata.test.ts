@@ -10,6 +10,32 @@ import {
 } from "./productionUpdateMetadata";
 
 describe("production update metadata loader", () => {
+  it("selects file replacement only for capable installed Agents and rejects its invalid signature", async () => {
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    const version = "9.9.9";
+    const signed = (role: string) => {
+      const asset = { name: `WonRemote-Agent-${role}.exe`, url: `https://updates.example.com/${role}.exe`, sha256: "a".repeat(64) };
+      const metadata = { assetName: asset.name, downloadUrl: asset.url, checksum: asset.sha256, latestVersion: version };
+      return { ...asset,
+        signature: sign(null, Buffer.from(buildProductionUpdateSignaturePayload(metadata)), privateKey).toString("base64"),
+        signatureV2: sign(null, Buffer.from(buildProductionUpdateSignaturePayloadV2({ ...metadata, arch: "x86", forceUpdate: false, updateKind: "installer" })), privateKey).toString("base64"),
+      };
+    };
+    const setup = signed("Setup"); const update = signed("Update");
+    const manifest = { version, agentWindows: { x86: setup }, agentInstallers: { x86: setup }, agentFileUpdates: { x86: update }, viewerWindows: { x86: setup } };
+    const env = { WONREMOTE_BUILD_ARCH: "x86", WONREMOTE_UPDATE_MANIFEST_PUBLIC_KEY: publicKey.export({ format: "pem", type: "spki" }).toString() };
+    const fetcher = async () => new Response(JSON.stringify(manifest));
+    expect((await loadProductionInstallerUpdateMetadata(env, fetcher))?.assetName).toBe(setup.name);
+    const capable = { ...env, WONREMOTE_AGENT_FILE_UPDATE: "1" };
+    expect((await loadProductionInstallerUpdateMetadata(capable, fetcher))?.assetName).toBe(update.name);
+    expect((await loadProductionInstallerUpdateMetadata({ ...capable, WONREMOTE_UPDATE_PRODUCT: "viewer" }, fetcher))?.assetName).toBe(setup.name);
+    expect((await loadProductionInstallerUpdateMetadata(capable, fetcher, true))?.assetName).toBe(setup.name);
+    const historical = { version, agentWindows: { x86: setup } };
+    expect((await loadProductionInstallerUpdateMetadata(capable, async () => new Response(JSON.stringify(historical))))?.assetName).toBe(setup.name);
+    await expect(loadProductionInstallerUpdateMetadata(capable, async () => new Response(JSON.stringify({ ...manifest,
+      agentFileUpdates: { x86: { ...update, sha256: "b".repeat(64) } },
+    })))).rejects.toThrow("signature");
+  });
   it("loads and verifies the signed GitHub release manifest without the local API server", async () => {
     const { privateKey, publicKey } = generateKeyPairSync("ed25519");
     const manifestUrl = "https://example.com/wonremote-update-manifest.json";
@@ -139,11 +165,11 @@ describe("production update metadata loader", () => {
     });
   });
 
-  it("prefers agentWindows over the legacy windows section for Agent updates", async () => {
+  it.each(["Setup", "Update"])("accepts signed Agent %s executables without changing the legacy handoff protocol", async (role) => {
     const { privateKey, publicKey } = generateKeyPairSync("ed25519");
     const asset = {
-      name: "WonRemote-Agent-Setup.exe",
-      url: "https://updates.example.com/WonRemote-Agent-Setup.exe",
+      name: `WonRemote-Agent-${role}.exe`,
+      url: `https://updates.example.com/WonRemote-Agent-${role}.exe`,
       sha256: "e".repeat(64),
     };
     const signature = sign(null, Buffer.from(buildProductionUpdateSignaturePayload({
@@ -173,7 +199,8 @@ describe("production update metadata loader", () => {
         windows: { x64: { name: "legacy.exe", url: "https://updates.example.com/legacy.exe", sha256: "f".repeat(64) } },
       }), { status: 200 }),
     );
-    expect(metadata?.assetName).toBe("WonRemote-Agent-Setup.exe");
+    expect(metadata?.assetName).toBe(`WonRemote-Agent-${role}.exe`);
+    expect(metadata?.updateKind).toBe("installer");
   });
 
   it("selects the signed portable product declared by the packaged runtime", async () => {

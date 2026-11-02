@@ -1,12 +1,14 @@
 import { createReadStream, createWriteStream } from "node:fs";
-import { appendFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { createHash } from "node:crypto";
+import { appendFile, link, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { isFileCollisionPolicy, type FileCollisionPolicy } from "../domain/fileCollisionPolicy";
+import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { resolveAgentDownloadDir, resolveSafeDownloadPath } from "./fileSafety";
 import { computeSha256 } from "./checksum";
 import { REMOTE_FILE_MAX_BYTES } from "../domain/fileTransferPolicy";
+import { publishFileWithoutOverwrite } from "./filePublication";
 import type { TransferredFile } from "../domain/types";
 
 export type ReceivedFileStatus = "partial" | "complete" | "duplicate";
@@ -41,16 +43,65 @@ export interface TransferredFileDownloadOptions {
 
 class DownloadIntegrityError extends Error {}
 
+const pendingFilePublications = new Map<string, Promise<void>>();
+
+async function publishReceivedFile(source: string, target: string, policy?: FileCollisionPolicy): Promise<string> {
+  if (policy !== undefined && !isFileCollisionPolicy(policy)) throw new Error("Invalid file collision policy");
+  const key = process.platform === "win32" ? target.toLowerCase() : target;
+  const previous = pendingFilePublications.get(key) ?? Promise.resolve();
+  // Windows can reject overlapping replacements of the same destination.
+  const publication = previous.catch(() => {}).then(async () => {
+    if (!policy || policy === "overwrite") { await rename(source, target); return target; }
+    for (let suffix = 0; suffix < 1000; suffix++) {
+      const destination = suffix === 0 ? target : path.join(path.dirname(target), `(${suffix}) ${path.basename(target)}`);
+      try {
+        try {
+          await link(source, destination);
+        } catch (error) {
+          if (process.platform !== "win32" || !["EPERM", "ENOTSUP", "EOPNOTSUPP", "EXDEV"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+          await publishFileWithoutOverwrite(source, destination);
+          return destination;
+        }
+        await rm(source, { force: true });
+        return destination;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        if (policy === "skip") throw new DownloadIntegrityError(`File skipped: ${path.basename(target)} (existing file preserved)`);
+      }
+    }
+    throw new Error("No available filename");
+  });
+  const completion = publication.then(() => {});
+  pendingFilePublications.set(key, completion);
+  try {
+    return await publication;
+  } finally {
+    completion.catch(() => {});
+    if (pendingFilePublications.get(key) === completion) pendingFilePublications.delete(key);
+  }
+}
+
 export async function saveTransferredFileChunk(
   file: TransferredFile,
   env: Record<string, string | undefined> = process.env,
 ): Promise<ReceivedFileResult> {
-  const targetPath = await resolveTransferredFileTargetPath(file, env);
+  let targetPath = await resolveTransferredFileTargetPath(file, env);
   const buffer = Buffer.from(String(file.fileData ?? ""), "base64");
 
   if (typeof file.transferId !== "string" || !Number.isInteger(file.chunkIndex)) {
     verifyChunkChecksum(file, buffer);
-    await writeFile(targetPath, buffer);
+    const temporary = path.join(path.dirname(targetPath), `.wonremote-${randomUUID()}.part`);
+    const handle = await open(temporary, "wx");
+    try {
+      try {
+        await handle.writeFile(buffer);
+      } finally {
+        await handle.close();
+      }
+      targetPath = await publishReceivedFile(temporary, targetPath, file.collisionPolicy);
+    } finally {
+      await rm(temporary, { force: true });
+    }
     return {
       filename: file.filename,
       receivedBytes: buffer.length,
@@ -147,8 +198,8 @@ export async function saveTransferredFileChunk(
           throw new Error(`File checksum mismatch: ${file.filename}`);
         }
       }
-      await rm(targetPath, { force: true });
-      await rename(partPath, targetPath);
+      // Same-directory replacement must never pre-delete the user's previous file.
+      targetPath = await publishReceivedFile(partPath, targetPath, file.collisionPolicy);
       await rm(statePath, { force: true });
       return {
         filename: file.filename,
@@ -237,6 +288,7 @@ export async function saveTransferredFileDownloadStream(
       throw writeError;
     }
     await once(writeStream, "finish");
+    if (!writeStream.closed) await once(writeStream, "close");
 
     const receivedBytes = (await stat(tmpPath)).size;
     if (expectedTotalBytes !== undefined && receivedBytes !== expectedTotalBytes) {
@@ -249,14 +301,13 @@ export async function saveTransferredFileDownloadStream(
       }
     }
 
-    await rm(targetPath, { force: true });
-    await rename(tmpPath, targetPath);
+    const savedPath = await publishReceivedFile(tmpPath, targetPath, file.collisionPolicy);
     return {
       filename: file.filename,
       receivedBytes,
       receivedChunks: 1,
       status: "complete",
-      targetPath,
+      targetPath: savedPath,
       totalChunks: 1,
       transferId: typeof file.transferId === "string" ? file.transferId : undefined,
     };
@@ -397,6 +448,7 @@ async function resolveTransferredFileTargetPath(
   file: TransferredFile,
   env: Record<string, string | undefined>,
 ): Promise<string> {
+  if (file.collisionPolicy !== undefined && !isFileCollisionPolicy(file.collisionPolicy)) throw new Error("Invalid file collision policy");
   const downloadsDir = resolveAgentDownloadDir(env);
   const webkitRelativePath = (file as TransferredFile & { webkitRelativePath?: unknown }).webkitRelativePath;
   const targetPath = resolveSafeDownloadPath(

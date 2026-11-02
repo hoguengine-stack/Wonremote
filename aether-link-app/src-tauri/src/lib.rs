@@ -4,6 +4,8 @@ mod agent_startup;
 mod update_handoff_process;
 mod viewer_downloads;
 mod viewer_shortcuts;
+mod viewer_activation;
+mod login_input_state;
 mod zook_agent;
 use update_handoff_process::{
     run_agent_update_handoff_task, spawn_brokered_update_handoff, CREATE_NO_WINDOW,
@@ -938,6 +940,15 @@ fn show_main_window_with_log(app: &tauri::AppHandle, reason: &str) {
         );
     }
 
+    match window.is_minimized() {
+        Ok(true) => {
+            if let Err(error) = window.unminimize() {
+                append_runtime_log("window", &format!("{reason}: restore failed: {error}"));
+            }
+        }
+        Ok(false) => {}
+        Err(error) => append_runtime_log("window", &format!("{reason}: minimized state unavailable: {error}")),
+    }
     match window.show() {
         Ok(_) => append_runtime_log("window", &format!("{reason}: show ok")),
         Err(error) => append_runtime_log("window", &format!("{reason}: show failed: {error}")),
@@ -1016,6 +1027,7 @@ fn spawn_agent_only_process(
     command.env("WONREMOTE_PACKAGE_KIND", packaged_update_kind(resource_dir));
     command.env("WONREMOTE_UPDATE_PRODUCT", "agent");
     command.env("WONREMOTE_TAURI_UPDATE_BROKER", "1");
+    command.env("WONREMOTE_AGENT_FILE_UPDATE", if agent_file_update_capable() { "1" } else { "0" });
     if let Ok(host_exe_path) = env::current_exe() {
         command.env("WONREMOTE_HOST_EXE_PATH", node_compatible_path(&host_exe_path));
     }
@@ -1423,6 +1435,29 @@ fn should_attempt_update_handoff(
         || (allow_agent_update_task && matches!(request, UpdateHandoffRequest::InstallerV2(_)))
 }
 
+fn file_update_root_compatible(install_root: &Path, program_roots: &[PathBuf], registered_roots: &[PathBuf]) -> bool {
+    let Ok(root) = std::fs::canonicalize(install_root) else { return false; };
+    root.join("update-handoff-broker.ps1").is_file()
+        && program_roots.iter().any(|path| std::fs::canonicalize(path)
+            .map(|path| windows_path_is_under(&root, &path)).unwrap_or(false))
+        && registered_roots.iter().any(|path| std::fs::canonicalize(path)
+            .map(|path| windows_paths_equal(&root, &path)).unwrap_or(false))
+}
+
+fn agent_file_update_capable() -> bool {
+    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_WOW64_32KEY, KEY_WOW64_64KEY};
+    let Ok(exe) = env::current_exe() else { return false; };
+    let Some(root) = exe.parent() else { return false; };
+    let program_roots = ["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"]
+        .into_iter().filter_map(env::var_os).map(PathBuf::from).collect::<Vec<_>>();
+    let registry = RegKey::predef(HKEY_LOCAL_MACHINE);
+    let registered = [KEY_WOW64_32KEY, KEY_WOW64_64KEY].into_iter().filter_map(|view| {
+        registry.open_subkey_with_flags("Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\WonRemote Agent", KEY_READ | view)
+            .ok()?.get_value::<String, _>("InstallLocation").ok().map(|path| PathBuf::from(path.trim_matches('"')))
+    }).collect::<Vec<_>>();
+    file_update_root_compatible(root, &program_roots, &registered)
+}
+
 fn stage_agent_installer_handoff(
     request: &InstallerUpdateHandoffRequest,
 ) -> Result<StagedAgentUpdateHandoff, String> {
@@ -1728,9 +1763,7 @@ fn save_agent_config(
     )
     .map_err(|e| e.to_string())?;
 
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.hide();
-    }
+    show_main_window_with_log(&app, "agent-registration-complete");
 
     Ok(())
 }
@@ -2167,6 +2200,7 @@ fn start_installer_update_inner(
         .env("WONREMOTE_PACKAGE_KIND", package_kind)
         .env("WONREMOTE_UPDATE_PRODUCT", restart_mode)
         .env("WONREMOTE_TAURI_UPDATE_BROKER", "1")
+        .env("WONREMOTE_AGENT_FILE_UPDATE", if !is_viewer_update && agent_file_update_capable() { "1" } else { "0" })
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -2741,6 +2775,13 @@ pub fn run() {
     let _single_instance_guard = match try_acquire_single_instance(is_agent) {
         Ok(Some(guard)) => guard,
         Ok(None) => {
+            if !is_agent {
+                match viewer_activation::activate_existing() {
+                    Ok(true) => append_runtime_log("startup", "existing Viewer restored and foregrounded"),
+                    Ok(false) => append_runtime_log("startup", "existing Viewer activation not granted or window still starting"),
+                    Err(error) => append_runtime_log("startup", &format!("existing Viewer activation failed: {error}")),
+                }
+            }
             if agent_launch_should_show_window(is_agent) {
                 if let Err(error) = request_existing_agent_window() {
                     append_runtime_log(
@@ -2782,6 +2823,7 @@ pub fn run() {
         .manage(AgentState::new())
         .manage(viewer_downloads::Downloads::default())
         .invoke_handler(tauri::generate_handler![
+            login_input_state::get_login_input_state,
             viewer_downloads::viewer_download_folder,
             viewer_downloads::choose_viewer_download_folder,
             viewer_downloads::open_viewer_download_folder,
@@ -2959,6 +3001,16 @@ pub fn run() {
                 }
             } else {
                 // Viewer Mode Setup
+                if let Some(window) = app.get_webview_window("main") {
+                    match window.hwnd() {
+                        Ok(hwnd) => {
+                            if let Err(error) = viewer_activation::mark_main_window(hwnd.0 as _) {
+                                append_runtime_log("window", &format!("Viewer activation registration failed: {error}"));
+                            }
+                        }
+                        Err(error) => append_runtime_log("window", &format!("Viewer HWND unavailable: {error}")),
+                    }
+                }
                 if viewer_update_action(ViewerUpdateEntryPoint::Startup)
                     != ViewerUpdateAction::None
                 {
@@ -3462,6 +3514,24 @@ mod registry_tests {
 
         let _ = std::fs::remove_file(&staged.pending_path);
         let _ = std::fs::remove_dir_all(&fixture_root);
+    }
+
+    #[test]
+    fn file_update_capability_requires_protected_registered_root_and_broker() {
+        let fixture = env::temp_dir().join(format!("wonremote-capability-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        let programs = fixture.join("Program Files");
+        let installed = programs.join("WonRemote Agent");
+        let legacy = fixture.join("AppData").join("Agent");
+        std::fs::create_dir_all(&installed).unwrap();
+        std::fs::create_dir_all(&legacy).unwrap();
+        for root in [&installed, &legacy] { std::fs::write(root.join("update-handoff-broker.ps1"), b"fixture").unwrap(); }
+        assert!(file_update_root_compatible(&installed, &[programs.clone()], &[installed.clone()]));
+        assert!(!file_update_root_compatible(&legacy, &[programs.clone()], &[legacy.clone()]));
+        assert!(!file_update_root_compatible(&installed, &[programs.clone()], &[]));
+        assert!(!file_update_root_compatible(&installed, &[programs.clone()], &[legacy]));
+        std::fs::remove_file(installed.join("update-handoff-broker.ps1")).unwrap();
+        assert!(!file_update_root_compatible(&installed, &[programs], &[installed.clone()]));
+        std::fs::remove_dir_all(fixture).unwrap();
     }
 
     #[test]

@@ -1,11 +1,11 @@
 export type DownloadInvoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 
-export async function saveDesktopFile(file: { filename: string; blob: Blob }, invoke: DownloadInvoke, signal?: AbortSignal): Promise<string> {
+export async function saveDesktopFile(file: { filename: string; blob: Blob }, invoke: DownloadInvoke, signal?: AbortSignal, collisionPolicy?: import("./fileCollisionPolicy").FileCollisionPolicy): Promise<string> {
   let id: string | undefined;
   const check = () => { if (signal?.aborted) throw new Error("저장이 취소됐습니다."); };
   try {
     check();
-    id = await invoke<string>("begin_viewer_download", { filename: file.filename, total: file.blob.size });
+    id = await invoke<string>("begin_viewer_download", { filename: file.filename, total: file.blob.size, ...(collisionPolicy ? { collisionPolicy } : {}) });
     for (let offset = 0; offset < file.blob.size; offset += 65536) {
       check();
       const bytes = new Uint8Array(await file.blob.slice(offset, offset + 65536).arrayBuffer());

@@ -83,11 +83,12 @@ describe("desktop packaging scaffold", () => {
   it("uses Tauri with the existing Vite build output", () => {
     const configPath = path.join(projectRoot, "src-tauri", "tauri.conf.json");
     expect(existsSync(configPath)).toBe(true);
-    expect(packageJson.version).toBe("0.1.113");
-    expect(readFileSync(path.join(projectRoot, "src", "domain", "appVersion.ts"), "utf8")).toContain('WONREMOTE_APP_VERSION = "0.1.113"');
-    expect(readFileSync(path.join(projectRoot, "src-tauri", "Cargo.toml"), "utf8")).toMatch(/^version = "0\.1\.113"/m);
+    expect(packageJson.version).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(readFileSync(path.join(projectRoot, "src", "domain", "appVersion.ts"), "utf8")).toContain(`WONREMOTE_APP_VERSION = "${packageJson.version}"`);
+    expect(readFileSync(path.join(projectRoot, "src-tauri", "Cargo.toml"), "utf8").match(/^version = "([^"]+)"/m)?.[1]).toBe(packageJson.version);
 
     const config = JSON.parse(readFileSync(configPath, "utf8"));
+    expect(config.version).toBe(packageJson.version);
     expect(config.build).toMatchObject({
       beforeDevCommand: "npm run dev",
       beforeBuildCommand: "npm run build",
@@ -839,11 +840,12 @@ describe("desktop packaging scaffold", () => {
     expect(styles).not.toContain(".firebase-agent-panel label:has");
   });
 
-  it("packages only two x86 Viewer and Agent installers", () => {
+  it("packages two x86 installers plus a distinct protected Agent file update", () => {
     const packageReleaseScript = readFileSync(path.join(projectRoot, "scripts", "package-release-exes.js"), "utf8");
 
     expect(packageReleaseScript).toContain("WonRemote-Agent-Setup.exe");
-    expect(packageReleaseScript).toContain("Two x86 WonRemote product installers created");
+    expect(packageReleaseScript).toContain("WonRemote-Agent-Update.exe");
+    expect(packageReleaseScript).toContain("buildAgentFileUpdate(appRoot, targetRelease, packageJson.version)");
     expect(packageReleaseScript).not.toContain('key: "x64"');
     expect(packageReleaseScript).toContain('key: "x86"');
     expect(packageReleaseScript).not.toContain("createUniversalProductInstaller");
@@ -887,7 +889,7 @@ describe("desktop packaging scaffold", () => {
     expect(packageReleaseScript).toContain("i686-pc-windows-msvc");
     expect(packageReleaseScript).toContain("WONREMOTE_BUILD_ARCH");
     expect(packageReleaseScript).not.toContain('key: "x64"');
-    expect(packageReleaseScript).toContain("Two x86 WonRemote product installers created");
+    expect(packageReleaseScript).toContain("Two x86 installers and the separate Agent file update created");
     expect(publishScript).not.toContain("$StableInstallerPathX86");
     expect(publishScript).not.toContain("$StableAgentInstallerPathX86");
 
@@ -984,7 +986,7 @@ describe("desktop packaging scaffold", () => {
     expect(settings).toContain('include(":controlcore")');
     expect(agentBuild).toContain('implementation(project(":controlcore"))');
     expect(addonBuild).toContain('implementation(project(":controlcore"))');
-    expect(addonBuild).toContain('rootProject.file("keystore.properties")');
+    expect(addonBuild).toContain('System.getenv("WONREMOTE_ANDROID_SIGNING_PROPERTIES") ?: "keystore.properties"');
     expect(coreManifest).toContain('android:protectionLevel="signature"');
     expect(addonManifest).toContain('android:permission="com.wonremote.permission.CONTROL_ADDON"');
     expect(client).toContain("checkSignatures");
@@ -1193,9 +1195,10 @@ describe("desktop packaging scaffold", () => {
       expect(publishScript).toContain(asset);
     }
     expect(packageReleaseScript).toContain("expectedOutputs");
-    expect(packageReleaseScript).toContain("Two x86 WonRemote product installers created");
+    expect(packageReleaseScript).toContain("Two x86 installers and the separate Agent file update created");
     expect(publishScript).toContain("Publish-Asset $ManifestPath $ManifestName");
-    expect(publishScript.match(/^\s{2}Publish-Asset /gm)?.length).toBe(3);
+    expect(publishScript.match(/^\s{2}Publish-Asset /gm)?.length).toBe(4);
+    expect(publishScript).toContain("Publish-Asset $AgentFileUpdatePath $AgentFileUpdateAssetName");
     expect(publishScript).toContain("Refusing to replace published release");
     expect(publishScript).toContain("Bump the version before publishing");
     expect(publishScript).toContain("Release upload verification failed");

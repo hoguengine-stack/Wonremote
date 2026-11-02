@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { collectDevicePresence } from "./devicePresenceRefresh";
+import { collectDevicePresence, mergeScopedDeviceRefresh } from "./devicePresenceRefresh";
 import { resolveDeviceStatuses } from "./agentRegistry";
 import { createApiServer } from "../server/apiServer";
 import type { ManagedDevice } from "./types";
@@ -19,6 +19,12 @@ const device: ManagedDevice = {
 afterEach(() => vi.useRealTimers());
 
 describe("on-demand Agent presence", () => {
+  it("merges only requested rows, removes missing targets, and retains unrelated object identity",()=>{
+    const other={...device,id:"other"},removed={...device,id:"removed"};
+    const fresh={...device,status:"offline" as const};
+    const merged=mergeScopedDeviceRefresh([device,other,removed],[fresh,{...other,desktopName:"Wrong"}],[device.id,removed.id]);
+    expect(merged).toEqual([fresh,other]);expect(merged[1]).toBe(other);
+  });
   it("shows the list before waiting, progressively publishes replies and cancels late updates without idle requests", async () => {
     vi.useFakeTimers();
     let next!: (device: ManagedDevice) => void;
@@ -159,8 +165,9 @@ describe("on-demand Agent presence", () => {
     expect(resolveDeviceStatuses([{ ...device, presenceMode: undefined }])[0].status).toBe("offline");
   });
 
-  it("routes one real local refresh command and returns the Agent heartbeat response", async () => {
-    const server = createApiServer([device]);
+  it.each([false,true])("routes one real local refresh command and returns the Agent heartbeat response, scoped=%s", async (scoped) => {
+    const other={...device,id:"123-45-67890:AGENT-TEST0002",deviceNumber:"AGENT-TEST0002"};
+    const server = createApiServer(scoped?[device,other]:[device]);
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     const post = async (route: string, data: unknown) => {
@@ -168,7 +175,7 @@ describe("on-demand Agent presence", () => {
       expect(response.status).toBe(200); return response.json();
     };
     try {
-      const refresh = fetch(`${base}/api/devices?refresh=1`).then((response) => response.json());
+      const refresh = fetch(`${base}/api/devices?refresh=1${scoped?`&scope=selected&deviceId=${encodeURIComponent(device.id)}`:""}`).then((response) => response.json());
       let action = "";
       await vi.waitFor(async () => {
         const result = await post("/api/agent/commands", { deviceId: device.id, installId: "test0001" });
@@ -177,6 +184,11 @@ describe("on-demand Agent presence", () => {
       });
       await post("/api/agent/heartbeat", { deviceId: device.id, installId: "test0001", presenceMode: "manual", heartbeatRequestId: action.split(" ")[1] });
       const result = await refresh;
+      expect(result.devices).toHaveLength(1);
+      if(scoped) {
+        expect((await post("/api/agent/commands",{deviceId:other.id,installId:"test0002"})).commands).toEqual([]);
+        expect((await (await fetch(`${base}/api/devices?refresh=1&scope=selected`)).json()).devices).toEqual([]);
+      }
       expect(result.devices[0]).toMatchObject({ status: "online", heartbeatRequestId: action.split(" ")[1] });
       expect((await post("/api/agent/commands", { deviceId: device.id, installId: "test0001" })).commands).toEqual([]);
       expect((await post("/api/sessions", { deviceId: device.id })).session.state).toBe("connected");

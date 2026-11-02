@@ -12,16 +12,15 @@ beforeEach(() => {
   mocks.spawn.mockReturnValue(child);
 });
 afterEach(() => { vi.useRealTimers(); child.stdout.destroy(); });
-const select = (signal?: AbortSignal) => selectFileToSend(signal, { SystemRoot: "C:\\Windows" }, "win32");
+const select = (signal?: AbortSignal) => selectFileToSend(signal, { WONREMOTE_POC_PATH: "C:\\WonRemote\\bin\\wonremote-poc.exe" }, "win32");
 
 describe("trusted reverse file selection", () => {
-  it("uses a fixed local dialog script without interpolating file paths", async () => {
+  it("uses the bundled native picker without PowerShell, shell commands or interpolated file paths", async () => {
     const pending = select();
     const [executable, args, options] = mocks.spawn.mock.calls[0];
-    expect(executable).toBe("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+    expect(executable).toBe("C:\\WonRemote\\bin\\wonremote-poc.exe");
     expect(options).toMatchObject({ shell: false, windowsHide: true });
-    const script = Buffer.from(args[args.length - 1], "base64").toString("utf16le");
-    expect(script).toContain("UserInteractive"); expect(script).toContain("IsSystem");
+    expect(args).toEqual(["--select-file"]);
     child.stdout.write(JSON.stringify("C:\\Reports\\report.txt")); child.emit("close", 0);
     await expect(pending).resolves.toBe("C:\\Reports\\report.txt");
     expect(vi.getTimerCount()).toBe(0);

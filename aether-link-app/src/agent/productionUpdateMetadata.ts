@@ -22,7 +22,7 @@ export async function loadProductionRollbackMetadata(
   const releaseBase = `https://github.com/hoguengine-stack/Wonremote/releases/download/v${requestedVersion}/`;
   const metadata = await loadProductionInstallerUpdateMetadata({
     ...env, WONREMOTE_UPDATE_MANIFEST_URL: `${releaseBase}wonremote-update-manifest.json`,
-  }, fetchImpl);
+  }, fetchImpl, true);
   if (!metadata || metadata.latestVersion !== requestedVersion) throw new Error("Rollback release version did not match.");
   const name = resolveRuntimeUpdateProduct(env) === "viewer" ? "WonRemote-Viewer-Setup.exe" : "WonRemote-Agent-Setup.exe";
   // Never replace a signed URL with an inferred historical URL or use mutable latest assets.
@@ -38,10 +38,12 @@ export async function loadProductionInstallerUpdateMetadata(
     | "WONREMOTE_PACKAGE_KIND"
     | "WONREMOTE_UPDATE_PRODUCT"
     | "WONREMOTE_UPDATE_MANIFEST_PUBLIC_KEY"
+    | "WONREMOTE_AGENT_FILE_UPDATE"
     | "WONREMOTE_UPDATE_MANIFEST_URL",
     string
   >> = process.env,
   fetchImpl: typeof fetch = fetch,
+  agentInstallerForRollback = false,
 ): Promise<ProductionUpdateMetadata | null> {
   const manifestUrl = env.WONREMOTE_UPDATE_MANIFEST_URL?.trim() || DEFAULT_PRODUCTION_UPDATE_MANIFEST_URL;
   const separator = manifestUrl.includes("?") ? "&" : "?";
@@ -51,7 +53,16 @@ export async function loadProductionInstallerUpdateMetadata(
     return null;
   }
 
-  return parseProductionUpdateManifest(await response.json(), {
+  const manifest = await response.json();
+  // New releases sign first-install/rollback Setup separately from file updates.
+  // Historical releases without that section retain their original signed path.
+  const section = agentInstallerForRollback ? "agentInstallers"
+    : env.WONREMOTE_AGENT_FILE_UPDATE === "1" && resolveRuntimeUpdateKind(env) === "installer" ? "agentFileUpdates" : "agentWindows";
+  const selected = resolveRuntimeUpdateProduct(env) === "agent"
+    && manifest && typeof manifest === "object" && Object.prototype.hasOwnProperty.call(manifest, section)
+    ? { ...manifest, agentWindows: manifest[section] }
+    : manifest;
+  return parseProductionUpdateManifest(selected, {
     arch: resolveRuntimeArch(env),
     assetKind: resolveRuntimeUpdateKind(env),
     product: resolveRuntimeUpdateProduct(env),
