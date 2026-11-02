@@ -81,7 +81,8 @@ describe("Agent file replacement, not Setup", () => {
 
   for (const scenario of ["success", "no-handoff", "wrong-caller", "unregistered", "outside-protected", "junction", "unexpected-entry", "incomplete", "copy-failure"]) {
     it(`executes a Windows filesystem fixture: ${scenario}`, () => {
-      const root = fs.mkdtempSync(path.join(os.tmpdir(), "wonremote-update-executor-"));
+      // .NET expands 8.3 TEMP aliases; match the real caller instead of mocking a different spelling.
+      const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "wonremote-update-executor-")));
       temporaryDirectories.push(root);
       const fixture = path.join(root, "fixture.ps1");
       fs.writeFileSync(fixture, `
@@ -134,7 +135,22 @@ if ($scenario -eq 'success') {
   foreach ($name in $names) { if ((Get-Content -LiteralPath (Join-Path $install $name) -Raw).Trim() -ne 'new') { throw 'Bytes not replaced' } }
 } else {
   if (-not $failed) { throw 'Unsafe update was accepted' }
-  if ($scenario -ne 'copy-failure' -and (Test-Path -LiteralPath (Join-Path $fixtureRoot 'stopped'))) { throw 'Stopped before validation' }
+  if ($scenario -eq 'copy-failure') {
+    if (-not (Test-Path -LiteralPath (Join-Path $fixtureRoot 'stopped'))) { throw 'Copy failure did not reach replacement' }
+    if ((Get-Content -LiteralPath (Join-Path $install 'wonremote-viewer.exe') -Raw).Trim() -ne 'old') { throw 'Locked original was changed' }
+  } else {
+    $expected = @{
+      'no-handoff' = 'An existing protected Agent update handoff is required'
+      'wrong-caller' = 'did not originate from the protected handoff'
+      'unregistered' = 'No matching protected Agent installation exists'
+      'outside-protected' = 'No matching protected Agent installation exists'
+      'junction' = 'reparse point'
+      'unexpected-entry' = 'Unexpected Agent update entry'
+      'incomplete' = 'Incomplete Agent update'
+    }
+    if (-not $failure.Contains($expected[$scenario])) { throw ('Wrong rejection: ' + $failure) }
+    if (Test-Path -LiteralPath (Join-Path $fixtureRoot 'stopped')) { throw 'Stopped before validation' }
+  }
 }
 if ((Get-Content -LiteralPath (Join-Path $install 'agent-config.json') -Raw).Trim() -ne 'identity') { throw 'Lost identity' }
 if ((Get-Content -LiteralPath (Join-Path $install 'uninstall.exe') -Raw).Trim() -ne 'original-uninstaller') { throw 'Reinstalled' }

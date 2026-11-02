@@ -158,6 +158,9 @@ jobs:
       - name: Verify installer update E2E
         run: npm run test:update-e2e
 
+      - name: Verify protected Agent file-update filesystem boundary
+        run: npx vitest run --maxWorkers=1 scripts/package-agent-file-update.test.js -t 'Windows filesystem fixture'
+
       - name: Verify received file preservation and resume
         run: npx vitest run --maxWorkers=1 src/agent/fileTransferFinalization.test.ts src/agent/filePublication.test.ts src/agent/fileTransferReceiver.test.ts src/agent/webrtcFileReceiver.test.ts src/agent/firebaseStorageDownload.test.ts src/agent/selectFileToSend.test.ts src/agent/reverseFileRequest.test.ts src/domain/desktopFileSave.test.ts src/domain/fileTransferQueue.test.ts
 
@@ -225,7 +228,7 @@ jobs:
         run: npm run release:sign
 
       - name: Verify Agent file replacement and signed legacy manifest compatibility
-        run: npx vitest run --maxWorkers=1 scripts/package-agent-file-update.test.js scripts/package-release-exes.test.js scripts/verify-x86-installer-payloads.test.js
+        run: npx vitest run --maxWorkers=1 scripts/package-agent-file-update.test.js scripts/package-release-exes.test.js scripts/verify-x86-installer-payloads.test.js -t '^(?!.*Windows filesystem fixture)'
 
       - name: Build signed update manifest from final installer bytes
         run: |
