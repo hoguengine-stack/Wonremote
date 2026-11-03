@@ -99,6 +99,7 @@ jobs:
         run: |
           npm ci
           npm --prefix ../functions ci --ignore-scripts
+          npm --prefix ../cloudflare/video-consultation ci
 
       - name: Install x86 Rust target
         run: rustup target add i686-pc-windows-msvc
@@ -175,6 +176,18 @@ jobs:
       - name: Verify explicit Agent update feedback and login errors
         run: npx vitest run src/domain/agentUpdateTracker.test.ts src/agent/agentUpdatePollPolicy.test.ts src/domain/agentRegistry.test.ts src/firebase/viewerDeviceMetadata.test.ts src/firebase/viewerDeviceRefresh.test.ts src/firebase/firebaseError.test.ts src/firebase/viewerFirebaseAuth.test.ts src/server/apiServer.test.ts
 
+      - name: Verify video-only consultation and designated SMS phones
+        run: npx vitest run src/videoConsultation.browser.test.ts src/videoSms.browser.test.ts src/api/videoConsultationApi.test.ts src/domain/videoConsultation.test.ts
+
+      - name: Verify real cursor metadata transport and painted fallback
+        run: |
+          npx vitest run src/domain/webrtcFrameAssembly.test.ts src/firebase/agentPeerConnection.test.ts
+          npx vitest run src/viewerDeviceRefresh.test.ts -t 'actual remote cursor metadata'
+
+      - name: Verify isolated video Worker runtime and SMS trust boundaries
+        working-directory: cloudflare/video-consultation
+        run: node ../../aether-link-app/node_modules/vitest/vitest.mjs run test
+
       - name: Verify Android discovery and published archive preservation
         run: npx vitest run src/androidUpdateRelease.test.ts
 
@@ -203,6 +216,7 @@ jobs:
           cargo test --manifest-path ../aether-link-poc/Cargo.toml --target i686-pc-windows-msvc --release --locked --bin wonremote-poc display_ -- --test-threads=1
           cargo test --manifest-path ../aether-link-poc/Cargo.toml --target i686-pc-windows-msvc --release --locked --bin wonremote-poc file_picker:: -- --test-threads=1
           cargo test --manifest-path ../aether-link-poc/Cargo.toml --target i686-pc-windows-msvc --release --locked --bin wonremote-poc file_publication:: -- --test-threads=1
+          cargo test --manifest-path ../aether-link-poc/Cargo.toml --target i686-pc-windows-msvc --release --locked --bin wonremote-poc remote_cursor::tests -- --test-threads=1
 
       - name: Verify Agent startup with installed NSIS toolchain
         run: npm test -- src/agentStartup.test.ts

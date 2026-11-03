@@ -572,6 +572,7 @@ async function startStreaming(
           height: data.height,
           sequence: streamFrameSequence,
           keyframe: data.keyframe === true,
+          ...(typeof data.cursorEmbedded === "boolean" ? {cursorEmbedded:data.cursorEmbedded} : {}),
         };
         const sendResult = USE_FIREBASE
           ? webRtcTransport?.sendFrame(
@@ -619,13 +620,7 @@ async function startStreaming(
             })
           ) {
             streamTransport = "firestore-fallback";
-            await postSessionTilesWithFirebase(sessionId, {
-              tiles: data.tiles,
-              width: data.width,
-              height: data.height,
-              sequence: streamFrameSequence,
-              keyframe: data.keyframe === true,
-            });
+            await postSessionTilesWithFirebase(sessionId, framePayload);
             firestoreTileFallbackFrameCount += 1;
           } else {
             streamTransport = "none";
@@ -636,7 +631,7 @@ async function startStreaming(
           await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/tiles`, {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ tiles: data.tiles, width: data.width, height: data.height }),
+            body: JSON.stringify(framePayload),
           });
         }
         updateAdaptiveStreamProfile();

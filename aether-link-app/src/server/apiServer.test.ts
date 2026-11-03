@@ -752,6 +752,7 @@ describe("WonRemote local API server", () => {
       tiles: [{ x: 0, y: 0, w: 32, h: 32, data: "base64tiledata" }],
       width: 1920,
       height: 1080,
+      cursorEmbedded:true,
     });
     expect(postTiles.status).toBe(200);
 
@@ -760,11 +761,16 @@ describe("WonRemote local API server", () => {
     const body1 = await getTiles1.json();
     expect(body1.tiles).toHaveLength(1);
     expect(body1.tiles[0].data).toBe("base64tiledata");
+    expect(body1.cursorEmbedded).toBe(true);
 
     const getTiles2 = await fetch(`${baseUrl}/api/sessions/${sessionId}/tiles`);
     expect(getTiles2.status).toBe(200);
     const body2 = await getTiles2.json();
     expect(body2.tiles).toHaveLength(0);
+    expect(body2.cursorEmbedded).toBe(true);
+    await postJson(`/api/sessions/${sessionId}/tiles`,{tiles:[],width:1920,height:1080,cursorEmbedded:'true'});
+    const malformed=await (await fetch(`${baseUrl}/api/sessions/${sessionId}/tiles`)).json();
+    expect(malformed).not.toHaveProperty('cursorEmbedded');
   });
 
   it("verifies absolute mouse coordinates mapping fidelity for multi-monitor setup", () => {

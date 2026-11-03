@@ -3,6 +3,7 @@
 interface ImportMetaEnv {
   readonly VITE_WONREMOTE_APP_VERSION: string;
   readonly VITE_WONREMOTE_API_URL?: string;
+  readonly VITE_WONREMOTE_VIDEO_API_URL?: string;
   readonly VITE_WONREMOTE_FIREBASE_API_KEY?: string;
   readonly VITE_WONREMOTE_FIREBASE_AUTH_DOMAIN?: string;
   readonly VITE_WONREMOTE_FIREBASE_PROJECT_ID?: string;

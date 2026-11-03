@@ -426,7 +426,7 @@ export async function fetchFileTransferReceipts(sessionId: string): Promise<File
   return body.receipts;
 }
 
-export async function fetchTiles(sessionId: string): Promise<{ tiles: any[]; width: number; height: number }> {
+export async function fetchTiles(sessionId: string): Promise<{ tiles: any[]; width: number; height: number; cursorEmbedded?: boolean }> {
   if (isViewerFirebaseEnabled()) {
     return fetchFirebaseTiles(sessionId);
   }

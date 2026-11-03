@@ -288,15 +288,17 @@ export function bindAgentFileMessages(
 }
 
 export function serializeFrameChunks(
-  frame: { tiles: unknown[]; width: number; height: number; sequence: number; keyframe: boolean },
+  frame: { tiles: unknown[]; width: number; height: number; sequence: number; keyframe: boolean; cursorEmbedded?: boolean },
   maxMessageBytes: number,
 ): string[] {
   const metadataReserveBytes = 192;
+  const cursorMetadata = typeof frame.cursorEmbedded === "boolean" ? {cursorEmbedded:frame.cursorEmbedded} : {};
   const fixedBytes = metadataReserveBytes + Buffer.byteLength(JSON.stringify({
     width: frame.width,
     height: frame.height,
     sequence: frame.sequence,
     keyframe: frame.keyframe,
+    ...cursorMetadata,
   }));
   const chunkTiles: unknown[][] = [];
   let serializedTiles: string[] = [];
@@ -332,6 +334,7 @@ export function serializeFrameChunks(
       height: frame.height,
       sequence: frame.sequence,
       keyframe: frame.keyframe,
+      ...cursorMetadata,
       frameChunkIndex,
       frameChunkCount,
     });
@@ -344,7 +347,7 @@ export function serializeFrameChunks(
 
 export function sendFrameWithBackpressure(
   channel: AgentDataChannelLike | null,
-  frame: { tiles: unknown[]; width: number; height: number; sequence: number; keyframe: boolean },
+  frame: { tiles: unknown[]; width: number; height: number; sequence: number; keyframe: boolean; cursorEmbedded?: boolean },
   options: { maxBufferedAmount: number; maxMessageBytes: number },
 ): AgentFrameSendResult {
   if (channel?.readyState !== "open" || !channel.send) {

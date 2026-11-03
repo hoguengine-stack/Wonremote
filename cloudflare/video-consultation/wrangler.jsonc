@@ -1,0 +1,20 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "wonremote-video-consultation",
+  "account_id": "46df3574638637f22fa029f211e03a4b",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-11-03",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "observability": { "enabled": false },
+  "vars": {
+    "FIREBASE_PROJECT_ID": "wonremote-a7fd3",
+    "FIREBASE_WEB_API_KEY": "AIzaSyDb1Ihymmrt1SSYvbOAB2NjRV9PiWMY2y8",
+    "BOOTSTRAP_VIEWER_UID": "Xjjdvk0Nx1eqCvND4yIOHbM53tl1",
+    "PUBLIC_ORIGIN": "https://wonremote-a7fd3.web.app"
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "VIDEO_ROOMS", "class_name": "VideoRooms" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["VideoRooms"] }]
+}

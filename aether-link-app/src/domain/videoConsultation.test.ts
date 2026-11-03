@@ -24,6 +24,29 @@ async function invite(f:ReturnType<typeof fixture>){
   return {token,guestKey:"b".repeat(43)};
 }
 describe("isolated video consultation service",()=>{
+  it("awaits asynchronous relay configuration and does not commit a room or guest claim on relay failure",async()=>{
+    const f=fixture(),rtc=vi.fn(async()=>({iceServers:[{urls:["turn:turn.cloudflare.com:3478"]}]}));
+    const service=createVideoService(f.store,{origin:"https://example.test",inviteSecret:"a".repeat(32),rtc});
+    const created=await service.execute("viewer-1",{roomId:id,action:"create"});
+    expect(created.rtc).toEqual({iceServers:[{urls:["turn:turn.cloudflare.com:3478"]}]});expect(rtc).toHaveBeenCalledOnce();
+    rtc.mockRejectedValueOnce(new Error("relay unavailable"));
+    const token=new URL(String(created.link)).hash.match(/token=([^&]+)/)![1],before=f.counts().writes;
+    await expect(service.execute(null,{roomId:id,action:"join",token,guestKey:"b".repeat(43)})).rejects.toThrow("relay unavailable");
+    expect(f.counts().writes).toBe(before);expect(f.documents.get(`videoConsultations/${id}`)?.guestHash).toBeUndefined();
+    const empty=fixture(),failed=createVideoService(empty.store,{origin:"https://example.test",inviteSecret:"a".repeat(32),rtc:async()=>{throw Error("unavailable");}});
+    await expect(failed.execute("viewer-1",{roomId:id,action:"create"})).rejects.toThrow("unavailable");expect(empty.documents.size).toBe(0);
+  });
+  it("mints one relay credential across a retried transaction and rejects guests before minting",async()=>{
+    const f=fixture(),rtc=vi.fn(async()=>({iceServers:[]}));
+    let first=true;
+    const retry:VideoStore={watch:()=>()=>{},transact:async action=>{
+      if(first){first=false;const staged=new Map<string,Record<string,unknown>>();await action({get:async()=>undefined,put:(path,value)=>{staged.set(path,value);}});}
+      return f.store.transact(action);
+    }};
+    const service=createVideoService(retry,{origin:"https://example.test",inviteSecret:"a".repeat(32),rtc});
+    await service.execute("viewer-1",{roomId:id,action:"create"});expect(rtc).toHaveBeenCalledOnce();
+    await expect(service.execute(null,{roomId:id,action:"join",token:"z".repeat(43),guestKey:"b".repeat(43)})).rejects.toThrow("초대");expect(rtc).toHaveBeenCalledOnce();
+  });
   it("creates an expiring fragment link, keeps no plain invitation or phone, and deduplicates create",async()=>{
     const f=fixture(),guest=await invite(f),before=f.counts();
     const again=await f.call("viewer-1","create");expect(new URL(String(again.link)).search).toBe("");

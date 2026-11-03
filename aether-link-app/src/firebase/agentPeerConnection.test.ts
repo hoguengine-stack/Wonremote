@@ -293,7 +293,7 @@ describe("Agent data-channel backpressure", () => {
 
   it("splits a large frame into bounded messages with one monotonic sequence", () => {
     const tiles = Array.from({ length: 8 }, (_, index) => ({ index, image: "a".repeat(9_000) }));
-    const payloads = serializeFrameChunks({ tiles, width: 1280, height: 720, sequence: 42, keyframe: true }, 30_000);
+    const payloads = serializeFrameChunks({ tiles, width: 1280, height: 720, sequence: 42, keyframe: true, cursorEmbedded:true }, 30_000);
 
     expect(payloads.length).toBeGreaterThan(1);
     expect(payloads.every((payload) => Buffer.byteLength(payload) <= 30_000)).toBe(true);
@@ -303,6 +303,7 @@ describe("Agent data-channel backpressure", () => {
       frame.width === 1280 &&
       frame.height === 720 &&
       frame.keyframe === true &&
+      frame.cursorEmbedded === true &&
       frame.frameChunkIndex === index &&
       frame.frameChunkCount === parsed.length
     )).toBe(true);

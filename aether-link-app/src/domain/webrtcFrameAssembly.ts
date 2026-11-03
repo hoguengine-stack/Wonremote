@@ -4,6 +4,8 @@ export interface RemoteTileFrame {
   height: number;
   sequence?: number;
   keyframe?: boolean;
+  // Includes the OS intentionally hiding its cursor; do not invent a local arrow.
+  cursorEmbedded?: boolean;
 }
 
 export function hasCompleteTileCoverage(width: number, height: number, tiles: unknown[]): boolean {
@@ -36,6 +38,7 @@ interface PendingFrame {
   height: number;
   sequence: number;
   keyframe: boolean;
+  cursorEmbedded?: boolean;
 }
 
 const MAX_FRAME_CHUNKS = 4_096;
@@ -75,6 +78,7 @@ export class WebRtcFrameAssembler {
         height: chunk.height,
         sequence: chunk.sequence,
         keyframe: chunk.keyframe,
+        ...(typeof chunk.cursorEmbedded === "boolean" ? {cursorEmbedded:chunk.cursorEmbedded} : {}),
       };
       this.pending.set(chunk.sequence, pending);
       trimOldest(this.pending, MAX_PENDING_FRAMES);
@@ -82,7 +86,8 @@ export class WebRtcFrameAssembler {
       pending.chunkCount !== chunk.frameChunkCount ||
       pending.width !== chunk.width ||
       pending.height !== chunk.height ||
-      pending.keyframe !== chunk.keyframe
+      pending.keyframe !== chunk.keyframe ||
+      pending.cursorEmbedded !== chunk.cursorEmbedded
     ) {
       this.pending.delete(chunk.sequence);
       return [];
@@ -102,6 +107,7 @@ export class WebRtcFrameAssembler {
       height: pending.height,
       sequence: pending.sequence,
       keyframe: pending.keyframe,
+      ...(typeof pending.cursorEmbedded === "boolean" ? {cursorEmbedded:pending.cursorEmbedded} : {}),
     };
 
     if (!this.initialKeyframeDelivered && !frame.keyframe) {
@@ -150,10 +156,13 @@ function toLegacyFrame(value: Record<string, unknown>): RemoteTileFrame | null {
     width: Number(value.width),
     height: Number(value.height),
     ...(sequence === null ? {} : { sequence }),
+    ...(typeof value.cursorEmbedded === "boolean" ? {cursorEmbedded:value.cursorEmbedded} : {}),
   };
 }
 
-function validateChunk(value: Record<string, unknown>): (Required<RemoteTileFrame> & {
+function validateChunk(value: Record<string, unknown>): (RemoteTileFrame & {
+  sequence: number;
+  keyframe: boolean;
   frameChunkIndex: number;
   frameChunkCount: number;
 }) | null {
@@ -168,7 +177,8 @@ function validateChunk(value: Record<string, unknown>): (Required<RemoteTileFram
     frameChunkIndex === null || frameChunkIndex < 0 ||
     frameChunkCount === null || frameChunkCount < 1 || frameChunkCount > MAX_FRAME_CHUNKS ||
     frameChunkIndex >= frameChunkCount ||
-    typeof value.keyframe !== "boolean"
+    typeof value.keyframe !== "boolean" ||
+    (value.cursorEmbedded !== undefined && typeof value.cursorEmbedded !== "boolean")
   ) {
     return null;
   }
@@ -178,6 +188,7 @@ function validateChunk(value: Record<string, unknown>): (Required<RemoteTileFram
     height: Number(value.height),
     sequence,
     keyframe: value.keyframe,
+    ...(typeof value.cursorEmbedded === "boolean" ? {cursorEmbedded:value.cursorEmbedded} : {}),
     frameChunkIndex,
     frameChunkCount,
   };

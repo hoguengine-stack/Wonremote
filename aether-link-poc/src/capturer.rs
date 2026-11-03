@@ -18,6 +18,8 @@ use windows::Win32::Graphics::Gdi::{
     SRCCOPY,
 };
 use crate::capture_orientation::orient_duplication_bgra;
+use crate::remote_cursor::{draw_gdi_cursor, DesktopPointer};
+use windows::Win32::Foundation::POINT;
 
 pub struct DesktopCapturer {
     backend: CaptureBackend,
@@ -101,6 +103,7 @@ pub enum CaptureFrameStatus {
         rgb565: Vec<u8>,
         capture_time_us: u128,
         convert_time_us: u128,
+        cursor_embedded: bool,
     },
     Timeout,
     AccessLost,
@@ -116,6 +119,7 @@ pub struct DxgiCapturer {
     rotation: DXGI_MODE_ROTATION,
     adapter_name: String,
     output_name: String,
+    pointer: DesktopPointer,
 }
 
 pub struct GdiCapturer {
@@ -208,6 +212,7 @@ impl GdiCapturer {
             );
 
             let blit_error = blit_result.err();
+            let cursor_embedded = blit_error.is_none() && draw_gdi_cursor(memory_dc, POINT { x:self.x, y:self.y });
             let _ = SelectObject(memory_dc, old_object);
 
             let mut bgra_buffer = vec![0u8; (self.width * self.height * 4) as usize];
@@ -266,6 +271,7 @@ impl GdiCapturer {
                 rgb565: rgb565_buffer,
                 capture_time_us: capture_time,
                 convert_time_us: convert_time,
+                cursor_embedded,
             })
         }
     }
@@ -323,6 +329,7 @@ impl DxgiCapturer {
                 rotation: DXGI_MODE_ROTATION_UNSPECIFIED,
                 adapter_name: String::new(),
                 output_name,
+                pointer: DesktopPointer::default(),
             };
 
             capturer.init_duplication_for_output(&dxgi_adapter, &output)?;
@@ -357,6 +364,7 @@ impl DxgiCapturer {
             self.output_name = utf16_to_string(&output_desc.DeviceName);
             self.duplication = Some(duplication);
             self.staging_texture = None;
+            self.pointer = DesktopPointer::default();
 
             Ok(())
         }
@@ -376,6 +384,7 @@ impl DxgiCapturer {
             let capture_start = std::time::Instant::now();
             match duplication.AcquireNextFrame(timeout_ms, &mut frame_info, &mut resource) {
                 Ok(_) => {
+                    self.pointer.update(duplication, &frame_info);
                     let resource = resource.unwrap();
                     let texture: ID3D11Texture2D = resource.cast()?;
 
@@ -431,7 +440,7 @@ impl DxgiCapturer {
                     let capture_time = capture_start.elapsed().as_micros();
 
                     let convert_start = std::time::Instant::now();
-                    let bgra_buffer = orient_duplication_bgra(
+                    let mut bgra_buffer = orient_duplication_bgra(
                         bgra_buffer,
                         width,
                         height,
@@ -439,6 +448,7 @@ impl DxgiCapturer {
                         self.height as usize,
                         self.rotation,
                     )?;
+                    let cursor_embedded = self.pointer.composite(&mut bgra_buffer, self.width as usize, self.height as usize);
                     let rgb565_buffer =
                         bgra_to_rgb565(&bgra_buffer, self.width as usize, self.height as usize);
                     let convert_time = convert_start.elapsed().as_micros();
@@ -448,6 +458,7 @@ impl DxgiCapturer {
                         rgb565: rgb565_buffer,
                         capture_time_us: capture_time,
                         convert_time_us: convert_time,
+                        cursor_embedded,
                     })
                 }
                 Err(e) => {

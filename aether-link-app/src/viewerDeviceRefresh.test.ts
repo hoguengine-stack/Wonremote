@@ -183,6 +183,53 @@ const counts = (page: Page) => page.evaluate(() => {
 const refresh = (page: Page) => page.getByRole("button", { name: "장비 목록 새로고침", exact: true });
 
 describe("manual Viewer device list in a real browser", () => {
+  it.each([false, true])("uses actual remote cursor metadata only after painting (mobile=%s)", async mobile => {
+    const page = await openViewer({connected:true, mobile});
+    try {
+      const connect = () => page.locator('.table-row').filter({has:page.getByText('PC-0',{exact:true})}).getByRole('button',{name:'접속',exact:true}).click();
+      await connect();
+      await page.waitForFunction(() => typeof (window as any).rtcCallbacks?.onFrame === 'function');
+      const canvas = page.locator('.remote-canvas');
+      expect(await canvas.evaluate(e => getComputedStyle(e).cursor)).not.toBe('none');
+      if (mobile) expect(await page.getByLabel('원격 포인터',{exact:true}).count()).toBe(1);
+      const before = await counts(page);
+      await page.evaluate(() => {
+        const source=document.createElement('canvas'); source.width=64; source.height=32;
+        const ctx=source.getContext('2d')!; ctx.fillStyle='#167d83'; ctx.fillRect(0,0,64,32);
+        ctx.fillStyle='white'; ctx.fillRect(12,8,3,16);
+        const data=source.toDataURL('image/jpeg').split(',')[1];
+        (window as any).cursorFrame=(flag:unknown,sequence:number,keyframe=true,invalid=false)=>(window as any).rtcCallbacks.onFrame({cursorEmbedded:flag,sequence,keyframe,width:64,height:32,tiles:[{x:0,y:0,w:64,h:32,data:invalid?'invalid':data}]});
+        (window as any).cursorFrame(true,1,true,true);
+      });
+      const status=page.getByTestId(mobile?'mobile-connection-status':'remote-connection-status');
+      await status.getByText(/화면 표시 오류/).waitFor();
+      expect(await canvas.evaluate(e => getComputedStyle(e).cursor)).not.toBe('none');
+      await page.evaluate(() => (window as any).cursorFrame(true,10));
+      await expect.poll(() => canvas.evaluate(e => getComputedStyle(e).cursor)).toBe('none');
+      if (mobile) expect(await page.getByLabel('원격 포인터',{exact:true}).count()).toBe(0);
+      expect(await canvas.evaluate(e => (e as HTMLCanvasElement).getContext('2d')!.getImageData(13,12,1,1).data[0])).toBeGreaterThan(210);
+      const original=await canvas.boundingBox();
+      await page.getByRole('button',{name:mobile?'확대':'화면 확대',exact:true}).click();
+      await expect.poll(async () => (await canvas.boundingBox())!.width).toBeGreaterThan(original!.width);
+      expect(await canvas.evaluate(e => getComputedStyle(e).cursor)).toBe('none');
+      await page.screenshot({path:`../.codex-tmp/actual-remote-cursor-${mobile?'mobile':'desktop'}.png`});
+      await page.evaluate(() => (window as any).cursorFrame(undefined,9,false));
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      expect(await canvas.evaluate(e => getComputedStyle(e).cursor)).toBe('none');
+      await page.evaluate(() => (window as any).cursorFrame(false,11,true,true));
+      await status.getByText(/화면 표시 오류/).waitFor();
+      expect(await canvas.evaluate(e => getComputedStyle(e).cursor)).toBe('none');
+      await page.evaluate(() => (window as any).cursorFrame(undefined,12));
+      await expect.poll(() => canvas.evaluate(e => getComputedStyle(e).cursor)).toBe('default');
+      if (mobile) expect(await page.getByLabel('원격 포인터',{exact:true}).count()).toBe(1);
+      expect(await counts(page)).toEqual(before);
+      await page.evaluate(() => (window as any).cursorFrame(true,14));
+      await expect.poll(() => canvas.evaluate(e => getComputedStyle(e).cursor)).toBe('none');
+      if (mobile) await page.getByRole('button',{name:'화면 및 세션 설정',exact:true}).click();
+      await page.getByTestId('end-session').click(); await connect();
+      expect(await page.locator('.remote-canvas').evaluate(e => getComputedStyle(e).cursor)).not.toBe('none');
+    } finally { await page.close(); }
+  });
   it.each([1024,1920,2560])("fits below the expanded fullscreen toolbar, centers zoom and places closable PC tabs in the header at %ipx",async(width)=>{
     const page=await openViewer({connected:true,desktop:true,viewport:{width,height:1440}});
     try{

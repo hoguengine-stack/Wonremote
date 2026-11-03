@@ -61,13 +61,16 @@ export function createVideoService(store:VideoStore,options:{origin:string;invit
   async function execute(owner:string|null,raw:unknown):Promise<Record<string,unknown>>{
     const input=videoInput(raw),action=input.action,id=videoRoomId(input.roomId);
     const inviteToken=createHmac("sha256",options.inviteSecret).update(id).digest("base64url");
+    // Storage retries share one credential request, never mint once per transaction attempt.
+    let rtc:Promise<unknown>|undefined;
+    const configuration=(identity:string)=>rtc??=Promise.resolve().then(()=>options.rtc(identity));
     // Reject random guest probes before a billable database lookup.
     if(!owner&&!equalHash(token(input.token),videoHash(inviteToken)))throw new VideoError(403,"초대 정보를 확인할 수 없습니다.");
     if(action==="create"){
       if(!owner)throw new VideoError(401,"Viewer 로그인이 필요합니다.");
       return store.transact(async tx=>{
         const previous=await tx.get(path(id)) as VideoRoom|undefined;
-        if(previous){assertVideoAccess(previous,owner,input,now());if(!equalHash(inviteToken,previous.inviteHash))throw new VideoError(409,"다른 초대 번호입니다.");return {roomId:id,link:videoLink(options.origin,id,inviteToken),expiresAt:previous.expiresAt,inviteExpiresAt:previous.inviteExpiresAt,rtc:options.rtc(owner)};}
+        if(previous){assertVideoAccess(previous,owner,input,now());if(!equalHash(inviteToken,previous.inviteHash))throw new VideoError(409,"다른 초대 번호입니다.");return {roomId:id,link:videoLink(options.origin,id,inviteToken),expiresAt:previous.expiresAt,inviteExpiresAt:previous.inviteExpiresAt,rtc:await configuration(owner)};}
         const quotaPath=`videoConsultationQuotas/${owner}`,quota=await tx.get(quotaPath);
         const active=typeof quota?.activeRoom==="string"?await tx.get(path(quota.activeRoom)) as VideoRoom|undefined:undefined;
         if(active&&active.state!=="ended"&&active.expiresAt>now())throw new VideoError(409,"열린 영상상담을 먼저 종료해 주세요.");
@@ -77,7 +80,7 @@ export function createVideoService(store:VideoStore,options:{origin:string;invit
         const room:VideoRoom={id,ownerUid:owner,inviteHash:videoHash(inviteToken),createdAt:now(),inviteExpiresAt:now()+VIDEO_INVITE_MS,expiresAt:now()+VIDEO_ROOM_MS,
           state:"waiting",smsState:"none",viewerCandidates:[],guestCandidates:[],purgeAt:new Date(now()+VIDEO_ROOM_MS+24*60*60_000)};
         tx.put(path(id),room);tx.put(quotaPath,{activeRoom:id,windowStart,count:count+1});
-        return {roomId:id,link:videoLink(options.origin,id,inviteToken),expiresAt:room.expiresAt,inviteExpiresAt:room.inviteExpiresAt,rtc:options.rtc(owner)};
+        return {roomId:id,link:videoLink(options.origin,id,inviteToken),expiresAt:room.expiresAt,inviteExpiresAt:room.inviteExpiresAt,rtc:await configuration(owner)};
       });
     }
     if(action==="sms"){
@@ -104,7 +107,7 @@ export function createVideoService(store:VideoStore,options:{origin:string;invit
       if(action==="join"){
         if(owner)throw new VideoError(400,"고객 초대 링크로 시작해 주세요.");
         if(!room.guestHash)tx.put(path(id),{...room,guestHash:videoHash(token(input.guestKey)),state:"joined"});
-        return {roomId:id,expiresAt:room.expiresAt,rtc:options.rtc(`video-${id}`)};
+        return {roomId:id,expiresAt:room.expiresAt,rtc:await configuration(`video-${id}`)};
       }
       if(action==="watch")return {expiresAt:room.expiresAt};
       if(action==="end"){

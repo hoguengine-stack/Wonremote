@@ -204,7 +204,7 @@ interface ApiState {
   sessions: Map<string, RemoteSession>;
   inputLogs: Map<string, string[]>;
   commandQueues: Map<string, AgentCommand[]>;
-  sessionTiles: Map<string, { tiles: any[]; width: number; height: number }>;
+  sessionTiles: Map<string, { tiles: any[]; width: number; height: number; cursorEmbedded?: boolean }>;
   sessionChats: Map<string, ChatMessage[]>;
   sessionClipboards: Map<string, ClipboardData[]>;
   sessionFiles: Map<string, TransferredFile[]>;
@@ -1135,11 +1135,12 @@ async function routeRequest(
       if (!requireConnectedSession(state, response, sessionId)) {
         return;
       }
-      const body = await readJson<{ tiles?: any[]; width?: number; height?: number }>(request);
+      const body = await readJson<{ tiles?: any[]; width?: number; height?: number; cursorEmbedded?: boolean }>(request);
       state.sessionTiles.set(sessionId, {
         tiles: body.tiles ?? [],
         width: body.width ?? 0,
         height: body.height ?? 0,
+        ...(typeof body.cursorEmbedded === "boolean" ? {cursorEmbedded:body.cursorEmbedded} : {}),
       });
       writeJson(response, 200, { ok: true });
       return;
@@ -1154,7 +1155,9 @@ async function routeRequest(
         return;
       }
       const data = state.sessionTiles.get(sessionId) ?? { tiles: [], width: 0, height: 0 };
-      state.sessionTiles.set(sessionId, { tiles: [], width: data.width, height: data.height });
+      state.sessionTiles.set(sessionId, { tiles: [], width: data.width, height: data.height,
+        ...(typeof data.cursorEmbedded === "boolean" ? {cursorEmbedded:data.cursorEmbedded} : {}),
+      });
       writeJson(response, 200, data);
       return;
     }

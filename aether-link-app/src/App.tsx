@@ -3526,6 +3526,7 @@ function RemoteSessionPanel({
   const pendingMoveRef = React.useRef<{ dx: number; dy: number } | null>(null);
   const lastPointerPointRef = React.useRef({ dx: 32768, dy: 32768 });
   const [mobilePointer, setMobilePointer] = useState({ dx: 32768, dy: 32768 });
+  const [remoteCursorEmbedded, setRemoteCursorEmbedded] = useState(false);
   const [mobileKeyboardEnabled, setMobileKeyboardEnabled] = useState(false);
   const pingStateRef = React.useRef<{ start: number } | null>(null);
   const activeTransferIdRef = React.useRef<string>("");
@@ -3985,6 +3986,7 @@ function RemoteSessionPanel({
 
   // Stream Frame drawing
   useEffect(() => {
+    setRemoteCursorEmbedded(false);
     if (!device || !sessionId || !session || session.state !== "connected") {
       return;
     }
@@ -3995,7 +3997,13 @@ function RemoteSessionPanel({
     let webRtcTransport: ViewerWebRtcTransport | null = null;
     let webRtcStartInFlight = false;
     let webRtcConnectionOpen = false;
-    type TileFrame = { tiles?: any[]; width?: number; height?: number; sequence?: number; keyframe?: boolean };
+    type TileFrame = { tiles?: any[]; width?: number; height?: number; sequence?: number; keyframe?: boolean; cursorEmbedded?: boolean };
+    let cursorFrameSequence = -1;
+    const applyPaintedCursor = (data: TileFrame, sequence: number) => {
+      if (sequence < cursorFrameSequence) return;
+      cursorFrameSequence = sequence;
+      setRemoteCursorEmbedded(data.cursorEmbedded === true);
+    };
     let keyframeRenderPending = false;
     let hasPresentedBaseline = false;
     let baselineRevision = 0;
@@ -4090,6 +4098,7 @@ function RemoteSessionPanel({
               drawTileCells(ctx, img, tile, frameSequence, true);
               if (img.naturalWidth > 0 && Number(tile.w) > 0 && Number(tile.h) > 0) {
                 setPicturePresented(true);
+                applyPaintedCursor(data, frameSequence);
               }
             }
             loadedCount++;
@@ -4152,6 +4161,7 @@ function RemoteSessionPanel({
             }
           }
           if (visibleContext) {
+            applyPaintedCursor(data, frameSequence);
             markConnectionTiming(sessionId, "first-picture");
             hasPresentedBaseline = true;
             baselineRevision++;
@@ -5481,14 +5491,14 @@ function RemoteSessionPanel({
               onWheel={handleCanvasWheel}
               style={{
                 display: "block",
-                cursor: "crosshair",
+                cursor: remoteCursorEmbedded ? "none" : "default",
                 transform: mobileRemote ? `translate(${mobilePan.x}px, ${mobilePan.y}px) scale(${zoom})` : `scale(${zoom})`,
                 transformOrigin: portraitRemote ? "center top" : "center center",
               }}
             />
             {mobileRemote && <MobileRemoteGesturePad
               canvas={canvasRef} viewport={remotePreviewRef}
-              pointer={{dx: (mobilePointer.dx-mobileDisplayStart.dx)/Math.max(1,mobileDisplayEnd.dx-mobileDisplayStart.dx)*65535,
+              pointer={remoteCursorEmbedded ? undefined : {dx: (mobilePointer.dx-mobileDisplayStart.dx)/Math.max(1,mobileDisplayEnd.dx-mobileDisplayStart.dx)*65535,
                 dy: (mobilePointer.dy-mobileDisplayStart.dy)/Math.max(1,mobileDisplayEnd.dy-mobileDisplayStart.dy)*65535}} portrait={portraitRemote}
               touchpad={mobileInputMode === "touchpad" && isVisible && isActive ? {
                 move: (x, y) => {

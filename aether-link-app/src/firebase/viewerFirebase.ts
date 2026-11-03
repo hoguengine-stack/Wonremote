@@ -1035,6 +1035,7 @@ export async function fetchFirebaseTiles(
     height: Number(data.height ?? 0),
     sequence: typeof data.sequence === "number" ? data.sequence : undefined,
     keyframe: data.keyframe === true,
+    ...(typeof data.cursorEmbedded === "boolean" ? {cursorEmbedded:data.cursorEmbedded} : {}),
   }), env);
   return frames.reduce(
     (merged, frame) => ({
@@ -1043,6 +1044,7 @@ export async function fetchFirebaseTiles(
       height: frame.height || merged.height,
       sequence: frame.sequence ?? merged.sequence,
       keyframe: frame.keyframe || merged.keyframe,
+      ...(typeof frame.cursorEmbedded === "boolean" ? {cursorEmbedded:frame.cursorEmbedded} : {}),
     }),
     { tiles: [] as any[], width: 0, height: 0, sequence: undefined, keyframe: false } as RemoteTileFrame,
   );

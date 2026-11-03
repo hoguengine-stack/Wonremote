@@ -17,6 +17,27 @@ describe("full frame tile coverage", () => {
 });
 
 describe("WebRTC frame assembly", () => {
+  it("preserves actual cursor mode through out-of-order chunks and legacy frames", () => {
+    const assembler = new WebRtcFrameAssembler();
+    const frame={tiles:[{id:1}],width:64,height:32,sequence:1,keyframe:true,frameChunkCount:2,cursorEmbedded:true};
+    expect(assembler.push({...frame,frameChunkIndex:1})).toEqual([]);
+    expect(assembler.push({...frame,frameChunkIndex:0})[0]).toMatchObject({cursorEmbedded:true,tiles:[{id:1},{id:1}]});
+    expect(assembler.push({tiles:[],width:64,height:32,cursorEmbedded:false})[0].cursorEmbedded).toBe(false);
+    expect(assembler.push({tiles:[],width:64,height:32,cursorEmbedded:'true'})[0].cursorEmbedded).toBeUndefined();
+    expect(assembler.push({tiles:[],width:64,height:32})[0].cursorEmbedded).toBeUndefined();
+  });
+
+  it("rejects mixed or malformed cursor mode instead of hiding a legacy pointer", () => {
+    const assembler = new WebRtcFrameAssembler();
+    const frame={tiles:[{id:1}],width:64,height:32,sequence:1,keyframe:true,frameChunkCount:2};
+    expect(assembler.push({...frame,cursorEmbedded:true,frameChunkIndex:0})).toEqual([]);
+    expect(assembler.push({...frame,cursorEmbedded:false,frameChunkIndex:1})).toEqual([]);
+    expect(assembler.push({...frame,sequence:2,cursorEmbedded:'true',frameChunkIndex:0})).toEqual([]);
+    expect(assembler.push({...frame,sequence:3,cursorEmbedded:true,frameChunkIndex:0})).toEqual([]);
+    expect(assembler.push({...frame,sequence:3,frameChunkIndex:1})).toEqual([]);
+    expect(assembler.push({...frame,sequence:4,frameChunkIndex:0})).toEqual([]);
+    expect(assembler.push({...frame,sequence:4,frameChunkIndex:1})[0]).not.toHaveProperty('cursorEmbedded');
+  });
   it("waits for every initial keyframe chunk and then releases queued deltas in sequence order", () => {
     const assembler = new WebRtcFrameAssembler();
 

@@ -1,5 +1,6 @@
 mod capture_orientation;
 mod capturer;
+mod remote_cursor;
 mod secure_capture;
 mod file_picker;
 mod file_publication;
@@ -2468,6 +2469,7 @@ async fn run_streaming_loop(
     }
     let tile_size = 32;
     let mut tile_diff = TileDiff::new(width, height, tile_size);
+    let mut previous_cursor_embedded = None;
 
     let mut compressor = Compressor::new().unwrap();
     let _ = compressor.set_quality(config.jpeg_quality);
@@ -2524,6 +2526,7 @@ async fn run_streaming_loop(
             Ok(CaptureFrameStatus::Frame {
                 mut rgb565,
                 capture_time_us,
+                cursor_embedded,
                 ..
             }) => {
                 let processing_start = Instant::now();
@@ -2546,9 +2549,11 @@ async fn run_streaming_loop(
                         }
                     }
                 }
-                if request_keyframe.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                if request_keyframe.swap(false, std::sync::atomic::Ordering::SeqCst)
+                    || previous_cursor_embedded != Some(cursor_embedded) {
                     tile_diff.prev_frame = None;
                 }
+                previous_cursor_embedded = Some(cursor_embedded);
                 let keyframe = tile_diff.prev_frame.is_none();
                 let (dirty_tiles, _) = tile_diff.get_dirty_tiles(&rgb565);
 
@@ -2602,6 +2607,7 @@ async fn run_streaming_loop(
                             "height": height,
                             "tiles": base64_tiles,
                             "keyframe": keyframe,
+                            "cursorEmbedded": cursor_embedded,
                             "processingMs": (capture_time_us as f64 + processing_start.elapsed().as_micros() as f64) / 1000.0,
                             "timestamp": now_unix_ms()
                         });
@@ -3107,6 +3113,7 @@ async fn main() {
                 rgb565,
                 capture_time_us: cap_time_us,
                 convert_time_us: conv_time_us,
+                ..
             }) => {
                 frame_count += 1;
 

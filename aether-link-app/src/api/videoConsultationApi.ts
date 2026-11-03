@@ -1,12 +1,14 @@
 import { resolveFirebaseConfig } from "../firebase/firebaseConfig";
 import { getWonRemoteFirebaseServices } from "../firebase/firebaseServices";
 
+export const DEFAULT_VIDEO_CONSULTATION_URL="https://wonremote-video-consultation.qpalzm8178.workers.dev/videoConsultation";
+
 export type VideoSignal = {
   state:"waiting"|"joined"|"ended";expiresAt?:number;smsState?:string;message?:string;
   offer?:RTCSessionDescriptionInit;answer?:RTCSessionDescriptionInit;
   viewerCandidates?:RTCIceCandidateInit[];guestCandidates?:RTCIceCandidateInit[];
 };
-export type VideoInvitation = {roomId:string;link:string;inviteExpiresAt:number;expiresAt:number;rtc:RTCConfiguration};
+export type VideoInvitation = {roomId:string;link:string;inviteExpiresAt:number;expiresAt:number;rtc:RTCConfiguration;smsAvailable?:boolean;smsRoutingAvailable?:boolean};
 export interface VideoApi {
   call(action:string,roomId:string,data:Record<string,unknown>,signal?:AbortSignal):Promise<any>;
   watch(roomId:string,onUpdate:(value:VideoSignal)=>void,signal:AbortSignal):Promise<void>;
@@ -22,9 +24,12 @@ export function videoGuestKey(){
 export function createVideoApi(guest?:{token:string;guestKey:string}):VideoApi{
   const config=resolveFirebaseConfig(import.meta.env);
   const project=config?.projectId;
-  const endpoint=`https://us-central1-${project}.cloudfunctions.net/videoConsultation`;
+  const configured=import.meta.env.VITE_WONREMOTE_VIDEO_API_URL?.trim();
+  const endpoint=configured??(project==="wonremote-a7fd3"?DEFAULT_VIDEO_CONSULTATION_URL:`https://us-central1-${project}.cloudfunctions.net/videoConsultation`);
   async function request(action:string,roomId:string,data:Record<string,unknown>,signal?:AbortSignal){
     if(!project)throw new Error("영상상담 서버가 설정되지 않았습니다.");
+    const url=new URL(endpoint);
+    if(url.username||url.password||url.search||url.hash||(url.protocol!=="https:"&&!(url.protocol==="http:"&&["localhost","127.0.0.1"].includes(url.hostname))))throw new Error("영상상담 서버 주소가 올바르지 않습니다.");
     const headers:Record<string,string>={"Content-Type":"application/json"};
     if(!guest){
       const user=getWonRemoteFirebaseServices(config!).auth.currentUser;

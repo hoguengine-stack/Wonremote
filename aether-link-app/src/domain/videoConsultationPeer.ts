@@ -12,7 +12,7 @@ export function createVideoPeer(input:{
   const fail=(error:unknown)=>{if(!closed)input.onError(error instanceof Error?error:new Error("영상 연결에 실패했습니다."));};
   const publish=(data:Record<string,unknown>)=>input.api.call("signal",input.roomId,data,controller.signal);
   const enqueue=(action:()=>Promise<void>)=>{tasks=tasks.then(async()=>{if(!closed)await action();}).catch(fail);return tasks;};
-  peer.ontrack=event=>{if(!closed){if(!incoming.getTracks().some(track=>track.id===event.track.id))incoming.addTrack(event.track);input.onStream(incoming);}};
+  peer.ontrack=event=>{if(!closed&&event.track.kind==="video"){if(!incoming.getTracks().some(track=>track.id===event.track.id))incoming.addTrack(event.track);input.onStream(incoming);}else if(event.track.kind==="audio")event.track.stop();};
   peer.onconnectionstatechange=()=>{if(!closed)input.onState(peer.connectionState);};
   peer.onicecandidate=event=>{
     if(closed||!event.candidate||localCandidates>=32)return;
@@ -20,8 +20,8 @@ export function createVideoPeer(input:{
     const c=event.candidate;
     void enqueue(async()=>{await publish({candidate:{candidate:c.candidate,sdpMid:c.sdpMid,sdpMLineIndex:c.sdpMLineIndex}});});
   };
-  if(input.guest){for(const track of input.stream?.getTracks()??[])peer.addTrack(track,input.stream!);}
-  else{peer.addTransceiver("video",{direction:"recvonly"});peer.addTransceiver("audio",{direction:"sendrecv"});}
+  if(input.guest){for(const track of input.stream?.getVideoTracks()??[])peer.addTrack(track,input.stream!);}
+  else peer.addTransceiver("video",{direction:"recvonly"});
   return {
     async start(){
       if(input.guest)return;
@@ -48,12 +48,6 @@ export function createVideoPeer(input:{
           await peer.addIceCandidate(candidate);seen.add(key);
         }
       });
-    },
-    async microphone(track:MediaStreamTrack|null){
-      if(closed)throw new Error("상담이 종료되었습니다.");
-      const sender=peer.getTransceivers().find(value=>value.receiver.track.kind==="audio")?.sender;
-      if(!sender)throw new Error("음성 연결이 준비되지 않았습니다.");
-      await sender.replaceTrack(track);
     },
     async camera(track:MediaStreamTrack){
       if(closed)throw new Error("상담이 종료되었습니다.");

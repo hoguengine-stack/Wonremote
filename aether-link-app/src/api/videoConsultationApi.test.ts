@@ -2,15 +2,26 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const user=vi.hoisted(()=>({getIdToken:vi.fn(async()=>"viewer-id-token")}));
 const services=vi.hoisted(()=>vi.fn(()=>({auth:{currentUser:user}})));
 vi.mock("../firebase/firebaseServices",()=>({getWonRemoteFirebaseServices:services}));
-import { createVideoApi, readVideoInvite } from "./videoConsultationApi";
-afterEach(()=>{vi.unstubAllGlobals();vi.useRealTimers();vi.clearAllMocks();});
+import { createVideoApi, DEFAULT_VIDEO_CONSULTATION_URL, readVideoInvite } from "./videoConsultationApi";
+afterEach(()=>{vi.unstubAllEnvs();vi.unstubAllGlobals();vi.useRealTimers();vi.clearAllMocks();});
 describe("video HTTP client",()=>{
+  it("selects the configured Cloudflare endpoint without discovery or Firebase Functions calls",async()=>{
+    vi.stubEnv("VITE_WONREMOTE_VIDEO_API_URL","https://video.example.workers.dev/videoConsultation");
+    const fetcher=vi.fn(async(_url:string)=>Response.json({ok:true}));vi.stubGlobal("fetch",fetcher);
+    await createVideoApi().call("create","room",{});
+    expect(fetcher).toHaveBeenCalledOnce();expect(fetcher.mock.calls[0][0]).toBe("https://video.example.workers.dev/videoConsultation");
+    for(const endpoint of ["http://unsafe.example/videoConsultation","https://user:secret@video.example/","https://video.example/?token=secret"]){
+      vi.stubEnv("VITE_WONREMOTE_VIDEO_API_URL",endpoint);
+      await expect(createVideoApi().call("create","room",{})).rejects.toThrow("주소");
+    }
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
   it("keeps guest capability out of URLs, referrers and Firebase auth, while owner sends only its ID token",async()=>{
     const fetcher=vi.fn(async()=>Response.json({ok:true}));vi.stubGlobal("fetch",fetcher);
     const api=createVideoApi({token:"t".repeat(43),guestKey:"g".repeat(43)});
     await api.call("join","room",{});expect(services).not.toHaveBeenCalled();
     const [url,init]=fetcher.mock.calls[0] as unknown as [string,RequestInit];
-    expect(url).toMatch(/^https:\/\/us-central1-wonremote-a7fd3\.cloudfunctions\.net\/videoConsultation$/);
+    expect(url).toBe(DEFAULT_VIDEO_CONSULTATION_URL);
     expect(init).toMatchObject({credentials:"omit",referrerPolicy:"no-referrer",cache:"no-store"});
     expect((init.headers as Record<string,string>).Authorization).toBeUndefined();expect(JSON.parse(String(init.body))).toMatchObject({token:"t".repeat(43),guestKey:"g".repeat(43)});
     await createVideoApi().call("create","room",{});
