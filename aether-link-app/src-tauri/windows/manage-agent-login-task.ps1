@@ -157,7 +157,7 @@ function Test-AgentNodeRuntime($Runtime, [string]$Root) {
 }
 
 function Wait-ProtectedAgentRuntime($Runtime) {
-  $deadline = (Get-Date).AddSeconds(15)
+  $deadline = (Get-Date).AddSeconds(60)
   $stableChecks = 0
   do {
     if (Test-AgentNodeRuntime $Runtime $Runtime.Root) {

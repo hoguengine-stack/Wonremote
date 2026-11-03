@@ -5,6 +5,51 @@ import path from "node:path";
 import { describe, it, expect } from "vitest";
 
 describe.skipIf(process.platform !== "win32")("Agent first-run Windows boundaries", () => {
+  it.each(["agent-install-hooks-x86.nsh", "viewer-install-hooks-x86.nsh", "agent-install-hooks.nsh", "viewer-install-hooks.nsh"])("uses a scoped process check instead of killing the shared basename: %s", hook => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "wonremote-scoped-nsis-"));
+    const nsis = path.join(process.env.LOCALAPPDATA!, "tauri", "NSIS");
+    const output = path.join(root, "fixture.exe");
+    const script = path.join(root, "fixture.nsi");
+    try {
+      writeFileSync(script, `Unicode true
+!include MUI2.nsh
+!include LogicLib.nsh
+!macro CheckIfAppIsRunning executableName productName
+  FileOpen $0 "$EXEDIR\\proof.txt" w
+  FileWrite $0 "global-basename-check"
+  FileClose $0
+!macroend
+!include "${path.resolve("src-tauri/windows", hook)}"
+!ifmacrodef WONREMOTE_REQUIRE_X64_WINDOWS
+!macroundef WONREMOTE_REQUIRE_X64_WINDOWS
+!macro WONREMOTE_REQUIRE_X64_WINDOWS
+  FileOpen $0 "$EXEDIR\\proof.txt" w
+  FileWrite $0 "architecture-checked:"
+  FileClose $0
+!macroend
+!endif
+!macroundef WONREMOTE_STOP_RUNNING_PROCESSES
+!macro WONREMOTE_STOP_RUNNING_PROCESSES
+  FileOpen $0 "$EXEDIR\\proof.txt" a
+  FileSeek $0 0 END
+  FileWrite $0 "scoped-process-check"
+  FileClose $0
+!macroend
+Name "WonRemote process-scope fixture"
+OutFile "${output}"
+RequestExecutionLevel user
+SilentInstall silent
+InstallDir "${root}\\installed"
+Section
+  !insertmacro NSIS_HOOK_PREINSTALL
+  !insertmacro CheckIfAppIsRunning "unrelated-fixture.exe" "fixture"
+SectionEnd
+`);
+      execFileSync(path.join(nsis, "makensis.exe"), [script], { windowsHide: true, timeout: 15000, stdio: "pipe" });
+      execFileSync(output, ["/S"], { windowsHide: true, timeout: 15000 });
+      expect(readFileSync(path.join(root, "proof.txt"), "utf8")).toBe(`${hook.includes("x86")?"":"architecture-checked:"}scoped-process-check`);
+    } finally { rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
+  }, 35000);
   it("shows the Agent after registration without changing background updater or finish intent", () => {
     const source = readFileSync(path.resolve("src-tauri/src/lib.rs"), "utf8");
     const save = source.slice(source.indexOf("fn save_agent_config("), source.indexOf("fn restart_agent_process("));
@@ -201,6 +246,34 @@ exit 0
     expect(output).toContain(`FULL=1;FILTERED=${scenario === "empty" ? 0 : scenario === "exits" ? 1 : 3};STOPPED=${scenario === "empty" ? "False" : "True"}`);
     expect(output.includes("process termination failed")).toBe(scenario === "stuck");
   }, 20_000);
+
+  it("preserves the real NSIS installer behind a 32-bit nsExec wrapper, not the Agent above it", () => {
+    const helper = path.resolve("src-tauri/windows/stop-wonremote-processes.ps1").replace(/'/g, "''");
+    const script = `
+      $root='C:\\Program Files\\WonRemote Agent'
+      $global:stopped=[Collections.Generic.HashSet[int]]::new()
+      function Start-Sleep {}
+      function Stop-ScheduledTask {}
+      function Get-CimInstance {
+        param($ClassName,$Filter,$ErrorAction)
+        if($Filter){return}
+        [pscustomobject]@{ProcessId=$PID;ParentProcessId=8000;ExecutablePath='C:\\Windows\\powershell.exe'}
+        [pscustomobject]@{ProcessId=8000;ParentProcessId=9000;ExecutablePath='C:\\Temp\\nsExec-wrapper.tmp'}
+        [pscustomobject]@{ProcessId=9000;ParentProcessId=101;ExecutablePath=($root+'\\.update-handoff\\request\\installer.exe')}
+        [pscustomobject]@{ProcessId=101;ParentProcessId=1;ExecutablePath=($root+'\\wonremote-viewer.exe')}
+      }
+      function Stop-Process {param($Id,[switch]$Force,$ErrorAction);[void]$global:stopped.Add([int]$Id)}
+      $source=[IO.File]::ReadAllText('${helper}').Replace('exit 0','return')
+      $parameters=@{Product='Agent';InstallRoot=$root}
+      if($source.Contains('[int] $InstallerProcessId')){$parameters.InstallerProcessId=9000}
+      & ([scriptblock]::Create($source)) @parameters
+      if($global:stopped.Contains(9000)){throw 'Real NSIS installer was killed'}
+      if(-not $global:stopped.Contains(101)){throw 'Agent ancestor above installer must still stop'}
+      'real-installer-preserved'
+    `;
+    const output = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { windowsHide: true, timeout: 15000, encoding: "utf8" });
+    expect(output).toContain("real-installer-preserved");
+  }, 20000);
 
   it("stops the SYSTEM broker and both protected and legacy Agent process trees before overwrite", () => {
     const helper = path.resolve("src-tauri/windows/stop-wonremote-processes.ps1").replace(/'/g, "''");

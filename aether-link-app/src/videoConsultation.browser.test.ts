@@ -16,8 +16,8 @@ beforeAll(async()=>{
       if(w.fakeCameraSwitch&&typeof c.video==='object')c={...c,video:{...c.video,facingMode:undefined}};
       const s=await gum(c),t=s.getVideoTracks()[0];
       if(w.fakeTorch&&t){let on=false;const settings=t.getSettings.bind(t),stop=t.stop.bind(t);
-        t.getCapabilities=()=>({torch:facing==='user'?[false]:[true,false]});t.getSettings=()=>({...settings(),facingMode:facing,torch:on});
-        t.applyConstraints=async value=>{if(w.torchFailure)throw new Error('fixture torch failure');if(w.delayTorch)await new Promise(r=>w.finishTorch=r);on=Boolean(value.advanced?.[0]?.torch);w.torchChanges.push(on);};
+        t.getCapabilities=()=>w.lateTorch&&!w.revealTorch?{}:({torch:facing==='user'?[false]:[true,false]});t.getSettings=()=>({...settings(),facingMode:facing,torch:on});
+        t.applyConstraints=async value=>{if(w.torchFailure)throw new Error('fixture torch failure');if(w.delayTorch)await new Promise(r=>w.finishTorch=r);if(value.torch?.exact!==value.advanced?.[0]?.torch)throw Error('Torch not required');on=Boolean(value.torch.exact);w.torchChanges.push(on);};
         t.stop=()=>{on=false;stop();};
       }
       w.tracks.push(...s.getTracks());if(w.delayMedia)await new Promise(r=>w.finishMedia=r);return s;
@@ -48,7 +48,7 @@ function fixture(smsAvailable?:boolean){
   };
   async function emit(page:Page,room:VideoRoom){await page.evaluate(value=>(window as any).nextSignal?.(value),publicVideoRoom(room)).catch(()=>undefined);}
   const service=createVideoService(store,{origin:"http://localhost",inviteSecret:"a".repeat(32),rtc:()=>({iceServers:[]})});
-  async function open(guest?:{roomId:string;token:string},options:{mobile?:boolean;deny?:boolean;delay?:boolean;torch?:boolean}={}){
+  async function open(guest?:{roomId:string;token:string},options:{mobile?:boolean;deny?:boolean;delay?:boolean;torch?:boolean;lateTorch?:boolean;clock?:boolean}={}){
     const page=await browser.newPage({viewport:options.mobile?{width:390,height:844}:{width:1440,height:900}});
     page.setDefaultTimeout(8_000);const guestKey="g".repeat(43);
     await page.route("http://localhost/**",route=>route.fulfill({contentType:"text/html",body:`<meta name="viewport" content="width=device-width,initial-scale=1"><div class="${guest?"video-consultation-page":"video-consultation-backdrop"}" id="root"></div>`}));
@@ -62,8 +62,10 @@ function fixture(smsAvailable?:boolean){
     });
     await page.exposeFunction("serverStop",()=>{for(const w of watchers)if(w.page===page)watchers.delete(w);});
     await page.goto("http://localhost/video-support");await page.addStyleTag({content:readFileSync("src/styles.css","utf8")});
-    await page.evaluate(options=>{Object.assign(window,{deny:options.deny,delayMedia:options.delay,fakeTorch:options.torch});},options);
+    if(options.clock)await page.clock.install();
+    await page.evaluate(options=>{Object.assign(window,{deny:options.deny,delayMedia:options.delay,fakeTorch:options.torch,lateTorch:options.lateTorch});},options);
     await page.addScriptTag({content:bundle});await page.evaluate(guest=>(window as any).mount(guest),guest);
+    if(!guest)await page.getByRole("textbox",{name:"영상상담 초대 링크"}).waitFor();
     return page;
   }
   return {open,actions,watchers,docs};
@@ -76,8 +78,24 @@ async function noOverflow(page:Page){
 }
 
 describe("video consultation actual browser media",()=>{
+  it("refreshes delayed torch capabilities on playback, applies required on/off and keeps the camera through a failed switch",async()=>{
+    const f=fixture(false),owner=await f.open();
+    const params=new URLSearchParams(new URL(await owner.getByRole("textbox",{name:"영상상담 초대 링크"}).inputValue()).hash.slice(1));
+    const guest=await f.open({roomId:params.get("room")!,token:params.get("token")!},{mobile:true,torch:true,lateTorch:true});
+    await guest.getByRole("button",{name:"카메라 허용하고 시작",exact:true}).click();
+    await until(()=>owner.locator("video").evaluate(node=>(node as HTMLVideoElement).videoWidth>0));
+    expect(await guest.getByRole("button",{name:"후레쉬 켜기",exact:true}).isDisabled()).toBe(true);
+    await guest.getByText("현재 카메라·브라우저는 후레쉬 제어를 지원하지 않습니다.",{exact:true}).waitFor();
+    await guest.locator("video").evaluate(node=>{(window as any).revealTorch=true;node.dispatchEvent(new Event("playing"));});
+    await guest.getByRole("button",{name:"후레쉬 켜기",exact:true}).click();await guest.getByRole("button",{name:"후레쉬 끄기",exact:true}).click();
+    expect(await guest.evaluate(()=>(window as any).torchChanges)).toEqual([true,false]);
+    await guest.evaluate(()=>(window as any).deny=true);await guest.getByRole("button",{name:"카메라 전환",exact:true}).click();
+    await guest.getByRole("alert").filter({hasText:"현재 카메라는 유지"}).waitFor();
+    expect(await guest.locator("video").evaluate(node=>(node as HTMLVideoElement).srcObject instanceof MediaStream&&((node as HTMLVideoElement).srcObject as MediaStream).getVideoTracks()[0].readyState==="live")).toBe(true);
+    await guest.getByRole("button",{name:"상담 종료",exact:true}).click();await guest.close();await owner.close();
+  },20_000);
   it("uses video only, toggles a supported torch, reevaluates front/rear support and preserves video after torch failure",async()=>{
-    const f=fixture(false),owner=await f.open();await owner.getByRole("button",{name:"영상상담 시작",exact:true}).click();
+    const f=fixture(false),owner=await f.open();
     const query=new URLSearchParams(new URL(await owner.getByRole("textbox",{name:"영상상담 초대 링크"}).inputValue()).hash.slice(1));
     const guest=await f.open({roomId:query.get("room")!,token:query.get("token")!},{mobile:true,torch:true});
     await guest.evaluate(()=>(window as any).fakeCameraSwitch=true);
@@ -87,7 +105,8 @@ describe("video consultation actual browser media",()=>{
     await guest.getByRole("button",{name:"후레쉬 끄기",exact:true}).click();expect(await guest.evaluate(()=>(window as any).torchChanges)).toEqual([true,false]);
     await guest.evaluate(()=>(window as any).torchFailure=true);await guest.getByRole("button",{name:"후레쉬 켜기",exact:true}).click();await guest.getByRole("alert").filter({hasText:"카메라 영상은 계속"}).waitFor();
     expect(await guest.evaluate(()=>(window as any).tracks[0].readyState)).toBe('live');await guest.evaluate(()=>(window as any).torchFailure=false);
-    await guest.getByRole("button",{name:"카메라 전환",exact:true}).click();await until(()=>guest.getByRole("button",{name:"후레쉬 켜기",exact:true}).isDisabled());
+    await guest.getByRole("button",{name:"카메라 전환",exact:true}).click();await until(()=>guest.evaluate(()=>(window as any).tracks[0].readyState==='ended'));
+    expect(await guest.getByRole("button",{name:"후레쉬 켜기",exact:true}).isDisabled()).toBe(true);
     expect(await guest.evaluate(()=>(window as any).tracks[0].readyState)).toBe('ended');
     await guest.getByRole("button",{name:"카메라 전환",exact:true}).click();await until(()=>guest.getByRole("button",{name:"후레쉬 켜기",exact:true}).isEnabled());
     expect(await guest.evaluate(()=>(window as any).constraints.every((c:any)=>c.audio===false))).toBe(true);
@@ -99,14 +118,13 @@ describe("video consultation actual browser media",()=>{
   },30_000);
   it("uses manual links without advertising an unconfigured SMS action on Cloudflare",async()=>{
     const f=fixture(false),owner=await f.open();
-    await owner.getByRole("button",{name:"영상상담 시작",exact:true}).click();
     const link=owner.getByRole("textbox",{name:"영상상담 초대 링크"});await link.waitFor();expect(await link.inputValue()).toContain("#room=");
     expect(await owner.getByRole("button",{name:"문자 전송",exact:true}).count()).toBe(0);expect(await owner.getByRole("textbox",{name:"휴대폰 번호",exact:true}).count()).toBe(0);
     await owner.context().grantPermissions(["clipboard-read","clipboard-write"]);await owner.getByRole("button",{name:"링크 복사",exact:true}).click();expect(await owner.evaluate(()=>navigator.clipboard.readText())).toBe(await link.inputValue());
     await noOverflow(owner);await owner.getByRole("button",{name:"영상상담 닫기",exact:true}).click();await until(async()=>f.watchers.size===0);expect(f.actions.filter(a=>a==="viewer:sms")).toHaveLength(0);await owner.close();
   });
   it("requires consent, renders moving video without audio, handles missing SMS provider and closes every track",async()=>{
-    const f=fixture(),owner=await f.open();await owner.getByRole("button",{name:"영상상담 시작",exact:true}).click();
+    const f=fixture(),owner=await f.open();
     const link=await owner.getByRole("textbox",{name:"영상상담 초대 링크"}).inputValue();const params=new URL(link).hash;const query=new URLSearchParams(params.slice(1));
     await owner.context().grantPermissions(["clipboard-read","clipboard-write"],{origin:"http://localhost"});
     await owner.getByRole("button",{name:"링크 복사",exact:true}).click();expect(await owner.evaluate(()=>navigator.clipboard.readText())).toBe(link);
@@ -126,9 +144,14 @@ describe("video consultation actual browser media",()=>{
     await until(async()=>(await measure()).frame>first.frame+2);
     expect(await owner.getByRole("button",{name:"마이크 켜기",exact:true}).count()).toBe(0);
     expect(await guest.evaluate(()=>(window as any).tracks.every((t:MediaStreamTrack)=>t.kind==='video'))).toBe(true);
+    await guest.locator('video').evaluate(node=>{(window as any).previewBefore=(node as HTMLVideoElement).srcObject;});
     await guest.evaluate(()=>(window as any).fakeCameraSwitch=true);await guest.getByRole("button",{name:"카메라 전환",exact:true}).click();
     await until(()=>guest.evaluate(()=>(window as any).tracks.filter((t:MediaStreamTrack)=>t.kind==="video").length===2));
     await until(()=>guest.evaluate(()=>(window as any).tracks.find((t:MediaStreamTrack)=>t.kind==="video").readyState==="ended"));
+    expect(await guest.locator('video').evaluate(node=>(node as HTMLVideoElement).srcObject!==(window as any).previewBefore)).toBe(true);
+    const previewFrames=await guest.locator('video').evaluate(node=>(node as HTMLVideoElement).getVideoPlaybackQuality().totalVideoFrames);
+    await until(()=>guest.locator('video').evaluate((node,frames)=>(node as HTMLVideoElement).getVideoPlaybackQuality().totalVideoFrames>frames+2,previewFrames));
+    const viewerFrames=(await measure()).frame;await until(async()=>(await measure()).frame>viewerFrames+2);
     await noOverflow(guest);await owner.screenshot({path:`${evidence}/viewer-connected.png`});await guest.screenshot({path:`${evidence}/phone-connected.png`});
     await guest.getByRole("button",{name:"상담 종료",exact:true}).click();
     await until(()=>owner.getByText("상담 종료",{exact:true}).count().then(n=>n>=1));
@@ -137,7 +160,7 @@ describe("video consultation actual browser media",()=>{
     await owner.close();await guest.close();
   },30_000);
   it("permission denial does not claim the invitation, and late permission after close stops camera without joining",async()=>{
-    const f=fixture(),owner=await f.open();await owner.getByRole("button",{name:"영상상담 시작",exact:true}).click();
+    const f=fixture(),owner=await f.open();
     const link=await owner.getByRole("textbox",{name:"영상상담 초대 링크"}).inputValue(),p=new URLSearchParams(new URL(link).hash.slice(1));
     const invite={roomId:p.get("room")!,token:p.get("token")!};
     const denied=await f.open(invite,{mobile:true,deny:true});
@@ -150,9 +173,11 @@ describe("video consultation actual browser media",()=>{
   },20_000);
   it("keeps consent controls usable on narrow phones and landscape, and traps owner dialog focus",async()=>{
     const f=fixture(),owner=await f.open();await owner.setViewportSize({width:1024,height:768});await noOverflow(owner);
-    expect(await owner.getByRole("button",{name:"상담 종료",exact:true}).isDisabled()).toBe(true);
+    expect(await owner.getByRole("button",{name:"영상상담 시작",exact:true}).count()).toBe(0);
+    expect(f.actions.filter(a=>a==="viewer:create")).toHaveLength(1);
+    expect(await owner.getByRole("button",{name:"상담 종료",exact:true}).isEnabled()).toBe(true);
     await owner.getByRole("button",{name:"영상상담 닫기",exact:true}).focus();await owner.keyboard.press("Shift+Tab");
-    expect(await owner.getByRole("button",{name:"영상상담 시작",exact:true}).evaluate(node=>node===document.activeElement)).toBe(true);
+    expect(await owner.getByRole("button",{name:"상담 종료",exact:true}).evaluate(node=>node===document.activeElement)).toBe(true);
     await owner.close();
     for(const viewport of [{width:320,height:568},{width:844,height:390}]){
       const guest=await f.open({roomId:"11111111-1111-4111-8111-111111111111",token:"t".repeat(43)},{mobile:true});
@@ -162,8 +187,8 @@ describe("video consultation actual browser media",()=>{
     }
   });
   it("expires unused invitations, ends once, and does not restart work after unmount",async()=>{
-    const f=fixture(),owner=await f.open();await owner.clock.install();
-    await owner.getByRole("button",{name:"영상상담 시작",exact:true}).click();await until(async()=>f.watchers.size===1);
+    const f=fixture(),owner=await f.open(undefined,{clock:true});
+    await until(async()=>f.watchers.size===1);
     await owner.clock.fastForward(15*60_000+1000);await owner.getByRole("button",{name:"새 상담",exact:true}).waitFor();
     await owner.getByRole("alert").filter({hasText:"유효시간"}).waitFor();await until(async()=>f.actions.includes("viewer:end"));
     await owner.evaluate(()=>(window as any).root.unmount());await owner.clock.fastForward(60*60_000);

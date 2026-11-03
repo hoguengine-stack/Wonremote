@@ -11,6 +11,26 @@ import { createAgentHealthReporter } from "./agentUpdateHealth";
 const identity = { registeredDeviceId: "business:AGENT-82220F6D", installId: "agent-82220f6d" };
 
 describe("Agent update online readiness", () => {
+  it("starts background update work only after the complete persisted availability receipt", async () => {
+    let release!: () => void;
+    const saved = new Promise<void>(resolve => { release = resolve; });
+    const backgroundUpdate = vi.fn(() => new Promise<void>(() => {}));
+    const report = createAgentHealthReporter({baseDir:"unused",version:"0.1.119",writeReceipt:()=>saved,
+      onHealthy:()=>{void backgroundUpdate();}});
+    expect(report.isHealthy()).toBe(false);
+    await report.heartbeatAccepted(identity,identity.registeredDeviceId);
+    const challenge=report.takeCommandChallenge(identity)!;
+    await report.commandReceiverReady(identity);
+    const receipt=report.commandRoundTripVerified(identity,challenge);
+    expect(backgroundUpdate).not.toHaveBeenCalled();
+    expect(report.isHealthy()).toBe(false);
+    release();
+    expect(await receipt).toBe(true);
+    expect(report.isHealthy()).toBe(true);
+    expect(backgroundUpdate).toHaveBeenCalledTimes(1);
+    await report.heartbeatAccepted(identity,identity.registeredDeviceId);
+    expect(backgroundUpdate).toHaveBeenCalledTimes(1);
+  });
   it("writes an atomic real receipt only for the server-accepted original identity", async () => {
     const baseDir = await mkdtemp(path.join(os.tmpdir(), "wonremote-online-"));
     try {

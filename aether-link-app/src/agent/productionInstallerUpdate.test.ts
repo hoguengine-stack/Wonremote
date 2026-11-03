@@ -17,7 +17,36 @@ const POWERSHELL_HARNESS_TIMEOUT_MS = 60_000;
 const POWERSHELL_CASE_TIMEOUT_MS = 75_000;
 
 describe("production installer update", () => {
-  it.runIf(process.platform === "win32").each(["launch", "installer", "runtime", "online"])(
+  it.runIf(process.platform === "win32")("accepts a slow runtime after fifteen seconds but still enforces a bounded readiness deadline", async () => {
+    const baseDir=path.join(os.tmpdir(),`wonremote-slow-runtime-${process.pid}-${Date.now()}`);
+    await mkdir(baseDir,{recursive:true});
+    try {
+      const installer=path.join(baseDir,"installer.exe");await writeFile(installer,"fixture");
+      const handoff=await prepareInstallerHandoff({installerPath:installer,installerArgs:["/S"],installerSha256:createHash("sha256").update("fixture").digest("hex")},{baseDir});
+      const source=await readFile(handoff.scriptPath,"utf8");
+      const prefix=source.slice(0,source.lastIndexOf("\ntry {\n  Backup-WonRemoteInstall"));
+      const harness=path.join(baseDir,"slow.ps1");
+      await writeFile(harness,prefix+`
+$global:clock=[datetime]'2026-11-03T00:00:00Z'
+$global:origin=$global:clock
+function Get-Date { $global:clock }
+function Start-Sleep {param($Milliseconds);$global:clock=$global:clock.AddMilliseconds($Milliseconds)}
+function Test-WonRemoteAgentRuntime { ($global:clock-$global:origin).TotalSeconds -ge 18 }
+Wait-WonRemoteAgentRuntime
+if(($global:clock-$global:origin).TotalSeconds -lt 18){throw 'Readiness skipped'}
+$global:origin=$global:clock
+function Test-WonRemoteAgentRuntime { $false }
+$rejected=$false
+try{Wait-WonRemoteAgentRuntime}catch{$rejected=$true}
+if(-not $rejected -or ($global:clock-$global:origin).TotalSeconds -gt 61){throw 'Unbounded or missing runtime wait'}
+Close-UpdateLock
+'slow-ready-and-bounded'
+`);
+      const result=spawnSync("powershell.exe",["-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-File",harness],{windowsHide:true,encoding:"utf8",timeout:15000});
+      expect(result.status,result.stderr).toBe(0);expect(result.stdout).toContain("slow-ready-and-bounded");
+    }finally{await rm(baseDir,{recursive:true,force:true});}
+  },20000);
+  it.runIf(process.platform === "win32").each(["launch", "installer", "runtime", "online", "rollback"])(
     "preserves or restores the runtime at the %s failure boundary",
     async (failure) => {
       const baseDir = path.join(os.tmpdir(), `wonremote-failure-${process.pid}-${failure}-${Date.now()}`);
@@ -40,22 +69,23 @@ $FailureExitCode = 1
 $InstallerStarted = $false
 $AcceptedPath = '${harness.replace(/'/g, "''")}.accepted'
 $RestartMode = 'agent'
+$RollbackRoot = '${baseDir.replace(/'/g, "''")}'
 function Record([string]$Event) { Add-Content -LiteralPath $env:WR_EVENTS -Value $Event }
 function Backup-WonRemoteInstall { $script:RollbackEntries = @('backup'); Record 'backup' }
 function Write-HandoffLog([string]$Message) {}
 function Start-Process {
   Record 'launch'
   if ($env:WR_FAILURE -eq 'launch') { throw 'installer launch rejected' }
-  $p = [pscustomobject]@{ Id = 1; ExitCode = $(if ($env:WR_FAILURE -eq 'installer') { 5 } else { 0 }) }
+  $p = [pscustomobject]@{ Id = 1; ExitCode = $(if ($env:WR_FAILURE -in @('installer','rollback')) { 5 } else { 0 }) }
   $p | Add-Member ScriptMethod WaitForExit { }
   return $p
 }
 function Start-WonRemoteAgent { Record 'start' }
 function Wait-WonRemoteAgentRuntime { Record 'health'; if ($env:WR_FAILURE -eq 'runtime') { throw 'replacement runtime unavailable' } }
 function Wait-WonRemoteAgentOnline { Record 'online'; throw 'replacement heartbeat unavailable' }
-function Restore-WonRemoteInstall { Record 'restore-and-restart' }
+function Restore-WonRemoteInstall { Record 'restore-and-restart'; if ($env:WR_FAILURE -eq 'rollback') { throw 'original runtime unavailable' } }
 function Remove-WonRemoteRollback { Record 'cleanup-backup' }
-function Write-UpdateResult([string]$State, [string]$Message) { Record $State }
+function Write-UpdateResult([string]$State, [string]$Message) { Record $State; Set-Content -LiteralPath ($env:WR_EVENTS + '.message') -Value $Message }
 function Close-UpdateLock { Record 'unlock' }
 ${script.slice(start)}
 `);
@@ -63,11 +93,15 @@ ${script.slice(start)}
           env: { ...process.env, WR_EVENTS: events, WR_FAILURE: failure }, encoding: "utf8", timeout: POWERSHELL_HARNESS_TIMEOUT_MS, windowsHide: true,
         });
         expect(result.error, result.stderr).toBeUndefined();
-        expect(result.status, result.stderr).toBe(failure === "installer" ? 5 : 1);
+        expect(result.status, result.stderr).toBe(["installer", "rollback"].includes(failure) ? 5 : 1);
         const recorded = (await readFile(events, "utf8")).trim().split(/\r?\n/);
         if (failure === "launch") {
           expect(recorded).toEqual(["backup", "launch", "failed", "cleanup-backup", "unlock"]);
           await expect(stat(`${harness}.accepted`)).rejects.toThrow();
+        } else if (failure === "rollback") {
+          expect(recorded).toEqual(["backup", "launch", "rollback", "restore-and-restart", "failed", "unlock"]);
+          expect(await readFile(`${events}.message`, "utf8")).toContain("Install: Installer exited with code 5.; Rollback: original runtime unavailable");
+          await expect(stat(path.join(baseDir, "ROLLBACK_FAILED"))).resolves.toBeDefined();
         } else {
           expect(recorded).toEqual([
             "backup", "launch", ...(["runtime", "online"].includes(failure) ? ["start", "health"] : []),
@@ -447,7 +481,7 @@ foreach ($case in @(@{legacy=$false;version='0.1.104'},@{legacy=$true;version='0
       expect(script).toContain("Start-Process -FilePath $candidate -ArgumentList @('--agent') -WindowStyle Hidden");
       expect(script).toContain("if ($process.ExitCode -ne 0) {");
       expect(script).toContain("Start-WonRemoteAgent\n  if ($RestartMode -eq 'agent') {\n    Wait-WonRemoteAgentRuntime");
-      expect(script).toContain("catch {\n  Write-HandoffLog \"Installer handoff failed");
+      expect(script).toContain('Write-HandoffLog "Installer handoff failed: $installError"');
       expect(script).toContain("Restore-WonRemoteInstall");
       const second = await prepareInstallerHandoff(
         {

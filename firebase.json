@@ -21,7 +21,7 @@
     ],
     "headers": [
       {
-        "source": "/video-support",
+        "source": "/video-support**",
         "headers": [
           {"key":"Cache-Control","value":"no-store"},
           {"key":"Referrer-Policy","value":"no-referrer"},
@@ -140,6 +140,8 @@
       }
     ],
     "rewrites": [
+      { "source": "/video-support", "destination": "/video-support.html" },
+      { "source": "/video-support/", "destination": "/video-support.html" },
       {
         "source": "**",
         "destination": "/index.html"

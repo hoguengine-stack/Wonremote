@@ -1,5 +1,5 @@
 import { generateKeyPairSync, sign } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildProductionUpdateSignaturePayload,
   buildProductionUpdateSignaturePayloadV2,
@@ -10,6 +10,22 @@ import {
 } from "./productionUpdateMetadata";
 
 describe("production update metadata loader", () => {
+  it("bounds a stalled update response instead of indefinitely holding native checks", async () => {
+    const controller = new AbortController();
+    const deadline = vi.spyOn(AbortSignal, "timeout").mockReturnValue(controller.signal);
+    let received: AbortSignal | undefined;
+    try {
+      const pending = loadProductionInstallerUpdateMetadata({}, async (_url, options) => {
+        received = options?.signal as AbortSignal;
+        const signal = received;
+        return new Promise<Response>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+      });
+      expect(deadline).toHaveBeenCalledWith(15_000);
+      expect(received).toBe(controller.signal);
+      controller.abort(new DOMException("Update deadline", "TimeoutError"));
+      await expect(pending).rejects.toMatchObject({name:"TimeoutError"});
+    } finally { deadline.mockRestore(); }
+  });
   it("selects file replacement only for capable installed Agents and rejects its invalid signature", async () => {
     const { privateKey, publicKey } = generateKeyPairSync("ed25519");
     const version = "9.9.9";

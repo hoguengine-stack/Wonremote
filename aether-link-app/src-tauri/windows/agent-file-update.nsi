@@ -19,7 +19,8 @@ Section
   SetOutPath "$PLUGINSDIR"
   File "${__FILEDIR__}\agent-file-update.ps1"
   File "${__FILEDIR__}\stop-wonremote-processes.ps1"
-  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\agent-file-update.ps1" -PayloadRoot "$PLUGINSDIR\payload"'
+  System::Call 'kernel32::GetCurrentProcessId() i.r0'
+  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\agent-file-update.ps1" -PayloadRoot "$PLUGINSDIR\payload" -InstallerProcessId $0'
   Pop $0
   StrCmp $0 "0" success
   SetErrorLevel 1

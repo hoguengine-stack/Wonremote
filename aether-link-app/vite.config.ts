@@ -11,6 +11,7 @@ const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
 
 export default defineConfig({
   plugins: [react()],
+  build: { rolldownOptions: { input: { index: join(dirname(packageJsonPath), "index.html"), video: join(dirname(packageJsonPath), "video-support.html") } } },
   define: {
     "import.meta.env.VITE_WONREMOTE_APP_VERSION": JSON.stringify(packageJson.version),
   },

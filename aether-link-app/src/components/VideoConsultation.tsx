@@ -18,6 +18,7 @@ export function VideoConsultation({guest,onClose,api:injectedApi}:{guest?:GuestI
   const [torch,setTorch]=useState(false),[torchAvailable,setTorchAvailable]=useState(false);
   const [hasPicture,setHasPicture]=useState(false);
   const [smsSelection,setSmsSelection]=useState<VideoSmsSelection|null>(null),[senderPhone,setSenderPhone]=useState<VideoSmsPhone|null>(null);
+  const [smsRouteLoading,setSmsRouteLoading]=useState(false),[smsRouteError,setSmsRouteError]=useState("");
   const live=useRef(true),operation=useRef(false),roomId=useRef(guest?.roomId??"");
   const generation=useRef(0),admitted=useRef(false);
   const deadline=useRef<ReturnType<typeof setTimeout>|undefined>(undefined);
@@ -54,7 +55,14 @@ export function VideoConsultation({guest,onClose,api:injectedApi}:{guest?:GuestI
       previous?.focus();
     };
   },[api]);
-  function play(element:HTMLMediaElement|null){if(element)void element.play().then(()=>{if(live.current)setPlayBlocked(false);},()=>{if(live.current)setPlayBlocked(true);});}
+  function play(element:HTMLMediaElement|null){if(element){const stream=element.srcObject;void element.play().then(()=>{if(live.current&&element.srcObject===stream)setPlayBlocked(false);},()=>{if(live.current&&element.srcObject===stream)setPlayBlocked(true);});}}
+  function refreshTorch(){
+    if(!guest||!local.current)return;
+    const track=local.current.getVideoTracks()[0];
+    setTorchAvailable(supportsTorch(track));
+    const actual=(track?.getSettings() as MediaTrackSettings&{torch?:boolean}|undefined)?.torch;
+    if(typeof actual==="boolean")setTorch(actual);
+  }
   async function connect(created:VideoInvitation,stream?:MediaStream){
     if(!live.current){stream?.getTracks().forEach(track=>track.stop());return;}
     const active=new AbortController();controller.current=active;let joining=Boolean(guest),connected=false;
@@ -110,14 +118,15 @@ export function VideoConsultation({guest,onClose,api:injectedApi}:{guest?:GuestI
         const created=await api.call("create",id,{}) as VideoInvitation;
         if(!live.current||epoch!==generation.current){void api.call("end",id,{}).catch(()=>undefined);return;}
         admitted.current=true;
-        setInvitation(created);setStatus("고객 접속 대기");setSenderPhone(null);
+        setInvitation(created);setStatus("고객 접속 대기");setSenderPhone(null);setSmsRouteError("");
         if(created.smsRoutingAvailable){
           try{
-            const selection=readVideoSmsSelection(),active=new AbortController();smsRouteController.current=active;setSmsSelection(selection);
+            const selection=readVideoSmsSelection(),active=new AbortController();smsRouteController.current=active;setSmsSelection(selection);setSmsRouteLoading(true);
             void api.call("sms-route","",selection,active.signal).then(result=>{
               if(live.current&&!active.signal.aborted&&epoch===generation.current)setSenderPhone(result.phone);
-            }).catch(()=>{if(live.current&&!active.signal.aborted)setSenderPhone(null);});
-          }catch{setSmsSelection(null);}
+            }).catch(cause=>{if(live.current&&!active.signal.aborted){setSenderPhone(null);setSmsRouteError(cause instanceof Error?cause.message:"발송폰 확인에 실패했습니다.");}})
+              .finally(()=>{if(live.current&&!active.signal.aborted&&epoch===generation.current)setSmsRouteLoading(false);});
+          }catch{setSmsSelection(null);setSmsRouteError("이 PC의 발송폰 설정을 읽지 못했습니다.");}
         }
         await connect(created);
       }
@@ -134,12 +143,18 @@ export function VideoConsultation({guest,onClose,api:injectedApi}:{guest?:GuestI
     catch(cause){if(live.current)setError(cause instanceof Error?cause.message:"문자를 전송하지 못했습니다.");}
     finally{operation.current=false;if(live.current)setBusy(false);}
   }
+  useEffect(()=>{
+    if(guest||ended)return;
+    // Queue after StrictMode's discarded mount so one explicit open creates one invitation.
+    let cancelled=false;queueMicrotask(()=>{if(!cancelled)void begin();});
+    return()=>{cancelled=true;};
+  },[api,guest,ended]);
   async function toggleTorch(){
     const track=local.current?.getVideoTracks()[0];
     if(operation.current||!track||!supportsTorch(track))return;
     operation.current=true;setBusy(true);setError("");const epoch=generation.current,next=!torch;
     try{
-      await track.applyConstraints({advanced:[{torch:next} as MediaTrackConstraintSet&{torch:boolean}]});
+      await track.applyConstraints({torch:{exact:next},advanced:[{torch:next}]} as MediaTrackConstraints&{torch:ConstrainBoolean;advanced:{torch:boolean}[]});
       if(!live.current||epoch!==generation.current||track!==local.current?.getVideoTracks()[0])return;
       const actual=(track.getSettings() as MediaTrackSettings&{torch?:boolean}).torch;
       if(typeof actual==="boolean"&&actual!==next)throw new Error("Torch setting not applied");
@@ -148,21 +163,29 @@ export function VideoConsultation({guest,onClose,api:injectedApi}:{guest?:GuestI
     finally{operation.current=false;if(live.current)setBusy(false);}
   }
   async function switchCamera(){
-    if(operation.current||!peer.current||!local.current)return;operation.current=true;setError("");const epoch=generation.current;
+    if(operation.current||!peer.current||!local.current)return;operation.current=true;setBusy(true);setError("");const epoch=generation.current;
     try{
       const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{exact:front.current?"environment":"user"}},audio:false});
       const track=stream.getVideoTracks()[0];
       if(!live.current||!peer.current||!local.current||epoch!==generation.current){stream.getTracks().forEach(value=>value.stop());return;}
-      try{await peer.current.camera(track);if(!live.current||!local.current||epoch!==generation.current){stream.getTracks().forEach(value=>value.stop());return;}const old=local.current.getVideoTracks();old.forEach(value=>{local.current?.removeTrack(value);value.stop();});local.current.addTrack(track);front.current=!front.current;setTorch(false);setTorchAvailable(supportsTorch(track));}
+      try{await peer.current.camera(track);if(!live.current||!local.current||epoch!==generation.current){stream.getTracks().forEach(value=>value.stop());return;}
+        const old=local.current;local.current=stream;
+        // Safari can freeze a preview whose stream temporarily loses its last track.
+        if(localVideo.current){localVideo.current.srcObject=stream;play(localVideo.current);}
+        old.getTracks().forEach(value=>value.stop());front.current=!front.current;setTorch(false);setTorchAvailable(supportsTorch(track));}
       catch(cause){stream.getTracks().forEach(value=>value.stop());throw cause;}
-    }catch{if(live.current)setError("이 기기에서는 카메라를 전환하지 못했습니다. 현재 카메라는 유지됩니다.");}
-    finally{operation.current=false;}
+    }catch{if(live.current&&epoch===generation.current)setError("이 기기에서는 카메라를 전환하지 못했습니다. 현재 카메라는 유지됩니다.");}
+    finally{operation.current=false;if(live.current)setBusy(false);}
   }
   async function end(){
     stop();setEnded(true);setTorch(false);setTorchAvailable(false);setStatus("상담 종료");
     try{await closeRoom();}
     catch{if(live.current)setError("이 기기 송출은 중지됐지만 서버 종료 확인에 실패했습니다. 링크 만료 전에는 다시 공유하지 마세요.");}
   }
+  const smsDisabledReason=ended?"상담이 종료되었습니다.":smsState!=="none"?"이미 발송을 요청한 초대입니다.":busy?"요청을 처리 중입니다.":
+    invitation?.smsRoutingAvailable&&(smsRouteLoading||!smsSelection||!senderPhone?.ready)?
+      smsRouteLoading?"발송폰을 확인 중입니다.":smsRouteError||(!senderPhone?"발송폰 설정에서 문자 발송용 휴대폰과 SIM을 먼저 연결해 주세요.":`지정 발송폰: ${videoSmsPhoneStatus(senderPhone)} · 발송폰 상태를 새로고침해 주세요.`):
+      !/^01[016789]\d{7,8}$/.test(phone.replace(/[ -]/g,""))?phone?"수신번호를 010-0000-0000 형식으로 확인해 주세요.":"문자를 받을 휴대폰 번호를 입력해 주세요.":"";
   return <section ref={modal} className={`video-consultation${guest?" video-consultation-guest":""}`} role={guest?undefined:"dialog"} aria-modal={guest?undefined:true} aria-labelledby="video-consultation-title"
     onKeyDown={event=>{
       event.stopPropagation();if(guest||event.key!=="Tab")return;
@@ -176,19 +199,20 @@ export function VideoConsultation({guest,onClose,api:injectedApi}:{guest?:GuestI
     </header>
     <div className="video-consultation-body">
       {!guest&&<div className="video-invitation">
-        {!invitation?<button type="button" className="primary-button" disabled={busy||ended} onClick={()=>void begin()}><Video size={18}/>{busy?"준비 중":"영상상담 시작"}</button>:<>
-          {invitation.smsRoutingAvailable&&!ended&&<VideoSmsSettings api={api} onChange={(selection,value)=>{smsRouteController.current?.abort();setSmsSelection(selection);setSenderPhone(value);}}/>}
+        {!invitation?<><label>휴대폰 번호<input type="tel" disabled placeholder="010-0000-0000"/></label><p role="status">{error?"상담 준비에 실패했습니다.":"상담 링크 준비 중"}</p>{error&&!ended&&<button type="button" className="primary-button" disabled={busy} onClick={()=>void begin()}>다시 시도</button>}</>:<>
+          {invitation.smsRoutingAvailable&&!ended&&<VideoSmsSettings api={api} onChange={(selection,value)=>{smsRouteController.current?.abort();setSmsRouteLoading(false);setSmsRouteError("");setSmsSelection(selection);setSenderPhone(value);}}/>}
           {invitation.smsRoutingAvailable&&<p role="status">{senderPhone?`등록 발신번호 ${senderPhone.number} · ${videoSmsPhoneStatus(senderPhone)}`:"발송폰 미지정"}</p>}
           {(invitation.smsRoutingAvailable||invitation.smsAvailable!==false)&&<label>휴대폰 번호<input type="tel" inputMode="tel" autoComplete="off" value={phone} maxLength={14} placeholder="010-0000-0000" onChange={event=>setPhone(event.target.value)} disabled={ended||smsState!=="none"}/></label>}
-          <div className="button-row">{(invitation.smsRoutingAvailable||invitation.smsAvailable!==false)&&<button type="button" className="primary-button" disabled={busy||ended||smsState!=="none"||(invitation.smsRoutingAvailable&&!senderPhone?.ready)||!/^01[016789]\d{7,8}$/.test(phone.replace(/[ -]/g,""))} onClick={()=>void sendSms()}><Send size={16}/>문자 전송</button>}
+          <div className="button-row">{(invitation.smsRoutingAvailable||invitation.smsAvailable!==false)&&<button type="button" className="primary-button" disabled={Boolean(smsDisabledReason)} title={smsDisabledReason||undefined} aria-describedby="video-sms-disabled-reason" onClick={()=>void sendSms()}><Send size={16}/>문자 전송</button>}
             <button type="button" className="secondary-button" disabled={ended} onClick={()=>void navigator.clipboard.writeText(invitation.link).then(()=>setStatus("초대 링크 복사됨"),()=>setError("링크 복사에 실패했습니다. 아래 주소를 선택해 복사해 주세요."))}><Copy size={16}/>링크 복사</button></div>
+          {(invitation.smsRoutingAvailable||invitation.smsAvailable!==false)&&<p id="video-sms-disabled-reason" role="status">{smsDisabledReason}</p>}
           <label>초대 링크<input readOnly value={invitation.link} aria-label="영상상담 초대 링크" onFocus={event=>event.target.select()}/></label>
           <small>초대 유효시간 {new Date(invitation.inviteExpiresAt).toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit"})}까지</small>
           {smsState!=="none"&&<p role="status">{smsState==="accepted"?"문자 발송업체 접수 완료 · 휴대폰 수신 완료와는 다릅니다.":smsState==="sending"?"문자 접수 확인 중":"문자 접수 결과 미확인 · 중복 재전송하지 않습니다."}</p>}
         </>}
       </div>}
       <div className="video-consultation-stage">
-        <video ref={guest?localVideo:remoteVideo} autoPlay playsInline muted aria-label={guest?"내 카메라":"고객 카메라"} onLoadedData={()=>setHasPicture(true)}/>
+        <video ref={guest?localVideo:remoteVideo} autoPlay playsInline muted aria-label={guest?"내 카메라":"고객 카메라"} onLoadedData={()=>{setHasPicture(true);refreshTorch();}} onPlaying={refreshTorch}/>
         {(guest?!local.current:!hasPicture)&&<div className="video-consultation-placeholder"><Video size={44}/><span>{guest?"WonRemote 영상상담":"고객 카메라 연결 대기"}</span></div>}
         {guest&&!local.current&&!ended&&<div className="video-customer-start"><p>시작하면 카메라 권한을 요청합니다. 상담원에게 카메라 영상이 전달되며 마이크는 사용하지 않습니다.</p><button type="button" className="primary-button" disabled={busy} onClick={()=>void begin()}><Video size={18}/>{busy?"준비 중":"카메라 허용하고 시작"}</button></div>}
       </div>
@@ -200,6 +224,7 @@ export function VideoConsultation({guest,onClose,api:injectedApi}:{guest?:GuestI
       {playBlocked&&<button type="button" className="secondary-button" onClick={()=>play(guest?localVideo.current:remoteVideo.current)}><Video size={18}/>영상 재생</button>}
       {guest&&<button type="button" className="secondary-button" disabled={busy||ended||!peer.current} aria-label="카메라 전환" title="전면·후면 카메라 전환" onClick={()=>void switchCamera()}><SwitchCamera size={19}/></button>}
       {guest&&<button type="button" className="secondary-button" disabled={busy||ended||!peer.current||!torchAvailable} aria-label={torch?"후레쉬 끄기":"후레쉬 켜기"} aria-pressed={torch} title={torchAvailable?(torch?"후레쉬 끄기":"후레쉬 켜기"):"현재 카메라 또는 브라우저는 후레쉬를 지원하지 않습니다"} onClick={()=>void toggleTorch()}>{torch?<FlashlightOff size={19}/>:<Flashlight size={19}/>}</button>}
+      {guest&&local.current&&!ended&&!busy&&!torchAvailable&&<span role="status">현재 카메라·브라우저는 후레쉬 제어를 지원하지 않습니다.</span>}
       <button type="button" className="danger-button" disabled={ended||(!roomId.current&&!guest)} onClick={()=>void end()}><PhoneOff size={18}/>상담 종료</button>
     </footer>
   </section>;

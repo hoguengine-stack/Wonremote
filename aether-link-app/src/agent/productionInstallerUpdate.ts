@@ -496,7 +496,7 @@ function Test-WonRemoteAgentRuntime([string[]]$Roots) {
 
 function Wait-WonRemoteAgentRuntime {
   $roots = @(Get-WonRemoteAgentRoots)
-  $deadline = (Get-Date).AddSeconds(15)
+  $deadline = (Get-Date).AddSeconds(60)
   do {
     if (Test-WonRemoteAgentRuntime $roots) {
       Write-HandoffLog 'WonRemote Agent node runtime health check passed.'
@@ -635,7 +635,9 @@ try {
   Close-UpdateLock
   exit 0
 } catch {
-  Write-HandoffLog "Installer handoff failed: $($_.Exception.Message)"
+  $installError = [string]$_.Exception.Message
+  $rollbackError = 'No complete rollback backup was available.'
+  Write-HandoffLog "Installer handoff failed: $installError"
   if (-not $InstallerStarted) {
     # No installer changed the installation; rollback would needlessly stop the working runtime.
     Write-UpdateResult 'failed' ('Installer did not start; existing runtime preserved. ' + $_.Exception.Message)
@@ -650,7 +652,8 @@ try {
       Restore-WonRemoteInstall
       $rollbackCompleted = $true
     } catch {
-      Write-HandoffLog "Installer rollback failed: $($_.Exception.Message)"
+      $rollbackError = [string]$_.Exception.Message
+      Write-HandoffLog "Installer rollback failed: $rollbackError"
       Set-Content -LiteralPath (Join-Path $RollbackRoot '${FAILED_ROLLBACK_MARKER}') -Encoding UTF8 -Value (Get-Date -Format o) -ErrorAction SilentlyContinue
       Write-HandoffLog "Rollback backup retained for manual recovery: $RollbackRoot"
     }
@@ -658,10 +661,10 @@ try {
     Write-HandoffLog 'Installer was not started because no complete rollback backup was available.'
   }
   if ($rollbackCompleted) {
-    Write-UpdateResult 'rollback' 'The new runtime failed and the previous version was restored.'
+    Write-UpdateResult 'rollback' ('The new runtime failed and the previous version was restored. Install: ' + $installError)
     Remove-WonRemoteRollback
   } elseif ($script:RollbackEntries.Count -gt 0) {
-    Write-UpdateResult 'failed' 'The installer and automatic rollback both failed.'
+    Write-UpdateResult 'failed' ('The installer and automatic rollback both failed. Install: ' + $installError + '; Rollback: ' + $rollbackError)
   }
   Close-UpdateLock
   exit $FailureExitCode

@@ -47,7 +47,9 @@ export async function loadProductionInstallerUpdateMetadata(
 ): Promise<ProductionUpdateMetadata | null> {
   const manifestUrl = env.WONREMOTE_UPDATE_MANIFEST_URL?.trim() || DEFAULT_PRODUCTION_UPDATE_MANIFEST_URL;
   const separator = manifestUrl.includes("?") ? "&" : "?";
-  const response = await fetchImpl(`${manifestUrl}${separator}nocache=${Date.now()}`);
+  const response = await fetchImpl(`${manifestUrl}${separator}nocache=${Date.now()}`, {
+    signal: AbortSignal.timeout(15_000),
+  });
 
   if (!response.ok) {
     return null;

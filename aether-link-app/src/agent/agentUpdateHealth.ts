@@ -83,6 +83,7 @@ export function createAgentHealthReporter(options: {
 
   // Readiness is availability evidence, never authorization to execute an update.
   return {
+    isHealthy: () => reported,
     takeCommandChallenge(config: AgentHealthIdentity): string | null {
       if (!config.registeredDeviceId || reported || commandRoundTrip) return null;
       if (!commandChallenge) {

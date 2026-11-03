@@ -70,7 +70,7 @@ describe("Agent file replacement, not Setup", () => {
     fs.copyFileSync(path.join(windowsRoot, "agent-file-update.nsi"), path.join(root, "agent-file-update.nsi"));
     fs.copyFileSync(path.join(windowsRoot, "stop-wonremote-processes.ps1"), path.join(root, "stop-wonremote-processes.ps1"));
     const receipt = path.join(root, "caller.txt");
-    fs.writeFileSync(path.join(root, "agent-file-update.ps1"), `param([string]$PayloadRoot)\n. ${quote(path.join(windowsRoot, "agent-file-update.ps1"))}\nGet-UpdateCallerPath | Set-Content -LiteralPath ${quote(receipt)}\nexit 0\n`);
+    fs.writeFileSync(path.join(root, "agent-file-update.ps1"), `param([string]$PayloadRoot,[int]$InstallerProcessId)\n. ${quote(path.join(windowsRoot, "agent-file-update.ps1"))} -InstallerProcessId $InstallerProcessId\nGet-UpdateCallerPath | Set-Content -LiteralPath ${quote(receipt)}\nexit 0\n`);
     const output = path.join(root, "fixture.exe");
     execFileSync(path.join(process.env.LOCALAPPDATA, "tauri/NSIS/makensis.exe"), ["/V2",
       `/DUPDATE_OUTPUT=${output}`, "/DUPDATE_VERSION=9.9.9", `/DUPDATE_PAYLOAD=${payload}`,
@@ -78,6 +78,26 @@ describe("Agent file replacement, not Setup", () => {
     execFileSync(output, [], { windowsHide: true, timeout: 20_000 });
     expect(fs.readFileSync(receipt, "utf8").replace(/^\uFEFF/, "").trim().toLowerCase()).toBe(output.toLowerCase());
   }, 30_000);
+
+  it("validates an explicit NSIS ancestor across the native-x86 wrapper and rejects unrelated PIDs", () => {
+    const script = `
+. ${quote(path.join(windowsRoot, "agent-file-update.ps1"))}
+$script:InstallerProcessId=9000
+function Get-CimInstance {
+  param($ClassName,$Filter)
+  if($Filter -eq "ProcessId = $PID"){return [pscustomobject]@{ProcessId=$PID;ParentProcessId=8000}}
+  if($Filter -eq 'ProcessId = 8000'){return [pscustomobject]@{ProcessId=8000;ParentProcessId=9000;ExecutablePath='C:\\Temp\\wrapper.tmp'}}
+  if($Filter -eq 'ProcessId = 9000'){return [pscustomobject]@{ProcessId=9000;ParentProcessId=0;ExecutablePath='C:\\Program Files\\WonRemote Agent\\.update-handoff\\test\\installer.exe'}}
+}
+if((Get-UpdateCallerPath) -notlike '*\\.update-handoff\\test\\installer.exe'){throw 'Wrong NSIS caller'}
+$script:InstallerProcessId=7777
+$rejected=$false
+try{Get-UpdateCallerPath}catch{$rejected=$true}
+if(-not $rejected){throw 'Unrelated PID accepted'}
+'validated-x86-caller'
+`;
+    expect(execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script,"utf16le").toString("base64")], {windowsHide:true,timeout:15000,encoding:"utf8"})).toContain("validated-x86-caller");
+  });
 
   for (const scenario of ["success", "no-handoff", "wrong-caller", "unregistered", "outside-protected", "junction", "unexpected-entry", "incomplete", "copy-failure"]) {
     it(`executes a Windows filesystem fixture: ${scenario}`, () => {

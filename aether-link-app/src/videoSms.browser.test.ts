@@ -29,18 +29,19 @@ function backend(){
   };
   const gateway=createSmsGateway({get:async<T>(id:string)=>docs.get(id) as T|undefined,put:async(id:string,value:unknown)=>{docs.set(id,value);},delete:async(id:string)=>docs.delete(id)},"i".repeat(32),provider as typeof fetch);
   const actions:string[]=[];let user="counselor-a";
-  async function open(mobile=false){
+  async function open(mobile=false,routeFailure=false){
     const page=await browser.newPage({viewport:mobile?{width:390,height:844}:{width:1280,height:900}});page.setDefaultTimeout(8_000);
     await page.route('http://localhost/**',route=>route.fulfill({contentType:'text/html',body:'<meta name="viewport" content="width=device-width,initial-scale=1"><div id="root" class="video-consultation-backdrop"></div>'}));
     await page.exposeFunction('serverCall',async(input:Record<string,unknown>)=>{
       actions.push(String(input.action));
+      if(input.action==='sms-route'&&routeFailure)throw new Error('지정폰 확인 서버에 연결하지 못했습니다.');
       if(String(input.action).startsWith('sms-'))return gateway.execute(user,input);
       if(input.action==='create')return {roomId:input.roomId,rtc:{iceServers:[]},smsAvailable:false,smsRoutingAvailable:true,link:`http://localhost/video-support#room=${input.roomId}&token=${'t'.repeat(43)}`,inviteExpiresAt:Date.now()+900_000};
       if(input.action==='sms'){await (await gateway.prepare(user,input))(String(input.phone),'http://localhost/video-support#private');return {smsState:'accepted'};}
       return {ok:true};
     });
     await page.goto('http://localhost');await page.addStyleTag({content:readFileSync('src/styles.css','utf8')});await page.addScriptTag({content:bundle});await page.evaluate(()=>(window as any).mount());
-    await page.getByRole('button',{name:'영상상담 시작',exact:true}).click();await page.getByRole('textbox',{name:'영상상담 초대 링크'}).waitFor();return page;
+    await page.getByRole('textbox',{name:'영상상담 초대 링크'}).waitFor();return page;
   }
   return {open,docs,actions,sends,setUser:(value:string)=>{user=value;},setOffline:()=>{offline=true;}};
 }
@@ -56,6 +57,19 @@ async function register(page:Page,id=first,number='01012345678'){
 }
 async function close(page:Page){await page.getByRole('button',{name:'영상상담 닫기',exact:true}).click();await page.close();}
 describe('Viewer SMS phone settings actual browser',()=>{
+  it('explains an unassigned phone and failed route without enabling a wrong sender',async()=>{
+    const f=backend(),page=await f.open();
+    await page.getByText('발송폰 설정에서 문자 발송용 휴대폰과 SIM을 먼저 연결해 주세요.',{exact:true}).waitFor();
+    await page.getByRole('textbox',{name:'휴대폰 번호',exact:true}).fill('01098765432');
+    expect(await page.getByRole('button',{name:'문자 전송',exact:true}).isEnabled()).toBe(false);
+    await settings(page);await register(page);await page.getByRole('button',{name:'설정 닫기',exact:true}).click();
+    expect(await page.getByRole('button',{name:'문자 전송',exact:true}).isEnabled()).toBe(true);
+    expect(f.sends).toHaveLength(0);await close(page);
+    const failed=await f.open(false,true);
+    await failed.getByText('지정폰 확인 서버에 연결하지 못했습니다.',{exact:true}).waitFor();
+    expect(await failed.getByRole('button',{name:'문자 전송',exact:true}).isEnabled()).toBe(false);
+    expect(f.sends).toHaveLength(0);await close(failed);
+  },30000);
   it('persists PC and counselor routes, isolates other PCs/accounts and sends once from the displayed phone',async()=>{
     const f=backend(),a=await f.open();await settings(a);await register(a);
     await a.getByRole('textbox',{name:'휴대폰 번호',exact:true}).fill('01098765432');

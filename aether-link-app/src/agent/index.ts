@@ -203,9 +203,15 @@ const USE_FIREBASE = isAgentFirebaseEnabled(process.env);
 const AGENT_SYSTEM_INFO = discoverAgentSystemInfo();
 const FIRESTORE_TILE_FALLBACK_POLICY = resolveFirestoreTileFallbackPolicy(process.env);
 const persistentInputInjector = new PersistentInputInjector(POC_PATH);
+let checkUpdateAfterHealthy: (() => void) | undefined;
 const agentHealthReporter = createAgentHealthReporter({
   baseDir: process.env.APPDATA ?? process.cwd(),
-  onHealthy: () => console.log("[Health] Command round-trip verified"),
+  onHealthy: () => {
+    console.log("[Health] Command round-trip verified");
+    const check = checkUpdateAfterHealthy;
+    checkUpdateAfterHealthy = undefined;
+    check?.();
+  },
   version: WONREMOTE_APP_VERSION,
 });
 
@@ -1169,7 +1175,9 @@ async function main() {
   // Check version updates on start
   await ensureFirebaseAgentAuth(activeConfig);
   activeConfig = await reconcileFirebaseRegistrationOnStart(activeConfig);
-  await checkUpdate(activeConfig);
+  checkUpdateAfterHealthy = () => {
+    void checkUpdate(activeConfig).catch(error => console.error("Update check failed:", error));
+  };
 
   try {
     activeConfig = await sendHeartbeatWithRecovery(activeConfig);
@@ -1356,6 +1364,8 @@ function scheduleAgentUpdateRetry(): void {
 }
 
 async function checkUpdate(config: AgentLocalConfig, manual = false) {
+  // An update server stall must not prevent first heartbeat or installer/rollback readiness.
+  if (!manual && !agentHealthReporter.isHealthy()) return;
   if (isUpdating) return;
   const attemptAtMs = Date.now();
   if (!manual && !shouldAttemptAgentUpdateCheck(attemptAtMs, lastUpdateCheckAttemptAtMs, UPDATE_CHECK_INTERVAL_MS)) {
@@ -1818,7 +1828,7 @@ async function runAgentTick(config: AgentLocalConfig, heartbeatRequestId: string
   try {
     activeConfig = await sendHeartbeatWithRecovery(activeConfig, heartbeatRequestId);
     heartbeatRetryAtMs = 0;
-    await checkUpdate(activeConfig);
+    void checkUpdate(activeConfig).catch(error => console.error("Update check failed:", error));
     console.log("[Status] Online");
   } catch (error: any) {
     heartbeatRetryAtMs = Date.now() + firebaseRequestRetryDelayMs(error);

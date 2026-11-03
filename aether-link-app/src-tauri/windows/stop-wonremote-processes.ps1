@@ -2,7 +2,8 @@ param(
   [Parameter(Mandatory = $true)]
   [ValidateSet("Agent", "Viewer")]
   [string] $Product,
-  [string] $InstallRoot
+  [string] $InstallRoot,
+  [int] $InstallerProcessId
 )
 
 $ErrorActionPreference = "Stop"
@@ -21,10 +22,6 @@ function Convert-ExtendedPath([string] $Value) {
     return $normalized.Substring($extendedPrefix.Length)
   }
   return $normalized
-}
-
-if ($Product -eq "Agent") {
-  Stop-ScheduledTask -TaskName "WonRemote Secure Capture" -ErrorAction SilentlyContinue
 }
 
 $roots = @()
@@ -52,14 +49,37 @@ foreach ($process in $processes) {
 }
 $self = $processById[[int] $PID]
 $installerPid = if ($null -ne $self) { [int] $self.ParentProcessId } else { -1 }
+$protectedIds = New-Object "System.Collections.Generic.HashSet[int]"
+[void] $protectedIds.Add([int] $PID)
+[void] $protectedIds.Add($installerPid)
+if ($InstallerProcessId -ne 0) {
+  # On native x86 Windows nsExec inserts a wrapper, so the immediate parent is not NSIS.
+  $cursor = $self
+  $ancestors = New-Object "System.Collections.Generic.HashSet[int]"
+  $foundInstaller = $false
+  while ($null -ne $cursor -and $ancestors.Count -lt 64 -and $ancestors.Add([int]$cursor.ProcessId)) {
+    [void] $protectedIds.Add([int]$cursor.ProcessId)
+    if ([int]$cursor.ProcessId -eq $InstallerProcessId -and $InstallerProcessId -ne $PID) {
+      $foundInstaller = $true
+      break
+    }
+    $parent = $processById[[int]$cursor.ParentProcessId]
+    if ($parent -and $parent.CreationDate -and $cursor.CreationDate -and
+        [datetime]$parent.CreationDate -gt [datetime]$cursor.CreationDate) { break }
+    $cursor = $parent
+  }
+  if (-not $foundInstaller) { throw 'The specified installer is not an ancestor of this helper. No processes were stopped.' }
+}
+if ($Product -eq "Agent") {
+  Stop-ScheduledTask -TaskName "WonRemote Secure Capture" -ErrorAction SilentlyContinue
+}
 $targetIds = New-Object "System.Collections.Generic.HashSet[int]"
 
 foreach ($process in $processes) {
   $id = [int] $process.ProcessId
   if (
     $id -eq 0 -or
-    $id -eq $PID -or
-    $id -eq $installerPid
+    $protectedIds.Contains($id)
   ) {
     continue
   }
@@ -96,8 +116,7 @@ do {
     $parentId = [int] $process.ParentProcessId
     if (
       $id -eq 0 -or
-      $id -eq $PID -or
-      $id -eq $installerPid -or
+      $protectedIds.Contains($id) -or
       $targetIds.Contains($id)
     ) {
       continue

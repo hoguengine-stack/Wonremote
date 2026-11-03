@@ -177,7 +177,7 @@ jobs:
         run: npx vitest run src/domain/agentUpdateTracker.test.ts src/agent/agentUpdatePollPolicy.test.ts src/domain/agentRegistry.test.ts src/firebase/viewerDeviceMetadata.test.ts src/firebase/viewerDeviceRefresh.test.ts src/firebase/firebaseError.test.ts src/firebase/viewerFirebaseAuth.test.ts src/server/apiServer.test.ts
 
       - name: Verify video-only consultation and designated SMS phones
-        run: npx vitest run src/videoConsultation.browser.test.ts src/videoSms.browser.test.ts src/api/videoConsultationApi.test.ts src/domain/videoConsultation.test.ts
+        run: npx vitest run src/videoConsultation.browser.test.ts src/videoGuest.browser.test.ts src/videoSms.browser.test.ts src/api/videoConsultationApi.test.ts src/domain/videoConsultation.test.ts src/domain/videoConsultationPeer.test.ts
 
       - name: Verify real cursor metadata transport and painted fallback
         run: |
@@ -228,7 +228,9 @@ jobs:
           npx tsx tests/e2e/test_update_handoff_broker.ts
 
       - name: Verify manual update task scope and launch error reporting
-        run: cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc --release --lib test_manual_update
+        run: |
+          cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc --release --lib test_manual_update
+          cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc --release --lib native_update_checks_are_async_commands_not_ui_thread_waits
 
       - name: Verify pinned Viewer window activation without restarting sessions
         run: |

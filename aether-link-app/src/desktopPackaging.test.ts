@@ -258,9 +258,9 @@ describe("desktop packaging scaffold", () => {
       expect(hook).toContain("${IfNot} ${RunningX64}");
       expect(hook).toContain("requires 64-bit Windows");
       expect(hook).toContain("Abort");
-      expect(hook.indexOf("!insertmacro WONREMOTE_REQUIRE_X64_WINDOWS")).toBeLessThan(
-        hook.indexOf("!insertmacro WONREMOTE_STOP_RUNNING_PROCESSES"),
-      );
+      const preinstall=hook.slice(hook.indexOf("!macro NSIS_HOOK_PREINSTALL"),hook.indexOf("!macro NSIS_HOOK_POSTINSTALL"));
+      expect(preinstall).toContain("!insertmacro WONREMOTE_REQUIRE_X64_WINDOWS");
+      expect(hook).toContain('product-process-check.nsh');
     }
 
     expect(packageReleaseScript).toContain('rustTarget: "i686-pc-windows-msvc"');

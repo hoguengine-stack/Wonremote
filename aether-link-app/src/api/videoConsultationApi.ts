@@ -1,5 +1,4 @@
 import { resolveFirebaseConfig } from "../firebase/firebaseConfig";
-import { getWonRemoteFirebaseServices } from "../firebase/firebaseServices";
 
 export const DEFAULT_VIDEO_CONSULTATION_URL="https://wonremote-video-consultation.qpalzm8178.workers.dev/videoConsultation";
 
@@ -32,6 +31,7 @@ export function createVideoApi(guest?:{token:string;guestKey:string}):VideoApi{
     if(url.username||url.password||url.search||url.hash||(url.protocol!=="https:"&&!(url.protocol==="http:"&&["localhost","127.0.0.1"].includes(url.hostname))))throw new Error("영상상담 서버 주소가 올바르지 않습니다.");
     const headers:Record<string,string>={"Content-Type":"application/json"};
     if(!guest){
+      const {getWonRemoteFirebaseServices}=await import("../firebase/firebaseServices");
       const user=getWonRemoteFirebaseServices(config!).auth.currentUser;
       if(!user)throw new Error("Viewer 로그인이 필요합니다.");
       headers.Authorization=`Bearer ${await user.getIdToken(action==="watch")}`;

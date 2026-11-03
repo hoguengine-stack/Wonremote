@@ -8,7 +8,7 @@ export function createVideoPeer(input:{
   const peer=(input.createPeer??(config=>new RTCPeerConnection(config)))(input.configuration);
   const incoming=new MediaStream();
   const controller=new AbortController();let closed=false,localCandidates=0,remoteDescription="",received:RTCIceCandidateInit[]=[];
-  let tasks=Promise.resolve();const seen=new Set<string>();
+  let tasks=Promise.resolve(),candidates=Promise.resolve();const seen=new Set<string>();
   const fail=(error:unknown)=>{if(!closed)input.onError(error instanceof Error?error:new Error("영상 연결에 실패했습니다."));};
   const publish=(data:Record<string,unknown>)=>input.api.call("signal",input.roomId,data,controller.signal);
   const enqueue=(action:()=>Promise<void>)=>{tasks=tasks.then(async()=>{if(!closed)await action();}).catch(fail);return tasks;};
@@ -18,7 +18,8 @@ export function createVideoPeer(input:{
     if(closed||!event.candidate||localCandidates>=32)return;
     localCandidates++;
     const c=event.candidate;
-    void enqueue(async()=>{await publish({candidate:{candidate:c.candidate,sdpMid:c.sdpMid,sdpMLineIndex:c.sdpMLineIndex}});});
+    // Slow candidate uploads must not hold incoming SDP behind an HTTP backlog.
+    candidates=candidates.then(async()=>{if(!closed)await publish({candidate:{candidate:c.candidate,sdpMid:c.sdpMid,sdpMLineIndex:c.sdpMLineIndex}});}).catch(fail);
   };
   if(input.guest){for(const track of input.stream?.getVideoTracks()??[])peer.addTrack(track,input.stream!);}
   else peer.addTransceiver("video",{direction:"recvonly"});

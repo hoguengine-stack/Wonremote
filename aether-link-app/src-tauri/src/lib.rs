@@ -2319,8 +2319,9 @@ fn start_installer_update_inner(
 }
 
 #[tauri::command]
-fn check_installer_update(app: tauri::AppHandle) -> Result<ViewerUpdateCheck, String> {
-    check_installer_update_for(&app, "viewer", "viewer-native-update", false)
+async fn check_installer_update(app: tauri::AppHandle) -> Result<ViewerUpdateCheck, String> {
+    tauri::async_runtime::spawn_blocking(move || check_installer_update_for(&app, "viewer", "viewer-native-update", false))
+        .await.map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -2329,8 +2330,9 @@ async fn check_selected_viewer_update(app: tauri::AppHandle) -> Result<ViewerUpd
 }
 
 #[tauri::command]
-fn check_agent_installer_update(app: tauri::AppHandle) -> Result<ViewerUpdateCheck, String> {
-    check_installer_update_for(&app, "agent", "agent-native-update", false)
+async fn check_agent_installer_update(app: tauri::AppHandle) -> Result<ViewerUpdateCheck, String> {
+    tauri::async_runtime::spawn_blocking(move || check_installer_update_for(&app, "agent", "agent-native-update", false))
+        .await.map_err(|error| error.to_string())?
 }
 
 fn check_installer_update_for(
@@ -3197,6 +3199,16 @@ pub fn run() {
 #[cfg(test)]
 mod registry_tests {
     use super::*;
+
+    #[test]
+    fn native_update_checks_are_async_commands_not_ui_thread_waits() {
+        fn assert_async<F: std::future::Future<Output = Result<ViewerUpdateCheck, String>> + Send>(
+            _command: fn(tauri::AppHandle) -> F,
+        ) {}
+        assert_async(check_installer_update);
+        assert_async(check_agent_installer_update);
+        assert_async(check_selected_viewer_update);
+    }
 
     #[test]
     fn update_handoff_breaks_away_from_enclosing_windows_job() {

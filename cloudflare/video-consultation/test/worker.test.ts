@@ -203,7 +203,7 @@ describe("actual workerd SQLite consultation coordinator",()=>{
         await page.evaluate((value:string)=>{(window as any).fixtureToken=value;},token);await page.addScriptTag({content:client.outputFiles[0].text});
         await page.evaluate((value:any)=>(window as any).mount(value),guest);return page;
       };
-      const owner=await open();await owner.getByRole("button",{name:"영상상담 시작",exact:true}).click();
+      const owner=await open();
       const link=owner.getByRole("textbox",{name:"영상상담 초대 링크"});await link.waitFor().catch(async()=>{throw Error(`Invitation not shown: ${await owner.locator('body').innerText()}`);});
       const params=new URLSearchParams(new URL(await link.inputValue()).hash.slice(1)),guest=await open({roomId:params.get("room"),token:params.get("token")});
       expect(await guest.evaluate(()=>(window as any).tracks.length)).toBe(0);

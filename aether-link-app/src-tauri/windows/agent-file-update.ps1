@@ -1,4 +1,4 @@
-param([string]$PayloadRoot)
+param([string]$PayloadRoot, [int]$InstallerProcessId)
 
 $ErrorActionPreference = 'Stop'
 
@@ -26,7 +26,16 @@ function Get-RegisteredAgentRoots {
 
 function Get-UpdateCallerPath {
   $self = Get-CimInstance Win32_Process -Filter "ProcessId = $PID"
-  return (Get-CimInstance Win32_Process -Filter "ProcessId = $($self.ParentProcessId)").ExecutablePath
+  $seen = New-Object 'System.Collections.Generic.HashSet[int]'
+  $cursor = $self
+  while ($cursor -and $seen.Count -lt 64 -and $seen.Add([int]$cursor.ProcessId)) {
+    $parent = Get-CimInstance Win32_Process -Filter "ProcessId = $($cursor.ParentProcessId)"
+    if (-not $parent -or ($parent.CreationDate -and $cursor.CreationDate -and
+        [datetime]$parent.CreationDate -gt [datetime]$cursor.CreationDate)) { break }
+    if ($InstallerProcessId -eq 0 -or [int]$parent.ProcessId -eq $InstallerProcessId) { return $parent.ExecutablePath }
+    $cursor = $parent
+  }
+  throw 'The Agent file updater caller is not an ancestor of this helper.'
 }
 
 function Resolve-AgentUpdateRoot {
@@ -60,7 +69,7 @@ function Resolve-AgentUpdateRoot {
 }
 
 function Stop-AgentForFileUpdate([string]$Root) {
-  & (Join-Path $PSScriptRoot 'stop-wonremote-processes.ps1') -Product Agent -InstallRoot $Root
+  & (Join-Path $PSScriptRoot 'stop-wonremote-processes.ps1') -Product Agent -InstallRoot $Root -InstallerProcessId $InstallerProcessId
   if ($LASTEXITCODE -ne 0) { throw 'Could not stop the Agent for file replacement.' }
 }
 
