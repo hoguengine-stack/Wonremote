@@ -15,6 +15,14 @@ on:
         description: Build a separate zlib Agent test candidate without publishing latest
         type: boolean
         default: false
+      viewerOnly:
+        description: Publish only Viewer; preserve legacy Agent latest and rollout
+        type: boolean
+        default: false
+      viewerTargets:
+        description: Existing Viewer install IDs for signed idle-only migration (no Agent updates)
+        type: string
+        default: '82220F6D,59F19451,1D42C9F9'
 
 permissions:
   contents: write
@@ -37,7 +45,7 @@ jobs:
       - name: Verify development and recurrence coverage
         run: |
           DEPLOYMENT_STAGE="$(node -e 'const c = require("./CHANGE_CONTRACT.json"); process.stdout.write(c.status === "ready-to-deploy" && ["deploy", "build-and-deploy"].includes(c.releaseImpact) ? "predeploy" : "complete");')"
-          if [[ "$DEPLOYMENT_STAGE" == "predeploy" && ( "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" || "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "${{ inputs.trialAgentZlib }}" == "true" && "${{ inputs.publish }}" == "false" ) ]]; then
+          if [[ "$DEPLOYMENT_STAGE" == "predeploy" && ( "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" || "$GITHUB_EVENT_NAME" == "workflow_dispatch" && ( "${{ inputs.viewerOnly }}" == "true" || "${{ inputs.trialAgentZlib }}" == "true" && "${{ inputs.publish }}" == "false" ) ) ]]; then
             node aether-link-app/scripts/verify-recurrence-coverage.js --stage predeploy
           else
             node aether-link-app/scripts/verify-recurrence-coverage.js
@@ -112,6 +120,7 @@ jobs:
           if ('${{ inputs.trialAgentZlib }}' -eq 'true' -and '${{ inputs.publish }}' -ne 'false') {
             throw "The zlib Agent trial cannot publish the production latest release."
           }
+          if ('${{ inputs.viewerOnly }}' -eq 'true' -and '${{ inputs.trialAgentZlib }}' -eq 'true') { throw 'Viewer-only and Agent trial are mutually exclusive.' }
 
       - name: Verify realtime ICE configuration
         run: |
@@ -202,7 +211,14 @@ jobs:
         run: npx --yes firebase-tools@14.22.0 emulators:exec --only firestore --project wonremote-a7fd3 "node aether-link-app/scripts/verify-firestore-rules.mjs"
 
       - name: Build two x86 installers
+        if: ${{ !inputs.viewerOnly }}
         run: npm run release:exes
+
+      - name: Build and verify only the x86 Viewer installer
+        if: ${{ inputs.viewerOnly }}
+        run: |
+          node scripts/package-release-exes.js --viewer-only
+          node scripts/verify-x86-installer-payloads.js --viewer-only
 
       - name: Verify bundled native file publication without installation
         run: npx tsx tests/e2e/test_file_publication.ts
@@ -241,18 +257,31 @@ jobs:
           cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc --release --locked --lib viewer_downloads:: -- --test-threads=1
 
       - name: Apply and verify Authenticode signatures
-        run: npm run release:sign
+        run: |
+          if ('${{ inputs.viewerOnly }}' -eq 'true') { & ./scripts/sign-release-artifacts.ps1 -ViewerOnly }
+          else { npm run release:sign }
 
       - name: Verify Agent file replacement and signed legacy manifest compatibility
         run: npx vitest run --maxWorkers=1 scripts/package-agent-file-update.test.js scripts/package-release-exes.test.js scripts/verify-x86-installer-payloads.test.js -t '^(?!.*Windows filesystem fixture)'
 
       - name: Build signed update manifest from final installer bytes
         run: |
-          if ('${{ inputs.trialAgentZlib }}' -eq 'true') {
+          if ('${{ inputs.viewerOnly }}' -eq 'true') {
+            node scripts/create-update-manifest.js --viewer-only true
+            node scripts/verify-release-manifest.js --viewer-only true --manifest release-exe/wonremote-update-manifest.json --version (Get-Content package.json -Raw | ConvertFrom-Json).version --viewer-x64 release-exe/WonRemote-Viewer-Setup.exe
+          } elseif ('${{ inputs.trialAgentZlib }}' -eq 'true') {
             node scripts/create-update-manifest.js --release-tag v0.1.108-zlib-kiosk-test
           } else {
             npm run release:manifest
           }
+
+      - name: Sign existing-Viewer migration without changing Agent updates
+        if: ${{ inputs.viewerOnly && inputs.publish }}
+        env:
+          VIEWER_TARGETS: ${{ inputs.viewerTargets }}
+        run: |
+          $expires = [datetime]::UtcNow.AddDays(6).ToString('o')
+          npx tsx scripts/create-selected-viewer-policy.ts --manifest release-exe/wonremote-update-manifest.json --targets $env:VIEWER_TARGETS --expires $expires --output release-exe/viewer-selected.json
 
       - name: Verify Tauri resource paths
         run: cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc --release --lib test_node_resource_paths
@@ -316,14 +345,15 @@ jobs:
           npm run change:verify:predeploy
 
       - name: Publish GitHub release
-        run: npm run release:publish
+        run: |
+          if ('${{ inputs.viewerOnly }}' -eq 'true') { & ./scripts/publish-github-release.ps1 -ViewerOnly }
+          else { npm run release:publish }
 
-      - name: Verify live Firebase download aliases
+      - name: Verify live Agent download aliases (Viewer activates with Hosting)
+        if: ${{ !inputs.viewerOnly }}
         run: |
           $expectedAliases = @{
-            "viewer" = "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Viewer-Setup.exe"
             "agent" = "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Agent-Setup.exe"
-            "viewer-x86" = "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Viewer-Setup.exe"
             "agent-x86" = "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Agent-Setup.exe"
           }
           foreach ($alias in $expectedAliases.Keys) {

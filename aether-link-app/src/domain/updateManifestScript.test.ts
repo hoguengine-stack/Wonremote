@@ -24,6 +24,19 @@ function fixtureFiles(root: string) {
 }
 
 describe("production update manifest scripts", () => {
+  it("signs and verifies a Viewer-only release without reading or publishing Agent assets",()=>{
+    const root=mkdtempSync(path.join(tmpdir(),"wonremote-viewer-manifest-"));
+    try{
+      const viewer=path.join(root,"WonRemote-Viewer-Setup.exe"),out=path.join(root,"manifest.json"),key=path.join(root,"private.pem"),publicKey=path.join(root,"public.pem");
+      writeFileSync(viewer,"viewer122bytes");
+      execFileSync(process.execPath,[path.join(projectRoot,"scripts/generate-update-keypair.js"),`--private-key=${key}`,`--public-key=${publicKey}`],{cwd:projectRoot});
+      execFileSync(process.execPath,[manifestScript,"--viewer-only=true",`--viewer-x64=${viewer}`,`--agent-x64=${path.join(root,"absent-agent.exe")}`,`--agent-update-x64=${path.join(root,"absent-update.exe")}`,"--version=0.1.122",`--private-key=${key}`,`--out=${out}`],{cwd:projectRoot});
+      const manifest=JSON.parse(readFileSync(out,"utf8"));
+      expect(manifest.version).toBe("0.1.122");expect(manifest.agentWindows).toBeUndefined();expect(manifest.agentInstallers).toBeUndefined();expect(manifest.agentFileUpdates).toBeUndefined();
+      expect(manifest.viewerWindows.x86.url).toContain("/v0.1.122/WonRemote-Viewer-Setup.exe");
+      execFileSync(process.execPath,[path.join(projectRoot,"scripts/verify-release-manifest.js"),"--viewer-only","true","--manifest",out,"--version","0.1.122","--viewer-x64",viewer],{cwd:projectRoot,env:{...process.env,WONREMOTE_UPDATE_MANIFEST_PUBLIC_KEY:readFileSync(publicKey,"utf8")}});
+    }finally{rmSync(root,{recursive:true,force:true});}
+  });
   it("signs file-only Agent updates separately from first-install Setup for old and current readers", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "wonremote-manifest-contract-"));
     try {
@@ -120,14 +133,24 @@ describe("production update manifest scripts", () => {
 
   it("publishes two x86 installers, the file update and one manifest after the draft gate", () => {
     const script = readFileSync(path.join(projectRoot, "scripts", "publish-github-release.ps1"), "utf8");
-    expect(script.match(/^\s{2}Publish-Asset /gm)?.length).toBe(4);
+    expect(script).toContain("$PublishedAssets = @(foreach ($ExpectedAsset in $ExpectedAssets)");
     expect(script).toContain("draft = $true");
     expect(script).toContain("draft = $false");
-    expect(script).toContain("Publish-Asset $StableInstallerPath $StableInstallerAssetName");
-    expect(script).toContain("Publish-Asset $StableAgentInstallerPath $StableAgentInstallerAssetName");
-    expect(script).toContain("Publish-Asset $AgentFileUpdatePath $AgentFileUpdateAssetName");
-    expect(script).toContain("Publish-Asset $ManifestPath $ManifestName");
+    for(const field of ["StableInstallerAssetName","StableAgentInstallerAssetName","AgentFileUpdateAssetName","ManifestName"])expect(script).toContain(`Name = $${field}`);
     expect(script).not.toContain("Portable");
     expect(script).not.toContain("_${Version}_");
+  });
+  (process.platform==='win32'?it:it.skip)("executes the publisher asset plan for both products and Viewer-only without changing global latest",()=>{
+    const root=mkdtempSync(path.join(tmpdir(),'wonremote-publish-scope-'));
+    try{
+      const script=readFileSync(path.join(projectRoot,'scripts/publish-github-release.ps1'),'utf8');
+      const plan=script.slice(script.indexOf('$ExpectedAssets = @('),script.indexOf('function Assert-Manifest'));
+      const run=(viewerOnly:boolean)=>JSON.parse(execFileSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',`$ErrorActionPreference='Stop';$ViewerOnly=$${viewerOnly};$ReleaseDir='${root.replace(/'/g,"''")}';$StableInstallerAssetName='WonRemote-Viewer-Setup.exe';$StableAgentInstallerAssetName='WonRemote-Agent-Setup.exe';$AgentFileUpdateAssetName='WonRemote-Agent-Update.exe';$ManifestName='wonremote-update-manifest.json';$StableInstallerPath='viewer';$StableAgentInstallerPath='agent';$AgentFileUpdatePath='update';$ManifestPath='manifest';${plan};$ExpectedAssets|ConvertTo-Json -Compress`],{encoding:'utf8'}));
+      expect(run(false).map((asset:any)=>asset.Name)).toEqual(['WonRemote-Viewer-Setup.exe','WonRemote-Agent-Setup.exe','WonRemote-Agent-Update.exe','wonremote-update-manifest.json']);
+      expect(run(true).map((asset:any)=>asset.Name)).toEqual(['WonRemote-Viewer-Setup.exe','wonremote-update-manifest.json']);
+      expect(script).toContain("make_latest = $(if ($ViewerOnly) { 'false' } else { 'true' })");
+      writeFileSync(path.join(root,'WonRemote-Agent-Setup.exe'),'wrong-scope');
+      expect(()=>run(true)).toThrow();
+    }finally{rmSync(root,{recursive:true,force:true});}
   });
 });

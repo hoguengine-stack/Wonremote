@@ -360,6 +360,13 @@ function main() {
   assertReleaseVersionConsistency();
   resetReleaseOutput();
 
+  if (process.argv.includes("--viewer-only")) {
+    buildViewerInstaller(RELEASE_TARGET);
+    const installer = path.join(releaseTargetFor(RELEASE_TARGET), "bundle", "nsis", `WonRemote Viewer_${packageJson.version}_x86-setup.exe`);
+    ensureExists(installer, "fresh Viewer-only installer");
+    fs.copyFileSync(installer, path.join(outputDir, "WonRemote-Viewer-Setup.exe"));
+    return;
+  }
   copyStableX86Installers(packageTarget(RELEASE_TARGET));
 }
 

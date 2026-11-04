@@ -143,6 +143,13 @@ await verifyAsset(manifest, {
   filePath: path.resolve(args.get("--viewer-x86") || requiredArg(args, "--viewer-x64")),
   expectedName: args.get("--viewer-asset-name-x86") || args.get("--viewer-asset-name-x64") || "WonRemote-Viewer-Setup.exe",
 });
+if (args.get("--viewer-only") === "true") {
+  if (["agentWindows", "agentInstallers", "agentFileUpdates"].some(key => Object.hasOwn(manifest, key))) {
+    throw new Error("Viewer-only manifest must not include Agent update entries.");
+  }
+  console.log(`Verified Viewer-only manifest ${manifestPath} for ${version}, including both trusted signatures and exact payload hashes.`);
+  process.exit(0);
+}
 await verifyAsset(manifest, {
   arch: "x64",
   section: "agentFileUpdates",

@@ -2,7 +2,8 @@ param(
   [string]$Repository = "hoguengine-stack/Wonremote",
   [string]$Version = "",
   [switch]$Draft,
-  [switch]$Prerelease
+  [switch]$Prerelease,
+  [switch]$ViewerOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -70,6 +71,18 @@ $ExpectedAssets = @(
   @{ Name = $AgentFileUpdateAssetName; Path = $AgentFileUpdatePath }
   @{ Name = $ManifestName; Path = $ManifestPath }
 )
+if ($ViewerOnly) {
+  $ExpectedAssets = @($ExpectedAssets | Where-Object { $_.Name -in @($StableInstallerAssetName, $ManifestName) })
+  if (Get-ChildItem -LiteralPath $ReleaseDir -Filter '*Agent*.exe') { throw 'Viewer-only publication contains Agent installers.' }
+}
+
+function Assert-Manifest($Manifest, $Viewer, $Agent) {
+  $Arguments = @('--manifest',$Manifest,'--version',$Version,'--viewer-x64',$Viewer,'--viewer-asset-name-x64',$StableInstallerAssetName)
+  if ($ViewerOnly) { $Arguments += @('--viewer-only','true') }
+  else { $Arguments += @('--agent-x64',$Agent,'--agent-asset-name-x64',$StableAgentInstallerAssetName) }
+  & node (Join-Path $ScriptDir 'verify-release-manifest.js') @Arguments
+  if ($LASTEXITCODE -ne 0) { throw 'Signed release manifest verification failed.' }
+}
 
 foreach ($ExpectedAsset in $ExpectedAssets) {
   if (-not (Test-Path -LiteralPath $ExpectedAsset.Path)) {
@@ -85,22 +98,14 @@ if ($env:WONREMOTE_SKIP_UPDATE_E2E_PREFLIGHT -ne "YES") {
 }
 
 if ($env:WONREMOTE_SKIP_BUILD_PAYLOAD_PREFLIGHT -ne "YES") {
-  & node (Join-Path $ScriptDir "verify-x86-installer-payloads.js")
+  $PayloadArgs = @(if ($ViewerOnly) { '--viewer-only' })
+  & node (Join-Path $ScriptDir "verify-x86-installer-payloads.js") @PayloadArgs
   if ($LASTEXITCODE -ne 0) {
     throw "x86 installer payload preflight failed with exit code $LASTEXITCODE."
   }
 }
 
-& node (Join-Path $ScriptDir "verify-release-manifest.js") `
-  --manifest $ManifestPath `
-  --version $Version `
-  --viewer-x64 $StableInstallerPath `
-  --agent-x64 $StableAgentInstallerPath `
-  --viewer-asset-name-x64 $StableInstallerAssetName `
-  --agent-asset-name-x64 $StableAgentInstallerAssetName
-if ($LASTEXITCODE -ne 0) {
-  throw "Release manifest preflight failed with exit code $LASTEXITCODE."
-}
+Assert-Manifest $ManifestPath $StableInstallerPath $StableAgentInstallerPath
 
 $Headers = @{
   "Accept" = "application/vnd.github+json"
@@ -124,6 +129,7 @@ function Invoke-GitHubJson($Method, $Uri, $Body = $null) {
 }
 
 $ReleaseApi = "https://api.github.com/repos/$Repository/releases"
+$LegacyLatest = if ($ViewerOnly) { (Invoke-GitHubJson 'Get' "$ReleaseApi/latest").tag_name } else { $null }
 $Release = $null
 try {
   $Release = Invoke-GitHubJson "Get" "$ReleaseApi/tags/$Tag"
@@ -144,7 +150,7 @@ if ($Release) {
   $Release = Invoke-GitHubJson "Post" $ReleaseApi @{
     tag_name = $Tag
     target_commitish = "main"
-    name = "WonRemote $Version"
+    name = $(if ($ViewerOnly) { "WonRemote Viewer $Version (Agent unchanged)" } else { "WonRemote $Version" })
     draft = $true
     prerelease = $RequestedPrerelease
   }
@@ -164,12 +170,10 @@ function Publish-Asset($FilePath, $AssetName, $ContentType) {
   return Invoke-RestMethod -Method Post -Uri $UploadUrl -Headers $Headers -InFile $FilePath -ContentType $ContentType
 }
 
-$PublishedAssets = @(
-  Publish-Asset $StableInstallerPath $StableInstallerAssetName "application/octet-stream"
-  Publish-Asset $StableAgentInstallerPath $StableAgentInstallerAssetName "application/octet-stream"
-  Publish-Asset $AgentFileUpdatePath $AgentFileUpdateAssetName "application/octet-stream"
-  Publish-Asset $ManifestPath $ManifestName "application/json"
-)
+$PublishedAssets = @(foreach ($ExpectedAsset in $ExpectedAssets) {
+  $ContentType = if ($ExpectedAsset.Name.EndsWith('.json')) { 'application/json' } else { 'application/octet-stream' }
+  Publish-Asset $ExpectedAsset.Path $ExpectedAsset.Name $ContentType
+})
 
 # Keep a partial or wrong upload private. Each successful upload returns its stored asset metadata.
 if ($PublishedAssets.Count -ne $ExpectedAssets.Count) {
@@ -205,16 +209,7 @@ try {
     }
     $RemoteAssetPaths[$ExpectedAsset.Name] = $RemotePath
   }
-  & node (Join-Path $ScriptDir "verify-release-manifest.js") `
-    --manifest $RemoteAssetPaths[$ManifestName] `
-    --version $Version `
-    --viewer-x64 $RemoteAssetPaths[$StableInstallerAssetName] `
-    --agent-x64 $RemoteAssetPaths[$StableAgentInstallerAssetName] `
-    --viewer-asset-name-x64 $StableInstallerAssetName `
-    --agent-asset-name-x64 $StableAgentInstallerAssetName
-  if ($LASTEXITCODE -ne 0) {
-    throw "Release download verification failed with exit code $LASTEXITCODE."
-  }
+  Assert-Manifest $RemoteAssetPaths[$ManifestName] $RemoteAssetPaths[$StableInstallerAssetName] $RemoteAssetPaths[$StableAgentInstallerAssetName]
 } finally {
   $CleanupPath = [System.IO.Path]::GetFullPath($RemoteVerificationDirectory)
   $CleanupRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd([System.IO.Path]::DirectorySeparatorChar)
@@ -229,10 +224,14 @@ try {
 if (-not $RequestedDraft) {
   Write-Host "Publishing GitHub Release $Tag after every required asset was uploaded."
   $Release = Invoke-GitHubJson "Patch" "$ReleaseApi/$($Release.id)" @{
-    name = "WonRemote $Version"
+    name = $(if ($ViewerOnly) { "WonRemote Viewer $Version (Agent unchanged)" } else { "WonRemote $Version" })
     draft = $false
     prerelease = $RequestedPrerelease
+    make_latest = $(if ($ViewerOnly) { 'false' } else { 'true' })
   }
 }
 
+if ($ViewerOnly -and -not $RequestedDraft -and (Invoke-GitHubJson 'Get' "$ReleaseApi/latest").tag_name -ne $LegacyLatest) {
+  throw 'Viewer-only release unexpectedly changed legacy Agent latest. Do not change rollout or Hosting.'
+}
 Write-Host "Published WonRemote release assets for $Tag."

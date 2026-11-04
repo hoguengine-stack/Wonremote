@@ -42,14 +42,21 @@ describe("installed-platform device access boundary", () => {
       await expect(lock.authorize(await request("connect", "pass-1234"), Date.now(), async()=>{throw Error("connect publish failed");})).rejects.toThrow("connect publish failed");
       expect((await stat(file)).mtimeMs === beforeCleanConnect).toBe(true);
       expect(await readFile(file)).toEqual(beforeCleanBytes);
+      await lock.authorize(await request("set", "pass-1234", "updated-password"));
+      lock = await AgentDeviceAccessLock.load(file, "device-1");
+      expect(lock.publicState.publicKey).toBe(first.publicKey);
+      expect(lock.publicState.enabled).toBe(true);
+      expect(lock.publicState.version).not.toBe(first.version);
+      await expect(lock.authorize(await request("connect", "pass-1234"))).rejects.toThrow("일치하지");
+      await expect(lock.authorize(await request("connect", "updated-password"))).resolves.toEqual(lock.publicState);
       await expect(lock.authorize(await request("reset", "incorrect administrator", "replacement"))).rejects.toThrow("일치하지");
       if (process.env.WONREMOTE_TEST_RECOVERY_PASSWORD) {
         await lock.authorize(await request("reset", process.env.WONREMOTE_TEST_RECOVERY_PASSWORD, "replacement"));
         expect(lock.publicState.version).not.toBe(first.version);
-        await expect(lock.authorize(await request("connect", "pass-1234"))).rejects.toThrow("일치하지");
+        await expect(lock.authorize(await request("connect", "updated-password"))).rejects.toThrow("일치하지");
         await lock.authorize(await request("disable", "replacement"));
       } else {
-        await lock.authorize(await request("disable", "pass-1234"));
+        await lock.authorize(await request("disable", "updated-password"));
       }
       expect(lock.publicState.enabled).toBe(false);
       const changed = lock.publicState;

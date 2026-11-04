@@ -1,3 +1,4 @@
+param([switch]$ViewerOnly)
 $ErrorActionPreference = "Stop"
 
 $AndroidDir = $PSScriptRoot
@@ -24,6 +25,7 @@ $Products = @(
 )
 
 $SigningProperties = if ($env:WONREMOTE_ANDROID_SIGNING_PROPERTIES) { $env:WONREMOTE_ANDROID_SIGNING_PROPERTIES } else { Join-Path $AndroidDir "keystore.properties" }
+if ($ViewerOnly) { $Products = @($Products | Where-Object { $_.Name -eq 'Viewer' }) }
 if (-not (Test-Path -LiteralPath $SigningProperties -PathType Leaf)) {
   throw "mobile/android/keystore.properties is required. Keep the release key outside Git and reuse it for every update."
 }
@@ -41,15 +43,18 @@ if (-not $env:GRADLE_USER_HOME) {
 
 Push-Location $AndroidDir
 try {
-  & .\gradlew.bat :agent:assembleRelease :viewer:assembleRelease :controladdon:assembleRelease --build-cache --parallel
+  $Tasks = @(if ($ViewerOnly) { ':viewer:assembleRelease' } else { ':agent:assembleRelease'; ':viewer:assembleRelease'; ':controladdon:assembleRelease' })
+  & .\gradlew.bat @Tasks --build-cache --parallel
   if ($LASTEXITCODE -ne 0) { throw "Android Agent/Viewer/Control Add-On release build failed." }
 }
 finally {
   Pop-Location
 }
 
-& node (Join-Path $AndroidDir "verify-native-release.mjs") (Join-Path $AndroidDir "agent\build\outputs\mapping\release\mapping.txt")
-if ($LASTEXITCODE -ne 0) { throw "Android WebRTC JNI verification failed; do not publish these artifacts." }
+if (-not $ViewerOnly) {
+  & node (Join-Path $AndroidDir "verify-native-release.mjs") (Join-Path $AndroidDir "agent\build\outputs\mapping\release\mapping.txt")
+  if ($LASTEXITCODE -ne 0) { throw "Android WebRTC JNI verification failed; do not publish these artifacts." }
+}
 
 $ApkSigner = Get-ChildItem (Join-Path $env:ANDROID_HOME "build-tools\*\apksigner.bat") |
   Sort-Object FullName -Descending |
@@ -75,5 +80,6 @@ foreach ($Product in $Products) {
 
 $Aapt = Join-Path (Split-Path -Parent $ApkSigner) "aapt.exe"
 if (-not (Test-Path $Aapt)) { throw "Android SDK aapt is required to verify APK package/version metadata." }
-& node (Join-Path $AndroidDir "create-update-manifest.mjs") $Aapt
+$ScopeArgs = @(if ($ViewerOnly) { '--viewer-only' })
+& node (Join-Path $AndroidDir "create-update-manifest.mjs") $Aapt @ScopeArgs
 if ($LASTEXITCODE -ne 0) { throw "Android update metadata generation failed; do not deploy these artifacts." }

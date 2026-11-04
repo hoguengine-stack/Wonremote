@@ -1,3 +1,4 @@
+param([switch]$ViewerOnly)
 $ErrorActionPreference = "Stop"
 
 $releaseDir = Join-Path $PSScriptRoot "..\release-exe"
@@ -6,6 +7,7 @@ $installers = @(
   Join-Path $releaseDir "WonRemote-Agent-Setup.exe"
   Join-Path $releaseDir "WonRemote-Agent-Update.exe"
 )
+if ($ViewerOnly) { $installers = @(Join-Path $releaseDir "WonRemote-Viewer-Setup.exe") }
 $missing = @($installers | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) })
 if ($missing.Count -gt 0) {
   throw "Authenticode signing input is missing: $($missing -join ', ')"

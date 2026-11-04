@@ -361,9 +361,10 @@ export async function processAgentDeviceAccessRequest(
     await lock.authorize(request, Date.now(), async (state: DeviceAccessState) => {
       if (request.operation !== "connect") await stopActiveSession();
       await runTransaction(db, async transaction => {
-        const currentRequest = await transaction.get(requestRef);
         const lockRef = doc(db, "deviceAccessLocks", deviceId);
-        const currentLock = await transaction.get(lockRef);
+        const [currentRequest, currentLock] = await Promise.all([
+          transaction.get(requestRef), transaction.get(lockRef),
+        ]);
         if (currentRequest.data()?.state !== "pending" || (currentLock.data()?.version ?? "") !== previous.version) throw new Error("잠금 요청이 이미 처리되었거나 설정이 변경되었습니다.");
         if (request.operation !== "connect") {
           transaction.set(lockRef, {enabled:state.enabled, version:state.version, updatedAt:serverTimestamp()});

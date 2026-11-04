@@ -28,6 +28,31 @@ function fixture() {
 }
 afterEach(() => roots.splice(0).forEach(root => rmSync(root, { recursive: true, force: true })));
 describe("Android release discovery", () => {
+  (process.platform==='win32'?it:it.skip)("passes a complete Gradle Viewer task and scope flag instead of splatting characters",()=>{
+    const script=readFileSync(path.resolve(__dirname,'../../mobile/android/build-agent-release.ps1'),'utf8');
+    const task=script.split(/\r?\n/).filter(line=>line.includes('$Tasks =')||line.includes('& .\\gradlew.bat @Tasks')).join('\n').replace('& .\\gradlew.bat','Invoke-Fixture');
+    const flag=script.split(/\r?\n/).find(line=>line.startsWith('$ScopeArgs ='));
+    const run=(value:boolean,body:string)=>JSON.parse(execFileSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',`$ViewerOnly=$${value};function Invoke-Fixture { ConvertTo-Json -InputObject @($args) -Compress };${body}`],{encoding:'utf8'}));
+    expect(run(true,task)).toEqual([':viewer:assembleRelease','--build-cache','--parallel']);
+    expect(run(false,task)).toEqual([':agent:assembleRelease',':viewer:assembleRelease',':controladdon:assembleRelease','--build-cache','--parallel']);
+    expect(run(true,`${flag};Invoke-Fixture @ScopeArgs`)).toEqual(['--viewer-only']);
+  });
+  it("updates only Android Viewer while preserving signed Agent and add-on discovery and payloads",()=>{
+    const {root,app,inspect}=fixture();const previous=publishAndroidManifest(root,inspect);
+    writeFileSync(path.join(app,'package.json'),JSON.stringify({version:'0.1.82'}));
+    writeFileSync(path.join(app,'release-apk/WonRemote-Viewer.apk'),'new-viewer');
+    execFileSync('tar',['-acf',path.join(app,'public/download/viewer.zip'),'-C',path.join(app,'release-apk'),'WonRemote-Viewer.apk']);
+    const current=(file:string)=>file.includes('Viewer')?inspect(file).replace('1081','1082').replace('0.1.81','0.1.82'):inspect(file);
+    const manifest=publishAndroidManifest(root,current,{viewerOnly:true});
+    expect(manifest.apps['com.wonremote.viewer'].versionName).toBe('0.1.82');
+    for(const id of ['com.wonremote.agent','com.wonremote.controladdon'])expect(manifest.apps[id]).toEqual(previous.apps[id]);
+    expect(()=>verifyAndroidManifest(root,{viewerOnly:true})).not.toThrow();
+    expect(()=>verifyAndroidManifest(root)).toThrow('version/package mismatch');
+    cpSync(path.join(app,'public/download'),path.join(app,'dist/download'),{recursive:true});
+    expect(()=>verifyAndroidHostingArtifacts(root,{viewerOnly:true})).not.toThrow();
+    writeFileSync(path.join(app,'public/download/agent.zip'),'tampered');
+    expect(()=>verifyAndroidManifest(root,{viewerOnly:true})).toThrow('payload/hash mismatch');
+  });
   it("blocks removal or changed bytes of currently published versioned archives before Hosting deploy",async()=>{
     const {root,app,inspect}=fixture();const live=publishAndroidManifest(root,inspect);
     const load=async()=>live;

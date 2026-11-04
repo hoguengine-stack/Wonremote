@@ -37,10 +37,11 @@ export function createX86PayloadVerificationPlan({
   appRoot = defaultAppRoot,
   releaseDir = path.join(appRoot, "release-exe"),
   version = readPackageVersion(appRoot),
+  viewerOnly = false,
 } = {}) {
   const installerDir = path.join(appRoot, "src-tauri", "target", X86_RELEASE_DIRECTORY, "bundle", "nsis");
 
-  const plans = PRODUCTS.map((product) => {
+  const plans = (viewerOnly ? ["viewer"] : PRODUCTS).map((product) => {
     const productName = product === "agent" ? "Agent" : "Viewer";
     return {
       product,
@@ -49,7 +50,7 @@ export function createX86PayloadVerificationPlan({
       expectedPeMachine: X86_PE_MACHINE,
     };
   });
-  plans.push({
+  if (!viewerOnly) plans.push({
     product: "agent-update",
     releasedInstallerPath: path.join(releaseDir, "WonRemote-Agent-Update.exe"),
     x86InstallerPath: path.join(installerDir, "WonRemote-Agent-Update.exe"),
@@ -98,7 +99,7 @@ export async function verifyX86InstallerPayloads(options = {}) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const results = await verifyX86InstallerPayloads();
+  const results = await verifyX86InstallerPayloads({viewerOnly:process.argv.includes("--viewer-only")});
   for (const result of results) {
     console.log(`Verified ${result.product} x86 installer payload: ${result.sha256}`);
   }

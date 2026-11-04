@@ -20,6 +20,7 @@
       "download/android/v0.1.117/**"
     ],
     "headers": [
+      {"source":"/updates/**","headers":[{"key":"Cache-Control","value":"no-store"}]},
       {
         "source": "/video-support**",
         "headers": [
@@ -115,7 +116,7 @@
       },
       {
         "source": "/download/viewer",
-        "destination": "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Viewer-Setup.exe",
+          "destination": "https://github.com/hoguengine-stack/Wonremote/releases/download/v0.1.122/WonRemote-Viewer-Setup.exe",
         "type": 302
       },
       {
@@ -130,7 +131,7 @@
       },
       {
         "source": "/download/viewer-x86",
-        "destination": "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Viewer-Setup.exe",
+          "destination": "https://github.com/hoguengine-stack/Wonremote/releases/download/v0.1.122/WonRemote-Viewer-Setup.exe",
         "type": 302
       },
       {

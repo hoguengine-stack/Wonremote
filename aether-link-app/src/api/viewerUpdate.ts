@@ -1,7 +1,7 @@
 import type { UpdateCheckResult } from "../domain/updatePolicy";
+import { VIEWER_UPDATE_MANIFEST_URL } from "../domain/updateTrust";
 
-export const DEFAULT_VIEWER_UPDATE_MANIFEST_URL =
-  "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/wonremote-update-manifest.json";
+export const DEFAULT_VIEWER_UPDATE_MANIFEST_URL = VIEWER_UPDATE_MANIFEST_URL;
 
 type ManifestAsset = {
   name?: unknown;

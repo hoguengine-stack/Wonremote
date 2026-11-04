@@ -3,7 +3,7 @@ import {
   type ProductionUpdateMetadata,
   type ProductionUpdateKind,
 } from "../domain/updateManifest";
-import { resolveProductionUpdatePublicKey } from "../domain/updateTrust";
+import { resolveProductionUpdatePublicKey, VIEWER_UPDATE_MANIFEST_URL } from "../domain/updateTrust";
 import { isHigherVersion } from "../domain/versioning";
 
 export const DEFAULT_PRODUCTION_UPDATE_MANIFEST_URL =
@@ -45,7 +45,7 @@ export async function loadProductionInstallerUpdateMetadata(
   fetchImpl: typeof fetch = fetch,
   agentInstallerForRollback = false,
 ): Promise<ProductionUpdateMetadata | null> {
-  const manifestUrl = env.WONREMOTE_UPDATE_MANIFEST_URL?.trim() || DEFAULT_PRODUCTION_UPDATE_MANIFEST_URL;
+  const manifestUrl = env.WONREMOTE_UPDATE_MANIFEST_URL?.trim() || (resolveRuntimeUpdateProduct(env) === "viewer" ? VIEWER_UPDATE_MANIFEST_URL : DEFAULT_PRODUCTION_UPDATE_MANIFEST_URL);
   const separator = manifestUrl.includes("?") ? "&" : "?";
   const response = await fetchImpl(`${manifestUrl}${separator}nocache=${Date.now()}`, {
     signal: AbortSignal.timeout(15_000),

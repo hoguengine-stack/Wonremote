@@ -7,7 +7,7 @@ import { readVideoSmsSelection, videoSmsPhoneStatus, type VideoSmsPhone, type Vi
 
 type GuestInvite=NonNullable<ReturnType<typeof readVideoInvite>>;
 function supportsTorch(track?:MediaStreamTrack){
-  try{const value=(track?.getCapabilities() as MediaTrackCapabilities&{torch?:boolean|boolean[]}|undefined)?.torch;return Array.isArray(value)?value.includes(true)&&value.includes(false):value===true;}catch{return false;}
+  try{const value=(track?.getCapabilities() as MediaTrackCapabilities&{torch?:boolean|boolean[]}|undefined)?.torch;return value===undefined?undefined:Array.isArray(value)?value.includes(true):value===true;}catch{return undefined;}
 }
 export function VideoConsultation({guest,onClose,api:injectedApi}:{guest?:GuestInvite;onClose?:()=>void;api?:VideoApi}){
   const [key]=useState(()=>guest?videoGuestKey():"");
@@ -59,7 +59,7 @@ export function VideoConsultation({guest,onClose,api:injectedApi}:{guest?:GuestI
   function refreshTorch(){
     if(!guest||!local.current)return;
     const track=local.current.getVideoTracks()[0];
-    setTorchAvailable(supportsTorch(track));
+    setTorchAvailable(supportsTorch(track)!==false);
     const actual=(track?.getSettings() as MediaTrackSettings&{torch?:boolean}|undefined)?.torch;
     if(typeof actual==="boolean")setTorch(actual);
   }
@@ -107,7 +107,7 @@ export function VideoConsultation({guest,onClose,api:injectedApi}:{guest?:GuestI
         const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"},width:{ideal:1280},height:{ideal:720}},audio:false});
         if(!live.current||epoch!==generation.current){stream.getTracks().forEach(track=>track.stop());return;}
         local.current=stream;front.current=stream.getVideoTracks()[0]?.getSettings().facingMode==="user";
-        setTorch(false);setTorchAvailable(supportsTorch(stream.getVideoTracks()[0]));
+        setTorch(false);setTorchAvailable(supportsTorch(stream.getVideoTracks()[0])!==false);
         if(localVideo.current){localVideo.current.srcObject=stream;play(localVideo.current);}
         const result=await api.call("join",guest.roomId,{});
         if(!live.current||epoch!==generation.current){void api.call("end",guest.roomId,{}).catch(()=>undefined);return;}
@@ -151,30 +151,61 @@ export function VideoConsultation({guest,onClose,api:injectedApi}:{guest?:GuestI
   },[api,guest,ended]);
   async function toggleTorch(){
     const track=local.current?.getVideoTracks()[0];
-    if(operation.current||!track||!supportsTorch(track))return;
+    if(operation.current||!track)return;
+    if(supportsTorch(track)===false){setTorchAvailable(false);return;}
     operation.current=true;setBusy(true);setError("");const epoch=generation.current,next=!torch;
     try{
       await track.applyConstraints({torch:{exact:next},advanced:[{torch:next}]} as MediaTrackConstraints&{torch:ConstrainBoolean;advanced:{torch:boolean}[]});
       if(!live.current||epoch!==generation.current||track!==local.current?.getVideoTracks()[0])return;
       const actual=(track.getSettings() as MediaTrackSettings&{torch?:boolean}).torch;
       if(typeof actual==="boolean"&&actual!==next)throw new Error("Torch setting not applied");
+      if(supportsTorch(track)!==true&&typeof actual!=="boolean"){
+        await track.applyConstraints({torch:{exact:false},advanced:[{torch:false}]} as MediaTrackConstraints&{torch:ConstrainBoolean;advanced:{torch:boolean}[]});
+        throw new Error("Torch setting not confirmed");
+      }
       setTorch(next);
     }catch{if(live.current&&epoch===generation.current)setError("후레쉬를 변경하지 못했습니다. 카메라 영상은 계속 공유됩니다.");}
     finally{operation.current=false;if(live.current)setBusy(false);}
   }
   async function switchCamera(){
     if(operation.current||!peer.current||!local.current)return;operation.current=true;setBusy(true);setError("");const epoch=generation.current;
-    try{
-      const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{exact:front.current?"environment":"user"}},audio:false});
-      const track=stream.getVideoTracks()[0];
-      if(!live.current||!peer.current||!local.current||epoch!==generation.current){stream.getTracks().forEach(value=>value.stop());return;}
-      try{await peer.current.camera(track);if(!live.current||!local.current||epoch!==generation.current){stream.getTracks().forEach(value=>value.stop());return;}
-        const old=local.current;local.current=stream;
-        // Safari can freeze a preview whose stream temporarily loses its last track.
+    const previous=local.current,previousFront=front.current,previousSettings=previous.getVideoTracks()[0]?.getSettings();let released=false;
+    const current=()=>live.current&&epoch===generation.current&&peer.current&&local.current;
+    const open=(isFront:boolean)=>navigator.mediaDevices.getUserMedia({video:{facingMode:{exact:isFront?"user":"environment"},width:{ideal:1280},height:{ideal:720}},audio:false});
+    const replace=async(stream:MediaStream,isFront:boolean)=>{
+      try{
+        if(!current()){stream.getTracks().forEach(track=>track.stop());return;}
+        const track=stream.getVideoTracks()[0];if(!track)throw new Error("Camera track unavailable");
+        await peer.current!.camera(track);
+        if(!current()){stream.getTracks().forEach(track=>track.stop());return;}
+        const old=local.current!;local.current=stream;
+        // Rebind the preview to avoid Safari's zero-track stream freeze.
         if(localVideo.current){localVideo.current.srcObject=stream;play(localVideo.current);}
-        old.getTracks().forEach(value=>value.stop());front.current=!front.current;setTorch(false);setTorchAvailable(supportsTorch(track));}
-      catch(cause){stream.getTracks().forEach(value=>value.stop());throw cause;}
-    }catch{if(live.current&&epoch===generation.current)setError("이 기기에서는 카메라를 전환하지 못했습니다. 현재 카메라는 유지됩니다.");}
+        old.getTracks().forEach(track=>track.stop());
+        front.current=track.getSettings().facingMode?track.getSettings().facingMode==="user":isFront;
+        setTorch(false);setTorchAvailable(supportsTorch(track)!==false);
+      }catch(cause){stream.getTracks().forEach(track=>track.stop());throw cause;}
+    };
+    try{
+      let stream:MediaStream;
+      try{stream=await open(!previousFront);}
+      catch(cause){
+        if(!(cause instanceof DOMException)||cause.name!=="NotReadableError"||!current())throw cause;
+        // Some Android camera drivers cannot open front and rear concurrently.
+        previous.getTracks().forEach(track=>track.stop());released=true;
+        stream=await open(!previousFront);
+      }
+      await replace(stream,!previousFront);
+    }catch{
+      if(!current())return;
+      if(released){
+        try{
+          const restored=previousSettings?.deviceId?await navigator.mediaDevices.getUserMedia({video:{deviceId:{exact:previousSettings.deviceId}},audio:false}):await open(previousFront);
+          await replace(restored,previousFront);
+        }catch{if(current())fail(new Error("카메라 전환과 기존 카메라 복구에 실패했습니다. 상담을 종료하고 새 링크로 다시 시작해 주세요."));return;}
+      }
+      if(current())setError("이 기기에서는 카메라를 전환하지 못했습니다. 현재 카메라는 유지됩니다.");
+    }
     finally{operation.current=false;if(live.current)setBusy(false);}
   }
   async function end(){

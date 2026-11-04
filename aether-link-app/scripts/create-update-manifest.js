@@ -106,6 +106,7 @@ function buildSignaturePayloadV2(input) {
 }
 
 const args = readArgs(process.argv.slice(2));
+const viewerOnly = args.get("--viewer-only") === "true";
 const version = args.get("--version") || packageJson.version;
 const forceUpdate = args.get("--force-update") === "true";
 const viewerPath = path.resolve(args.get("--viewer-x64") || args.get("--installer") || defaultInstallerPath(version));
@@ -139,7 +140,7 @@ for (const [label, assetPath] of [
   ["x86 Agent installer", agentPathX86],
   ["x64 compatible Agent file update", agentUpdatePath],
   ["x86 Agent file update", agentUpdatePathX86],
-]) {
+].filter(([label]) => !viewerOnly || label.includes("Viewer"))) {
   if (!fs.existsSync(assetPath)) {
     throw new Error(`${label} not found: ${assetPath}`);
   }
@@ -183,20 +184,20 @@ const viewerX64 = buildSignedAsset({
 const viewerX86 = buildSignedAsset({
   arch: "x86", assetName: viewerAssetNameX86, downloadUrl: viewerDownloadUrlX86, filePath: viewerPathX86, updateKind: "installer",
 });
-const agentX64 = buildSignedAsset({
+const agentX64 = !viewerOnly && buildSignedAsset({
   arch: "x64", assetName: agentAssetName, downloadUrl: agentDownloadUrl, filePath: agentPath, updateKind: "installer",
 });
-const agentX86 = buildSignedAsset({
+const agentX86 = !viewerOnly && buildSignedAsset({
   arch: "x86", assetName: agentAssetNameX86, downloadUrl: agentDownloadUrlX86, filePath: agentPathX86, updateKind: "installer",
 });
 // Keep the executable handoff wire kind for existing installed readers. These
 // bytes contain file replacement only, not the first-install Setup workflow.
-const agentUpdateX64 = buildSignedAsset({
+const agentUpdateX64 = !viewerOnly && buildSignedAsset({
   arch: "x64", assetName: stableAgentUpdateName,
   downloadUrl: buildDownloadUrl(args, version, stableAgentUpdateName, "--agent-update-download-url-x64"),
   filePath: agentUpdatePath, updateKind: "installer",
 });
-const agentUpdateX86 = buildSignedAsset({
+const agentUpdateX86 = !viewerOnly && buildSignedAsset({
   arch: "x86", assetName: stableAgentUpdateName,
   downloadUrl: buildDownloadUrl(args, version, stableAgentUpdateName, "--agent-update-download-url-x86"),
   filePath: agentUpdatePathX86, updateKind: "installer",
@@ -214,7 +215,7 @@ const manifest = {
     x64: viewerX64,
     x86: viewerX86,
   },
-  agentWindows: {
+  ...(viewerOnly ? {} : { agentWindows: {
     x64: agentX64,
     x86: agentX86,
   },
@@ -225,7 +226,7 @@ const manifest = {
   agentInstallers: {
     x64: agentX64,
     x86: agentX86,
-  },
+  } }),
 };
 
 fs.mkdirSync(path.dirname(outPath), { recursive: true });
@@ -234,5 +235,7 @@ fs.writeFileSync(outPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 console.log(`Production update manifest written to ${outPath}`);
 console.log(`x64 Viewer SHA-256: ${manifest.viewerWindows.x64.sha256}`);
 console.log(`x86 Viewer SHA-256: ${manifest.viewerWindows.x86.sha256}`);
-console.log(`x64 Agent SHA-256: ${manifest.agentWindows.x64.sha256}`);
-console.log(`x86 Agent SHA-256: ${manifest.agentWindows.x86.sha256}`);
+if (!viewerOnly) {
+  console.log(`x64 Agent SHA-256: ${manifest.agentWindows.x64.sha256}`);
+  console.log(`x86 Agent SHA-256: ${manifest.agentWindows.x86.sha256}`);
+}

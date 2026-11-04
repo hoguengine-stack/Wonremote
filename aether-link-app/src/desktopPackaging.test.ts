@@ -174,7 +174,7 @@ describe("desktop packaging scaffold", () => {
     const workflow = readFileSync(path.join(projectRoot, "..", ".github", "workflows", "publish-release.yml"), "utf8");
     expect(workflow).toContain("WONREMOTE_AGENT_ZLIB_TRIAL: ${{ inputs.trialAgentZlib && !inputs.publish && 'YES' || 'NO' }}");
     expect(workflow).toContain("The zlib Agent trial cannot publish the production latest release.");
-    expect(workflow).toContain('"$GITHUB_EVENT_NAME" == "workflow_dispatch" && "${{ inputs.trialAgentZlib }}" == "true" && "${{ inputs.publish }}" == "false"');
+    expect(workflow).toContain('"$GITHUB_EVENT_NAME" == "workflow_dispatch" && ( "${{ inputs.viewerOnly }}" == "true" || "${{ inputs.trialAgentZlib }}" == "true" && "${{ inputs.publish }}" == "false" )');
     expect(workflow).toContain("node scripts/create-update-manifest.js --release-tag v0.1.108-zlib-kiosk-test");
   });
 
@@ -906,7 +906,8 @@ describe("desktop packaging scaffold", () => {
     expect(buildAndroidScript).toContain("public\\download\\agent.zip");
     expect(buildAndroidScript).toContain("public\\download\\viewer.zip");
     expect(buildAndroidScript).toContain("public\\download\\control-addon.zip");
-    expect(buildAndroidScript).toContain(":agent:assembleRelease :viewer:assembleRelease :controladdon:assembleRelease");
+    for(const task of [":agent:assembleRelease",":viewer:assembleRelease",":controladdon:assembleRelease"])expect(buildAndroidScript).toContain(task);
+    expect(buildAndroidScript).toContain('& .\\gradlew.bat @Tasks --build-cache --parallel');
     expect(existsSync(path.join(projectRoot, "public", "download", "agent.apk"))).toBe(false);
     expect(existsSync(path.join(projectRoot, "public", "download", "viewer.apk"))).toBe(false);
     expect(existsSync(path.join(projectRoot, "public", "download", "control-addon.apk"))).toBe(false);
@@ -1114,7 +1115,8 @@ describe("desktop packaging scaffold", () => {
     expect(publishScript).toContain("WonRemote-Viewer-Setup.exe");
     expect(publishScript).toContain("WonRemote-Agent-Setup.exe");
     expect(publishScript).toContain("$StableAgentInstallerPath");
-    expect(publishScript).toContain("Publish-Asset $StableAgentInstallerPath $StableAgentInstallerAssetName");
+    expect(publishScript).toContain("Name = $StableAgentInstallerAssetName; Path = $StableAgentInstallerPath");
+    expect(publishScript).toContain("Publish-Asset $ExpectedAsset.Path $ExpectedAsset.Name $ContentType");
     expect(publishScript).toContain("wonremote-update-manifest.json");
   });
 
@@ -1162,7 +1164,7 @@ describe("desktop packaging scaffold", () => {
     expect(workflow).toContain("if ('${{ inputs.trialAgentZlib }}' -eq 'true') {\n              npm run change:verify:predeploy\n            } else {\n              npm run change:verify");
     const publication = workflow.split("  publish-release:")[1];
     expect(publication.indexOf("npm run change:verify:predeploy")).toBeGreaterThan(0);
-    expect(publication.indexOf("npm run change:verify:predeploy")).toBeLessThan(publication.indexOf("run: npm run release:publish"));
+    expect(publication.indexOf("npm run change:verify:predeploy")).toBeLessThan(publication.indexOf("npm run release:publish"));
   });
 
   it("verifies delivery against the split WonRemote install folders", () => {
@@ -1196,9 +1198,8 @@ describe("desktop packaging scaffold", () => {
     }
     expect(packageReleaseScript).toContain("expectedOutputs");
     expect(packageReleaseScript).toContain("Two x86 installers and the separate Agent file update created");
-    expect(publishScript).toContain("Publish-Asset $ManifestPath $ManifestName");
-    expect(publishScript.match(/^\s{2}Publish-Asset /gm)?.length).toBe(4);
-    expect(publishScript).toContain("Publish-Asset $AgentFileUpdatePath $AgentFileUpdateAssetName");
+    for(const field of ["StableInstallerAssetName","StableAgentInstallerAssetName","AgentFileUpdateAssetName","ManifestName"])expect(publishScript).toContain(`Name = $${field}`);
+    expect(publishScript).toContain("$PublishedAssets = @(foreach ($ExpectedAsset in $ExpectedAssets)");
     expect(publishScript).toContain("Refusing to replace published release");
     expect(publishScript).toContain("Bump the version before publishing");
     expect(publishScript).toContain("Release upload verification failed");
@@ -1265,10 +1266,14 @@ describe("desktop packaging scaffold", () => {
     expect(releaseWorkflow).toContain("aether-link-app/.local-run/cmake");
     expect(releaseWorkflow).toContain("aether-link-app/.local-run/nasm");
     expect(releaseWorkflow).not.toContain("aether-link-app/.cache");
-    expect(releaseWorkflow).toContain("Verify live Firebase download aliases");
+    expect(releaseWorkflow).toContain("Verify live Agent download aliases");
     expect(releaseWorkflow).toContain("--max-redirs 0");
-    expect(releaseWorkflow).toContain('"viewer-x86" = "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Viewer-Setup.exe"');
     expect(releaseWorkflow).toContain('"agent-x86" = "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Agent-Setup.exe"');
+    const deploy=readFileSync(path.join(projectRoot,"scripts/deploy-firebase.ps1"),"utf8");
+    expect(deploy).toContain("@('viewer','viewer-x86','agent','agent-x86')");
+    expect(deploy).toContain('Published alias mismatch');
+    expect(deploy).toContain('original-key signature/version/payload verification');
+    expect(deploy).toContain('Hosting contains stale Viewer discovery');
   });
 
   it("does not require Authenticode until the release certificate is provisioned", () => {
@@ -1276,11 +1281,11 @@ describe("desktop packaging scaffold", () => {
 
     expect(releaseWorkflow).toContain("WONREMOTE_REQUIRE_AUTHENTICODE: ${{ vars.WONREMOTE_REQUIRE_AUTHENTICODE }}");
     expect(releaseWorkflow).not.toContain('WONREMOTE_REQUIRE_AUTHENTICODE: "YES"');
-    expect(releaseWorkflow.indexOf("run: npm run release:sign")).toBeGreaterThan(
+    expect(releaseWorkflow.indexOf("npm run release:sign")).toBeGreaterThan(
       releaseWorkflow.indexOf("run: npm run release:exes"),
     );
     expect(releaseWorkflow.indexOf("npm run release:manifest")).toBeGreaterThan(
-      releaseWorkflow.indexOf("run: npm run release:sign"),
+      releaseWorkflow.indexOf("npm run release:sign"),
     );
   });
 

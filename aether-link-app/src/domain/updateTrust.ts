@@ -1,3 +1,5 @@
+export const VIEWER_UPDATE_MANIFEST_URL = "https://wonremote-a7fd3.web.app/updates/viewer-latest.json";
+
 export const BUNDLED_UPDATE_MANIFEST_PUBLIC_KEY = [
   "-----BEGIN PUBLIC KEY-----",
   "MCowBQYDK2VwAyEAwwhk0hWhfnVUQc8DS6XsT1XGaFNLBa94h//lHmRPIzY=",

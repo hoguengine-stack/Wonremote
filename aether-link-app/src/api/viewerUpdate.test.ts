@@ -26,7 +26,7 @@ describe("viewer update metadata", () => {
     );
 
     expect(requestedUrls[0]).toMatch(
-      /^https:\/\/github\.com\/hoguengine-stack\/Wonremote\/releases\/latest\/download\/wonremote-update-manifest\.json\?nocache=/,
+      /^https:\/\/wonremote-a7fd3\.web\.app\/updates\/viewer-latest\.json\?nocache=/,
     );
     expect(requestedUrls[0]).not.toContain("127.0.0.1");
     expect(metadata).toMatchObject({
@@ -131,7 +131,7 @@ describe("viewer update metadata", () => {
 
   it("keeps the stable signed manifest URL independent of release versions", () => {
     expect(DEFAULT_VIEWER_UPDATE_MANIFEST_URL).toBe(
-      "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/wonremote-update-manifest.json",
+      "https://wonremote-a7fd3.web.app/updates/viewer-latest.json",
     );
   });
 });

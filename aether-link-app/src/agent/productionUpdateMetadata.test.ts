@@ -10,6 +10,28 @@ import {
 } from "./productionUpdateMetadata";
 
 describe("production update metadata loader", () => {
+  it("keeps Agent120 on the legacy endpoint while Viewer122 uses its own signed discovery", async () => {
+    const {privateKey,publicKey}=generateKeyPairSync("ed25519");
+    const signed=(product:string,version:string)=>{
+      const asset={name:`WonRemote-${product}-Setup.exe`,url:`https://github.com/hoguengine-stack/Wonremote/releases/download/v${version}/WonRemote-${product}-Setup.exe`,sha256:"a".repeat(64)};
+      const data={assetName:asset.name,downloadUrl:asset.url,checksum:asset.sha256,latestVersion:version};
+      return {...asset,signature:sign(null,Buffer.from(buildProductionUpdateSignaturePayload(data)),privateKey).toString("base64"),
+        signatureV2:sign(null,Buffer.from(buildProductionUpdateSignaturePayloadV2({...data,arch:"x86",forceUpdate:false,updateKind:"installer"})),privateKey).toString("base64")};
+    };
+    const agent={version:"0.1.120",agentWindows:{x86:signed("Agent","0.1.120")}};
+    const viewer={version:"0.1.122",viewerWindows:{x86:signed("Viewer","0.1.122")}};
+    const requests:string[]=[];
+    const fetcher=async(url:any)=>{requests.push(String(url));return new Response(JSON.stringify(String(url).startsWith("https://wonremote-a7fd3.web.app/updates/viewer-latest.json")?viewer:agent));};
+    const env={WONREMOTE_BUILD_ARCH:"x86",WONREMOTE_UPDATE_MANIFEST_PUBLIC_KEY:publicKey.export({type:"spki",format:"pem"}).toString()};
+    expect((await loadProductionInstallerUpdateMetadata(env,fetcher))?.latestVersion).toBe("0.1.120");
+    expect((await loadProductionInstallerUpdateMetadata({...env,WONREMOTE_UPDATE_PRODUCT:"viewer"},fetcher))?.latestVersion).toBe("0.1.122");
+    expect(requests).toHaveLength(2);
+    expect(requests[0]).toContain("releases/latest/download/wonremote-update-manifest.json");
+    expect(requests[1]).toContain("web.app/updates/viewer-latest.json");
+    await expect(loadProductionInstallerUpdateMetadata({...env,WONREMOTE_UPDATE_PRODUCT:"viewer"},async()=>new Response(JSON.stringify({...viewer,version:"0.1.123"})))).rejects.toThrow("signature");
+    const combined={version:"0.1.127",viewerWindows:{x86:signed("Viewer","0.1.127")},agentWindows:{x86:signed("Agent","0.1.127")}};
+    for(const product of ["viewer","agent"])expect((await loadProductionInstallerUpdateMetadata({...env,WONREMOTE_UPDATE_PRODUCT:product},async()=>new Response(JSON.stringify(combined))))?.latestVersion).toBe("0.1.127");
+  });
   it("bounds a stalled update response instead of indefinitely holding native checks", async () => {
     const controller = new AbortController();
     const deadline = vi.spyOn(AbortSignal, "timeout").mockReturnValue(controller.signal);

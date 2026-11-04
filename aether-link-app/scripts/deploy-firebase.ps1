@@ -4,7 +4,9 @@ param(
   [switch]$SparkOnly,
   [switch]$IncludeFunctions,
   [switch]$IncludeStorage,
-  [switch]$SkipStorage
+  [switch]$SkipStorage,
+  [switch]$HostingOnly,
+  [switch]$ViewerOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -19,7 +21,17 @@ $AppDir = Resolve-Path (Join-Path $ScriptDir "..")
 $RepoRoot = Resolve-Path (Join-Path $AppDir "..")
 $FunctionsDir = Join-Path $RepoRoot "functions"
 
-& node (Join-Path $RepoRoot "mobile/android/create-update-manifest.mjs") --verify
+$ManifestPath = Join-Path $AppDir 'public/updates/viewer-latest.json'
+if (-not (Test-Path -LiteralPath $ManifestPath)) { throw 'Stage the fresh CI-signed Viewer discovery before Hosting deployment.' }
+$Version = (Get-Content -LiteralPath (Join-Path $AppDir 'package.json') -Raw | ConvertFrom-Json).version
+$VerifierArgs = @('--manifest',$ManifestPath,'--version',$Version,'--viewer-x64',(Join-Path $AppDir 'release-exe/WonRemote-Viewer-Setup.exe'))
+if ($ViewerOnly) { $VerifierArgs += @('--viewer-only','true') }
+else { $VerifierArgs += @('--agent-x64',(Join-Path $AppDir 'release-exe/WonRemote-Agent-Setup.exe')) }
+& node (Join-Path $ScriptDir 'verify-release-manifest.js') @VerifierArgs
+if ($LASTEXITCODE -ne 0) { throw 'Staged Viewer discovery failed original-key signature/version/payload verification.' }
+
+$AndroidScope = @(if ($ViewerOnly) { '--viewer-only' })
+& node (Join-Path $RepoRoot "mobile/android/create-update-manifest.mjs") --verify @AndroidScope
 if ($LASTEXITCODE -ne 0) {
   throw "Android update metadata is missing or stale. Rebuild the three Android apps before deploying their downloads."
 }
@@ -61,14 +73,17 @@ if (-not $SkipAppBuild) {
   }
 }
 
-& node (Join-Path $RepoRoot "mobile/android/create-update-manifest.mjs") --verify-hosted
+& node (Join-Path $RepoRoot "mobile/android/create-update-manifest.mjs") --verify-hosted @AndroidScope
 if ($LASTEXITCODE -ne 0) { throw "Android Hosting output does not match verified release artifacts." }
 
 & node (Join-Path $RepoRoot "mobile/android/create-update-manifest.mjs") --verify-live-history
 if ($LASTEXITCODE -ne 0) { throw "Published Android archive preservation failed; do not deploy Hosting." }
 
-$DeployFunctions = $IncludeFunctions -and -not $SparkOnly
-$DeployStorage = $IncludeStorage -and -not $SkipStorage
+if ((Get-FileHash -LiteralPath $ManifestPath).Hash -cne (Get-FileHash -LiteralPath (Join-Path $AppDir 'dist/updates/viewer-latest.json')).Hash) {
+  throw 'Hosting contains stale Viewer discovery; rebuild frontend with signed metadata staged.'
+}
+$DeployFunctions = $IncludeFunctions -and -not $SparkOnly -and -not ($HostingOnly -or $ViewerOnly)
+$DeployStorage = $IncludeStorage -and -not $SkipStorage -and -not ($HostingOnly -or $ViewerOnly)
 
 if ($DeployFunctions) {
   Push-Location $FunctionsDir
@@ -81,7 +96,7 @@ if ($DeployFunctions) {
   }
 }
 
-$DeployTargets = if ($SparkOnly) {
+$DeployTargets = if ($HostingOnly -or $ViewerOnly) { 'hosting' } elseif ($SparkOnly) {
   if ($DeployStorage) { "firestore:rules,storage,hosting" } else { "firestore:rules,hosting" }
 } else {
   if ($DeployFunctions -and $DeployStorage) { "functions,firestore:rules,storage,hosting" }
@@ -105,6 +120,21 @@ try {
   $FirebaseArgs = $FirebasePrefixArgs + $DeployArgs
   & $FirebaseExecutable @FirebaseArgs
   if ($LASTEXITCODE -ne 0) { throw "Firebase deployment failed with exit code $LASTEXITCODE." }
+  $Config = Get-Content -LiteralPath (Join-Path $RepoRoot 'firebase.json') -Raw | ConvertFrom-Json
+  foreach ($Alias in @('viewer','viewer-x86','agent','agent-x86')) {
+    $Expected = @($Config.hosting.redirects | Where-Object { $_.source -eq "/download/$Alias" })[0].destination
+    if (-not $Expected) { throw "Missing explicit download alias $Alias" }
+    $Headers = & curl.exe --silent --show-error --head --max-redirs 0 "https://wonremote-a7fd3.web.app/download/$Alias"
+    if ($LASTEXITCODE -ne 0) { throw "Alias check failed: $Alias" }
+    $Status = @($Headers | Where-Object { $_ -match '^HTTP/' })[-1]
+    $Location = (@($Headers | Where-Object { $_ -match '^location:' })[0] -replace '^location:\s*','').Trim()
+    if ($Status -notmatch '\s302\s' -or $Location -ne $Expected) { throw "Published alias mismatch: $Alias" }
+  }
+  $ManifestPath = Join-Path $AppDir 'public/updates/viewer-latest.json'
+  if (-not (Test-Path -LiteralPath $ManifestPath)) { throw 'Viewer discovery was not staged.' }
+  $Live = Invoke-WebRequest -Uri 'https://wonremote-a7fd3.web.app/updates/viewer-latest.json' -UseBasicParsing
+  $Local = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
+  if (($Live.Content | ConvertFrom-Json | ConvertTo-Json -Depth 20 -Compress) -cne ($Local | ConvertTo-Json -Depth 20 -Compress)) { throw 'Published Viewer discovery differs from signed release.' }
 }
 finally {
   Pop-Location

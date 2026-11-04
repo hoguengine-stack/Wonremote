@@ -13,10 +13,13 @@ beforeAll(async()=>{
     navigator.mediaDevices.getUserMedia=async c=>{
       w.constraints.push(c);w.mediaCalls++;if(w.deny)throw new DOMException('denied','NotAllowedError');
       const facing=c.video?.facingMode?.exact||c.video?.facingMode?.ideal||'environment';
+      if(w.exclusiveCamera&&w.tracks.some(t=>t.readyState==='live'&&t.getSettings().facingMode!==facing))throw new DOMException('Camera already in use','NotReadableError');
+      if(w.rejectAllMedia)throw new DOMException('Camera unavailable','NotReadableError');
+      if(w.rejectFront&&facing==='user')throw new DOMException('Front unavailable','NotReadableError');
       if(w.fakeCameraSwitch&&typeof c.video==='object')c={...c,video:{...c.video,facingMode:undefined}};
       const s=await gum(c),t=s.getVideoTracks()[0];
       if(w.fakeTorch&&t){let on=false;const settings=t.getSettings.bind(t),stop=t.stop.bind(t);
-        t.getCapabilities=()=>w.lateTorch&&!w.revealTorch?{}:({torch:facing==='user'?[false]:[true,false]});t.getSettings=()=>({...settings(),facingMode:facing,torch:on});
+        t.getCapabilities=()=>w.unsupportedTorch?{torch:false}:w.unknownTorch||w.lateTorch&&!w.revealTorch?{}:({torch:facing==='user'?[false]:[true,false]});t.getSettings=()=>({...settings(),facingMode:facing,...(w.noTorchSettings?{}:{torch:on})});
         t.applyConstraints=async value=>{if(w.torchFailure)throw new Error('fixture torch failure');if(w.delayTorch)await new Promise(r=>w.finishTorch=r);if(value.torch?.exact!==value.advanced?.[0]?.torch)throw Error('Torch not required');on=Boolean(value.torch.exact);w.torchChanges.push(on);};
         t.stop=()=>{on=false;stop();};
       }
@@ -78,14 +81,110 @@ async function noOverflow(page:Page){
 }
 
 describe("video consultation actual browser media",()=>{
-  it("refreshes delayed torch capabilities on playback, applies required on/off and keeps the camera through a failed switch",async()=>{
+  it("switches exclusive Android cameras without rejoining the room",async()=>{
+    const f=fixture(false),owner=await f.open();
+    const params=new URLSearchParams(new URL(await owner.getByRole('textbox',{name:'영상상담 초대 링크'}).inputValue()).hash.slice(1));
+    const guest=await f.open({roomId:params.get('room')!,token:params.get('token')!},{mobile:true,torch:true});
+    await guest.evaluate(()=>Object.assign(window,{fakeCameraSwitch:true,exclusiveCamera:true}));
+    await guest.getByRole('button',{name:'카메라 허용하고 시작',exact:true}).click();
+    await until(()=>owner.locator('video').evaluate(node=>(node as HTMLVideoElement).videoWidth>0));
+    await guest.getByRole('button',{name:'후레쉬 켜기',exact:true}).click();
+    await guest.getByRole('button',{name:'후레쉬 끄기',exact:true}).waitFor();
+    await guest.getByRole('button',{name:'후레쉬 끄기',exact:true}).click();
+    expect(await guest.evaluate(()=>(window as any).torchChanges)).toEqual([true,false]);
+    for(const facing of ['user','environment']){
+      await guest.getByRole('button',{name:'카메라 전환',exact:true}).click();
+      await until(()=>guest.locator('video').evaluate((node,expected)=>((node as HTMLVideoElement).srcObject as MediaStream)?.getVideoTracks()[0]?.getSettings().facingMode===expected,facing));
+      const frames=await owner.locator('video').evaluate(node=>(node as HTMLVideoElement).getVideoPlaybackQuality().totalVideoFrames);
+      await until(()=>owner.locator('video').evaluate((node,before)=>(node as HTMLVideoElement).getVideoPlaybackQuality().totalVideoFrames>before+2,frames));
+      expect(await guest.evaluate(()=>(window as any).tracks.filter((track:MediaStreamTrack)=>track.readyState==='live').length)).toBe(1);
+    }
+    expect(f.actions.filter(action=>action==='guest:join')).toHaveLength(1);
+    await guest.getByRole('button',{name:'상담 종료',exact:true}).click();
+    expect(await guest.evaluate(()=>(window as any).tracks.every((track:MediaStreamTrack)=>track.readyState==='ended'))).toBe(true);
+    await guest.close();await owner.close();
+  },30_000);
+  it("does not equate missing torch capabilities with unsupported and requires readback before reporting success",async()=>{
+    const f=fixture(false),owner=await f.open();
+    const params=new URLSearchParams(new URL(await owner.getByRole('textbox',{name:'영상상담 초대 링크'}).inputValue()).hash.slice(1));
+    const guest=await f.open({roomId:params.get('room')!,token:params.get('token')!},{mobile:true,torch:true});
+    await guest.evaluate(()=>Object.assign(window,{unknownTorch:true}));
+    await guest.getByRole('button',{name:'카메라 허용하고 시작',exact:true}).click();
+    await until(()=>owner.locator('video').evaluate(node=>(node as HTMLVideoElement).videoWidth>0));
+    await guest.getByRole('button',{name:'후레쉬 켜기',exact:true}).click();
+    await guest.getByRole('button',{name:'후레쉬 끄기',exact:true}).waitFor();
+    await guest.getByRole('button',{name:'후레쉬 끄기',exact:true}).click();
+    expect(await guest.evaluate(()=>(window as any).torchChanges)).toEqual([true,false]);
+    await guest.evaluate(()=>(window as any).noTorchSettings=true);
+    await guest.getByRole('button',{name:'후레쉬 켜기',exact:true}).click();
+    await guest.getByRole('alert').waitFor();
+    expect(await guest.getByRole('button',{name:'후레쉬 켜기',exact:true}).getAttribute('aria-pressed')).toBe('false');
+    expect(await guest.evaluate(()=>(window as any).torchChanges)).toEqual([true,false,true,false]);
+    await guest.evaluate(()=>(window as any).unsupportedTorch=true);
+    await guest.getByRole('button',{name:'후레쉬 켜기',exact:true}).click();
+    expect(await guest.getByRole('button',{name:'후레쉬 켜기',exact:true}).isDisabled()).toBe(true);
+    expect(await guest.evaluate(()=>(window as any).torchChanges)).toEqual([true,false,true,false]);
+    await guest.getByRole('button',{name:'상담 종료',exact:true}).click();
+    expect(await guest.evaluate(()=>(window as any).tracks.every((track:MediaStreamTrack)=>track.readyState==='ended'))).toBe(true);
+    await guest.close();await owner.close();
+  },20_000);
+  it("restores the original exclusive camera after a failed replacement",async()=>{
+    const f=fixture(false),owner=await f.open();
+    const params=new URLSearchParams(new URL(await owner.getByRole('textbox',{name:'영상상담 초대 링크'}).inputValue()).hash.slice(1));
+    const guest=await f.open({roomId:params.get('room')!,token:params.get('token')!},{mobile:true,torch:true});
+    await guest.evaluate(()=>Object.assign(window,{fakeCameraSwitch:true,exclusiveCamera:true,rejectFront:true}));
+    await guest.getByRole('button',{name:'카메라 허용하고 시작',exact:true}).click();
+    await until(()=>owner.locator('video').evaluate(node=>(node as HTMLVideoElement).videoWidth>0));
+    await guest.getByRole('button',{name:'카메라 전환',exact:true}).click();
+    await guest.getByRole('alert').waitFor();
+    await until(()=>guest.evaluate(()=>(window as any).tracks.length===2));
+    expect(await guest.locator('video').evaluate(node=>((node as HTMLVideoElement).srcObject as MediaStream).getVideoTracks()[0].getSettings().facingMode)).toBe('environment');
+    expect(await guest.evaluate(()=>(window as any).tracks[0].readyState)).toBe('ended');
+    const frames=await owner.locator('video').evaluate(node=>(node as HTMLVideoElement).getVideoPlaybackQuality().totalVideoFrames);
+    await until(()=>owner.locator('video').evaluate((node,before)=>(node as HTMLVideoElement).getVideoPlaybackQuality().totalVideoFrames>before+2,frames));
+    await guest.getByRole('button',{name:'상담 종료',exact:true}).click();await guest.close();await owner.close();
+  },20_000);
+  it("ends safely if neither the replacement nor original camera can reopen",async()=>{
+    const f=fixture(false),owner=await f.open();
+    const params=new URLSearchParams(new URL(await owner.getByRole('textbox',{name:'영상상담 초대 링크'}).inputValue()).hash.slice(1));
+    const guest=await f.open({roomId:params.get('room')!,token:params.get('token')!},{mobile:true,torch:true});
+    await guest.getByRole('button',{name:'카메라 허용하고 시작',exact:true}).click();
+    await until(()=>owner.locator('video').evaluate(node=>(node as HTMLVideoElement).videoWidth>0));
+    await guest.evaluate(()=>Object.assign(window,{fakeCameraSwitch:true,exclusiveCamera:true,rejectAllMedia:true}));
+    await guest.getByRole('button',{name:'카메라 전환',exact:true}).click();
+    await guest.getByRole('alert').filter({hasText:'기존 카메라 복구에 실패'}).waitFor();
+    expect(await guest.getByRole('button',{name:'카메라 전환',exact:true}).isDisabled()).toBe(true);
+    expect(await guest.locator('video').evaluate(node=>(node as HTMLVideoElement).srcObject)).toBeNull();
+    expect(await guest.evaluate(()=>(window as any).tracks.every((track:MediaStreamTrack)=>track.readyState==='ended'))).toBe(true);
+    await until(async()=>f.actions.filter(action=>action==='guest:end').length===1);
+    expect(f.actions.filter(action=>action==='guest:join')).toHaveLength(1);
+    await guest.close();await owner.close();
+  },20_000);
+  it("does not revive a late exclusive-camera replacement after the customer ends the consultation",async()=>{
+    const f=fixture(false),owner=await f.open();
+    const params=new URLSearchParams(new URL(await owner.getByRole('textbox',{name:'영상상담 초대 링크'}).inputValue()).hash.slice(1));
+    const guest=await f.open({roomId:params.get('room')!,token:params.get('token')!},{mobile:true,torch:true});
+    await guest.getByRole('button',{name:'카메라 허용하고 시작',exact:true}).click();
+    await until(()=>owner.locator('video').evaluate(node=>(node as HTMLVideoElement).videoWidth>0));
+    await guest.evaluate(()=>Object.assign(window,{fakeCameraSwitch:true,exclusiveCamera:true,delayMedia:true}));
+    await guest.getByRole('button',{name:'카메라 전환',exact:true}).click();
+    await until(()=>guest.evaluate(()=>Boolean((window as any).finishMedia)));
+    await guest.getByRole('button',{name:'상담 종료',exact:true}).click();
+    await guest.evaluate(()=>(window as any).finishMedia());
+    await until(()=>guest.evaluate(()=>(window as any).tracks.every((track:MediaStreamTrack)=>track.readyState==='ended')));
+    expect(await guest.locator('video').evaluate(node=>(node as HTMLVideoElement).srcObject)).toBeNull();
+    expect(f.actions.filter(action=>action==='guest:join')).toHaveLength(1);
+    expect(f.actions.filter(action=>action==='guest:end')).toHaveLength(1);
+    await guest.close();await owner.close();
+  },20_000);
+  it("allows unknown torch capability to be checked, refreshes on playback and preserves a camera after permission denial",async()=>{
     const f=fixture(false),owner=await f.open();
     const params=new URLSearchParams(new URL(await owner.getByRole("textbox",{name:"영상상담 초대 링크"}).inputValue()).hash.slice(1));
     const guest=await f.open({roomId:params.get("room")!,token:params.get("token")!},{mobile:true,torch:true,lateTorch:true});
     await guest.getByRole("button",{name:"카메라 허용하고 시작",exact:true}).click();
     await until(()=>owner.locator("video").evaluate(node=>(node as HTMLVideoElement).videoWidth>0));
-    expect(await guest.getByRole("button",{name:"후레쉬 켜기",exact:true}).isDisabled()).toBe(true);
-    await guest.getByText("현재 카메라·브라우저는 후레쉬 제어를 지원하지 않습니다.",{exact:true}).waitFor();
+    expect(await guest.getByRole("button",{name:"후레쉬 켜기",exact:true}).isEnabled()).toBe(true);
+    expect(await guest.getByText("현재 카메라·브라우저는 후레쉬 제어를 지원하지 않습니다.",{exact:true}).count()).toBe(0);
     await guest.locator("video").evaluate(node=>{(window as any).revealTorch=true;node.dispatchEvent(new Event("playing"));});
     await guest.getByRole("button",{name:"후레쉬 켜기",exact:true}).click();await guest.getByRole("button",{name:"후레쉬 끄기",exact:true}).click();
     expect(await guest.evaluate(()=>(window as any).torchChanges)).toEqual([true,false]);

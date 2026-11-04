@@ -731,11 +731,21 @@ export async function requestFirebaseDeviceAccess(
   const {db, auth} = getViewerFirebaseServices(env);
   const ownerUid = requireCurrentUserId(auth.currentUser?.uid);
   const device = await getDocFromServer(doc(db, "devices", deviceId));
-  const data = device.data();
+  return requestDeviceAccessWithFreshData(deviceId, operation, credentials, sessionId, signal, env, {ownerUid, data:device.data()});
+}
+
+async function requestDeviceAccessWithFreshData(
+  deviceId: string, operation: DeviceAccessOperation, credentials: DeviceAccessCredentials,
+  sessionId: string, signal: AbortSignal | undefined, env: ViewerFirebaseEnv,
+  {data, ownerUid}: {data: Record<string, unknown> | undefined; ownerUid: string},
+): Promise<{requestId: string; version: string}> {
+  const {db, auth} = getViewerFirebaseServices(env);
+  if (requireCurrentUserId(auth.currentUser?.uid) !== ownerUid) throw new Error("로그인 계정이 변경되었습니다. 다시 시도하세요.");
   if (data?.accessLockUnavailable === true) throw new Error("원격 에이전트의 잠금 저장소를 사용할 수 없습니다. 에이전트 재시작 또는 설정 복구가 필요합니다.");
   if (typeof data?.accessPublicKey !== "string") throw new Error("이 장비의 에이전트를 최신 버전으로 업데이트해야 접속 잠금을 사용할 수 있습니다.");
   const id = crypto.randomUUID();
-  const encrypted = await encryptDeviceAccessRequest({id, deviceId, ownerUid, operation, sessionId, lockVersion:data.accessLockVersion ?? ""}, data.accessPublicKey, credentials);
+  const encrypted = await encryptDeviceAccessRequest({id, deviceId, ownerUid, operation, sessionId, lockVersion:typeof data.accessLockVersion === "string" ? data.accessLockVersion : ""}, data.accessPublicKey, credentials);
+  if (requireCurrentUserId(auth.currentUser?.uid) !== ownerUid) throw new Error("로그인 계정이 변경되었습니다. 다시 시도하세요.");
   if (signal?.aborted) throw new Error("접속 잠금 요청이 취소되었습니다.");
   const requestRef = doc(db, "deviceAccessRequests", id);
   const batch = writeBatch(db);
@@ -1756,15 +1766,16 @@ async function openFirebaseSessionDirect(
     return prepared;
   }).catch(() => null);
   try {
-    const device = await requireFirebaseOnlineCompatibleDeviceDirect(deviceId, env);
+    const {device, data} = await requireFirebaseOnlineCompatibleDeviceDirect(deviceId, env);
     markConnectionTiming(deviceId, "device-validated");
     const session = buildConnectedSession(deviceId);
     let access: {accessRequestId: string; accessLockVersion: string} | undefined;
     if (device.accessLocked) {
       if (password === undefined) throw new Error("잠금 비밀번호를 입력해야 이 장비에 접속할 수 있습니다.");
-      const authorization = await requestFirebaseDeviceAccess(deviceId, "connect", {password}, session.id, undefined, env);
+      const authorization = await requestDeviceAccessWithFreshData(deviceId, "connect", {password}, session.id, undefined, env, {ownerUid:userId, data});
       access = {accessRequestId:authorization.requestId, accessLockVersion:authorization.version};
     }
+    if (requireCurrentUserId(services.auth.currentUser?.uid) !== userId) throw new Error("로그인 계정이 변경되었습니다. 다시 시도하세요.");
     const batch = writeBatch(services.db);
     safeBatchSet(batch, doc(services.db, "sessions", session.id), {
       ...access,
@@ -1802,13 +1813,14 @@ async function openFirebaseSessionDirect(
 async function requireFirebaseOnlineCompatibleDeviceDirect(
   deviceId: string,
   env: ViewerFirebaseEnv,
-): Promise<ManagedDevice> {
+): Promise<{device: ManagedDevice; data: Record<string, unknown>}> {
   const services = getViewerFirebaseServices(env);
   const deviceSnapshot = await getDocFromServer(doc(services.db, "devices", deviceId));
   if (!deviceSnapshot.exists()) {
     throw new Error("Firebase device not found.");
   }
-  const device = mapFirestoreDevice(deviceSnapshot.id, deviceSnapshot.data());
+  const data = deviceSnapshot.data();
+  const device = mapFirestoreDevice(deviceSnapshot.id, data);
   if (device.status !== "online") {
     throw new Error("Only online agents can accept connections.");
   }
@@ -1816,7 +1828,7 @@ async function requireFirebaseOnlineCompatibleDeviceDirect(
   if (!protocolDecision.compatible) {
     throw new Error(remoteProtocolErrorMessage(protocolDecision));
   }
-  return device;
+  return {device, data};
 }
 
 async function wakeFirebaseDeviceDirect(

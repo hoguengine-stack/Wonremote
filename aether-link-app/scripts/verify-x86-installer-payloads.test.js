@@ -57,6 +57,16 @@ afterEach(() => {
 });
 
 describe("x86 installer payload verifier", () => {
+  it("verifies only Viewer bytes for explicit Viewer-only scope and still rejects a wrong payload",async()=>{
+    const fixture=createFixture();
+    fs.rmSync(path.join(fixture.releaseDir,"WonRemote-Agent-Setup.exe"));
+    fs.rmSync(path.join(fixture.releaseDir,"WonRemote-Agent-Update.exe"));
+    const results=await verifyX86InstallerPayloads({...fixture,viewerOnly:true});
+    expect(results.map(result=>result.product)).toEqual(["viewer"]);
+    await expect(verifyX86InstallerPayloads(fixture)).rejects.toThrow("agent installer");
+    fs.appendFileSync(path.join(fixture.releaseDir,"WonRemote-Viewer-Setup.exe"),"tampered");
+    await expect(verifyX86InstallerPayloads({...fixture,viewerOnly:true})).rejects.toThrow("does not match");
+  });
   it("reads the PE machine used to require x86 release outputs", () => {
     expect(peMachineForBuffer(createPeFixture(0x014c))).toBe(0x014c);
     expect(peMachineForBuffer(createPeFixture(0x8664))).toBe(0x8664);
