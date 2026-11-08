@@ -2,6 +2,10 @@
 
 ## INC-20261107-189: Installed Agent could fall back to the Viewer role
 
+- Detected: 2026-11-07, user report and static inspection of the public Agent120 installer.
+- Severity: P1 product-role and update-availability risk; exact reported installed trigger remains unconfirmed.
+- Affected: Windows installed Agent/Viewer UI, native role selection and bundled updater entry. Existing identity, signed update protocol and transport are preserved.
+- Status: Source and focused checks verified; authorized123 CI/public payload verification in progress. No new installed-device qualification claimed.
 - User-visible symptom: User reports the official Agent download opens a Viewer login after installation. The downloaded v0.1.120 EXE matches the Agent release digest; exact trigger on that PC was not reproduced.
 - Minimal trigger: Direct Agent executable launch under the protected WonRemote Agent folder without Agent arguments or another legacy role hint; the old classifier does not recognize that folder as Agent. The released normal Finish callback does include Agent arguments.
 - Root cause and contributors: Separate installers contained both UI roles and a shared mode selector. Installed role was not fixed to package identity, and Viewer update CLI shared the full Agent process entry.
@@ -10,6 +14,7 @@
 - Regression proof: In-memory product bundles exclude the opposite screen; real bundled Viewer CLI rejects Agent commands before network, accepts signed Viewer metadata and rejects tampering. Existing signed/packaging tests, TypeScript noEmit, x86 check and native role unit test passed.
 - Release proof: None; source and focused tests only. No application installer build, installation, process restart or deployment.
 - Subsequent authorized release preparation: User explicitly requested build/public delivery of the separated products and Agent link normalization. Fresh123 affected10suites132tests, TypeScript and predeploy gate pass. Android3apps123/code1123 build/JNI pass and all APK signing certificates match the prior release. Normal exact-main Windows CI and public-download verification are next; no device installation is authorized. Complete gate remains incomplete until publication and preserves the older private59 pending outcome.
+- Preparation failure prevented publication: First123 CI change-guard rejected this new incident record because Detected/Severity/Affected/Status were missing. Added the actual fields without changing guards, software evidence or incomplete physical outcomes; subsequent release must rerun the unchanged gate against the committed fix.
 - Remaining blocker: Verify actual new installers, existing Agent identity and post-upgrade/rollback availability on representative hardware before a public rollout.
 
 ## INC-20261104-188: Independent Viewer publication must preserve legacy Agent updates
