@@ -163,7 +163,7 @@ jobs:
           }
 
       - name: Verify release contract tests
-        run: npx vitest run --maxWorkers=1 --exclude scripts/verify-*.test.mjs src/desktopPackaging.test.ts src/agent/productionUpdateCheck.test.ts src/agent/productionInstallerUpdate.test.ts src/agent/agentUpdateOnce.test.ts src/agent/agentUpdateHandoffBroker.test.ts src/agent/agentUpdateHealth.test.ts src/agent/updateResult.test.ts src/agent/productionUpdateMetadata.test.ts src/domain/updateManifest.test.ts src/domain/updateManifestScript.test.ts
+        run: npx vitest run --maxWorkers=1 --exclude scripts/verify-*.test.mjs src/installedProductSeparation.test.ts src/desktopPackaging.test.ts src/agent/productionUpdateCheck.test.ts src/agent/productionInstallerUpdate.test.ts src/agent/agentUpdateOnce.test.ts src/agent/agentUpdateHandoffBroker.test.ts src/agent/agentUpdateHealth.test.ts src/agent/updateResult.test.ts src/agent/productionUpdateMetadata.test.ts src/domain/updateManifest.test.ts src/domain/updateManifestScript.test.ts
 
       - name: Verify installer update E2E
         run: npm run test:update-e2e
@@ -284,7 +284,10 @@ jobs:
           npx tsx scripts/create-selected-viewer-policy.ts --manifest release-exe/wonremote-update-manifest.json --targets $env:VIEWER_TARGETS --expires $expires --output release-exe/viewer-selected.json
 
       - name: Verify Tauri resource paths
-        run: cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc --release --lib test_node_resource_paths
+        run: |
+          cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc --release --lib test_node_resource_paths
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc --release --lib installed_product_mode_overrides_legacy_switches
 
       - name: Verify acknowledged updater exit contract
         run: cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc --release --lib test_agent_update_handoff_requires_dedicated_exit_code

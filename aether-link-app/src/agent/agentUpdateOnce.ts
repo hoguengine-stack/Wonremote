@@ -227,9 +227,13 @@ async function prepareVerifiedPortableUpdate(
 export async function handleUpdateOnceCli(
   argv: string[] = process.argv.slice(2),
   env: Partial<Record<"APPDATA", string>> = process.env,
+  requiredRestartMode?: InstallerRestartMode,
 ): Promise<number> {
   try {
     const options = parseUpdateOnceOptions(argv, env);
+    if (requiredRestartMode && options.restartMode !== requiredRestartMode) {
+      throw new UpdateOnceError("Update restart mode does not match the installed product.", UPDATE_ONCE_EXIT.invalidArguments);
+    }
     const result = await runUpdateOnce(options);
     console.log(
       result.status === "handoff-started"

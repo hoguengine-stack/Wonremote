@@ -9,10 +9,18 @@ const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
   version: string;
 };
 
-export default defineConfig({
-  plugins: [react()],
-  build: { rolldownOptions: { input: { index: join(dirname(packageJsonPath), "index.html"), video: join(dirname(packageJsonPath), "video-support.html") } } },
-  define: {
-    "import.meta.env.VITE_WONREMOTE_APP_VERSION": JSON.stringify(packageJson.version),
-  },
+export default defineConfig(() => {
+  const product = process.env.WONREMOTE_DESKTOP_PRODUCT || "";
+  const index = join(dirname(packageJsonPath), "index.html");
+  return {
+    plugins: [react()],
+    build: {
+      copyPublicDir: !product,
+      rolldownOptions: { input: product ? { index } : { index, video: join(dirname(packageJsonPath), "video-support.html") } },
+    },
+    define: {
+      "import.meta.env.VITE_WONREMOTE_APP_VERSION": JSON.stringify(packageJson.version),
+      "import.meta.env.VITE_WONREMOTE_DESKTOP_PRODUCT": JSON.stringify(product),
+    },
+  };
 });

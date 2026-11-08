@@ -351,6 +351,12 @@ async function readClipboardPngBlob(): Promise<Blob | null> {
 }
 
 export function App() {
+  if (import.meta.env.VITE_WONREMOTE_DESKTOP_PRODUCT === "agent") return <AgentFirstRunApp />;
+  if (import.meta.env.VITE_WONREMOTE_DESKTOP_PRODUCT === "viewer") return <ViewerApp />;
+  return <SharedApp />;
+}
+
+function SharedApp() {
   const [appMode, setAppMode] = useState<"viewer" | "agent" | "ios-probe" | null>(null);
 
   useEffect(() => {

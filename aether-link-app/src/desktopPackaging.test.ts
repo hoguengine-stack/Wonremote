@@ -91,7 +91,7 @@ describe("desktop packaging scaffold", () => {
     expect(config.version).toBe(packageJson.version);
     expect(config.build).toMatchObject({
       beforeDevCommand: "npm run dev",
-      beforeBuildCommand: "npm run build",
+      beforeBuildCommand: "node scripts/build-app.js viewer",
       devUrl: "http://127.0.0.1:5173",
       frontendDist: "../dist-desktop",
     });
@@ -559,7 +559,7 @@ describe("desktop packaging scaffold", () => {
     expect(packageJson.devDependencies["@tauri-apps/cli"]).toBeDefined();
   });
 
-  it("compiles one x86 app and bundles both product installers before copying stable release files", () => {
+  it("builds both x86 product installers and verifies Agent resources before copying stable release files", () => {
     const packageReleaseScript = readFileSync(path.join(projectRoot, "scripts", "package-release-exes.js"), "utf8");
     const viewerStage = packageReleaseScript.indexOf("buildViewerInstaller(target)");
     const agentBuild = packageReleaseScript.indexOf("buildAgentDefaultInstaller(target)", viewerStage);
@@ -574,9 +574,9 @@ describe("desktop packaging scaffold", () => {
     expect(packageReleaseScript.match(/"npx tauri build"/g)).toHaveLength(1);
     expect(packageReleaseScript.match(/"npx tauri bundle"/g)).toHaveLength(1);
     expect(packageReleaseScript).not.toContain('WONREMOTE_BUILD_STAGE: "reuse"');
-    expect(packageReleaseScript.indexOf("verifyAgentRuntimeBundle(target)")).toBeLessThan(
-      packageReleaseScript.indexOf("buildAgentDefaultInstaller(target)", viewerStage),
-    );
+    const verifyAgent = packageReleaseScript.indexOf("verifyAgentRuntimeBundle(target)", agentBuild);
+    expect(verifyAgent).toBeGreaterThan(agentBuild);
+    expect(verifyAgent).toBeLessThan(packageReturn);
     expect(packageReleaseScript).toContain('--assemble-only');
   });
 

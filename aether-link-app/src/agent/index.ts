@@ -92,8 +92,7 @@ import {
   preparePortableHandoff,
   type SafePortableUpdateMetadata,
 } from "./portableUpdate";
-import { checkProductionUpdate } from "./productionUpdateCheck";
-import { loadSelectedViewerUpdate } from "./selectedViewerUpdate";
+import { handleUpdateCheckCli } from "./updateCheckCli";
 import { sendWakeOnLanMagicPacket } from "./wakeOnLan";
 import { parseAgentDisplayInventory } from "./agentDisplayInventory";
 import { PersistentInputInjector } from "./persistentInputInjector";
@@ -1066,19 +1065,8 @@ async function main() {
   }
 
   if (process.argv.includes("--check-update")) {
-    try {
-      const selected = process.env.WONREMOTE_SELECTED_VIEWER_UPDATE === "1";
-      const metadata = selected ? await loadSelectedViewerUpdate() : null;
-      const result = selected
-        ? metadata ? await checkProductionUpdate(undefined, async () => metadata) : { available: false, latestVersion: WONREMOTE_APP_VERSION }
-        : await checkProductionUpdate();
-      console.log(`[WonRemoteUpdateCheck]${JSON.stringify(result)}`);
-      return;
-    } catch (error) {
-      console.error(`[WonRemote Updater] ${error instanceof Error ? error.message : String(error)}`);
-      process.exitCode = 3;
-      return;
-    }
+    process.exitCode = await handleUpdateCheckCli();
+    return;
   }
 
   if (process.argv.includes("--update-once")) {

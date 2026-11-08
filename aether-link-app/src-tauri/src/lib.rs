@@ -23,7 +23,7 @@ use std::{
 use std::io::{BufRead, BufReader, Read, Write};
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
-    Arc, Mutex, Once,
+    Arc, Mutex, Once, OnceLock,
 };
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -1727,6 +1727,7 @@ fn save_agent_config(
     agent_state: tauri::State<'_, AgentState>,
     job: tauri::State<'_, Job>,
 ) -> Result<(), String> {
+    require_installed_product("agent")?;
     let config_path =
         default_agent_config_path().ok_or_else(|| "Failed to get config path".to_string())?;
     if let Some(parent) = config_path.parent() {
@@ -1774,6 +1775,7 @@ fn restart_agent_process(
     agent_state: tauri::State<'_, AgentState>,
     job: tauri::State<'_, Job>,
 ) -> Result<(), String> {
+    require_installed_product("agent")?;
     let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
 
     start_local_api_server_for_mode(&job, &resource_dir).map_err(|e| e.to_string())?;
@@ -1843,6 +1845,7 @@ fn get_agent_config() -> Option<GetConfigOutput> {
 
 #[tauri::command]
 fn get_or_create_agent_install_id(legacy_install_id: String) -> Result<String, String> {
+    require_installed_product("agent")?;
     let appdata = env::var_os("APPDATA").ok_or_else(|| "APPDATA is unavailable.".to_string())?;
     let identity_path = agent_install_id_file_from_appdata(&PathBuf::from(appdata));
     let config_path = default_agent_config_path();
@@ -1954,11 +1957,35 @@ fn executable_path_requests_agent(path: &Path) -> bool {
 }
 
 fn launched_as_agent() -> bool {
-    let args: Vec<String> = std::env::args().collect();
-    args.iter().any(|arg| arg == "--agent")
-        || env::var("WONREMOTE_RUN_AS_AGENT").is_ok()
-        || default_mode_requests_agent()
-        || executable_name_requests_agent()
+    agent_mode_for_launch(INSTALLED_AGENT_MODE.get().copied(), || {
+        env::args().any(|arg| arg == "--agent")
+            || env::var("WONREMOTE_RUN_AS_AGENT").is_ok()
+            || default_mode_requests_agent()
+            || executable_name_requests_agent()
+    })
+}
+
+fn agent_mode_for_launch(installed_mode: Option<bool>, legacy_mode: impl FnOnce() -> bool) -> bool {
+    installed_mode.unwrap_or_else(legacy_mode)
+}
+
+static INSTALLED_AGENT_MODE: OnceLock<bool> = OnceLock::new();
+
+#[test]
+fn installed_product_mode_overrides_legacy_switches() {
+    assert!(!agent_mode_for_launch(Some(false), || panic!("Viewer must not read Agent switches")));
+    assert!(agent_mode_for_launch(Some(true), || panic!("Agent must not fall back to Viewer")));
+    assert!(agent_mode_for_launch(None, || true));
+    assert!(!agent_mode_for_launch(None, || false));
+}
+
+fn require_installed_product(product: &str) -> Result<(), String> {
+    match INSTALLED_AGENT_MODE.get() {
+        Some(is_agent) if *is_agent != (product == "agent") => {
+            Err("Command does not match the installed product.".into())
+        }
+        _ => Ok(()),
+    }
 }
 
 fn agent_launch_should_show_window(is_agent: bool) -> bool {
@@ -2149,6 +2176,7 @@ fn start_installer_update_inner(
     selected_viewer: Option<bool>,
 ) -> Result<(), String> {
     let restart_mode = normalize_installer_restart_mode(&restart_mode)?;
+    require_installed_product(restart_mode)?;
     let selected = selected_viewer.unwrap_or(false);
     if selected && (restart_mode != "viewer" || rollback_version.is_some()) { return Err("Selected updates support Viewer upgrades only".into()); }
     if let Some(version) = rollback_version.as_deref() {
@@ -2341,6 +2369,7 @@ fn check_installer_update_for(
     log_scope: &str,
     selected: bool,
 ) -> Result<ViewerUpdateCheck, String> {
+    require_installed_product(product)?;
     let resources = node_resource_paths(&app
         .path()
         .resource_dir()
@@ -2756,8 +2785,15 @@ fn is_startup_registered(is_agent: bool) -> bool {
 }
 
 pub fn run() {
-    if let Some(code) = zook_agent::run_cli(&env::args().skip(1).collect::<Vec<_>>()) {
-        std::process::exit(code);
+    let context = tauri::generate_context!();
+    if matches!(tauri::utils::platform::bundle_type(), Some(tauri::utils::config::BundleType::Nsis)) {
+        let is_agent = context.config().identifier == "com.wonremote.agent";
+        let _ = INSTALLED_AGENT_MODE.set(is_agent);
+    }
+    if require_installed_product("agent").is_ok() {
+        if let Some(code) = zook_agent::run_cli(&env::args().skip(1).collect::<Vec<_>>()) {
+            std::process::exit(code);
+        }
     }
     install_panic_logger();
     let is_agent = launched_as_agent();
@@ -3109,7 +3145,7 @@ pub fn run() {
                 }
             }
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("failed to run WonRemote desktop shell");
     if !is_agent || cfg!(debug_assertions) {
         app.run(|_, _| {});

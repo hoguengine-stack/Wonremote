@@ -366,9 +366,10 @@ async function build() {
     },
   });
 
-  console.log("Building Agent to dist-agent/index.mjs...");
+  const viewerOnly = process.env.WONREMOTE_DESKTOP_PRODUCT === "viewer";
+  console.log(`Building ${viewerOnly ? "Viewer updater" : "Agent"} to dist-agent/index.mjs...`);
   const agentBuild = await esbuild.build({
-    entryPoints: ["src/agent/index.ts"],
+    entryPoints: [viewerOnly ? "src/agent/viewerUpdater.ts" : "src/agent/index.ts"],
     bundle: true,
     metafile: true,
     platform: "node",
@@ -387,9 +388,9 @@ async function build() {
       js: nodeEsmRequireBanner,
     },
   });
-  assertAgentWebRtcBundle(agentBuild.metafile);
-  if (buildArch === "ia32") {
-    runBundledX86AgentWebRtcSmoke();
+  if (!viewerOnly) {
+    assertAgentWebRtcBundle(agentBuild.metafile);
+    if (buildArch === "ia32") runBundledX86AgentWebRtcSmoke();
   }
 
   console.log("Backend bundling completed successfully!");

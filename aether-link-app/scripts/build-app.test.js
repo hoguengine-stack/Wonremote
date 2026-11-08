@@ -67,6 +67,15 @@ describe("build app stage runner", () => {
     expect(resolvePackageExecutable("npm", "darwin")).toBe("npm");
   });
 
+  it("isolates the Viewer installer output without building an Agent CLI package", () => {
+    const spawn = vi.fn(() => ({ status: 0, signal: null }));
+    runBuild({ desktopProduct: "viewer", env: {}, platform: "linux", spawn });
+    expect(spawn.mock.calls).toHaveLength(4);
+    expect(spawn).toHaveBeenCalledWith("npx", ["vite", "build", "--outDir", "dist-desktop"],
+      expect.objectContaining({ env: { WONREMOTE_DESKTOP_PRODUCT: "viewer" } }));
+    expect(() => createBuildCommands({ desktopProduct: "agent", stage: "reuse" })).toThrow("fresh");
+  });
+
   it("runs argv directly without a shell", () => {
     const spawn = vi.fn(() => ({ status: 0, signal: null }));
 

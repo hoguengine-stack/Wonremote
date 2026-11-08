@@ -1,6 +1,7 @@
 {
   "productName": "WonRemote Agent",
   "identifier": "com.wonremote.agent",
+  "build": { "beforeBuildCommand": "node scripts/build-app.js agent" },
   "app": {
     "windows": [
       {

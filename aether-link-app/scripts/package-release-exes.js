@@ -124,7 +124,7 @@ export function viewerRustInputFingerprint(projectRoot = appRoot, options = {}) 
   appendFingerprintInput(hash, tauriRoot, ".");
   appendFingerprintInput(hash, projectRoot, ".env");
   // Tauri embeds the frontend: changed UI must invalidate binary reuse too.
-  for (const input of ["src", "vite.config.ts", "package.json", "scripts/prepare-desktop-assets.js"]) {
+  for (const input of ["src", "vite.config.ts", "package.json", "scripts/build-app.js", "scripts/prepare-desktop-assets.js"]) {
     appendFingerprintInput(hash, projectRoot, input);
   }
   hash.update(options.rustcIdentity ?? currentRustToolchainIdentity());
@@ -226,7 +226,7 @@ function cleanTauriResourceOutput(target) {
 export function buildViewerInstaller(target, dependencies = {}) {
   const fingerprint = dependencies.fingerprint ?? viewerRustInputFingerprint();
   const canReuse = dependencies.canReuse ?? canReuseViewerBinary;
-  const buildResources = dependencies.buildResources ?? (() => runShell("npm run build", buildEnvFor(target, {
+  const buildResources = dependencies.buildResources ?? (() => runShell("node scripts/build-app.js viewer", buildEnvFor(target, {
     WONREMOTE_BUILD_STAGE: "full",
   })));
   const cleanResources = dependencies.cleanResources ?? (() => cleanTauriResourceOutput(target));
@@ -243,7 +243,7 @@ export function buildViewerInstaller(target, dependencies = {}) {
 
   console.log(`Building ${target.key} Viewer NSIS installer...`);
   if (canReuse(target, fingerprint)) {
-    console.log(`Reusing ${target.key} Viewer Rust binary; rebuilding web and Agent resources only.`);
+    console.log(`Reusing ${target.key} Viewer Rust binary; rebuilding Viewer resources only.`);
     buildResources();
     cleanResources();
     verifyIdentity();
@@ -310,8 +310,8 @@ function packageTarget(target) {
   const expectedAgentInstallerPath = path.join(installerDir, expectedAgentInstaller);
   ensureExists(expectedInstallerPath, `${target.key} WonRemote Viewer NSIS installer`);
 
-  verifyAgentRuntimeBundle(target);
   buildAgentDefaultInstaller(target);
+  verifyAgentRuntimeBundle(target);
   ensureExists(expectedAgentInstallerPath, `${target.key} Agent-default WonRemote Agent NSIS installer`);
   const agentUpdatePath = buildAgentFileUpdate(appRoot, targetRelease, packageJson.version);
   return {

@@ -39,21 +39,28 @@ export function resolvePackageExecutable(command, platform = process.platform) {
 
 export function createBuildCommands({
   stage,
+  desktopProduct,
   platform = process.platform,
   nodeExecutable = process.execPath,
 } = {}) {
   const resolvedStage = resolveBuildStage(stage);
+  if (desktopProduct && !["viewer", "agent"].includes(desktopProduct)) {
+    throw new Error("Desktop product must be viewer or agent.");
+  }
+  if (desktopProduct && resolvedStage !== "full") {
+    throw new Error("Product installers require fresh frontend and backend resources.");
+  }
   const frontendCommands = [
     { command: resolvePackageExecutable("npx", platform), args: ["tsc"] },
-    { command: resolvePackageExecutable("npx", platform), args: ["vite", "build"] },
+    { command: resolvePackageExecutable("npx", platform), args: ["vite", "build", ...(desktopProduct ? ["--outDir", "dist-desktop"] : [])] },
     { command: nodeExecutable, args: ["scripts/prepare-desktop-assets.js"] },
   ];
   const backendCommands = [
     { command: nodeExecutable, args: ["scripts/build-backend.js"] },
-    {
+    ...(desktopProduct === "viewer" ? [] : [{
       command: resolvePackageExecutable("npm", platform),
       args: ["run", "agent:package"],
-    },
+    }]),
   ];
 
   if (resolvedStage === "frontend-only") return frontendCommands;
@@ -121,6 +128,7 @@ export function runCommand(
 
 export function runBuild({
   env = process.env,
+  desktopProduct,
   rootDir = appRoot,
   platform = process.platform,
   nodeExecutable = process.execPath,
@@ -128,13 +136,14 @@ export function runBuild({
   exists = fs.existsSync,
 } = {}) {
   const stage = resolveBuildStage(env.WONREMOTE_BUILD_STAGE);
+  const commands = createBuildCommands({ stage, desktopProduct, platform, nodeExecutable });
   if (stage === "reuse") {
     validateReuseArtifacts({ rootDir, exists });
     return;
   }
 
-  for (const command of createBuildCommands({ stage, platform, nodeExecutable })) {
-    runCommand(command, { cwd: rootDir, env, platform, spawn });
+  for (const command of commands) {
+    runCommand(command, { cwd: rootDir, env: { ...env, WONREMOTE_DESKTOP_PRODUCT: desktopProduct ?? "" }, platform, spawn });
   }
 }
 
@@ -143,7 +152,7 @@ const isDirectExecution = process.argv[1]
 
 if (isDirectExecution) {
   try {
-    runBuild();
+    runBuild({ desktopProduct: process.argv[2] });
   } catch (error) {
     console.error(error instanceof Error ? error.message : error);
     process.exitCode = 1;
