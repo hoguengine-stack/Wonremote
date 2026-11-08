@@ -894,6 +894,9 @@ describe("desktop packaging scaffold", () => {
     expect(publishScript).not.toContain("$StableAgentInstallerPathX86");
 
     expect(redirects["/download/viewer-x86"]).toContain("WonRemote-Viewer-Setup.exe");
+    const releaseVersion = JSON.parse(readFileSync(path.join(projectRoot, "package.json"), "utf8")).version;
+    expect(redirects["/download/viewer"]).toBe(`https://github.com/hoguengine-stack/Wonremote/releases/download/v${releaseVersion}/WonRemote-Viewer-Setup.exe`);
+    expect(redirects["/download/viewer-x86"]).toBe(redirects["/download/viewer"]);
     expect(redirects["/download/agent-x86"]).toContain("WonRemote-Agent-Setup.exe");
     expect(redirects["/download/agent"]).toBe("https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Agent-Setup.exe");
     expect(redirects["/download/agent1"]).toBe("https://github.com/hoguengine-stack/Wonremote/releases/download/v0.1.108-zlib-kiosk-test/WonRemote-Agent-Setup.exe");
