@@ -27,7 +27,10 @@ jobs:
 
       - name: Build the disposable Windows candidate
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
           npm ci
+          npm --prefix ../functions ci --ignore-scripts
+          npm --prefix ../cloudflare/video-consultation ci
           node --test scripts/agent-install-proof-trust.test.mjs
           rustup target add i686-pc-windows-msvc
           npm run release:exes
