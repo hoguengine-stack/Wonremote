@@ -164,6 +164,11 @@ function downloadFile(url, destination) {
   });
 }
 
+export function extractBuildToolZip(archive, destination, expectedFile) {
+  run("tar.exe", ["-xf", archive, "-C", destination], appRoot);
+  ensureBuildArtifact(expectedFile, "Extracted build tool");
+}
+
 async function resolveIa32NodeRuntime() {
   const overridePath = process.env.WONREMOTE_NODE_RUNTIME_IA32 || process.env.WONREMOTE_NODE_RUNTIME_PATH;
   if (overridePath) {
@@ -179,13 +184,7 @@ async function resolveIa32NodeRuntime() {
     console.log(`Downloading 32-bit Node runtime from ${downloadUrl}...`);
     await downloadFile(downloadUrl, archivePath);
     fs.rmSync(extractedDir, { recursive: true, force: true });
-    run("powershell", [
-      "-NoProfile",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-Command",
-      `Expand-Archive -LiteralPath '${archivePath.replace(/'/g, "''")}' -DestinationPath '${cacheRoot.replace(/'/g, "''")}' -Force`,
-    ], appRoot);
+    extractBuildToolZip(archivePath, cacheRoot, nodePath);
   }
   return nodePath;
 }
@@ -207,13 +206,7 @@ async function resolvePortableCmakeBinDir() {
     console.log(`Downloading portable CMake from ${downloadUrl}...`);
     await downloadFile(downloadUrl, archivePath);
     fs.rmSync(extractedDir, { recursive: true, force: true });
-    run("powershell", [
-      "-NoProfile",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-Command",
-      `Expand-Archive -LiteralPath '${archivePath.replace(/'/g, "''")}' -DestinationPath '${cacheRoot.replace(/'/g, "''")}' -Force`,
-    ], appRoot);
+    extractBuildToolZip(archivePath, cacheRoot, cmakeExe);
   }
   return cmakeBinDir;
 }
@@ -234,13 +227,7 @@ async function resolvePortableNasmBinDir() {
     console.log(`Downloading portable NASM from ${downloadUrl}...`);
     await downloadFile(downloadUrl, archivePath);
     fs.rmSync(extractedDir, { recursive: true, force: true });
-    run("powershell", [
-      "-NoProfile",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-Command",
-      `Expand-Archive -LiteralPath '${archivePath.replace(/'/g, "''")}' -DestinationPath '${cacheRoot.replace(/'/g, "''")}' -Force`,
-    ], appRoot);
+    extractBuildToolZip(archivePath, cacheRoot, nasmExe);
   }
   return extractedDir;
 }

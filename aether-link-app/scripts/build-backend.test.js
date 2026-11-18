@@ -1,8 +1,28 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { runBundledX86AgentWebRtcSmoke } from "./build-backend.js";
+import { extractBuildToolZip, runBundledX86AgentWebRtcSmoke } from "./build-backend.js";
+
+it.skipIf(process.platform !== "win32")("extracts a fresh Windows build tool zip and rejects a missing expected binary", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "wonremote extract "));
+  try {
+    const archive = path.join(root, "build tool.zip");
+    const destination = path.join(root, "extracted tools");
+    const tool = path.join(destination, "tool.exe");
+    writeFileSync(path.join(root, "tool.exe"), "build tool fixture");
+    mkdirSync(destination);
+    execFileSync("tar.exe", ["-a", "-cf", archive, "-C", root, "tool.exe"], { windowsHide: true });
+
+    extractBuildToolZip(archive, destination, tool);
+    expect(readFileSync(tool, "utf8")).toBe("build tool fixture");
+    expect(() => extractBuildToolZip(archive, destination, path.join(destination, "missing.exe")))
+      .toThrow(/Extracted build tool is missing/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 describe("bundled x86 Agent WebRTC smoke", () => {
   it("launches the bundled x86 Node runtime against the packaged Agent smoke command", () => {
