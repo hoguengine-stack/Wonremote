@@ -35,6 +35,19 @@ describe("WonRemote local API server", () => {
     expect(await response.json()).toEqual({ ok: true });
   });
 
+  it("returns a startup health challenge only to the verified Agent in its normal poll", async () => {
+    const installId = "agent-health-test";
+    const registered = await postJson("/api/agent/first-run", { businessNumber: "2223344444", password: "1234", installId });
+    const { device } = await registered.json();
+    const healthChallengeId = "b44553ef-961e-4d12-b412-160f7570e084";
+    const request = { deviceId: device.id, installId, healthChallengeId };
+    const poll = () => postJson("/api/agent/commands", request);
+    expect((await postJson("/api/agent/commands", { ...request, installId: "other-install" })).status).toBe(404);
+    expect((await (await postJson("/api/agent/commands", { ...request, healthChallengeId: "start-stream" })).json()).commands).toEqual([]);
+    expect((await (await poll()).json()).commands).toMatchObject([{ deviceId: device.id, action: `agent-health-check ${healthChallengeId}` }]);
+    expect((await (await postJson("/api/agent/commands", { deviceId: device.id, installId })).json()).commands).toEqual([]);
+  });
+
   it("queues an explicit update request for an existing Agent without opening a session", async () => {
     const registration = await postJson("/api/agent/first-run", {businessNumber:"2223344444",password:"1234",installId:"agent-pos-77"});
     const {device} = await registration.json();

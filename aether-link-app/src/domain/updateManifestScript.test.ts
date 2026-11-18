@@ -148,7 +148,7 @@ describe("production update manifest scripts", () => {
       const run=(viewerOnly:boolean)=>JSON.parse(execFileSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',`$ErrorActionPreference='Stop';$ViewerOnly=$${viewerOnly};$ReleaseDir='${root.replace(/'/g,"''")}';$StableInstallerAssetName='WonRemote-Viewer-Setup.exe';$StableAgentInstallerAssetName='WonRemote-Agent-Setup.exe';$AgentFileUpdateAssetName='WonRemote-Agent-Update.exe';$ManifestName='wonremote-update-manifest.json';$StableInstallerPath='viewer';$StableAgentInstallerPath='agent';$AgentFileUpdatePath='update';$ManifestPath='manifest';${plan};$ExpectedAssets|ConvertTo-Json -Compress`],{encoding:'utf8'}));
       expect(run(false).map((asset:any)=>asset.Name)).toEqual(['WonRemote-Viewer-Setup.exe','WonRemote-Agent-Setup.exe','WonRemote-Agent-Update.exe','wonremote-update-manifest.json']);
       expect(run(true).map((asset:any)=>asset.Name)).toEqual(['WonRemote-Viewer-Setup.exe','wonremote-update-manifest.json']);
-      expect(script).toContain("make_latest = $(if ($ViewerOnly) { 'false' } else { 'true' })");
+      expect(script).toContain("make_latest = $(if ($PreserveLatest) { 'false' } else { 'true' })");
       writeFileSync(path.join(root,'WonRemote-Agent-Setup.exe'),'wrong-scope');
       expect(()=>run(true)).toThrow();
     }finally{rmSync(root,{recursive:true,force:true});}

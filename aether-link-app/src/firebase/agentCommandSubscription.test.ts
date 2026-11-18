@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getDoc, getDocFromServer, getDocs, getDocsFromServer, onSnapshot } from "firebase/firestore";
+import { getDoc, getDocFromServer, getDocs, getDocsFromServer, onSnapshot, runTransaction } from "firebase/firestore";
 import {
   fetchActiveFirebaseSessionsForAgent,
   fetchAgentZookNumberWithFirebase,
@@ -15,6 +15,7 @@ const state = vi.hoisted(() => ({
   errorHandler: undefined as ((error: unknown) => void) | undefined,
   unsubscribe: vi.fn(),
   batch: { commit: vi.fn(async (): Promise<void> => undefined), update: vi.fn() },
+  transaction: { get: vi.fn(), update: vi.fn() },
   update: vi.fn(async () => undefined),
 }));
 
@@ -32,13 +33,14 @@ vi.mock("firebase/firestore", () => ({
   getDocs: vi.fn(),
   getDocsFromServer: vi.fn(),
   limit: vi.fn((value: number) => ({ limit: value })),
-  onSnapshot: vi.fn((_query: unknown, onNext: (snapshot: any) => void, onError: (error: unknown) => void) => {
-    state.snapshotHandler = onNext;
-    state.errorHandler = onError;
+  onSnapshot: vi.fn((_query: unknown, optionsOrNext: unknown, nextOrError: (value: any) => void, error?: (value: unknown) => void) => {
+    state.snapshotHandler = typeof optionsOrNext === "function" ? optionsOrNext as (snapshot: unknown) => void : nextOrError;
+    state.errorHandler = error ?? nextOrError;
     return state.unsubscribe;
   }),
   orderBy: vi.fn(),
   query: vi.fn((...args: unknown[]) => ({ args })),
+  runTransaction: vi.fn(async (_db:unknown, run:(tx:typeof state.transaction) => Promise<unknown>) => run(state.transaction)),
   serverTimestamp: vi.fn(() => "server-time"),
   where: vi.fn(),
   writeBatch: vi.fn(() => state.batch),
@@ -56,7 +58,7 @@ const commandDoc = (id: string, action = "key-up A") => ({
   id, ref: { id }, data: () => ({ action, createdAt: "2026-09-12T00:00:00Z", sessionId: "session-1" }),
 });
 const snapshot = (docs: ReturnType<typeof commandDoc>[], added = docs) => ({
-  docs, docChanges: () => added.map((doc) => ({ type: "added", doc })),
+  metadata:{fromCache:false}, docs, docChanges: () => added.map((doc) => ({ type: "added", doc })),
 });
 const missingCommand = () => Object.assign(new Error("No document to update"), { code: "not-found" });
 const flushCommands = async () => { for (let i = 0; i < 200; i++) await Promise.resolve(); };
@@ -67,6 +69,7 @@ describe("Agent Firebase command subscription", () => {
     state.snapshotHandler = undefined;
     state.errorHandler = undefined;
     state.batch.commit.mockReset().mockResolvedValue(undefined);
+    state.transaction.get.mockReset().mockResolvedValue({exists:() => true, data:() => ({state:"pending"})});
     state.update.mockReset().mockResolvedValue(undefined);
     vi.mocked(getDocsFromServer).mockReset().mockResolvedValue(snapshot([]) as any);
   });
@@ -231,7 +234,184 @@ describe("Agent Firebase command subscription", () => {
     expect(errors).toHaveBeenCalledExactlyOnceWith(error);
     expect(writes.safeUpdateDoc).not.toHaveBeenCalled();
     expect(state.batch.commit).toHaveBeenCalledOnce();
+    expect(state.transaction.get).toHaveBeenCalledTimes(code === "permission-denied" ? 1 : 0);
+    expect(state.transaction.update).not.toHaveBeenCalled();
     expect(received).not.toHaveBeenCalled();
+  });
+
+  it("reconciles a denied batch only when an exact queued command was deleted", async () => {
+    state.batch.commit.mockRejectedValueOnce(Object.assign(new Error("denied"),{code:"permission-denied"}));
+    const refresh = commandDoc("refresh","refresh-status nonce");
+    const replaced = commandDoc("replacement","key-up A");
+    const newer = commandDoc("same-action");
+    const delivered = commandDoc("delivered");
+    const moved = commandDoc("moved");
+    const confirmed = new Map([
+      [refresh.id,{...refresh.data(),state:"pending"}],
+      [replaced.id,{...replaced.data(),action:"key-up B",state:"pending"}],
+      [newer.id,{...newer.data(),createdAt:"2026-09-12T00:00:01Z",state:"pending"}],
+      [delivered.id,{...delivered.data(),state:"delivered"}],
+      [moved.id,{...moved.data(),sessionId:"another-session",state:"pending"}],
+    ]);
+    state.transaction.get.mockImplementation(async (ref:{id:string}) => ({
+      exists: () => confirmed.has(ref.id), data: () => confirmed.get(ref.id),
+    }));
+    const errors = vi.fn(), received = vi.fn();
+    const stop = await subscribeAgentCommandsWithFirebase({deviceId:"d",installId:"install-1"},received,errors);
+    state.snapshotHandler?.(snapshot([commandDoc("deleted"),refresh,replaced,newer,delivered,moved]));
+    await flushCommands();
+    expect(runTransaction).toHaveBeenCalledExactlyOnceWith({},expect.any(Function),{maxAttempts:1});
+    expect(state.transaction.get.mock.calls.map(([ref])=>ref.id)).toEqual(["deleted","refresh","replacement","same-action","delivered","moved"]);
+    expect(state.transaction.update).toHaveBeenCalledExactlyOnceWith({id:refresh.id},{state:"delivered",deliveredAt:"server-time"});
+    expect(received).toHaveBeenCalledExactlyOnceWith([expect.objectContaining({id:refresh.id,action:"refresh-status nonce"})]);
+    expect(errors).not.toHaveBeenCalled();
+    expect(getDocsFromServer).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it("does not write or execute when the server refuses the deletion proof", async () => {
+    const denied = Object.assign(new Error("authorization revoked"),{code:"permission-denied"});
+    state.batch.commit.mockRejectedValueOnce(denied);
+    state.transaction.get.mockRejectedValue(denied);
+    const errors = vi.fn(), received = vi.fn();
+    await subscribeAgentCommandsWithFirebase({deviceId:"d",installId:"install-1"},received,errors);
+    state.snapshotHandler?.(snapshot([commandDoc("deleted"),commandDoc("refresh")]));
+    await flushCommands();
+    expect(runTransaction).toHaveBeenCalledOnce();
+    expect(errors).toHaveBeenCalledExactlyOnceWith(denied);
+    expect(state.transaction.update).not.toHaveBeenCalled();
+    expect(received).not.toHaveBeenCalled();
+  });
+
+  it("does not acknowledge a surviving command after the subscription closes during reconciliation", async () => {
+    state.batch.commit.mockRejectedValueOnce(Object.assign(new Error("denied"),{code:"permission-denied"}));
+    let finish!: (snapshot:unknown) => void;
+    state.transaction.get.mockResolvedValueOnce({exists:() => false, data:() => undefined});
+    state.transaction.get.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const command = commandDoc("refresh");
+    const errors = vi.fn(), received = vi.fn();
+    const stop = await subscribeAgentCommandsWithFirebase({deviceId:"d",installId:"install-1"},received,errors);
+    state.snapshotHandler?.(snapshot([commandDoc("deleted"),command]));
+    await flushCommands();
+    stop();
+    finish({exists:() => true, data:() => ({...command.data(),state:"pending"})});
+    await flushCommands();
+    expect(runTransaction).toHaveBeenCalledOnce();
+    expect(state.transaction.update).not.toHaveBeenCalled();
+    expect(received).not.toHaveBeenCalled();
+    expect(errors).not.toHaveBeenCalled();
+  });
+
+  it.each(["added", "modified"] as const)("keeps a new fixed health challenge from a %s event while the older callback is in flight", async type => {
+    const first = commandDoc("agent-health","agent-health-check 00000000-0000-4000-8000-000000000001");
+    const second = commandDoc("agent-health","agent-health-check 00000000-0000-4000-8000-000000000002");
+    let server = first;
+    state.transaction.get.mockImplementation(async () => ({data:() => ({...server.data(),state:"pending"})}));
+    let finish!: () => void;
+    const commands = vi.fn().mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+    const errors = vi.fn();
+    const stop = await subscribeAgentCommandsWithFirebase({deviceId:"d",installId:"install-1"},commands,errors);
+    state.snapshotHandler?.(snapshot([first]));
+    await flushCommands();
+    expect(commands).toHaveBeenCalledOnce();
+    server = second;
+    state.snapshotHandler?.({...snapshot([second]),docChanges:()=>[{type,doc:second}]});
+    state.snapshotHandler?.({...snapshot([second]),docChanges:()=>[{type:"modified",doc:second}]});
+    await flushCommands();
+    expect(commands).toHaveBeenCalledOnce();
+    finish();
+    await flushCommands();
+    expect(commands.mock.calls.map(([entries])=>entries[0].action)).toEqual([first.data().action,second.data().action]);
+    state.snapshotHandler?.(snapshot([second],[]));
+    await flushCommands();
+    expect(state.transaction.get).toHaveBeenCalledTimes(2);
+    expect(commands).toHaveBeenCalledTimes(2);
+    expect(errors).not.toHaveBeenCalled();
+    expect(state.batch.commit).not.toHaveBeenCalled();
+    expect(state.transaction.update).toHaveBeenCalledTimes(2);
+    stop();
+  });
+
+  it("does not mark a newer fixed health command delivered while handling a stale snapshot", async () => {
+    const older = commandDoc("agent-health","agent-health-check 00000000-0000-4000-8000-000000000001");
+    const latest = commandDoc("agent-health","agent-health-check 00000000-0000-4000-8000-000000000002");
+    const other = commandDoc("input");
+    state.transaction.get.mockResolvedValue({data:() => ({...latest.data(),state:"pending"})});
+    const commands = vi.fn(), errors = vi.fn();
+    const stop = await subscribeAgentCommandsWithFirebase({deviceId:"d",installId:"install-1"},commands,errors);
+    state.snapshotHandler?.(snapshot([older,other]));
+    await flushCommands();
+    expect(state.batch.update).toHaveBeenCalledExactlyOnceWith(other.ref,{state:"delivered",deliveredAt:"server-time"});
+    expect(state.transaction.update).not.toHaveBeenCalled();
+    expect(commands).toHaveBeenCalledExactlyOnceWith([expect.objectContaining({id:"input"})]);
+    commands.mockClear();
+    state.snapshotHandler?.({...snapshot([latest]),docChanges:()=>[{type:"modified",doc:latest}]});
+    await flushCommands();
+    expect(commands).toHaveBeenCalledExactlyOnceWith([expect.objectContaining({action:latest.data().action})]);
+    expect(errors).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it("checks a fixed health command only after its write is confirmed by the server", async () => {
+    const health = commandDoc("agent-health","agent-health-check 00000000-0000-4000-8000-000000000001");
+    state.transaction.get.mockResolvedValue({data:() => ({...health.data(),state:"pending"})});
+    const commands = vi.fn(), errors = vi.fn();
+    const stop = await subscribeAgentCommandsWithFirebase({deviceId:"d",installId:"install-1"},commands,errors);
+    state.snapshotHandler?.({...snapshot([health]),metadata:{fromCache:true}});
+    state.snapshotHandler?.(snapshot([{...health,metadata:{hasPendingWrites:true}} as typeof health]));
+    await flushCommands();
+    expect(state.transaction.get).not.toHaveBeenCalled();
+    expect(commands).not.toHaveBeenCalled();
+    state.snapshotHandler?.(snapshot([health],[]));
+    await flushCommands();
+    expect(runTransaction).toHaveBeenCalledExactlyOnceWith({},expect.any(Function),{maxAttempts:2});
+    expect(state.transaction.get).toHaveBeenCalledOnce();
+    expect(commands).toHaveBeenCalledExactlyOnceWith([expect.objectContaining({action:health.data().action})]);
+    expect(errors).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it("keeps ordinary commands flowing while a fixed-health transaction runs out of attempts", async () => {
+    const old = commandDoc("agent-health","agent-health-check 00000000-0000-4000-8000-000000000001");
+    const newer = commandDoc("agent-health","agent-health-check 00000000-0000-4000-8000-000000000002");
+    let rejectContention!: (error:Error) => void;
+    vi.mocked(runTransaction).mockImplementationOnce(() => new Promise((_resolve,reject) => { rejectContention = reject; }));
+    state.transaction.get.mockResolvedValue({data:() => ({...newer.data(),state:"pending"})});
+    const commands = vi.fn(), errors = vi.fn();
+    const stop = await subscribeAgentCommandsWithFirebase({deviceId:"d",installId:"install-1"},commands,errors);
+    state.snapshotHandler?.(snapshot([old,commandDoc("first-input")]));
+    await flushCommands();
+    expect(commands).toHaveBeenCalledExactlyOnceWith([expect.objectContaining({id:"first-input"})]);
+    state.snapshotHandler?.(snapshot([commandDoc("next-input")]));
+    await flushCommands();
+    expect(commands).toHaveBeenLastCalledWith([expect.objectContaining({id:"next-input"})]);
+    state.snapshotHandler?.({...snapshot([newer]),docChanges:()=>[{type:"modified",doc:newer}]});
+    rejectContention(Object.assign(new Error("version conflict"),{code:"aborted"}));
+    await flushCommands();
+    expect(commands).toHaveBeenCalledTimes(3);
+    expect(commands).toHaveBeenLastCalledWith([expect.objectContaining({action:newer.data().action})]);
+    expect(state.batch.commit).toHaveBeenCalledTimes(2);
+    expect(state.transaction.update).toHaveBeenCalledOnce();
+    expect(errors).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it("does not start deletion checks after stopping a scheduled transaction", async () => {
+    state.batch.commit.mockRejectedValueOnce(Object.assign(new Error("denied"),{code:"permission-denied"}));
+    let start!: () => void;
+    vi.mocked(runTransaction).mockImplementationOnce((_db, run) => new Promise((resolve,reject) => {
+      start = () => { void run(state.transaction as any).then(resolve,reject); };
+    }));
+    const commands = vi.fn(), errors = vi.fn();
+    const stop = await subscribeAgentCommandsWithFirebase({deviceId:"d",installId:"install-1"},commands,errors);
+    state.snapshotHandler?.(snapshot([commandDoc("deleted")]));
+    await flushCommands();
+    stop();
+    start();
+    await flushCommands();
+    expect(state.transaction.get).not.toHaveBeenCalled();
+    expect(commands).not.toHaveBeenCalled();
+    expect(errors).not.toHaveBeenCalled();
   });
 
   it("bounds a full deleted batch to one failed batch and one fresh query, without reconnects", async () => {
@@ -400,6 +580,22 @@ describe("Agent Firebase command subscription", () => {
       version: "0.1.44",
       activeDisplayIndex: 1,
     });
+  });
+
+  it("does not erase known diagnostics when a heartbeat has none, but may report a confirmed empty display list", async () => {
+    const writes = await import("./firestoreWrite");
+    const update = vi.mocked(writes.safeUpdateDoc);
+    const input = {deviceId:"device-1",installId:"install-1",heartbeatRequestId:"refresh-nonce"};
+    await sendAgentHeartbeatWithFirebase(input);
+    const unavailable = update.mock.calls[0][1];
+    expect(unavailable).toMatchObject({heartbeatRequestId:"refresh-nonce",status:"online",lastSeenAtServer:"server-time"});
+    expect(unavailable).not.toHaveProperty("displays");
+    expect(unavailable).not.toHaveProperty("controlDiagnostics");
+    await sendAgentHeartbeatWithFirebase({...input,displays:[],controlDiagnostics:{elevated:false}});
+    expect(update.mock.calls[1][1]).toMatchObject({displays:[],controlDiagnostics:{elevated:false}});
+    expect(update).toHaveBeenCalledTimes(2);
+    expect(getDoc).not.toHaveBeenCalled();
+    expect(getDocsFromServer).not.toHaveBeenCalled();
   });
 
   it("maps Firestore not-found heartbeat updates to status 404", async () => {

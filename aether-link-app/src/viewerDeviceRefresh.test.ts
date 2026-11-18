@@ -1,9 +1,33 @@
 import { readFileSync } from "node:fs";
+import { mkdtemp, rm, rmdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { build } from "esbuild";
 import ts from "typescript";
 import { chromium, type Browser, type Page } from "playwright";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import type { ManagedDevice } from "./domain/types";
+import type { AgentWebRtcTransport } from "./firebase/agentFirebase";
+
+const localFirebaseServices = vi.hoisted(() => new Map<string, unknown>());
+vi.mock("./firebase/firebaseServices", () => ({
+  getWonRemoteFirebaseServices: ({appId}: {appId?:string}) => {
+    const services = localFirebaseServices.get(appId ?? "");
+    if (!services) throw new Error("Expected an initialized loopback timing fixture.");
+    return services;
+  },
+}));
+const localPeerFactory = vi.hoisted(() => ({
+  create: undefined as typeof import("./firebase/agentPeerConnection").createAgentPeerConnection | undefined,
+}));
+vi.mock("./firebase/agentPeerConnection", async original => ({
+  ...await original<typeof import("./firebase/agentPeerConnection")>(),
+  createAgentPeerConnection: (config: Parameters<typeof import("./firebase/agentPeerConnection").createAgentPeerConnection>[0]) => {
+    if (!localPeerFactory.create) throw new Error("Expected an isolated loopback peer factory.");
+    return localPeerFactory.create(config);
+  },
+}));
 
 let browser: Browser;
 let bundle: string;
@@ -11,13 +35,26 @@ let bundle: string;
 beforeAll(async () => {
   const result = await build({
     stdin: {
-      contents: 'import React from "react"; import { createRoot } from "react-dom/client"; import { App } from "./src/App"; import { collectDevicePresence } from "./src/domain/devicePresenceRefresh"; window.collectDevicePresence = collectDevicePresence; window.root = createRoot(document.getElementById("root")); window.root.render(<React.StrictMode><App /></React.StrictMode>);',
+      contents: 'import React from "react"; import { createRoot } from "react-dom/client"; import { App } from "./src/App"; import { collectDevicePresence } from "./src/domain/devicePresenceRefresh"; import { markConnectionTiming } from "./src/domain/connectionTiming"; window.testMarkConnectionTiming = markConnectionTiming; window.collectDevicePresence = collectDevicePresence; window.root = createRoot(document.getElementById("root")); window.root.render(<React.StrictMode><App /></React.StrictMode>);',
       resolveDir: process.cwd(), loader: "tsx",
     },
     bundle: true, write: false, outfile: "viewer-test.js", platform: "browser", format: "iife",
     loader: { ".png": "dataurl" },
-    define: { "import.meta.env": "{}", "process.env.NODE_ENV": '"development"' },
+    define: { "import.meta.env": "window.testEnv", "process.env.NODE_ENV": '"development"' },
     plugins: [{ name: "offline-firebase-boundary", setup(builder) {
+      builder.onLoad({ filter: /[\\/]src[\\/]App\.tsx$/ }, ({ path }) => {
+        const code = readFileSync(path, "utf8");
+        const source = ts.createSourceFile(path, code, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+        const panel = source.statements.filter(ts.isFunctionDeclaration).find(node => node.name?.text === "RemoteSessionPanel");
+        if (!panel?.body) throw new Error("Cannot instrument RemoteSessionPanel render in browser tests.");
+        const start = panel.body.getStart(source) + 1;
+        const instrumented = code.slice(0, start) + "\nwindow.testSessionPanelRenders = (window.testSessionPanelRenders ?? 0) + 1;\n" + code.slice(start);
+        return {
+          contents: instrumented.replace(/\b(setPicturePresented|setRemoteCursorEmbedded)\(/g,
+            "(window.testPictureStateDispatch?.('$1'), $1)("),
+          loader: "tsx",
+        };
+      });
       builder.onLoad({ filter: /[\\/]firebase[\\/]viewerFirebase\.ts$/ }, ({ path }) => {
         const source = ts.createSourceFile(path, readFileSync(path, "utf8"), ts.ScriptTarget.Latest);
         const names = source.statements.filter(ts.isFunctionDeclaration)
@@ -32,13 +69,22 @@ beforeAll(async () => {
 }, 30_000);
 afterAll(async () => { await browser?.close(); });
 
-async function openViewer(options: { authenticated?: boolean; firstRun?: boolean; agent?: boolean; manual?: boolean; slow?: boolean; fail?: boolean; local?: boolean; connected?: boolean; mobile?: boolean; emulateMobile?: boolean; rolloutSupported?: boolean; nativeAndroid?: boolean; desktop?: boolean; accountManager?: boolean; viewport?: { width: number; height: number }; storeName?: string } = {}) {
-  const page = await browser.newPage({ viewport: options.viewport ?? (options.mobile ? { width: 390, height: 844 } : { width: 1440, height: 900 }), ...(options.emulateMobile ? { isMobile: true, hasTouch: true } : {}), ...(options.nativeAndroid ? { userAgent: "Android WonRemoteViewer/1" } : {}) });
-  const origin = options.nativeAndroid ? "https://wonremote-a7fd3.web.app" : "http://viewer.test";
+async function openViewer(options: { authenticated?: boolean; firstRun?: boolean; agent?: boolean; manual?: boolean; slow?: boolean; fail?: boolean; local?: boolean; connected?: boolean; mobile?: boolean; emulateMobile?: boolean; rolloutSupported?: boolean; nativeAndroid?: boolean; desktop?: boolean; accountManager?: boolean; diagnosticTiles?: boolean; viewport?: { width: number; height: number }; storeName?: string; firestorePort?: number; firestoreGroupingProject?: string } = {}, liveClockBrowser?: Browser, beforeMount?: (page: Page) => Promise<void>) {
+  const page = await (liveClockBrowser ?? browser).newPage({ viewport: options.viewport ?? (options.mobile ? { width: 390, height: 844 } : { width: 1440, height: 900 }), ...(options.emulateMobile ? { isMobile: true, hasTouch: true } : {}), ...(options.nativeAndroid ? { userAgent: "Android WonRemoteViewer/1" } : {}) });
+  const origin = options.firestorePort ? `http://127.0.0.1:${options.firestorePort}`
+    : options.nativeAndroid ? "https://wonremote-a7fd3.web.app" : "http://viewer.test";
   page.setDefaultTimeout(3_000);
   await page.route("**/*", async (route) => {
     const url = route.request().url();
-    if (url === `${origin}/${options.mobile ? "viewer" : ""}`) return route.fulfill({ contentType: "text/html", body: '<meta name="viewport" content="width=device-width, initial-scale=1.0"><div id="root"></div>' });
+    if (url === `${origin}/${options.mobile ? "viewer" : ""}`) return route.fulfill({
+      contentType:"text/html", headers:options.firestorePort ? {"Content-Security-Policy":"connect-src 'self'"} : {},
+      body:'<meta name="viewport" content="width=device-width, initial-scale=1.0"><div id="root"></div>',
+    });
+    if (options.firestorePort && url.startsWith(`${origin}/google.firestore.v1.Firestore/`)) return route.continue();
+    if (options.firestorePort && options.firestoreGroupingProject) {
+      const rpc = `${origin}/v1/projects/${options.firestoreGroupingProject}/databases/(default)/documents:`;
+      if (url.startsWith(rpc) && /^(batchGet|commit)(?:\?|$)/.test(url.slice(rpc.length))) return route.continue();
+    }
     if (options.local && url.endsWith("/api/admin/login") && route.request().method() === "POST") return route.fulfill({ json: {}, headers: { "access-control-allow-origin": "*" } });
     if (options.local && new URL(url).pathname === "/api/devices") {
       const devices = await page.evaluate(() => (window as any).testApi.fetchFirebaseDevices());
@@ -54,9 +100,10 @@ async function openViewer(options: { authenticated?: boolean; firstRun?: boolean
   });
   await page.goto(`${origin}/${options.mobile ? "viewer" : ""}`);
   await page.addStyleTag({ content: readFileSync("src/styles.css", "utf8") });
-  await page.clock.install();
+  if (!liveClockBrowser) await page.clock.install();
   await page.evaluate((opts) => {
     const w = window as any;
+    w.testEnv = opts.diagnosticTiles ? {VITE_WONREMOTE_ALLOW_FIRESTORE_STREAM_FALLBACK:"diagnostic"} : {};
     if (opts.desktop) {
       w.nativeCalls = []; w.nativeChunks = [];
       w.nativeCallbacks = []; w.nativeEvents = {};
@@ -84,7 +131,11 @@ async function openViewer(options: { authenticated?: boolean; firstRun?: boolean
           if (command === "get_computer_name") return "PC";
           if (command === "begin_viewer_download") return "local-save";
           if (command === "write_viewer_download") { w.nativeChunks.push(args.data); return; }
-          if (command === "finish_viewer_download") { if (w.failNativeSave) throw Error("Disk full"); return "C:/Downloads/received.txt"; }
+          if (command === "finish_viewer_download") {
+            if (w.holdNativeSave) await new Promise<void>(resolve => { w.releaseNativeSave = resolve; });
+            if (w.failNativeSave) throw Error("Disk full");
+            return "C:/Downloads/received.txt";
+          }
           if (command === "choose_viewer_download_folder") return "C:/Downloads";
           if (command === "check_selected_viewer_update") return {available:Boolean(w.selectedUpdateAvailable)};
           return 1;
@@ -93,8 +144,9 @@ async function openViewer(options: { authenticated?: boolean; firstRun?: boolean
     }
     const state = w.testState = {
       reads: 0, subscriptions: 0, connections: [] as string[], closedSessions: [] as string[], slow: Boolean(opts.slow), fail: Boolean(opts.fail),
-      presenceCommands: [] as string[], presenceStarts: 0, presenceStops: 0,
+      presenceCommands: [] as string[], presenceStarts: 0, presenceStops: 0, refreshTargets: [] as unknown[],
       auxiliaryReads: 0, auxiliarySubscriptions: [] as any[], auxiliaryStops: 0,
+      groupingStarts: 0, groupingStops: 0,
       historyReads: 0, historySubscriptions: 0, rtcStarts: 0, controls: [] as unknown[],
       devices: Array.from({ length: 10 }, (_, i) => ({
         id: `device-${i}`, deviceNumber: `AGENT-${i}`, businessNumber: "123-45-67890",
@@ -104,10 +156,23 @@ async function openViewer(options: { authenticated?: boolean; firstRun?: boolean
         ...(opts.rolloutSupported ? {version:"0.1.93",selectedRolloutVersion:"0.1.93",rollbackSupportVersion:"0.1.93"} : {}),
       })),
     };
+    w.groupingDocs ??= {};
+    w.groupingListeners = new Map();
     w.testApi = new Proxy({
       isViewerFirebaseEnabled: () => !opts.local,
-      subscribeViewerAuthState: (next: (authenticated: boolean) => void) => {
-        w.authChanged = next; next(opts.authenticated !== false); return () => {};
+      subscribeViewerAuthState: (next: (authenticated: boolean, uid?: string) => void) => {
+        w.authChanged = next; next(opts.authenticated !== false, "viewer-1"); return () => {};
+      },
+      subscribeViewerGrouping: (uid: string, next: (grouping: unknown) => void, fail: (error: Error) => void) => {
+        state.groupingStarts++;
+        w.groupingListeners.set(uid, next);
+        if (w.rejectGrouping) fail(Object.assign(new Error("Missing permissions"), {code:"permission-denied"}));
+        else if (!w.holdGrouping) next(structuredClone(w.groupingDocs[uid] ?? {customGroups: [], groupOrder: []}));
+        return () => { state.groupingStops++; w.groupingListeners.delete(uid); };
+      },
+      saveViewerGrouping: async (uid: string, change: (grouping: unknown) => unknown) => {
+        w.groupingDocs[uid]=change(structuredClone(w.groupingDocs[uid] ?? {customGroups: [], groupOrder: []}));
+        w.groupingListeners.get(uid)?.(structuredClone(w.groupingDocs[uid]));
       },
       subscribeFirebaseDevices: (next: (devices: unknown[]) => void) => {
         state.subscriptions++; next(structuredClone(state.devices)); return () => {};
@@ -117,6 +182,7 @@ async function openViewer(options: { authenticated?: boolean; firstRun?: boolean
       isCurrentViewerAccountManager: async () => Boolean(opts.accountManager),
       fetchFirebaseDevices: async (_env?: unknown, refreshPresence = false, signal?: AbortSignal, onProgress?: (devices: unknown[], pendingIds: string[]) => void, knownDevices?: unknown[], targetDeviceIds?: string[]) => {
         state.reads++;
+        state.refreshTargets.push(targetDeviceIds ?? null);
         const devices = structuredClone(state.devices).filter((device:any)=>targetDeviceIds===undefined||targetDeviceIds.includes(device.id));
         if (refreshPresence && w.parallelRefresh) {
           const read = new Promise(resolve => { w.finishParallelRead = () => resolve(structuredClone(state.devices)); });
@@ -144,10 +210,17 @@ async function openViewer(options: { authenticated?: boolean; firstRun?: boolean
         if (opts.connected) return { session: { id: `remote-session-${id}-${state.connections.length}`, deviceId: id, state: "connected", startedAt: new Date().toISOString() }, inputLog: [] };
         throw new Error("Current target is offline.");
       },
+      queuePreparedFirebaseViewerOffer: () => {},
       startFirebaseViewerWebRtcTransport: async (_id: string, callbacks: any) => {
         state.rtcStarts++; w.rtcCallbacks = callbacks;
+        if (callbacks.startInFastMode) state.controls.push("set-stream-mode fast");
         callbacks.onState("webrtc-open");
         return { close: () => {}, isControlReady: () => true, sendControl: (value: unknown) => { if (w.failControl) return false; state.controls.push(value); return true; }, sendFile: async (input:unknown) => w.testSendFile ? w.testSendFile(input) : false };
+      },
+      fetchFirebaseTiles: async () => {
+        const frame = w.nextDiagnosticFrame;
+        w.nextDiagnosticFrame = null;
+        return frame ?? {tiles:[],width:0,height:0};
       },
       getFirebaseViewerStorageOwner: () => "test-viewer-owner",
       subscribeViewerSessionData: (_id: string, next: (data: any) => void, _error: unknown, options: unknown) => {
@@ -167,6 +240,7 @@ async function openViewer(options: { authenticated?: boolean; firstRun?: boolean
       },
     }, { get(target, key) { return (target as any)[key] ?? (async () => null); } });
   }, options);
+  await beforeMount?.(page);
   await page.addScriptTag({ content: bundle });
   if (options.local) {
     await page.locator('input[name="username"]').fill("test");
@@ -183,9 +257,1191 @@ const counts = (page: Page) => page.evaluate(() => {
 const refresh = (page: Page) => page.getByRole("button", { name: "장비 목록 새로고침", exact: true });
 
 describe("manual Viewer device list in a real browser", () => {
+  const admissionCases = [{ realInventory: false, locked: false }, { realInventory: true, locked: false }];
+  if (process.platform === "win32") admissionCases.push({ realInventory: true, locked: true });
+  it.skipIf(!process.env.FIRESTORE_EMULATOR_HOST).each(admissionCases)("measures first picture through actual admission, Agent command and Firestore signaling (inventory: $realInventory, locked: $locked)", async ({ realInventory, locked }) => {
+    const address = process.env.FIRESTORE_EMULATOR_HOST!;
+    if (!/^127\.0\.0\.1:\d+$/.test(address)) throw new Error("Expected a loopback Firestore emulator.");
+    const port = Number(address.split(":")[1]);
+    const { initializeApp, deleteApp } = await import("firebase/app");
+    const { getFirestore, connectFirestoreEmulator, doc, getDocFromServer, collection, getDocsFromServer, query, where, setDoc, serverTimestamp } = await import("firebase/firestore");
+    const { subscribeAgentCommandsWithFirebase, startAgentWebRtcTransportWithFirebase, isAgentDeviceAccessSessionAllowed, processAgentDeviceAccessRequest } = await import("./firebase/agentFirebase");
+    const { createLoopbackAgentPeers, wireBrowserToLocalFirestore, loopbackStun } = await import("./firebase/browserFirestoreRtcFixture");
+    const projectId = `demo-connect-${crypto.randomUUID().slice(0,8)}`, deviceId = "device-0";
+    const agentUid = "connect-agent", viewerUid = "connect-viewer", installId = "connect-install";
+    const app = initializeApp({projectId,apiKey:"loopback-only"},"loopback-connection-agent");
+    const agentDb = getFirestore(app);
+    connectFirestoreEmulator(agentDb,"127.0.0.1",port,{mockUserToken:{sub:agentUid,wonremoteViewer:false}});
+    localFirebaseServices.set(agentUid,{db:agentDb,auth:{currentUser:{uid:agentUid}}});
+    const env = {VITE_WONREMOTE_FIREBASE_PROJECT_ID:projectId,VITE_WONREMOTE_FIREBASE_AUTH_DOMAIN:"localhost",
+      VITE_WONREMOTE_FIREBASE_API_KEY:"loopback-only",VITE_WONREMOTE_FIREBASE_APP_ID:agentUid,VITE_WONREMOTE_RTC_STUN_URLS:loopbackStun};
+    const {peers,create} = createLoopbackAgentPeers();
+    localPeerFactory.create = create;
+    const transports = new Map<string,AgentWebRtcTransport>();
+    const starts:string[] = [], stops:string[] = [], errors:string[] = [], controls:string[] = [];
+    const approvalsMs: number[] = [], verificationMs: number[] = [];
+    const agentStartup: {admission:number; admittedToOffer:number; offerToOpen:number}[] = [];
+    let unsubscribe: (()=>void) | undefined, wireBrowser: Browser | undefined;
+    let commandWork: Promise<void> | undefined;
+    let lockDirectory: string | undefined;
+    let lock: import("./agent/deviceAccessLock").AgentDeviceAccessLock | null = null;
+    const password = locked ? crypto.randomUUID() : "";
+    try {
+      if (locked) {
+        const { AgentDeviceAccessLock } = await import("./agent/deviceAccessLock");
+        const { encryptDeviceAccessRequest } = await import("./domain/deviceAccessLock");
+        lockDirectory = await mkdtemp(join(tmpdir(), "wonremote-locked-loopback-"));
+        lock = await AgentDeviceAccessLock.load(join(lockDirectory, "lock.dat"), deviceId);
+        const setup = await encryptDeviceAccessRequest({ id: crypto.randomUUID(), deviceId, ownerUid: viewerUid,
+          operation: "set", sessionId: "", lockVersion: "" }, lock.publicState.publicKey, {password:"",newPassword:password});
+        await lock.authorize(setup);
+        const authorize = lock.authorize.bind(lock);
+        vi.spyOn(lock, "authorize").mockImplementation(async (request, now, publish) => {
+          const start = performance.now();
+          return authorize(request, now, async state => {
+            verificationMs.push(Math.round(performance.now() - start));
+            await publish?.(state);
+          });
+        });
+      }
+      const registration = {ownerUid:agentUid,installId,status:"online",
+        businessNumber:"123-45-67890",deviceNumber:"AGENT-CONNECT",desktopName:realInventory?"Server-PC":"PC-0",deviceName:"POS",storeName:"Store",
+        protocolVersion:2,lastSeenAtServer:serverTimestamp(),
+        ...(lock ? {accessLocked:true,accessLockVersion:lock.publicState.version,accessPublicKey:lock.publicState.publicKey} : {})};
+      await expect(setDoc(doc(agentDb,"devices","different-owner"),{...registration,ownerUid:"wrong-owner"}))
+        .rejects.toMatchObject({code:"permission-denied"});
+      await setDoc(doc(agentDb,"devices",deviceId),registration);
+      if (lock) await setDoc(doc(agentDb,"deviceAccessLocks",deviceId),{enabled:true,version:lock.publicState.version,updatedAt:serverTimestamp()});
+      wireBrowser = await chromium.launch({headless:true,args:["--allow-loopback-in-peer-connection","--disable-features=WebRtcHideLocalIpsWithMdns"]});
+      const wire = (page: Page) => wireBrowserToLocalFirestore(page,projectId,viewerUid,port,realInventory);
+      let firestoreRequests = 0;
+      const page = await openViewer({firestorePort:port},wireBrowser,async page => {
+        page.on("request", request => {
+          if (request.url().startsWith(`http://127.0.0.1:${port}/google.firestore.v1.Firestore/`)) firestoreRequests++;
+        });
+        if (realInventory) await wire(page);
+      });
+      await page.route("**/fixture-redirect-probe",route=>route.fulfill({
+        status:302,headers:{location:`http://127.0.0.1:${port===65521?65522:65521}/different-origin`},
+      }));
+      const blocked = await page.evaluate(async ()=>{
+        const observed = new Promise<string>(resolve => document.addEventListener("securitypolicyviolation",
+          event=>resolve(event.effectiveDirective),{once:true}));
+        await fetch("/fixture-redirect-probe",{signal:AbortSignal.timeout(1_000)}).catch(()=>{});
+        return Promise.race([observed,new Promise(resolve=>setTimeout(()=>resolve("no CSP violation"),1_000))]);
+      });
+      expect(blocked).toBe("connect-src");
+      const palettes = [[[239,40,64],[18,99,218]],[[34,173,87],[234,116,46]],[[87,57,173],[44,180,176]]];
+      const frames = await page.evaluate(palettes => palettes.map(([left,right]) => {
+        const width=1920, height=1080, tiles=[];
+        const source=document.createElement("canvas");
+        for (let y=0;y<height;y+=128) for (let x=0;x<width;x+=128) {
+          const w=Math.min(128,width-x), h=Math.min(128,height-y);
+          source.width=w; source.height=h;
+          const ctx=source.getContext("2d")!;
+          ctx.fillStyle=`rgb(${(x<960?left:right).join(",")})`;ctx.fillRect(0,0,w,h);
+          tiles.push({x:x/32,y:y/32,w,h,data:source.toDataURL("image/jpeg").split(",")[1]});
+        }
+        return {width,height,tiles,sequence:1,keyframe:true};
+      }),palettes);
+      if (!realInventory) await wire(page);
+      let ready=false;
+      unsubscribe = await subscribeAgentCommandsWithFirebase({deviceId,installId,onReady:()=>{ready=true;}},commands => commandWork=(async()=>{
+        for (const {action} of commands) {
+          const [kind,id] = action.split(" ");
+          if (kind === "device-access" && id && lock) {
+            const start = performance.now();
+            await processAgentDeviceAccessRequest(deviceId,id,lock,async () => { throw new Error("Unexpected lock mutation"); },env);
+            approvalsMs.push(Math.round(performance.now() - start));
+          } else if (kind === "start-stream" && id) {
+            const start = performance.now();
+            if (!await isAgentDeviceAccessSessionAllowed(deviceId,id,lock,env)) throw new Error("Fixture session access denied.");
+            const admitted = performance.now();
+            const metrics = {admission:Math.round(admitted - start),admittedToOffer:-1,offerToOpen:-1};
+            agentStartup.push(metrics);
+            let offerAt: number | undefined;
+            const frame=frames[starts.length];
+            if(!frame) throw new Error("Unexpected additional capture.");
+            starts.push(id);
+            let open=false, sent=false, transport:AgentWebRtcTransport | undefined;
+            const trySend=()=>{
+              if (!open || !transport || sent) return;
+              sent=transport.sendFrame(frame)==="sent";
+              if (!sent) errors.push("First frame could not be sent.");
+            };
+            transport=await startAgentWebRtcTransportWithFirebase(id,{
+              onState:(state,error)=>{
+                if(state==="negotiating" && offerAt === undefined){
+                  offerAt = performance.now();
+                  metrics.admittedToOffer = Math.round(offerAt - admitted);
+                }
+                if(state==="open"){
+                  if (offerAt !== undefined) metrics.offerToOpen = Math.round(performance.now() - offerAt);
+                  open=true;trySend();
+                }
+                if(state==="error")errors.push(error??"Agent WebRTC failed.");
+              },
+              onControl:(control,current)=>{if(current()) controls.push(control);},
+            },env);
+            transports.set(id,transport);
+            trySend();
+          } else if (kind === "stop-stream" && id) {
+            await transports.get(id)?.close();
+            transports.delete(id); stops.push(id);
+          } else throw new Error("Unexpected loopback session command.");
+        }
+      })(),error=>errors.push(error.message),env);
+      await vi.waitFor(()=>expect(ready).toBe(true),{timeout:3_000});
+      await page.evaluate(()=>{
+        const realInfo=console.info.bind(console), reports:unknown[]=[];
+        (window as any).connectionPixelReports=reports;
+        (window as any).offerTimingBeforePanel=[];
+        console.info=(message,...args)=>{
+          const prefix="[ConnectionTiming] ";
+          if(typeof message==="string"&&message.startsWith(prefix)){
+            const {stage,attempt}=JSON.parse(message.slice(prefix.length));
+            if(stage==="offer-queued"){
+              (window as any).offerTimingBeforePanel.push(!document.querySelector(".session-panel"));
+            }
+            if(stage==="first-picture"){
+              const canvas=document.querySelector<HTMLCanvasElement>(".session-panel:not(.session-panel-inactive) .remote-canvas");
+              const ctx=canvas?.getContext("2d");
+              reports.push({attempt,size:[canvas?.width,canvas?.height],
+                visible:Boolean(canvas?.getClientRects().length && document.visibilityState==="visible"),
+                pixels:ctx?[[1,1],[1918,1078]].map(([x,y])=>Array.from(ctx.getImageData(x,y,1,1).data).slice(0,3)):[]});
+            }
+          }
+          realInfo(message,...args);
+        };
+      });
+      const timeline:{stage:string;attempt:number;elapsedMs:number}[] = [];
+      page.on("console",message=>{
+        const prefix="[ConnectionTiming] ";
+        if(message.text().startsWith(prefix)) timeline.push(JSON.parse(message.text().slice(prefix.length)));
+      });
+      const row=page.locator(".table-row").filter({has:page.getByText(registration.desktopName,{exact:true})});
+      await row.waitFor();
+      if (realInventory) expect(await counts(page)).toEqual({reads:0,subscriptions:0});
+      expect(firestoreRequests > 0).toBe(realInventory);
+      const canvas=page.locator(".remote-canvas");
+      for(let attempt=1;attempt<=3;attempt++){
+        await row.getByRole("button",{name:"접속",exact:true}).click();
+        if (locked && attempt === 1) {
+          const dialog = page.getByRole("dialog", {name:"잠금 장비 접속"});
+          await dialog.getByLabel("접속 비밀번호").fill(password);
+          await dialog.getByRole("button",{name:"접속",exact:true}).click();
+        }
+        await expect.poll(()=>({errors,starts:starts.length,pictures:timeline.filter(event=>event.stage==="first-picture").length}),
+          {timeout:7_000}).toEqual({errors:[],starts:attempt,pictures:attempt});
+        const pixels=await page.evaluate(index=>(window as any).connectionPixelReports[index],attempt-1);
+        const picture=timeline.filter(event=>event.stage==="first-picture")[attempt-1];
+        expect(pixels).toMatchObject({attempt:picture.attempt,visible:true,size:[1920,1080]});
+        const screenshot=await canvas.screenshot();
+        const composed=await page.evaluate(async png=>{
+          const image=new Image();
+          image.src=`data:image/png;base64,${png}`;
+          await image.decode();
+          const sample=document.createElement("canvas");
+          sample.width=sample.height=1;
+          const ctx=sample.getContext("2d")!;
+          return [0.25,0.75].map(x=>{
+            ctx.drawImage(image,Math.floor(image.width*x),Math.floor(image.height/2),1,1,0,0,1,1);
+            return Array.from(ctx.getImageData(0,0,1,1).data).slice(0,3);
+          });
+        },screenshot.toString("base64"));
+        for(const actual of [pixels.pixels,composed]){
+          expect(actual).toHaveLength(2);
+          palettes[attempt-1].forEach((color,i)=>color.forEach((value,j)=>expect(Math.abs(value-actual[i][j])).toBeLessThan(8)));
+        }
+        const candidates=peers[attempt-1].iceTransports.flatMap(transport=>transport.connection.localCandidates);
+        expect(candidates.map(candidate=>candidate.host)).toContain("127.0.0.1");
+        expect(candidates.every(candidate=>candidate.host==="127.0.0.1")).toBe(true);
+        if(attempt===1){
+          const box=(await canvas.boundingBox())!;
+          await page.mouse.move(box.x+box.width/4,box.y+box.height/3);
+          await expect.poll(()=>controls.some(action=>action.startsWith("move "))).toBe(true);
+        }
+        await page.getByTestId("end-session").click();
+        await expect.poll(()=>stops.length,{timeout:5_000}).toBe(attempt);
+        expect((await getDocFromServer(doc(agentDb,"sessions",starts[attempt-1]))).data()?.state).toBe("closed");
+      }
+      expect(stops).toEqual(starts);
+      expect(peers).toHaveLength(3);
+      expect(agentStartup).toHaveLength(starts.length);
+      for (const metrics of agentStartup) {
+        for (const ms of Object.values(metrics)) expect(ms).toBeGreaterThanOrEqual(0);
+      }
+      for(const peer of peers){
+        expect(peer.connectionState).toBe("closed");
+      }
+      if (locked) {
+        expect(approvalsMs).toHaveLength(3);
+        expect(verificationMs).toHaveLength(3);
+        const earlyOffers = await page.evaluate(() => (window as any).offerTimingBeforePanel);
+        expect(earlyOffers).toHaveLength(3);
+        expect(earlyOffers).toContain(true);
+        await expect(page.evaluate(id => (window as any).testApi.openFirebaseSession(id,undefined,false,"wrong-fixture-password"),deviceId)).rejects.toThrow("비밀번호가 일치하지 않습니다");
+        const sessions = await getDocsFromServer(query(collection(agentDb,"sessions"),where("deviceId","==",deviceId)));
+        expect(sessions.docs.map(session => session.id).sort()).toEqual([...starts].sort());
+        expect(starts).toHaveLength(3);
+        expect(peers).toHaveLength(3);
+      }
+      const delivered=(await getDocsFromServer(collection(agentDb,"devices",deviceId,"commands"))).docs;
+      expect(delivered.filter(command=>command.data().action.startsWith("start-stream ")).map(command=>command.data().state)).toEqual(["delivered","delivered","delivered"]);
+      const stages=["connect-click","connect-request","device-validated",...(locked ? ["access-request-queued","access-request-acknowledged","access-approved"] : []),
+        "command-dispatched","offer-queued","frame-received","first-picture"];
+      const samples=timeline.filter(event=>event.stage==="first-picture").map(picture=>{
+        const attempt=timeline.filter(event=>event.attempt===picture.attempt);
+        const required = Object.fromEntries(stages.map(stage=>{
+          const event=attempt.find(event=>event.stage===stage);
+          expect(event,`Timing stage ${stage}`).toBeDefined();
+          return [stage,Math.round(event!.elapsedMs)];
+        }));
+        for (const stage of ["offer-sent","channel-open"]) {
+          const event = attempt.find(event => event.stage === stage);
+          if (event) required[stage] = event.elapsedMs;
+        }
+        return required;
+      });
+      const requestToPictureMs = samples.map(sample => sample["first-picture"] - sample["connect-request"]);
+      const splits = samples.map(sample => {
+        const duration = (from: string, to: string) => {
+          const elapsed = sample[to] - sample[from];
+          expect(elapsed, `${from} to ${to}`).toBeGreaterThanOrEqual(0);
+          return elapsed;
+        };
+        return {
+          freshDevice: duration("connect-request","device-validated"),
+          ...(locked ? {
+            accessQueueToAck: duration("access-request-queued","access-request-acknowledged"),
+            accessAckToApproval: duration("access-request-acknowledged","access-approved"),
+            approvedToSessionAck: duration("access-approved","command-dispatched"),
+          } : {}),
+          sessionAckToOfferQueue: duration("command-dispatched","offer-queued"),
+          // A picture can finish the trace before an offer ACK or the control channel opens.
+          offerQueueToAck: sample["offer-sent"] === undefined ? null : duration("offer-queued","offer-sent"),
+          offerQueueToBothChannelsOpen: sample["channel-open"] === undefined ? null : duration("offer-queued","channel-open"),
+          receivedToPainted: duration("frame-received","first-picture"),
+        };
+      });
+      const iceWrites = await page.evaluate(() => (window as any).fixtureIceCounts);
+      process.stdout.write(`Local connection through Firestore and WebRTC (real inventory: ${realInventory}, locked: ${locked}, ms): ${JSON.stringify({samples,requestToPictureMs,splits,agentStartup,approvalsMs:approvalsMs.slice(0,3),verificationMs,iceWrites})}\n`);
+    } finally {
+      unsubscribe?.();
+      try {
+        await commandWork?.catch(()=>{});
+        await Promise.allSettled([...transports.values()].map(transport=>transport.close()));
+        await Promise.allSettled(peers.map(peer=>peer.close()));
+        await wireBrowser?.close();
+      } finally {
+        localPeerFactory.create=undefined;
+        localFirebaseServices.clear();
+        try { await deleteApp(app); }
+        finally {
+          try {
+            if (lockDirectory) {
+              await rm(join(lockDirectory, "lock.dat"), {force:true});
+              await rmdir(lockDirectory);
+            }
+          } finally {
+            const clear=await fetch(`http://127.0.0.1:${port}/emulator/v1/projects/${projectId}/databases/(default)/documents`,
+              {method:"DELETE",redirect:"error",signal:AbortSignal.timeout(3_000)});
+            expect(clear.ok).toBe(true);
+          }
+        }
+      }
+    }
+  }, 35_000);
+
+  it.skipIf(!process.env.FIRESTORE_EMULATOR_HOST).each([false,true])("measures a searched refresh through an Agent heartbeat and visible rows (grouped: %s)", async grouped => {
+    const address = process.env.FIRESTORE_EMULATOR_HOST!;
+    if (!/^127\.0\.0\.1:\d+$/.test(address)) throw new Error("Expected a loopback Firestore emulator.");
+    const {initializeApp, deleteApp} = await import("firebase/app");
+    const {getFirestore, connectFirestoreEmulator, collection, getDocFromServer, getDocsFromServer, doc, writeBatch, deleteDoc, serverTimestamp} = await import("firebase/firestore");
+    const {fetchFirebaseDevices} = await import("./firebase/viewerFirebase");
+    const {mapFirestoreDevice} = await import("./firebase/firestoreDevice");
+    const {prepareViewerDeviceList} = await import("./domain/viewerDeviceList");
+    const {subscribeAgentCommandsWithFirebase,sendAgentHeartbeatWithFirebase} = await import("./firebase/agentFirebase");
+    const projectId = `demo-refresh-${crypto.randomUUID().slice(0,8)}`, deviceId = "device-0", installId = "timing-install";
+    const selectedIds = grouped ? [deviceId,"device-1","device-2"] : [deviceId];
+    const seededIds = grouped ? [...selectedIds,"device-3"] : selectedIds;
+    const benchmarkIds = grouped ? Array.from({length:61},(_,index)=>`bench-${index}`) : [];
+    const apps: ReturnType<typeof initializeApp>[] = [];
+    const createClient = (appId:string, viewer:boolean) => {
+      const app = initializeApp({projectId,apiKey:"loopback-only",authDomain:"localhost",appId}, appId);
+      apps.push(app);
+      const db = getFirestore(app);
+      const uid = appId;
+      connectFirestoreEmulator(db,"127.0.0.1",Number(address.split(":")[1]),{mockUserToken:{sub:uid,wonremoteViewer:viewer}});
+      localFirebaseServices.set(appId,{db,auth:{currentUser:{uid}}});
+      return {db,uid,env:{VITE_WONREMOTE_FIREBASE_PROJECT_ID:projectId,VITE_WONREMOTE_FIREBASE_API_KEY:"loopback-only",
+        VITE_WONREMOTE_FIREBASE_AUTH_DOMAIN:"localhost",VITE_WONREMOTE_FIREBASE_APP_ID:appId}};
+    };
+    const agentErrors: Error[] = [], replies: string[] = [];
+    let stop: (()=>void) | undefined;
+    let clearFixture: (()=>Promise<void>) | undefined;
+    try {
+      const agent = createClient("timing-agent",false), viewer = createClient("timing-viewer",true);
+      const viewerEnv = {...import.meta.env,...viewer.env};
+      const commandsRef = collection(viewer.db,"devices",deviceId,"commands");
+      clearFixture = async () => {
+        const {docs} = await getDocsFromServer(commandsRef);
+        await Promise.all(docs.map(command=>deleteDoc(command.ref)));
+        const ids = [...seededIds,...benchmarkIds];
+        // Device deletes also read the lock document in the security rules.
+        for (let start=0; start<ids.length; start+=10) {
+          const deletions = writeBatch(viewer.db);
+          for (const id of ids.slice(start,start+10)) deletions.delete(doc(viewer.db,"devices",id));
+          await deletions.commit();
+        }
+      };
+      const seed = writeBatch(agent.db);
+      [...seededIds,...benchmarkIds].forEach((id,index) => seed.set(doc(agent.db,"devices",id),{
+        ownerUid:agent.uid,installId,status:"online",presenceMode:index===0?"manual":"periodic",
+        businessNumber:"123-45-67890",deviceNumber:`AGENT-TIMING-${index}`,desktopName:`PC-${index}`,
+        deviceName:"POS",storeName:grouped&&index<3?"GroupRefresh":"Store",protocolVersion:2,
+        lastSeenAt:serverTimestamp(),lastSeenAtServer:serverTimestamp(),
+      }));
+      await seed.commit();
+      let ready = false;
+      stop = await subscribeAgentCommandsWithFirebase({deviceId,installId,onReady:()=>{ ready = true; }},async commands => {
+        for (const {action} of commands) {
+          const nonce = /^refresh-status ([a-f0-9-]{36})$/.exec(action)?.[1];
+          if (!nonce) throw new Error("Unexpected command in timing fixture.");
+          await sendAgentHeartbeatWithFirebase({deviceId,installId,presenceMode:"manual",heartbeatRequestId:nonce,protocolVersion:2},agent.env);
+          replies.push(nonce);
+        }
+      },error=>agentErrors.push(error),agent.env);
+      await vi.waitFor(() => expect(ready).toBe(true), {timeout:3_000});
+      const samples: number[] = [];
+      for (let attempt=0; attempt<5; attempt++) {
+        const abort = new AbortController();
+        let probe: Promise<ManagedDevice[]> | undefined;
+        const page = await openViewer({manual:true},browser,async page => {
+          if (grouped) await page.evaluate(()=>{
+            const devices = (window as any).testState.devices;
+            devices[0].storeName = devices[1].storeName = devices[2].storeName = "GroupRefresh";
+            devices[1].presenceMode = devices[2].presenceMode = "periodic";
+          });
+        });
+        try {
+          const row = page.locator(".table-row").filter({has:page.getByText("PC-0",{exact:true})});
+          await row.getByText("오프라인",{exact:true}).waitFor();
+          await page.exposeFunction("readLocalRefresh",(known:ManagedDevice[], ids?:string[]) => {
+            expect([...ids!].sort()).toEqual(selectedIds);
+            if (probe) throw new Error("Unexpected duplicate refresh in timing fixture.");
+            probe = (async () => {
+              let delivered = Promise.resolve();
+              let deliveryError: unknown;
+              const result = await fetchFirebaseDevices(viewerEnv,true,abort.signal,(devices,pending) => {
+                delivered = delivered.then(async () => {
+                  if (!abort.signal.aborted) await page.evaluate(value => (window as any).showLocalRefresh(value),{devices,pending});
+                }).catch(error => { deliveryError ??= error; });
+              },known,ids).finally(() => delivered);
+              if (deliveryError) throw deliveryError;
+              expect(result.map(device=>[device.id,device.status]).sort()).toEqual(selectedIds.map(id=>[id,"online"]));
+              return result;
+            })();
+            return probe;
+          });
+          const search = page.getByPlaceholder("매장, 장비, 담당자, 연락처, 메모 검색");
+          await search.fill(grouped?"GroupRefresh":"PC-0");
+          await page.evaluate(() => {
+            const w = window as any;
+            w.testApi.fetchFirebaseDevices = (_env:unknown,_refresh:boolean,signal:AbortSignal,
+              onProgress:(devices:unknown,pending:unknown)=>void,known:unknown,ids:unknown) => {
+              w.showLocalRefresh = ({devices,pending}:{devices:ManagedDevice[];pending:string[]}) => {
+                if (signal.aborted) return;
+                w.refreshNonce = pending.length ? undefined : devices.find(device=>device.id==="device-0")?.heartbeatRequestId;
+                onProgress(devices,pending);
+              };
+              return w.readLocalRefresh(known,ids).finally(() => { w.refreshDone = true; });
+            };
+          });
+          await refresh(page).evaluate((button,grouped) => button.addEventListener("click", () => {
+            const start = performance.now();
+            const w = window as any;
+            const isVisibleOnline = () => {
+              return (grouped ? ["PC-0","PC-1","PC-2"] : ["PC-0"]).every(name => {
+                const row = document.querySelector(`input[aria-label="${name} 선택"]`)?.closest(".table-row");
+                const status = row?.querySelector(".status-pill.online");
+                return Boolean(status?.textContent?.trim() === "온라인" && status.getClientRects().length
+                  && document.visibilityState === "visible");
+              });
+            };
+            const record = () => {
+              if (isVisibleOnline()) {
+                const nonce = w.refreshNonce;
+                requestAnimationFrame(() => {
+                  if (isVisibleOnline()) w.refreshTiming = {ms:performance.now()-start,nonce};
+                  else record();
+                });
+              } else if (performance.now()-start<5_500) requestAnimationFrame(record);
+            };
+            requestAnimationFrame(record);
+          },{capture:true,once:true}),grouped);
+          await refresh(page).click();
+          await row.getByText("온라인",{exact:true}).waitFor();
+          await probe;
+          await page.waitForFunction(() => (window as any).refreshTiming);
+          const sample:{ms:number;nonce?:string} = await page.evaluate(() => (window as any).refreshTiming);
+          samples.push(sample.ms);
+          await expect.poll(() => replies.length).toBe(attempt+1);
+          expect(sample.nonce).toBe(replies[attempt]);
+          await page.waitForFunction(() => (window as any).refreshDone);
+          if (grouped) {
+            await search.fill("");
+            await page.locator(".table-row").filter({has:page.getByText("PC-3",{exact:true})}).getByText("오프라인",{exact:true}).waitFor();
+          }
+        } finally {
+          abort.abort();
+          await probe?.catch(() => {});
+          await page.close();
+        }
+      }
+      expect(agentErrors).toEqual([]);
+      expect(new Set(replies).size).toBe(5);
+      const commands = (await getDocsFromServer(commandsRef)).docs;
+      expect(commands.map(command=>command.data().state)).toEqual(Array(5).fill("delivered"));
+      const [first, ...warm] = samples.map(ms=>Math.round(ms));
+      process.stdout.write(`Local searched refresh click to visible rows (grouped: ${grouped}, ms): first=${first}; warm=${warm.join(", ")}\n`);
+      if (grouped) {
+        const baseline = async () => {
+          const snapshots = await Promise.all(benchmarkIds.map(id=>getDocFromServer(doc(viewer.db,"devices",id))));
+          const rows = snapshots.flatMap(snapshot=>snapshot.exists()?[mapFirestoreDevice(snapshot.id,snapshot.data())]:[]);
+          return prepareViewerDeviceList(rows,new Date().toISOString()).map(device=>device.id);
+        };
+        const groupedRead = async () => (await fetchFirebaseDevices(viewerEnv,false,undefined,undefined,[],benchmarkIds)).map(device=>device.id);
+        const timed = async (read:()=>Promise<string[]>) => {
+          const start = performance.now();
+          const ids = await read();
+          const elapsed = Math.round(performance.now()-start);
+          expect(ids.sort()).toEqual([...benchmarkIds].sort());
+          return elapsed;
+        };
+        const pairs = [];
+        for (let index=0; index<5; index++) {
+          if (index%2===0) pairs.push({individual:await timed(baseline),batched:await timed(groupedRead)});
+          else {
+            const batched = await timed(groupedRead);
+            pairs.push({individual:await timed(baseline),batched});
+          }
+        }
+        process.stdout.write(`Local 61-ID server lookup comparison (ms, excludes UI and heartbeat): ${JSON.stringify(pairs)}\n`);
+      }
+    } finally {
+      stop?.();
+      try { await clearFixture?.(); }
+      finally {
+        localFirebaseServices.clear();
+        await Promise.all(apps.map(app=>deleteApp(app)));
+      }
+    }
+  }, 30_000);
+
+  it("measures a 1080p pointer round trip through visible pixels", async () => {
+    const {wireViewerToLocalPeer} = await import("./firebase/browserRtcFixture");
+    const wireBrowser = await chromium.launch({headless:true,args:["--allow-loopback-in-peer-connection","--disable-features=WebRtcHideLocalIpsWithMdns"]});
+    let wire: Awaited<ReturnType<typeof wireViewerToLocalPeer>> | undefined;
+    try {
+      const page = await openViewer({connected:true},wireBrowser);
+      const colors = [[40,180,210],[210,70,40],[80,210,90],[165,85,210],[210,160,40],[50,100,220]];
+      const {base, markers} = await page.evaluate(colors => {
+        const width=1920,height=1080;
+        const source = document.createElement("canvas");
+        const tile = (x:number,y:number,w:number,h:number,color:string) => {
+          source.width=w;source.height=h;
+          const ctx=source.getContext("2d")!;
+          ctx.fillStyle=color;ctx.fillRect(0,0,w,h);
+          return {x:x/32,y:y/32,w,h,data:source.toDataURL("image/jpeg").split(",")[1]};
+        };
+        const tiles = [tile(0,0,960,544,"#142030"),tile(960,0,960,544,"#142030"),
+          tile(0,544,960,536,"#142030"),tile(960,544,960,536,"#142030")];
+        return {base:{sequence:1,keyframe:true,width,height,tiles},markers:colors.map(rgb=>tile(0,0,32,32,`rgb(${rgb.join(",")})`))};
+      },colors);
+      type Echo = {index:number; expectedX:number; peerAt?:number; sent?:string};
+      let armed: Echo | null = null;
+      wire = await wireViewerToLocalPeer(page,[base],(action,peer,receivedAt)=>{
+        if (!armed || Math.abs(Number(action.split(" ")[1])-armed.expectedX)>200) return;
+        const echo=armed;
+        armed=null;
+        echo.peerAt=receivedAt;
+        echo.sent=wire!.sendFrame(peer,{...base,keyframe:false,sequence:echo.index+2,tiles:[markers[echo.index]]});
+      });
+      await page.locator(".table-row").filter({has:page.getByText("PC-0",{exact:true})})
+        .getByRole("button",{name:"접속",exact:true}).click();
+      await page.getByText("Store · 화면 수신 중",{exact:true}).waitFor();
+      expect(wire.framesSent).toEqual(["sent"]);
+      const canvas = page.locator(".remote-canvas");
+      const box=(await canvas.boundingBox())!;
+      const timings: {inputToPeerMs:number;peerToPictureMs:number;inputToPictureMs:number}[]=[];
+      for (const [index,color] of colors.entries()) {
+        const fraction=.20+index*.11;
+        const echo: Echo={index,expectedX:Math.round(fraction*65535)};
+        armed=echo;
+        const painted=canvas.evaluate(async (node,color)=>{
+          const ctx=(node as HTMLCanvasElement).getContext("2d")!;
+          const deadline=performance.now()+2500;
+          while(performance.now()<deadline) {
+            await new Promise(requestAnimationFrame);
+            const pixel=ctx.getImageData(1,1,1,1).data;
+            if (!color.every((value,index)=>Math.abs(pixel[index]-value)<8)) continue;
+            await new Promise(requestAnimationFrame);
+            return Date.now();
+          }
+          throw new Error("The pointer's picture update never reached the visible canvas.");
+        },color);
+        const sentAt=Date.now();
+        const [visibleAt]=await Promise.all([painted,page.mouse.move(box.x+box.width*fraction,box.y+box.height/2)]);
+        expect(echo.sent).toBe("sent");
+        expect(echo.peerAt).toBeDefined();
+        expect(visibleAt).toBeGreaterThanOrEqual(echo.peerAt!);
+        timings.push({inputToPeerMs:echo.peerAt!-sentAt,peerToPictureMs:visibleAt-echo.peerAt!,inputToPictureMs:visibleAt-sentAt});
+      }
+      process.stdout.write(`1080p visible pointer response: ${JSON.stringify(timings)}\n`);
+    } finally {
+      try { await wire?.close(); }
+      finally { await wireBrowser.close(); }
+    }
+  },15_000);
+
+  it("measures a dropped 1080p pointer picture through the Agent repair and Viewer canvas", async () => {
+    const { captureStartup } = await import("./agent/captureStartupFixture");
+    const { wireViewerToLocalPeer } = await import("./firebase/browserRtcFixture");
+    const wireBrowser = await chromium.launch({ headless: true, args: ["--allow-loopback-in-peer-connection", "--disable-features=WebRtcHideLocalIpsWithMdns"] });
+    let wire: Awaited<ReturnType<typeof wireViewerToLocalPeer>> | undefined;
+    let captureWork: Promise<void> | undefined;
+    let cancelCaptureRepair: (() => void) | undefined;
+    type Sample = { peerAt?: number; recoveryAt?: number; recoveredOnProgress?: boolean; expectedX: number; index: number; pressureAfterSend: number; sends: string[] };
+    let armed: Sample | undefined;
+    try {
+      const page = await openViewer({ connected: true }, wireBrowser);
+      const colors = [[200, 60, 40], [60, 200, 40]];
+      const { base, cases, progressTile } = await page.evaluate(colors => {
+        const width = 1920, height = 1080;
+        const source = document.createElement("canvas");
+        const tile = (x: number, y: number, w: number, h: number, color: string) => {
+          source.width = w; source.height = h;
+          const ctx = source.getContext("2d")!;
+          ctx.fillStyle = color;
+          ctx.fillRect(0, 0, w, h);
+          return { x: x / 32, y: y / 32, w, h, data: source.toDataURL("image/jpeg").split(",")[1] };
+        };
+        const tiles = [tile(0, 0, 960, 544, "#142030"), tile(960, 0, 960, 544, "#142030"),
+          tile(0, 544, 960, 536, "#142030"), tile(960, 544, 960, 536, "#142030")];
+        return { base: { sequence: 1, keyframe: true, width, height, tiles }, progressTile: tile(32, 0, 32, 32, "#80a0d0"),
+          cases: colors.map(color => ({ color, picture: [tile(0, 0, 960, 544, `rgb(${color.join(",")})`), ...tiles.slice(1)],
+            skipped: tile(0, 0, 32, 32, `rgb(${color.join(",")})`) })) };
+      }, colors);
+      const { start, stdoutHandlers, context } = captureStartup();
+      await start("device-0", "local-picture-repair");
+      cancelCaptureRepair = () => {
+        if (context.keyframeRetryTimer !== null) clearTimeout(context.keyframeRetryTimer);
+        context.keyframeRetryTimer = null;
+      };
+      context.streamFrameSequence = base.sequence;
+      const receiveCapture = (tiles: typeof base.tiles, keyframe = false) => stdoutHandlers[0](JSON.stringify({
+        type: "frame", width: base.width, height: base.height, keyframe, tiles,
+      }));
+      let queuedBytes = 0;
+      Object.assign(context, { webRtcTransport: {
+        sendFrame: (frame: typeof base, maxBufferedAmount?: number) => {
+          const result = wire!.sendFrame(0, frame, { queuedBytes, maxBufferedAmount });
+          armed?.sends.push(result);
+          return result;
+        },
+        getBufferedAmount: () => queuedBytes,
+      } });
+      context.writeCaptureControl.mockImplementation((_input, command, _fail, written) => {
+        const sample = armed;
+        if (!sample) return false;
+        if (command !== "request-keyframe\n" || sample.recoveryAt !== undefined) throw new Error("Unexpected capture repair request");
+        sample.recoveryAt = Date.now();
+        written?.();
+        void receiveCapture(cases[sample.index].picture, true);
+        return true;
+      });
+      wire = await wireViewerToLocalPeer(page, [base], (action, _peer, receivedAt) => {
+        const sample = armed;
+        if (!sample || sample.peerAt !== undefined || Math.abs(Number(action.split(" ")[1]) - sample.expectedX) > 200) return;
+        sample.peerAt = receivedAt;
+        captureWork = (async () => {
+          queuedBytes = 512 * 1024;
+          await receiveCapture([cases[sample.index].skipped]);
+          await new Promise(resolve => setTimeout(resolve, 32));
+          queuedBytes = sample.pressureAfterSend;
+          const alreadyRequested = sample.recoveryAt !== undefined;
+          await receiveCapture([progressTile]);
+          sample.recoveredOnProgress = !alreadyRequested && sample.recoveryAt !== undefined;
+        })();
+      });
+      await page.locator(".table-row").filter({ has: page.getByText("PC-0", { exact: true }) })
+        .getByRole("button", { name: "접속", exact: true }).click();
+      await page.getByText("Store · 화면 수신 중", { exact: true }).waitFor();
+      await expect.poll(() => wire!.controls.includes("request-keyframe")).toBe(true);
+      const canvas = page.locator(".remote-canvas");
+      const box = (await canvas.boundingBox())!;
+      const timings: { repairRequestMs: number; playwrightCallToCanvasMs: number }[] = [];
+      for (const [index, pressureAfterSend] of [400 * 1024, 16 * 1024].entries()) {
+        // Measure independent drops, not two drops within one recovery cooldown.
+        if (index) await new Promise(resolve => setTimeout(resolve, 250));
+        const fraction = .20 + index * .29;
+        const sample: Sample = { expectedX: Math.round(fraction * 65535), index, pressureAfterSend, sends: [] };
+        armed = sample;
+        const painted = canvas.evaluate(async (node, color) => {
+          const ctx = (node as HTMLCanvasElement).getContext("2d")!;
+          const deadline = performance.now() + 2_500;
+          while (performance.now() < deadline) {
+            await new Promise(requestAnimationFrame);
+            const pixel = ctx.getImageData(1, 1, 1, 1).data;
+            if (!color.every((value, i) => Math.abs(pixel[i] - value) < 8)) continue;
+            await new Promise(requestAnimationFrame);
+            return Date.now();
+          }
+          throw new Error("The missed pointer picture did not recover.");
+        }, cases[index].color);
+        const playwrightCallAt = Date.now();
+        const [visibleAt] = await Promise.all([painted, page.mouse.move(box.x + box.width * fraction, box.y + box.height / 2)]);
+        await captureWork;
+        expect(sample.peerAt).toBeDefined();
+        expect(sample.recoveryAt).toBeDefined();
+        expect(sample.sends).toEqual(["backpressure", "sent", "sent"]);
+        expect(sample.recoveredOnProgress).toBe(index === 1);
+        expect(visibleAt).toBeGreaterThanOrEqual(sample.recoveryAt!);
+        timings.push({ repairRequestMs: sample.recoveryAt! - sample.peerAt!, playwrightCallToCanvasMs: visibleAt - playwrightCallAt });
+      }
+      process.stdout.write(`1080p dropped picture recovery (deadline, early): ${JSON.stringify(timings)}\n`);
+      expect(context.writeCaptureControl).toHaveBeenCalledTimes(2);
+    } finally {
+      armed = undefined;
+      try { await captureWork; }
+      finally {
+        cancelCaptureRepair?.();
+        try { await wire?.close(); }
+        finally { await wireBrowser.close(); }
+      }
+    }
+  }, 15_000);
+
+  it("shows distinct late 1080p pixels even when a complete packet overtakes eight fragmented pictures", async () => {
+    const { wireViewerToLocalPeer } = await import("./firebase/browserRtcFixture");
+    const { WEBRTC_TILE_CHANNEL_LABEL } = await import("./domain/webrtcControl");
+    const wireBrowser = await chromium.launch({ headless: true, args: ["--allow-loopback-in-peer-connection", "--disable-features=WebRtcHideLocalIpsWithMdns"] });
+    let wire: Awaited<ReturnType<typeof wireViewerToLocalPeer>> | undefined;
+    try {
+      const page = await openViewer({ connected: true }, wireBrowser);
+      const { base, markers } = await page.evaluate(label => {
+        const create = RTCPeerConnection.prototype.createDataChannel;
+        const sequences: number[] = (window as any).receivedTileSequences = [];
+        RTCPeerConnection.prototype.createDataChannel = function(name, options) {
+          const channel = create.call(this, name, options);
+          if (name === label) channel.addEventListener("message", ({ data }) => { sequences.push(JSON.parse(data).sequence); });
+          return channel;
+        };
+        const width = 1920, height = 1080;
+        const source = document.createElement("canvas");
+        const tile = (x: number, w: number, h: number, color: string) => {
+          source.width = w; source.height = h;
+          const ctx = source.getContext("2d")!;
+          ctx.fillStyle = color; ctx.fillRect(0, 0, w, h);
+          return { x, y: 0, w, h, data: source.toDataURL("image/jpeg").split(",")[1] };
+        };
+        return { base: { sequence: 1, keyframe: true, width, height, tiles: [tile(0, width, height, "#000000")] },
+          markers: [tile(0, 32, 32, "#ff0000"), tile(1, 32, 32, "#00ff00"), tile(2, 32, 32, "#0000ff")] };
+      }, WEBRTC_TILE_CHANNEL_LABEL);
+      wire = await wireViewerToLocalPeer(page, [base]);
+      await page.locator(".table-row").filter({ has: page.getByText("PC-0", { exact: true }) })
+        .getByRole("button", { name: "접속", exact: true }).click();
+      await page.getByText("Store · 화면 수신 중", { exact: true }).waitFor();
+      const send = (sequence: number, frameChunkCount: number, frameChunkIndex: number, index: number) =>
+        wire!.sendTilePacket(0, { ...base, keyframe: false, sequence, frameChunkCount, frameChunkIndex, tiles: [markers[index]] });
+      const pixels = () => page.locator(".remote-canvas").evaluate(node => {
+        const context = (node as HTMLCanvasElement).getContext("2d")!;
+        return [1, 33, 65].map(x => Array.from(context.getImageData(x, 1, 1, 1).data.slice(0, 3)).findIndex(channel => channel > 240));
+      });
+      for (let sequence = 2; sequence <= 9; sequence++) send(sequence, 2, 0, 0);
+      // Observe delivery, since the real tile channel is unordered.
+      await expect.poll(() => page.evaluate(() => (window as any).receivedTileSequences.filter((n: number) => n >= 2 && n <= 9).length)).toBe(8);
+      send(10, 1, 0, 2);
+      await expect.poll(pixels).toEqual([-1, -1, 2]);
+      send(2, 2, 1, 1);
+      await expect.poll(pixels).toEqual([0, 1, 2]);
+    } finally {
+      try { await wire?.close(); }
+      finally { await wireBrowser.close(); }
+    }
+  }, 15_000);
+
+  it.each([1920,3840])("measures a %i-wide picture and sends input over an actual local WebRTC channel", async width => {
+    const height = width * 9 / 16;
+    const is4k = width === 3840;
+    const useSwap = is4k ? [false,true,true,false] : [true,true,true];
+    const {wireViewerToLocalPeer} = await import("./firebase/browserRtcFixture");
+    const wireBrowser = await chromium.launch({headless:true,args:["--allow-loopback-in-peer-connection","--disable-features=WebRtcHideLocalIpsWithMdns"]});
+    let wire: Awaited<ReturnType<typeof wireViewerToLocalPeer>> | undefined;
+    try {
+      const page = await openViewer({connected:true},wireBrowser);
+      const viewerCpu = await page.context().newCDPSession(page);
+      const mouseDriver = is4k ? await page.context().newCDPSession(page) : null;
+      await page.evaluate(() => {
+        const sources = new WeakSet<HTMLCanvasElement>();
+        const counts = { copies: 0, surfaces: 0 };
+        (window as any).wireStagingProof = counts;
+        const drawImage = CanvasRenderingContext2D.prototype.drawImage;
+        CanvasRenderingContext2D.prototype.drawImage = function (this: CanvasRenderingContext2D, ...args: unknown[]) {
+          Reflect.apply(drawImage, this, args);
+          const source = args[0];
+          if (source instanceof HTMLCanvasElement && this.canvas.matches(".remote-canvas,.remote-picture-alternate")) {
+            counts.copies++;
+            if (!sources.has(source)) {
+              sources.add(source);
+              counts.surfaces++;
+            }
+          }
+        };
+      });
+      if (is4k) await page.evaluate(() => {
+        const getContext = HTMLCanvasElement.prototype.getContext;
+        HTMLCanvasElement.prototype.getContext = function (this: HTMLCanvasElement, ...args: unknown[]) {
+          if ((window as any).loopbackDisableAlternate && args[0] === "2d" && this.classList.contains("remote-picture-alternate")) return null;
+          return Reflect.apply(getContext,this,args);
+        };
+        document.addEventListener("pointermove",event => {
+          if (event.isTrusted && event.target instanceof HTMLCanvasElement && event.target.classList.contains("remote-canvas")) {
+            (window as any).wireTrustedMoves?.push({x:event.clientX,receivedAt:Date.now()});
+          }
+        },true);
+      });
+      const palettes = [[[215,33,51],[25,85,212]],[[41,212,85],[228,196,25]],[[156,53,199],[38,209,196]]];
+      const frames = await page.evaluate(({palettes,width,height}) => palettes.map(([left,right]) => {
+        const size = width / 15;
+        const source = document.createElement("canvas");
+        const tiles = [];
+        for (let y = 0; y < height; y += size) {
+          for (let x = 0; x < width; x += size) {
+            const w = Math.min(size,width-x), h = Math.min(size,height-y);
+            source.width = w; source.height = h;
+            const ctx = source.getContext("2d")!;
+            ctx.fillStyle = `rgb(${(x < width / 2 ? left : right).join(",")})`;
+            ctx.fillRect(0,0,w,h);
+            tiles.push({x:x/32,y:y/32,w,h,data:source.toDataURL("image/jpeg").split(",")[1]});
+          }
+        }
+        return {sequence:1,keyframe:true,width,height,tiles};
+      }),{palettes,width,height});
+      wire = await wireViewerToLocalPeer(page,is4k ? useSwap.map(() => frames[0]) : frames);
+      await page.evaluate(() => {
+        const prefix = "[ConnectionTiming] ";
+        const original = console.info.bind(console);
+        const proof: unknown[] = [];
+        (window as any).wirePixelProof = proof;
+        console.info = (value,...rest) => {
+          if (typeof value === "string" && value.startsWith(prefix)) {
+            const timing = JSON.parse(value.slice(prefix.length));
+            if (timing.stage === "first-picture") {
+              const canvas = document.querySelector<HTMLCanvasElement>(".session-panel:not(.session-panel-inactive) .remote-canvas");
+              const ctx = canvas?.getContext("2d");
+              proof.push({
+                attempt:timing.attempt,width:canvas?.width,height:canvas?.height,
+                visible:Boolean(canvas?.getClientRects().length && getComputedStyle(canvas).visibility === "visible"),
+                pixels:ctx && canvas ? [[1,1],[canvas.width-2,canvas.height-2]].map(([x,y])=>Array.from(ctx.getImageData(x,y,1,1).data).slice(0,3)) : [],
+              });
+            }
+          }
+          original(value,...rest);
+        };
+      });
+      const timing: {attempt:number;stage:string;elapsedMs:number}[] = [];
+      page.on("console",message => {
+        const prefix = "[ConnectionTiming] ";
+        if (message.text().startsWith(prefix)) timing.push(JSON.parse(message.text().slice(prefix.length)));
+      });
+      const row = page.locator(".table-row").filter({has:page.getByText("PC-0",{exact:true})});
+      const canvas = page.locator(".remote-canvas");
+      for (const [index, canSwap] of useSwap.entries()) {
+        const round = index + 1;
+        const basePicture = is4k ? 0 : index;
+        if (is4k) await page.evaluate(canSwap => { (window as any).loopbackDisableAlternate = !canSwap; },canSwap);
+        await row.getByRole("button",{name:"접속",exact:true}).click();
+        await expect.poll(() => timing.filter(stage=>stage.stage==="first-picture").length,{timeout:6_000}).toBe(round);
+        const picture = timing.filter(stage=>stage.stage==="first-picture")[round-1];
+        const proof = await page.evaluate(round => (window as any).wirePixelProof[round-1],round);
+        expect(proof).toMatchObject({attempt:picture.attempt,width,height,visible:true});
+        expect(proof.pixels).toHaveLength(2);
+        palettes[basePicture].forEach((color,index)=>color.forEach((value,channel)=>{
+          expect(Math.abs(proof.pixels[index][channel]-value)).toBeLessThan(8);
+        }));
+        {
+          const cpuSlowdown = is4k || round === 3 ? 4 : 1;
+          if (cpuSlowdown > 1) await viewerCpu.send("Emulation.setCPUThrottlingRate", {rate:cpuSlowdown});
+          const box = (await canvas.boundingBox())!;
+          const x = box.x+box.width/4, y = box.y+box.height/3;
+          const beforeMove = wire.motionReceipts.length;
+          await page.mouse.move(x,y);
+          await expect.poll(() => wire!.motionReceipts.length).toBeGreaterThan(beforeMove);
+          const move = wire.controls.filter(action=>action.startsWith("move ")).pop()!.split(" ").slice(1).map(Number);
+          expect(Math.abs(move[0]-16384)).toBeLessThan(200);
+          expect(Math.abs(move[1]-21845)).toBeLessThan(200);
+          const firstReceipt = wire.motionReceipts.length;
+          const beforeStaging: { copies: number; surfaces: number } = await page.evaluate(() => (window as any).wireStagingProof);
+          let deltaSequence = 1, deltasSent = 0;
+          const alternate = frames.filter((_, index) => index !== basePicture);
+          const deltaTiles = alternate.map(frame => is4k || round > 1 ? frame.tiles : frame.tiles.slice(0, 1));
+          const timer = setInterval(() => {
+            const tiles = deltaTiles[Math.floor(deltasSent / 4) % deltaTiles.length];
+            if (wire!.sendFrame(round - 1, { ...frames[basePicture], tiles, keyframe: false, sequence: ++deltaSequence }) === "sent") deltasSent++;
+          }, 33);
+          const rendererSweep = () => canvas.evaluate(async element => {
+            const bounds = element.getBoundingClientRect();
+            const inputs: { action: string; sentAt: number }[] = [];
+            const rgbDuringSweep: number[][] = [];
+            for (let index = 0; index < 60; index++) {
+              await new Promise(requestAnimationFrame);
+              const clientX = bounds.left + bounds.width * (0.15 + index / 100);
+              const clientY = bounds.top + bounds.height / 2;
+              const event = new PointerEvent("pointermove", { clientX, clientY, pointerType: "mouse", pointerId: 1, bubbles: true });
+              const dx = Math.round((event.clientX - bounds.left) / bounds.width * 65535);
+              const dy = Math.round((event.clientY - bounds.top) / bounds.height * 65535);
+              inputs.push({ action: `move ${dx} ${dy}`, sentAt: Date.now() });
+              element.dispatchEvent(event);
+              if (index % 5 === 4) {
+                const shown = element.parentElement?.dataset.pictureBuffer === "alternate"
+                  ? element.parentElement.querySelector<HTMLCanvasElement>(".remote-picture-alternate")! : element as HTMLCanvasElement;
+                rgbDuringSweep.push(Array.from(shown.getContext("2d")!.getImageData(1, 1, 1, 1).data));
+              }
+            }
+            return { inputs, rgbDuringSweep };
+          });
+          let browserIngress: { received: number; p95Ms: number } | undefined;
+          const trustedSweep = async () => {
+            if (!mouseDriver) return rendererSweep();
+            await page.evaluate(() => { (window as any).wireTrustedMoves = []; });
+            const inputs: { action: string; sentAt: number }[] = [];
+            const timestamps = new Map<number,number>();
+            const sends: Promise<unknown>[] = [];
+            const pixels: Promise<number[] | Error>[] = [];
+            const clientY = Math.round(box.y + box.height / 2);
+            const dy = Math.round((clientY - box.y) / box.height * 65535);
+            for (let index = 0; index < 60; index++) {
+              const clientX = Math.round(box.x + box.width * (0.15 + index / 100));
+              const dx = Math.round((clientX - box.x) / box.width * 65535);
+              const sentAt = Date.now();
+              inputs.push({action:`move ${dx} ${dy}`,sentAt});
+              timestamps.set(clientX,sentAt);
+              sends.push(mouseDriver.send("Input.dispatchMouseEvent",{type:"mouseMoved",x:clientX,y:clientY}).catch(error=>error));
+              if (index % 5 === 4) pixels.push(canvas.evaluate(element => {
+                const shown = element.parentElement?.dataset.pictureBuffer === "alternate"
+                  ? element.parentElement.querySelector<HTMLCanvasElement>(".remote-picture-alternate")! : element as HTMLCanvasElement;
+                return Array.from(shown.getContext("2d")!.getImageData(1,1,1,1).data);
+              }).catch(error=>error));
+              if (index < 59) await new Promise(resolve=>setTimeout(resolve,16));
+            }
+            for (const result of await Promise.all(sends)) if (result instanceof Error) throw result;
+            const rgbDuringSweep = (await Promise.all(pixels)).map(result => {
+              if (result instanceof Error) throw result;
+              return result;
+            });
+            const browserMoves: {x:number;receivedAt:number}[] = await page.evaluate(() => {
+              const w = window as any, trace = w.wireTrustedMoves;
+              delete w.wireTrustedMoves;
+              return trace;
+            });
+            const ingressTimes = browserMoves.flatMap(event => timestamps.has(event.x) ? [event.receivedAt - timestamps.get(event.x)!] : []).sort((a,b)=>a-b);
+            expect(ingressTimes.length).toBeGreaterThan(0);
+            browserIngress = {received:ingressTimes.length,p95Ms:ingressTimes[Math.ceil(ingressTimes.length * .95)-1]};
+            return {inputs,rgbDuringSweep};
+          };
+          const { inputs, rgbDuringSweep } = await trustedSweep().finally(() => clearInterval(timer));
+          const lastInput = inputs[inputs.length - 1];
+          await expect.poll(() => wire!.motionReceipts[wire!.motionReceipts.length - 1]?.action).toBe(lastInput.action);
+          const receipts = wire.motionReceipts.slice(firstReceipt);
+          const inputIndex = new Map(inputs.map((input, index) => [input.action, index]));
+          const delivered = receipts.map(receipt => inputIndex.get(receipt.action)!);
+          // The artificial slowdown measures degradation, not a hardware performance gate.
+          expect(delivered.length).toBeGreaterThanOrEqual(cpuSlowdown === 1 ? 45 : 2);
+          expect(delivered.every((index, position) => Number.isInteger(index) && (!position || index > delivered[position - 1]))).toBe(true);
+          expect(deltasSent).toBeGreaterThan(15);
+          for (const [expected] of palettes.filter((_, index) => index !== basePicture)) {
+            expect(rgbDuringSweep.some(rgb => expected.every((channel, index) => Math.abs(channel - rgb[index]) < 8))).toBe(true);
+          }
+          const afterStaging: typeof beforeStaging = await page.evaluate(() => (window as any).wireStagingProof);
+          const delays = receipts.map((receipt, index) => receipt.receivedAt - inputs[delivered[index]].sentAt).sort((a, b) => a - b);
+          const gaps = receipts.slice(1).map((receipt, index) => receipt.receivedAt - receipts[index].receivedAt);
+          const dispatchGaps = inputs.slice(1).map((input,index) => input.sentAt-inputs[index].sentAt);
+          process.stdout.write(`Local pointer during picture tiles: ${JSON.stringify({ width, canSwap, cpuSlowdown, tilesPerFrame: deltaTiles[0].length, sent: inputs.length, received: receipts.length, deltasSent,
+            sweepMs: lastInput.sentAt - inputs[0].sentAt,browserIngress,
+            medianMs: delays[Math.floor(delays.length / 2)], p95Ms: delays[Math.ceil(delays.length * 0.95) - 1], maxDispatchGapMs:Math.max(...dispatchGaps), maxReceiptGapMs: Math.max(...gaps),
+            stagingCopies: afterStaging.copies - beforeStaging.copies, stagingSurfaces: afterStaging.surfaces - beforeStaging.surfaces })}\n`);
+          if (is4k || round > 1) {
+            const copies = afterStaging.copies - beforeStaging.copies;
+            if (canSwap) expect(copies).toBe(0);
+            else expect(copies).toBeGreaterThan(2);
+          }
+          if (!is4k && round === 2) {
+            const inspectPicture = () => canvas.evaluate(node => {
+              const base = node as HTMLCanvasElement;
+              const parent = base.parentElement!;
+              const buffer = parent.dataset.pictureBuffer;
+              const alternate = parent.querySelector<HTMLCanvasElement>(".remote-picture-alternate")!;
+              const shown = buffer === "alternate" ? alternate : base;
+              const picture = shown.getContext("2d")!;
+              const rect = shown.getBoundingClientRect();
+              const input = base.getBoundingClientRect();
+              const standby = alternate.getBoundingClientRect();
+              const alternateStyle = getComputedStyle(alternate);
+              const sameBounds = (other: DOMRect) => [other.x,other.y,other.width,other.height]
+                .every((value,index)=>value === [input.x,input.y,input.width,input.height][index]);
+              return { buffer, pixels: [[1,1],[shown.width-2,shown.height-2]].map(([x,y])=>Array.from(picture.getImageData(x,y,1,1).data).slice(0,3)),
+                displayed: getComputedStyle(shown).opacity === "1" && (shown === base || getComputedStyle(base).opacity === "0"),
+                aligned: sameBounds(rect),
+                standbyStable: buffer ? sameBounds(standby) && alternateStyle.visibility === (buffer === "alternate" ? "visible" : "hidden")
+                  : alternateStyle.display === "none",
+                hitInput: document.elementFromPoint(input.x+input.width/2,input.y+input.height/2) === base };
+            });
+            const beforeFailure = await inspectPicture();
+            expect(beforeFailure.buffer).toMatch(/^(primary|alternate)$/);
+            expect(beforeFailure).toMatchObject({aligned:true,hitInput:true,displayed:true,standbyStable:true});
+            await canvas.evaluate(node => {
+              const base = node as HTMLCanvasElement;
+              const parent = base.parentElement!;
+              const back = parent.dataset.pictureBuffer === "alternate" ? base : parent.querySelector<HTMLCanvasElement>(".remote-picture-alternate")!;
+              const context = back.getContext("2d", { willReadFrequently:true })!;
+              const draw = context.drawImage;
+              context.drawImage = function (...args: unknown[]) {
+                Reflect.deleteProperty(context,"drawImage");
+                Reflect.apply(draw,context,args);
+                throw new Error("Stop after a partial back-buffer draw");
+              };
+            });
+            const sendPicture = (tiles = frames[round-1].tiles, keyframe = false) => {
+              expect(wire!.sendFrame(round - 1,{...frames[round-1],tiles,keyframe,sequence:++deltaSequence})).toBe("sent");
+            };
+            const retryPicture = page.getByRole("button",{name:"원격 연결 새로고침"});
+            sendPicture();
+            await expect.poll(() => retryPicture.isEnabled()).toBe(true);
+            expect(await inspectPicture()).toEqual(beforeFailure);
+            sendPicture(frames[round-1].tiles.slice(0,1));
+            await expect.poll(async () => (await inspectPicture()).pixels[0][1]).toBeGreaterThan(200);
+            expect(await inspectPicture()).toMatchObject({buffer:beforeFailure.buffer,pixels:[expect.any(Array),beforeFailure.pixels[1]]});
+
+            await page.getByRole("button",{name:"화면 확대",exact:true}).click();
+            expect(await inspectPicture()).toMatchObject({aligned:true,hitInput:true});
+            const dragBox = (await canvas.boundingBox())!;
+            const dragStart = wire.controls.length;
+            await page.mouse.move(dragBox.x+dragBox.width*.35, dragBox.y+dragBox.height*.35);
+            await page.mouse.down();
+            sendPicture();
+            await expect.poll(() => retryPicture.isEnabled()).toBe(false);
+            expect(await inspectPicture()).toMatchObject({buffer:beforeFailure.buffer === "alternate" ? "primary" : "alternate",aligned:true,hitInput:true,standbyStable:true});
+            await page.mouse.move(dragBox.x+dragBox.width*.6, dragBox.y+dragBox.height*.55);
+            await page.mouse.up();
+            await expect.poll(() => wire!.controls.slice(dragStart).filter(action => /^(mouse-down|mouse-up) /.test(action)).map(action=>action.split(" ")[0]))
+              .toEqual(["mouse-down","mouse-up"]);
+            const release = wire.controls.slice(dragStart).find(action=>action.startsWith("mouse-up "))!.split(" ").slice(1,3).map(Number);
+            expect(Math.abs(release[0]-39321)).toBeLessThan(200);
+            expect(Math.abs(release[1]-36044)).toBeLessThan(200);
+            if ((await inspectPicture()).buffer !== "alternate") {
+              sendPicture();
+              await expect.poll(async () => (await inspectPicture()).buffer).toBe("alternate");
+            }
+            const originalViewport = page.viewportSize()!;
+            await page.setViewportSize({width:2300,height:1400});
+            await page.getByRole("button",{name:"전체화면",exact:true}).click();
+            await expect.poll(async () => (await canvas.boundingBox())?.width ?? 0).toBeGreaterThan(1920);
+            await expect.poll(async () => (await inspectPicture()).aligned).toBe(true);
+            expect(await inspectPicture()).toMatchObject({buffer:"alternate",hitInput:true,displayed:true});
+            await page.getByRole("button",{name:"창모드",exact:true}).click();
+            await page.setViewportSize(originalViewport);
+            const resizedTile = await page.evaluate(() => {
+              const source = document.createElement("canvas");
+              source.width = 768;
+              source.height = 1024;
+              const context = source.getContext("2d")!;
+              context.fillStyle = "#ff9900";
+              context.fillRect(0,0,source.width,source.height);
+              return { x:0,y:0,w:source.width,h:source.height,data:source.toDataURL("image/png").split(",")[1] };
+            });
+            const sendResizedPicture = () => expect(wire!.sendFrame(round - 1,{sequence:++deltaSequence,width:768,height:1024,keyframe:true,tiles:[resizedTile]})).toBe("sent");
+            const intact = await inspectPicture();
+            await canvas.evaluate(node => {
+              const context = (node as HTMLCanvasElement).getContext("2d")!;
+              context.isContextLost = () => true;
+              context.drawImage = () => {};
+            });
+            sendResizedPicture();
+            await expect.poll(() => retryPicture.isEnabled()).toBe(true);
+            expect(await inspectPicture()).toEqual(intact);
+            expect(await canvas.evaluate(node => [(node as HTMLCanvasElement).width,(node as HTMLCanvasElement).height])).toEqual([1920,1080]);
+            await canvas.evaluate(node => {
+              const context = (node as HTMLCanvasElement).getContext("2d")!;
+              Reflect.deleteProperty(context,"isContextLost");
+              Reflect.deleteProperty(context,"drawImage");
+            });
+            sendResizedPicture();
+            await expect.poll(() => canvas.evaluate(node => [(node as HTMLCanvasElement).width,(node as HTMLCanvasElement).height])).toEqual([768,1024]);
+            expect(await inspectPicture()).toMatchObject({buffer:undefined,pixels:[[255,153,0],[255,153,0]],aligned:true,hitInput:true,displayed:true,standbyStable:true});
+            const centered = (await canvas.boundingBox())!;
+            await page.mouse.move(centered.x+centered.width/2,centered.y+centered.height/2);
+          }
+          const beforeClick = wire.controls.length;
+          await page.mouse.down(); await page.mouse.up();
+          await expect.poll(() => wire!.controls.slice(beforeClick).filter(action => /^(mouse-down|mouse-up) /.test(action)).map(action=>action.split(" ")[0]))
+            .toEqual(["mouse-down","mouse-up"]);
+          if (cpuSlowdown > 1) await viewerCpu.send("Emulation.setCPUThrottlingRate", {rate:1});
+        }
+        await page.getByTestId("end-session").click();
+        await row.getByRole("button",{name:"접속",exact:true}).waitFor();
+        await expect.poll(() => page.evaluate(() => (window as any).localSignalListeners.size)).toBe(0);
+        expect(wire.peers).toHaveLength(round);
+        await wire.peers[round-1].close();
+      }
+      expect(wire.framesSent).toEqual(useSwap.map(() => "sent"));
+      const samples = timing.filter(stage => stage.stage === "first-picture").map(picture => {
+        const stages = timing.filter(stage=>stage.attempt===picture.attempt);
+        const receive = stages.find(stage=>stage.stage==="frame-received");
+        const opened = stages.find(stage=>stage.stage==="channel-open");
+        expect(stages[0].stage).toBe("connect-click");
+        expect(receive).toBeDefined();
+        expect(opened).toBeDefined();
+        expect(picture.elapsedMs).toBeGreaterThan(receive!.elapsedMs);
+        return {channelOpenMs:opened!.elapsedMs,frameMs:receive!.elapsedMs,firstPictureMs:picture.elapsedMs};
+      });
+      console.info(`Local Viewer WebRTC ${width}x${height}`,{cold:samples[0],warm:samples.slice(1)});
+    } finally {
+      try { await wire?.close(); }
+      finally { await wireBrowser.close(); }
+    }
+  }, 30_000);
+
+  it.each([
+    ["when an inactive session becomes visible", "tab", 1],
+    ["when a background document becomes visible", "document", 1],
+    ["without recording a closed session on reveal", "closed", 0],
+    ["without recording a disconnected session on reveal", "disconnected", 0],
+    ["when fresh diagnostic pixels replace a failed WebRTC frame", "diagnostic", 1],
+    ["when a queued WebRTC frame expires behind a diagnostic frame", "diagnostic-race", 1],
+  ] as const)("times the first visible picture %s", async (_case, hiding, expectedPictures) => {
+    const diagnostic = hiding === "diagnostic" || hiding === "diagnostic-race";
+    const page = await openViewer({connected:true,diagnosticTiles:diagnostic});
+    try {
+      const stages: string[] = [];
+      page.on("console", message => {
+        const prefix = "[ConnectionTiming] ";
+        if (message.text().startsWith(prefix)) stages.push(JSON.parse(message.text().slice(prefix.length)).stage);
+      });
+      await page.locator(".table-row").filter({hasText:"PC-0"}).getByRole("button",{name:"접속",exact:true}).click();
+      await page.waitForFunction(() => typeof (window as any).rtcCallbacks?.onFrame === "function");
+      const tabHidden = hiding === "tab";
+      if (tabHidden) await page.getByRole("button",{name:"장비 목록",exact:true}).click();
+      else await page.evaluate(() => {
+        Object.defineProperty(document,"visibilityState",{configurable:true,value:"hidden"});
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      await page.evaluate(() => {
+        const w = window as any;
+        w.timingFixtureFrame = (sequence:number,color:string) => {
+          const source = document.createElement("canvas");
+          source.width = source.height = 32;
+          const ctx = source.getContext("2d")!;
+          ctx.fillStyle = color; ctx.fillRect(0,0,32,32);
+          return {sequence,keyframe:true,width:32,height:32,
+            tiles:[{x:0,y:0,w:32,h:32,data:source.toDataURL("image/jpeg").split(",")[1]}]};
+        };
+        w.rtcCallbacks.onFrame(w.timingFixtureFrame(1,"#ff0000"));
+      });
+      const canvas = page.locator(".remote-canvas");
+      await expect.poll(() => canvas.evaluate(el => (el as HTMLCanvasElement).width)).toBe(32);
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      expect(stages).toContain("frame-received");
+      expect(stages).not.toContain("first-picture");
+      if (hiding === "diagnostic-race") {
+        await page.evaluate(() => {
+          const w = window as any;
+          const native = window.Image;
+          w.Image = function() {
+            window.Image = native;
+            const img = new native();
+            Object.defineProperty(img,"onload",{set(callback) {
+              img.addEventListener("load",() => { w.releaseDiagnosticFrame = () => callback.call(img); },{once:true});
+            }});
+            return img;
+          };
+          w.nextDiagnosticFrame = w.timingFixtureFrame(2,"#0000ff");
+        });
+        await page.waitForFunction(() => typeof (window as any).releaseDiagnosticFrame === "function");
+        await page.evaluate(() => {
+          const w = window as any;
+          w.rtcCallbacks.onFrame(w.timingFixtureFrame(3,"#00ff00"));
+        });
+      }
+      if (hiding === "disconnected" || diagnostic) {
+        await page.evaluate(() => (window as any).rtcCallbacks.onError(new Error("fixture disconnected")));
+      }
+      if (hiding === "diagnostic-race") {
+        await page.evaluate(() => (window as any).releaseDiagnosticFrame());
+        await page.clock.runFor(100);
+        expect(stages).not.toContain("first-picture");
+      }
+
+      const before = await counts(page);
+      if (tabHidden) {
+        expect(await canvas.isVisible()).toBe(false);
+        await page.getByRole("button",{name:"PC-0",exact:true}).click();
+      } else if (hiding === "closed") {
+        const scheduled = await page.evaluate(() => {
+          const request = window.requestAnimationFrame, cancel = window.cancelAnimationFrame;
+          const heldId = -1;
+          let scheduled = false;
+          window.requestAnimationFrame = () => { scheduled = true; return heldId; };
+          window.cancelAnimationFrame = id => {
+            if (id !== heldId) { cancel(id); return; }
+            (window as any).cancelledReveal = true;
+            window.cancelAnimationFrame = cancel;
+          };
+          Reflect.deleteProperty(document,"visibilityState");
+          try { document.dispatchEvent(new Event("visibilitychange")); }
+          finally { window.requestAnimationFrame = request; }
+          return scheduled;
+        });
+        expect(scheduled).toBe(true);
+        await page.getByTestId("end-session").click();
+        await canvas.waitFor({state:"detached"});
+        expect(await page.evaluate(() => (window as any).cancelledReveal)).toBe(true);
+      } else await page.evaluate(() => {
+        Reflect.deleteProperty(document,"visibilityState");
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      if (hiding === "diagnostic") {
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        expect(stages).not.toContain("first-picture");
+        await page.evaluate(() => {
+          const w = window as any;
+          w.nextDiagnosticFrame = w.timingFixtureFrame(2,"#0000ff");
+        });
+      }
+      if (expectedPictures) {
+        await expect.poll(() => stages.filter(stage => stage === "first-picture").length).toBe(expectedPictures);
+        expect(stages.indexOf("first-picture")).toBeGreaterThan(stages.indexOf("frame-received"));
+        const channel = diagnostic ? 2 : 0;
+        expect(await canvas.evaluate((el,c) => (el as HTMLCanvasElement).getContext("2d")!.getImageData(15,15,1,1).data[c],channel)).toBeGreaterThan(240);
+      }
+      expect(await counts(page)).toEqual(before);
+      expect(await page.evaluate(() => (window as any).testState.rtcStarts)).toBe(1);
+      await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      expect(stages.filter(stage => stage === "first-picture")).toHaveLength(expectedPictures);
+      if (hiding === "disconnected") expect(stages).toContain("failed");
+    } finally { await page.close(); }
+  });
+
   it.each([false, true])("uses actual remote cursor metadata only after painting (mobile=%s)", async mobile => {
     const page = await openViewer({connected:true, mobile});
     try {
+      const stages: Array<{stage:string; elapsedMs:number}> = [];
+      page.on('console', message => {
+        const prefix='[ConnectionTiming] ';
+        if (message.text().startsWith(prefix)) stages.push(JSON.parse(message.text().slice(prefix.length)));
+      });
       const connect = () => page.locator('.table-row').filter({has:page.getByText('PC-0',{exact:true})}).getByRole('button',{name:'접속',exact:true}).click();
       await connect();
       await page.waitForFunction(() => typeof (window as any).rtcCallbacks?.onFrame === 'function');
@@ -203,10 +1459,25 @@ describe("manual Viewer device list in a real browser", () => {
       });
       const status=page.getByTestId(mobile?'mobile-connection-status':'remote-connection-status');
       await status.getByText(/화면 표시 오류/).waitFor();
+      expect(stages.map(stage=>stage.stage)).not.toContain('first-picture');
       expect(await canvas.evaluate(e => getComputedStyle(e).cursor)).not.toBe('none');
       await page.evaluate(() => (window as any).cursorFrame(true,10));
       await expect.poll(() => canvas.evaluate(e => getComputedStyle(e).cursor)).toBe('none');
+      await expect.poll(() => stages.some(stage=>stage.stage==='first-picture')).toBe(true);
+      const firstPicture=stages.findIndex(stage=>stage.stage==='first-picture');
+      const frameReceived=stages.findIndex(stage=>stage.stage==='frame-received');
+      expect(frameReceived).toBeGreaterThan(0);
+      expect(firstPicture).toBeGreaterThan(frameReceived);
+      expect(stages[firstPicture].elapsedMs).toBeGreaterThanOrEqual(stages[frameReceived].elapsedMs);
       if (mobile) expect(await page.getByLabel('원격 포인터',{exact:true}).count()).toBe(0);
+      else {
+        await page.getByTestId('secondary-tools').locator('summary').click();
+        await page.getByRole('button',{name:'포인터 켜기',exact:true}).click();
+        expect(await canvas.evaluate(e => getComputedStyle(e).cursor)).toBe('crosshair');
+        await page.getByTestId('secondary-tools').locator('summary').click();
+        await page.getByRole('button',{name:'포인터 끄기',exact:true}).click();
+        expect(await canvas.evaluate(e => getComputedStyle(e).cursor)).toBe('none');
+      }
       expect(await canvas.evaluate(e => (e as HTMLCanvasElement).getContext('2d')!.getImageData(13,12,1,1).data[0])).toBeGreaterThan(210);
       const original=await canvas.boundingBox();
       await page.getByRole('button',{name:mobile?'확대':'화면 확대',exact:true}).click();
@@ -225,9 +1496,19 @@ describe("manual Viewer device list in a real browser", () => {
       expect(await counts(page)).toEqual(before);
       await page.evaluate(() => (window as any).cursorFrame(true,14));
       await expect.poll(() => canvas.evaluate(e => getComputedStyle(e).cursor)).toBe('none');
+      const starts = await page.evaluate(() => (window as any).testState.rtcStarts);
+      await page.evaluate(() => { (window as any).previousConnection = (window as any).rtcCallbacks; });
       if (mobile) await page.getByRole('button',{name:'화면 및 세션 설정',exact:true}).click();
       await page.getByTestId('end-session').click(); await connect();
       expect(await page.locator('.remote-canvas').evaluate(e => getComputedStyle(e).cursor)).not.toBe('none');
+      await page.waitForFunction(previous => (window as any).testState.rtcStarts > previous, starts);
+      await page.evaluate(() => (window as any).cursorFrame(true,1));
+      await expect.poll(() => canvas.evaluate(e => getComputedStyle(e).cursor)).toBe('none');
+      await page.evaluate(() => {
+        (window as any).previousConnection.onFrame({sequence:30, keyframe:true, width:96, height:32, cursorEmbedded:false, tiles:[]});
+      });
+      expect(await canvas.evaluate(e => getComputedStyle(e).cursor)).toBe('none');
+      expect(await status.getByText(/화면 표시 오류/).count()).toBe(0);
     } finally { await page.close(); }
   });
   it.each([1024,1920,2560])("fits below the expanded fullscreen toolbar, centers zoom and places closable PC tabs in the header at %ipx",async(width)=>{
@@ -248,11 +1529,11 @@ describe("manual Viewer device list in a real browser", () => {
         source.getContext('2d')!.fillStyle='#157d84';source.getContext('2d')!.fillRect(0,0,1920,1200);
         (window as any).rtcCallbacks.onFrame({keyframe:true,width:1920,height:1200,tiles:[{x:0,y:0,w:1920,h:1200,data:source.toDataURL('image/jpeg').split(',')[1]}]});
       });
-      await expect.poll(()=>panel.locator('canvas').evaluate(e=>(e as HTMLCanvasElement).width)).toBe(1920);
+      await expect.poll(()=>panel.locator('.remote-canvas').evaluate(e=>(e as HTMLCanvasElement).width)).toBe(1920);
       const geometry=()=>panel.evaluate(e=>{
         const bar=e.querySelector('[data-testid="remote-command-bar"]')!.getBoundingClientRect();
         const viewport=e.querySelector('.remote-preview')!.getBoundingClientRect();
-        const canvas=e.querySelector('canvas')!.getBoundingClientRect();
+        const canvas=e.querySelector('.remote-canvas')!.getBoundingClientRect();
         return {barBottom:bar.bottom,viewTop:viewport.top,viewWidth:viewport.width,viewHeight:viewport.height,cx:canvas.x+canvas.width/2,cy:canvas.y+canvas.height/2,vx:viewport.x+viewport.width/2,vy:viewport.y+viewport.height/2,cw:canvas.width,ch:canvas.height};
       });
       await panel.getByRole('button',{name:'Fit',exact:true}).click();
@@ -261,7 +1542,7 @@ describe("manual Viewer device list in a real browser", () => {
       expect(Math.abs(fit.cx-fit.vx)).toBeLessThan(1);expect(Math.abs(fit.cy-fit.vy)).toBeLessThan(1);
       await panel.getByRole('button',{name:'화면 확대',exact:true}).click();const zoom=await geometry();
       expect(zoom.cw).toBeGreaterThan(fit.cw);expect(Math.abs(zoom.cx-zoom.vx)).toBeLessThan(1);expect(Math.abs(zoom.cy-zoom.vy)).toBeLessThan(1);
-      expect(await panel.locator('canvas').evaluate(e=>(e as HTMLCanvasElement).getContext('2d')!.getImageData(1,1,1,1).data[3])).toBe(255);
+      expect(await panel.locator('.remote-canvas').evaluate(e=>(e as HTMLCanvasElement).getContext('2d')!.getImageData(1,1,1,1).data[3])).toBe(255);
       await page.screenshot({path:`../.codex-tmp/fullscreen-header-${width}.png`});
       await panel.getByRole('button',{name:'장비 목록',exact:true}).click();await connect('PC-1');
       const active=page.locator('.session-panel:not(.session-panel-inactive)');
@@ -508,12 +1789,13 @@ describe("manual Viewer device list in a real browser", () => {
       expect(await page.evaluate(()=>(window as any).unlockAttempts.length)).toBe(before);
     } finally {await page.close();}
   });
-  it("does not revive remembered unlock when authorization returns after unmount", async () => {
+  it("cleans up late authorization after unmount without an offer or remembered unlock", async () => {
     const page=await openViewer({connected:true,desktop:true});
     try {
       await page.evaluate(()=>{
         const w=window as any;w.testState.devices[0].accessLocked=true;w.testState.devices[0].accessLockVersion='version-1';
-        const original=w.testApi.openFirebaseSession;w.rememberSchedules=0;
+        const original=w.testApi.openFirebaseSession;w.rememberSchedules=0;w.queuedOffers=[];
+        w.testApi.queuePreparedFirebaseViewerOffer=(id:string)=>w.queuedOffers.push(id);
         w.testApi.openFirebaseSession=async(...args:any[])=>{await new Promise(resolve=>{w.finishAuthorization=resolve;});const result=await original(...args);w.authorizationDone=true;return result;};
         const schedule=w.setTimeout.bind(w);
         w.setTimeout=(fn:any,delay:number,...args:any[])=>{if(delay===900_000)w.rememberSchedules++;return schedule(fn,delay,...args);};
@@ -525,13 +1807,20 @@ describe("manual Viewer device list in a real browser", () => {
       await page.waitForFunction(()=>(window as any).finishAuthorization);
       await page.evaluate(()=>(window as any).root.unmount());
       await page.evaluate(()=>(window as any).finishAuthorization());
-      await page.waitForFunction(()=>(window as any).authorizationDone);
-      expect(await page.evaluate(()=>(window as any).rememberSchedules)).toBe(0);
+      await expect.poll(() => page.evaluate(() => {
+        const w = window as any;
+        return {closed:w.testState.closedSessions, offers:w.queuedOffers, remembered:w.rememberSchedules};
+      })).toEqual({closed:["remote-session-device-0-1"],offers:[],remembered:0});
     } finally {await page.close();}
   });
   it("device access lock modal blocks connection until password and supports settings/reset with no idle requests", async () => {
     const page = await openViewer({connected:true, desktop:true});
     try {
+      const stages: Array<{attempt: number; stage: string; elapsedMs: number}> = [];
+      page.on('console', message => {
+        const prefix = '[ConnectionTiming] ';
+        if (message.text().startsWith(prefix)) stages.push(JSON.parse(message.text().slice(prefix.length)));
+      });
       await page.evaluate(() => {
         const w = window as any;
         w.testState.devices[0].accessLocked = true;
@@ -553,6 +1842,7 @@ describe("manual Viewer device list in a real browser", () => {
       expect(await page.evaluate(()=>(window as any).testState.connections)).toEqual([]);
       await page.getByRole('button',{name:'잠금 창 닫기'}).click();
       expect(await page.evaluate(()=>(window as any).testState.connections)).toEqual([]);
+      await expect.poll(() => stages.map(event=>event.stage)).toEqual(['connect-click','cancelled']);
       await row.getByRole('button',{name:'장비 정보 수정',exact:true}).click();
       await page.getByRole('button',{name:'접속 잠금',exact:true}).click();
       await page.getByRole('button',{name:'비밀번호 분실',exact:true}).click();
@@ -575,8 +1865,16 @@ describe("manual Viewer device list in a real browser", () => {
       expect(await page.evaluate(()=>(window as any).accessCalls.map((call:any[])=>call.slice(0,2)))).toEqual([['device-0','reset'],['device-0','reset']]);
       await row.getByRole('button',{name:'접속',exact:true}).click();
       await page.getByLabel('접속 비밀번호',{exact:true}).fill('new-password');
+      await page.clock.runFor(2_000);
+      expect(stages.some(event=>event.stage==='connect-request')).toBe(false);
       await page.getByRole('dialog',{name:'잠금 장비 접속'}).getByRole('button',{name:'접속',exact:true}).click();
       await expect.poll(()=>page.evaluate(()=>(window as any).testState.connections)).toEqual(['device-0']);
+      await expect.poll(() => stages.some(event=>event.stage==='session-ready')).toBe(true);
+      const request = stages.find(event=>event.stage==='connect-request')!;
+      expect(request.attempt).not.toBe(stages[0].attempt);
+      expect(stages.filter(event=>event.attempt===request.attempt).slice(0,3).map(event=>event.stage)).toEqual(['connect-click','connect-request','session-ready']);
+      expect(request.elapsedMs).toBeGreaterThanOrEqual(2_000);
+      expect(JSON.stringify(stages)).not.toContain('new-password');
       expect(await page.evaluate(()=>(window as any).enteredPassword)).toBe('new-password');
       expect(await page.locator('input[type=password]').count()).toBe(0);
       await page.screenshot({path:'../.codex-tmp/device-access-lock-browser.png'});
@@ -627,8 +1925,7 @@ describe("manual Viewer device list in a real browser", () => {
       await dialog.getByRole('alert').filter({hasText:'10자리'}).waitFor();
       expect(await page.evaluate(()=>(window as any).metadataSaves.length)).toBe(0);
       await dialog.getByLabel('사업자번호',{exact:true}).fill('9876543210');
-      await dialog.getByLabel('장비 구분',{exact:true}).selectOption('custom');
-      await dialog.getByLabel('장비 구분 직접입력',{exact:true}).fill('키오스크');
+      await dialog.getByLabel('장비 구분',{exact:true}).selectOption('키오스크');
       await page.screenshot({path:'../.codex-tmp/agent-live-metadata.png'});
       expect(await dialog.evaluate(e=>{const r=e.getBoundingClientRect();return r.left>=0&&r.top>=0&&r.right<=innerWidth&&r.bottom<=innerHeight;})).toBe(true);
       expect(await dialog.getByRole('button',{name:'저장',exact:true}).evaluate(e=>{const r=e.getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight;})).toBe(true);
@@ -656,7 +1953,7 @@ describe("manual Viewer device list in a real browser", () => {
       expect(await dialog.count()).toBe(0);
       await passwordDialog.getByLabel('비밀번호',{exact:true}).fill('4401');
       await passwordDialog.getByRole('button',{name:'확인',exact:true}).click();
-      await dialog.waitFor();expect(await dialog.getByLabel('장비 구분 직접입력',{exact:true}).inputValue()).toBe('키오스크');
+      await dialog.waitFor();expect(await dialog.getByLabel('장비 구분',{exact:true}).inputValue()).toBe('키오스크');
       await dialog.getByLabel('상호',{exact:true}).fill('취소할 변경');
       await dialog.getByRole('button',{name:'취소',exact:true}).click();
       const before=await page.evaluate(()=>({loads:(window as any).metadataLoads,saves:(window as any).metadataSaves.length}));
@@ -706,11 +2003,61 @@ describe("manual Viewer device list in a real browser", () => {
       expect(await page.evaluate(()=>(window as any).nativeCalls.filter((c:any)=>c.command==='save_agent_config').length)).toBe(1);
     } finally {await page.close();}
   });
-  it("hierarchical groups include mixed-business devices, persist locally and never rewrite metadata", async () => {
+  it.skipIf(!process.env.FIRESTORE_EMULATOR_HOST)("shares Viewer group edits and store order live between independent same-account browsers", async () => {
+    const address = process.env.FIRESTORE_EMULATOR_HOST!;
+    if (!/^127\.0\.0\.1:\d+$/.test(address)) throw new Error("Expected a loopback Firestore emulator.");
+    const firestorePort = Number(address.split(":")[1]);
+    const { wireBrowserToLocalFirestore } = await import("./firebase/browserFirestoreRtcFixture");
+    const projectId = `demo-connect-${crypto.randomUUID().slice(0, 8)}`;
+    const pages: Page[] = [];
+    const open = (uid: string) => openViewer({ firestorePort, firestoreGroupingProject: projectId }, browser, async page => {
+      pages.push(page);
+      await page.evaluate(() => {
+        const state = (window as any).testState;
+        state.devices = state.devices.slice(0, 3);
+        state.devices.forEach((device: ManagedDevice, index: number) => { device.storeName = index < 2 ? "Store A" : "Store B"; });
+      });
+      await wireBrowserToLocalFirestore(page, projectId, uid, firestorePort, false, true);
+    });
+    try {
+      const a = await open("group-test-shared");
+      const b = await open("group-test-shared");
+      const isolated = await open("group-test-other");
+      for (const page of pages) await expect.poll(() => page.getByRole("button", { name: "대그룹 생성", exact: true }).isEnabled()).toBe(true);
+      const editGroup = (page: Page, name: string) => page.getByRole("button", { name: `${name} 그룹 수정`, exact: true });
+      await a.getByRole("button", { name: "대그룹 생성", exact: true }).click();
+      let editor = a.getByRole("dialog", { name: "그룹 편집", exact: true });
+      await editor.getByLabel("그룹 이름", { exact: true }).fill("공유 시험 그룹");
+      await editor.getByRole("checkbox", { name: /PC-0/ }).check();
+      await editor.getByRole("button", { name: "저장", exact: true }).click();
+      await editor.waitFor({ state: "hidden" });
+      await editGroup(b, "공유 시험 그룹").waitFor();
+      await b.getByRole("region", { name: "사용자 그룹", exact: true }).locator(".group-button").filter({ hasText: "공유 시험 그룹" }).click();
+      await expect.poll(() => b.locator(".device-table .table-row:not(.table-head)").count()).toBe(1);
+      await b.locator(".device-table").getByText("PC-0", { exact: true }).waitFor();
+      await editGroup(b, "공유 시험 그룹").click();
+      editor = b.getByRole("dialog", { name: "그룹 편집", exact: true });
+      await editor.getByLabel("그룹 이름", { exact: true }).fill("다른 Viewer에서 수정");
+      await editor.getByRole("button", { name: "저장", exact: true }).click();
+      await editGroup(a, "다른 Viewer에서 수정").waitFor();
+
+      const stores = (page: Page) => page.getByRole("region", { name: "장비 목록", exact: true }).locator(".group-button");
+      const initialOrder = await stores(isolated).locator("strong").allTextContents();
+      expect(initialOrder).toEqual(["Store A", "Store B"]);
+      await stores(a).filter({ hasText: "Store B" }).dragTo(stores(a).filter({ hasText: "Store A" }), { targetPosition: { x: 8, y: 4 } });
+      await expect.poll(() => stores(a).locator("strong").allTextContents()).toEqual(["Store B", "Store A"]);
+      await expect.poll(() => stores(b).locator("strong").allTextContents()).toEqual(["Store B", "Store A"]);
+      expect(await stores(isolated).locator("strong").allTextContents()).toEqual(initialOrder);
+      expect(await editGroup(isolated, "공유 시험 그룹").count()).toBe(0);
+      expect(await editGroup(isolated, "다른 Viewer에서 수정").count()).toBe(0);
+    } finally { await Promise.allSettled(pages.map(page => page.close())); }
+  }, 20_000);
+
+  it("account hierarchical groups collapse to main POS, avoid the ungrouped list and never rewrite metadata", async () => {
     const page=await openViewer();
     try {
       await page.getByText('PC-0',{exact:true}).waitFor();
-      await page.evaluate(()=>{const w=window as any;w.testState.devices[1].storeName='다른 상호';w.testState.devices[1].businessNumber='999-99-99999';w.metadataChanges=[];w.testApi.updateFirebaseDeviceMetadata=(...args:any[])=>{w.metadataChanges.push(args);throw Error('unexpected metadata update');};});
+      await page.evaluate(()=>{const w=window as any;w.testState.devices[1].storeName='다른 상호';w.testState.devices[1].businessNumber='999-99-99999';w.testState.devices[1].deviceName='메인포스';w.metadataChanges=[];w.testApi.updateFirebaseDeviceMetadata=(...args:any[])=>{w.metadataChanges.push(args);throw Error('unexpected metadata update');};});
       await refresh(page).click();
       await page.getByRole('button',{name:'대그룹 생성',exact:true}).click();
       let dialog=page.getByRole('dialog',{name:'그룹 편집',exact:true});
@@ -724,6 +2071,10 @@ describe("manual Viewer device list in a real browser", () => {
       await page.screenshot({path:'../.codex-tmp/viewer-hierarchical-group-editor.png'});
       await dialog.getByRole('button',{name:'저장',exact:true}).click();
       await page.locator('.custom-group-row .group-button').filter({hasText:'운영 그룹'}).click();
+      expect(await page.locator('.device-table .table-row:not(.table-head)').count()).toBe(1);
+      expect(await page.locator('.device-table .table-row:not(.table-head)').innerText()).toContain('PC-1');
+      expect(await page.getByRole('region',{name:'장비 목록',exact:true}).getByText('다른 상호',{exact:true}).count()).toBe(0);
+      await page.locator('.device-inventory-group-toggle').click();
       expect(await page.locator('.device-table .table-row:not(.table-head)').count()).toBe(2);
       expect(await page.getByText('PC-1',{exact:true}).count()).toBe(1);
       expect(await page.evaluate(()=>(window as any).metadataChanges.length)).toBe(0);
@@ -731,11 +2082,24 @@ describe("manual Viewer device list in a real browser", () => {
       await page.evaluate(()=>(window as any).root.unmount());
       await page.addScriptTag({content:bundle});
       await page.locator('.custom-group-row .group-button').filter({hasText:'운영 그룹'}).click();
+      await page.locator('.device-inventory-group-toggle').click();
       expect(await page.locator('.device-table .table-row:not(.table-head)').count()).toBe(2);
+      await refresh(page).click();
+      expect(await page.evaluate(()=>(window as any).testState.refreshTargets.at(-1).sort())).toEqual(['device-0','device-1']);
+      await page.evaluate(()=>(window as any).authChanged(true,'viewer-2'));
+      await expect.poll(()=>page.getByRole('button',{name:'운영 그룹 그룹 수정',exact:true}).count()).toBe(0);
+      expect(await page.evaluate(()=>Array.from((window as any).groupingListeners.keys()))).toEqual(['viewer-2']);
+      await page.evaluate(()=>(window as any).authChanged(true,'viewer-1'));
+      await page.getByRole('button',{name:'운영 그룹 그룹 수정',exact:true}).waitFor();
+      expect(await page.evaluate(()=>Array.from((window as any).groupingListeners.keys()))).toEqual(['viewer-1']);
+      const groupingCounts=()=>page.evaluate(()=>{const s=(window as any).testState;return [s.groupingStarts,s.groupingStops];});
+      const beforeGrouping=await groupingCounts();
+      expect(beforeGrouping[0]-beforeGrouping[1]).toBe(1);
       const before=await counts(page);await page.clock.runFor(86_400_000);expect(await counts(page)).toEqual(before);
+      expect(await groupingCounts()).toEqual(beforeGrouping);
       await page.getByRole('button',{name:'운영 그룹 그룹 수정',exact:true}).click();
       dialog=page.getByRole('dialog',{name:'그룹 편집',exact:true});
-      const childId=await page.evaluate(()=>JSON.parse(localStorage.getItem('wonremote-viewer-list-v1')!).customGroups.find((g:any)=>g.name==='매장 단말').id);
+      const childId=await page.evaluate(()=>(window as any).groupingDocs['viewer-1'].customGroups.find((g:any)=>g.name==='매장 단말').id);
       await dialog.getByLabel('상위 그룹',{exact:true}).selectOption(childId);
       await dialog.getByRole('button',{name:'저장',exact:true}).click();
       await dialog.getByRole('alert').filter({hasText:'하위 그룹'}).waitFor();
@@ -749,11 +2113,22 @@ describe("manual Viewer device list in a real browser", () => {
       await page.getByRole('button',{name:'운영 그룹 그룹 수정',exact:true}).click();
       await page.getByRole('dialog',{name:'그룹 편집',exact:true}).getByRole('button',{name:'그룹 삭제',exact:true}).click();
       await page.locator('.custom-group-row .group-button').filter({hasText:'단말 묶음'}).click();
+      await page.locator('.device-inventory-group-toggle').click();
       expect(await page.locator('.device-table .table-row:not(.table-head)').count()).toBe(2);
       await page.setViewportSize({width:390,height:844});
       await page.getByRole('button',{name:'단말 묶음 그룹 수정',exact:true}).click();
       await page.screenshot({path:'../.codex-tmp/viewer-group-editor-narrow.png'});
       expect(await page.getByRole('dialog',{name:'그룹 편집',exact:true}).evaluate(e=>{const r=e.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth;})).toBe(true);
+      await page.evaluate(id=>{
+        const w=window as any;
+        const updated=w.groupingDocs['viewer-1'];
+        updated.customGroups.find((group:any)=>group.id===id).deviceIds.push('device-2');
+        w.groupingListeners.get('viewer-1')(structuredClone(updated));
+      },childId);
+      await dialog.getByLabel('그룹 이름',{exact:true}).fill('새 이름');
+      await dialog.getByRole('button',{name:'저장',exact:true}).click();
+      await page.getByRole('button',{name:'새 이름 그룹 수정',exact:true}).waitFor();
+      expect(await page.evaluate(id=>(window as any).groupingDocs['viewer-1'].customGroups.find((g:any)=>g.id===id).deviceIds,childId)).toEqual(['device-0','device-1','device-2']);
       expect(await page.evaluate(()=>(window as any).metadataChanges.length)).toBe(0);
     } finally {await page.close();}
   });
@@ -959,6 +2334,177 @@ describe("manual Viewer device list in a real browser", () => {
     } finally { await page.close(); }
   });
 
+  it.each(["denied", "awaiting server"])("shows unavailable account group access and requires an explicit retry: %s", async state => {
+    const page = await openViewer({}, undefined, p => p.evaluate(state => {
+      (window as any).rejectGrouping = state === "denied";
+      (window as any).holdGrouping = state === "awaiting server";
+    }, state));
+    try {
+      const groups = page.getByRole("region", {name:"사용자 그룹"});
+      const add = groups.getByRole("button", {name:"대그룹 생성"});
+      const retry = groups.getByRole("button", {name:"그룹 다시 불러오기"});
+      const status = groups.getByRole(state === "denied" ? "alert" : "status");
+      await status.waitFor();
+      expect(await add.isDisabled()).toBe(true);
+      expect(await status.innerText()).toContain(state === "denied" ? "권한" : "확인 중");
+      const starts = await page.evaluate(() => (window as any).testState.groupingStarts);
+      await page.evaluate(() => {
+        const w = window as any;
+        w.rejectGrouping = false;
+        w.holdGrouping = false;
+        w.groupingDocs["viewer-1"] = {customGroups:[{id:"a",name:"복구된 그룹",parentId:null,deviceIds:[]}],groupOrder:[]};
+      });
+      expect(await add.isDisabled()).toBe(true);
+      await retry.click();
+      await groups.getByRole("button", {name:/복구된 그룹 0/}).waitFor();
+      expect(await add.isEnabled()).toBe(true);
+      expect(await groups.getByRole("alert").count()).toBe(0);
+      expect(await page.evaluate(() => {
+        const w = window as any;
+        return [w.testState.groupingStarts, w.groupingListeners.size];
+      })).toEqual([starts + 1, 1]);
+    } finally { await page.close(); }
+  });
+
+  it("sends remote Win+D from the button immediately after monitor selection", async () => {
+    const page = await openViewer({desktop:true,connected:true}, undefined, p => p.evaluate(() => {
+      (window as any).testState.devices[0].displays = [
+        {index:0, name:"DISPLAY1", width:1920, height:1080, primary:true},
+        {index:1, name:"DISPLAY2 WITH A LONG MONITOR NAME", width:2560, height:1440, primary:false},
+      ];
+    }));
+    try {
+      await page.locator('.table-row').filter({has:page.getByText('PC-0',{exact:true})}).getByRole('button',{name:'접속',exact:true}).click();
+      const desktop = page.getByRole("button", {name:"원격 바탕화면 (Win+D)",exact:true});
+      await desktop.waitFor();
+      expect(await desktop.evaluate(e => e.previousElementSibling?.getAttribute("aria-label"))).toBe("모니터 선택");
+      const control = page.getByRole("button", {name:"제어모드",exact:true});
+      for (const width of [1920,1501,1440,1024]) {
+        await page.setViewportSize({width,height:768});
+        for (const button of [desktop, control]) await expect.poll(() => button.evaluate(e => {
+          const r = e.getBoundingClientRect();
+          const hit = document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);
+          if (r.left >= 0 && r.right <= innerWidth && e.contains(hit)) return true;
+          return {left:r.left,right:r.right,top:r.top,hit:hit?.outerHTML.slice(0,170)};
+        }), {message:`Toolbar buttons must be reachable at ${width}px`}).toBe(true);
+      }
+      await page.evaluate(() => { (window as any).testState.controls = []; });
+      await desktop.click();
+      expect(await page.evaluate(() => (window as any).testState.controls)).toEqual(["key-down Win","keypress D","key-up Win"]);
+    } finally { await page.close(); }
+  });
+
+  it("pauses remote control without losing transport or sticking held keys and buttons", async () => {
+    const page = await openViewer({desktop:true,connected:true});
+    try {
+      await page.locator('.table-row').filter({has:page.getByText('PC-0',{exact:true})}).getByRole('button',{name:'접속',exact:true}).click();
+      const toggle = page.getByRole("button", {name:"제어모드", exact:true});
+      const desktop = page.getByRole("button", {name:"원격 바탕화면 (Win+D)"});
+      const ime = page.locator('[data-remote-ime-input="true"]');
+      const canvas = page.locator("canvas.remote-canvas");
+      const inputs = () => page.evaluate(() => (window as any).testState.controls as string[]);
+      await toggle.waitFor();
+      expect(await toggle.getAttribute("aria-pressed")).toBe("true");
+      expect(await toggle.evaluate(e => getComputedStyle(e).backgroundColor)).toBe("rgb(155, 44, 55)");
+      expect(await toggle.evaluate(e => e.previousElementSibling?.getAttribute("aria-label"))).toBe("원격 바탕화면 (Win+D)");
+      await expect.poll(() => desktop.isEnabled()).toBe(true);
+      const rect = (await canvas.boundingBox())!;
+      await page.mouse.move(rect.x+rect.width/2,rect.y+rect.height/2);
+      await page.mouse.down();
+      await page.keyboard.down("Control");
+      await expect.poll(async () => (await inputs()).some(action=>action.startsWith("mouse-down "))).toBe(true);
+      expect(await inputs()).toContain("key-down Ctrl");
+      await toggle.evaluate(element => (element as HTMLButtonElement).click());
+      expect(await toggle.getAttribute("aria-pressed")).toBe("false");
+      expect(await inputs()).toContain("key-release-all");
+      expect((await inputs()).some(action=>action.startsWith("mouse-up "))).toBe(true);
+      expect(await desktop.isDisabled()).toBe(true);
+      await page.evaluate(()=>(window as any).testState.controls=[]);
+      await page.keyboard.up("Control");
+      await page.mouse.up();
+      await page.keyboard.press("ArrowRight");
+      await page.mouse.move(rect.x+rect.width/2+5,rect.y+rect.height/2);
+      await page.mouse.wheel(0,120);
+      await page.mouse.click(rect.x+rect.width/2,rect.y+rect.height/2);
+      await ime.evaluate(e => { (e as HTMLTextAreaElement).value="blocked"; e.dispatchEvent(new InputEvent("input",{bubbles:true})); });
+      await page.evaluate(() => {
+        const picture = document.createElement("canvas");
+        picture.width = picture.height = 32;
+        const ctx = picture.getContext("2d")!;
+        ctx.fillStyle = "#00e600";
+        ctx.fillRect(0,0,32,32);
+        (window as any).rtcCallbacks.onFrame({ sequence:1,keyframe:true,width:32,height:32,
+          tiles:[{x:0,y:0,w:32,h:32,data:picture.toDataURL("image/jpeg").split(",")[1]}] });
+      });
+      await expect.poll(() => canvas.evaluate(e => (e as HTMLCanvasElement).getContext("2d")!.getImageData(12,12,1,1).data[1])).toBeGreaterThan(210);
+      expect(await inputs()).toEqual([]);
+      expect(await page.evaluate(() => (window as any).testState.rtcStarts)).toBe(1);
+      await toggle.click();
+      await desktop.click();
+      expect(await inputs()).toEqual(["key-down Win","keypress D","key-up Win"]);
+    } finally { await page.close(); }
+  });
+
+  it("pauses mobile mouse and keyboard input while keeping local zoom and tools", async () => {
+    const page = await openViewer({mobile:true,connected:true});
+    try {
+      await page.locator(".table-row").filter({has:page.getByText("PC-0",{exact:true})}).getByRole("button",{name:"접속",exact:true}).click();
+      const settings = page.getByRole("button",{name:"화면 및 세션 설정",exact:true});
+      const toggle = page.getByRole("button",{name:"제어모드",exact:true});
+      const click = page.getByRole("button",{name:"좌클릭",exact:true});
+      const keyboard = page.getByRole("button",{name:"키보드",exact:true});
+      const touchpad = page.getByLabel("원격 터치패드",{exact:true});
+      await page.getByRole("button",{name:"터치패드 모드",exact:true}).click();
+      await touchpad.waitFor();
+      await settings.click();
+      await toggle.click();
+      expect(await toggle.getAttribute("aria-pressed")).toBe("false");
+      const tools = page.getByTestId("secondary-tools");
+      await tools.getByRole("button",{name:"채팅",exact:true}).click();
+      expect(await settings.getAttribute("aria-expanded")).toBe("false");
+      expect(await click.isDisabled()).toBe(true);
+      expect(await keyboard.isDisabled()).toBe(true);
+      await touchpad.waitFor({state:"detached"});
+      const canvas = page.locator("canvas.remote-canvas");
+      const before = await canvas.evaluate(e => e.style.transform);
+      await page.getByRole("button",{name:"확대",exact:true}).click();
+      await expect.poll(() => canvas.evaluate(e => e.style.transform)).not.toBe(before);
+      await settings.click();
+      await toggle.click();
+      await page.getByRole("button",{name:"도구 닫기",exact:true}).click();
+      await touchpad.waitFor();
+      expect(await click.isEnabled()).toBe(true);
+      expect(await keyboard.isEnabled()).toBe(true);
+    } finally { await page.close(); }
+  });
+
+  it("closes Viewer tools after a command but not its first safety confirmation", async () => {
+    const page = await openViewer({desktop:true,connected:true});
+    page.on("dialog", dialog => void dialog.accept());
+    try {
+      await page.locator('.table-row').filter({has:page.getByText('PC-0',{exact:true})}).getByRole('button',{name:'접속',exact:true}).click();
+      const tools = page.getByTestId("secondary-tools");
+      const open = () => tools.evaluate(e => (e as HTMLDetailsElement).open);
+      await tools.locator("summary").click();
+      await tools.getByRole("button", {name:"채팅", exact:true}).click();
+      expect(await open()).toBe(false);
+      await tools.locator("summary").click();
+      const chooser = page.waitForEvent("filechooser");
+      await tools.getByRole("button", {name:/^파일 전송/}).click();
+      await chooser;
+      expect(await open()).toBe(false);
+      await tools.locator("summary").click();
+      const restart = tools.getByRole("button", {name:"재시작",exact:true});
+      const restarts = () => page.evaluate(() => (window as any).testState.controls.filter((action:string) => action === "system restart"));
+      await restart.click();
+      expect(await open()).toBe(true);
+      expect(await restarts()).toEqual([]);
+      await restart.click();
+      expect(await open()).toBe(false);
+      expect(await restarts()).toEqual(["system restart"]);
+    } finally { await page.close(); }
+  });
+
   it("clipboard history sends remote Win+V to the right of transfer without copying clipboard data", async () => {
     const page=await openViewer({connected:true});
     try {
@@ -994,7 +2540,7 @@ describe("manual Viewer device list in a real browser", () => {
         await link.click();
       }
       expect(await page.evaluate(()=>(window as any).nativeCalls.filter((c:any)=>c.command==='open_viewer_shortcut'))).toEqual([]);
-      await expect.poll(()=>page.evaluate(()=>(window as any).testState.controls)).toEqual(['system toss-emergency-download','system edge-download','system asp-login']);
+      await expect.poll(()=>page.evaluate(()=>(window as any).testState.controls.filter((action:string)=>action.startsWith('system ')))).toEqual(['system toss-emergency-download','system edge-download','system asp-login']);
       await page.setViewportSize({width:1024,height:768});
       for(const link of [toss,edge,asp]) expect(await link.evaluate(e=>{const r=e.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth&&e.scrollWidth<=e.clientWidth;})).toBe(true);
       await page.screenshot({path:'../.codex-tmp/viewer-browser-shortcuts.png'});
@@ -1009,7 +2555,7 @@ describe("manual Viewer device list in a real browser", () => {
       for(const name of ['TossEmergencyOrders 다운로드','Microsoft Edge 다운로드','FirstPOS ASP 열기']) {
         await page.getByRole('button',{name,exact:true}).click();
       }
-      await expect.poll(()=>page.evaluate(()=>(window as any).testState.controls)).toEqual(['system toss-emergency-download','system edge-download','system asp-login']);
+      await expect.poll(()=>page.evaluate(()=>(window as any).testState.controls.filter((action:string)=>action.startsWith('system ')))).toEqual(['system toss-emergency-download','system edge-download','system asp-login']);
       expect(page.context().pages()).toHaveLength(1);
     } finally {await page.close();}
   });
@@ -1025,7 +2571,7 @@ describe("manual Viewer device list in a real browser", () => {
       expect(await toss.isDisabled()).toBe(true);
       expect(await toss.getAttribute('title')).toContain('0.1.112');
       expect(await page.getByRole('button',{name:'Microsoft Edge 다운로드',exact:true}).isEnabled()).toBe(true);
-      expect(await page.evaluate(()=>(window as any).testState.controls)).toEqual([]);
+      expect(await page.evaluate(()=>(window as any).testState.controls.filter((action:string)=>action.startsWith('system ')))).toEqual([]);
     } finally {await page.close();}
   });
 
@@ -1040,7 +2586,7 @@ describe("manual Viewer device list in a real browser", () => {
       expect(await toss.getAttribute('href')).toBe(null);
       await toss.tap();
       expect(await toss.evaluate(e=>{const r=e.getBoundingClientRect();const label=e.querySelector('span')!.getBoundingClientRect();return r.width>=44&&r.height>=44&&r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight&&e.scrollWidth<=e.clientWidth&&label.left>=r.left&&label.right<=r.right;})).toBe(true);
-      await expect.poll(()=>page.evaluate(()=>(window as any).testState.controls)).toEqual(['system toss-emergency-download']);
+      await expect.poll(()=>page.evaluate(()=>(window as any).testState.controls.filter((action:string)=>action.startsWith('system ')))).toEqual(['system toss-emergency-download']);
       expect(page.context().pages()).toHaveLength(1);
       expect(await page.evaluate(()=>document.activeElement?.getAttribute('data-remote-ime-input'))).not.toBe('true');
       await page.screenshot({path:`../.codex-tmp/mobile-toss-${viewport.width}.png`});
@@ -1240,6 +2786,7 @@ describe("manual Viewer device list in a real browser", () => {
       await page.evaluate(() => {
         const w = window as any;
         w.testState.devices = w.testState.devices.slice(0, 9).map((d: any) => ({ ...d, desktopName: `Fresh-${d.desktopName}` }));
+        w.testState.devices[8].presenceMode = undefined;
         w.testState.devices.push({ ...w.testState.devices[0], id: "new", desktopName: "New-PC", firstRegisteredAt: new Date().toISOString() });
         w.finishParallelRead();
       });
@@ -1252,10 +2799,23 @@ describe("manual Viewer device list in a real browser", () => {
       await page.screenshot({ path: "../.codex-tmp/viewer-parallel-refresh.png" });
       await page.clock.runFor(3_000);
       await expect.poll(() => page.getByText("확인 중", { exact: true }).count()).toBe(1);
+      expect(await page.getByText("응답 없음", { exact: true }).count()).toBe(7);
+      await page.locator(".table-row").filter({ hasText: "New-PC" }).getByText("확인 중", { exact: true }).waitFor();
       await page.clock.runFor(2_000);
       await expect.poll(() => refresh(page).isEnabled()).toBe(true);
       expect(await page.locator(".status-pill.online").count()).toBe(1);
-      expect(await page.locator(".status-pill.offline").count()).toBe(9);
+      expect(await page.getByText("응답 없음", { exact: true }).count()).toBe(8);
+      expect(await page.locator(".table-row .status-pill.offline").count()).toBe(1);
+      expect(await page.locator(".summary-item.offline strong").textContent()).toBe("1");
+      const unansweredRow = page.locator(".table-row").filter({ hasText: "Fresh-PC-1" });
+      await unansweredRow.getByRole("button", { name: "장비 진단", exact: true }).click();
+      const diagnostic = page.getByRole("dialog");
+      await diagnostic.getByText("응답 없음", { exact: true }).waitFor();
+      await diagnostic.getByRole("button", { name: "닫기", exact: true }).click();
+      await page.screenshot({ path: "../.codex-tmp/viewer-presence-timeout.png" });
+      await page.getByRole("group", { name: "장비 상태 필터" }).getByRole("button", { name: "오프라인", exact: true }).click();
+      await expect.poll(() => page.getByText("Fresh-PC-1", { exact: true }).count()).toBe(0);
+      expect(await page.getByText("Fresh-PC-8", { exact: true }).count()).toBe(1);
       await page.clock.runFor(86_400_000);
       expect(await counts(page)).toEqual({ reads: 2, subscriptions: 0 });
       expect(await page.evaluate(() => (window as any).testState.presenceCommands.length)).toBe(11);
@@ -1523,13 +3083,28 @@ describe("manual Viewer device list in a real browser", () => {
     } finally { await page.close(); }
   });
 
-  it.each([1024, 1366, 1920])("keeps a long Agent update result clear of the heading, tools and dashboard at %ipx", async (width) => {
+  it.each([1024, 1081, 1366, 1920])("keeps admin tools and a long Agent update result clear at %ipx", async (width) => {
     const page = await openViewer({ desktop: true, accountManager: true, viewport: { width, height: 768 }, storeName: "김미자 본오(방구석)" });
     try {
       await page.getByText("PC-0", { exact: true }).waitFor();
+      const toolbar = page.locator(".viewer-command-header .topbar-tools");
+      for (const name of ["영상상담", "Viewer 업데이트 확인", "뷰어 이전 버전 복구", "단계 배포", "계정 관리"]) {
+        await toolbar.getByRole("button", { name, exact: true }).waitFor();
+      }
       await page.getByRole("button", { name: /김미자 본오/ }).first().click();
       await page.getByRole("button", { name: "에이전트 업데이트 요청", exact: true }).first().click();
-      const notice = page.getByText(/PC-\d+: Agent 응답 대기 중/, { exact: false });
+      await page.getByText(/PC-\d+: Agent 응답 대기 중/).waitFor();
+      const failure = "업데이트 파일의 서명을 확인하지 못했습니다. 기존 버전을 유지했으며 원격 연결 설정은 변경하지 않았습니다. "
+        + "장비에서 업데이트 서버에 접속할 수 있는지 확인하고 최신 서명된 설치 파일로 다시 시도해 주세요.";
+      await page.evaluate(updateError => {
+        const w = window as any;
+        const request = w.updateRequests[0];
+        const device = w.testState.devices.find((item: any) => item.id === request.id);
+        w.updateWatchers[request.id].next({
+          ...device, updateRequestId: request.requestId, updateState: "failed", updateError,
+        });
+      }, failure);
+      const notice = page.getByRole("status").filter({ hasText: failure });
       await notice.waitFor();
       expect(await notice.evaluate((element) => element.closest(".viewer-command-header") === null)).toBe(true);
 
@@ -1547,6 +3122,41 @@ describe("manual Viewer device list in a real browser", () => {
       expect(overlaps(status, tools)).toBe(false);
       expect(overlaps(status, dashboard)).toBe(false);
       expect(await notice.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+      const layout = await toolbar.evaluate(element => {
+        const limits = element.getBoundingClientRect();
+        const controls = [...element.querySelectorAll<HTMLElement>(":scope > label, :scope > button")];
+        const names = controls.map(control => control.getAttribute("aria-label") || control.textContent?.trim() || "search");
+        const boxes = controls.map(control => control.getBoundingClientRect());
+        return {
+          clipped: controls.flatMap((control, index) => {
+            const box = boxes[index];
+            return box.width > 0 && box.left >= limits.left - 1 && box.right <= Math.min(innerWidth, limits.right + 1)
+              && box.top >= limits.top - 1 && box.bottom <= limits.bottom + 1 ? [] : [names[index]];
+          }),
+          covered: controls.flatMap((control, index) => {
+            const box = boxes[index];
+            return control.contains(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2))
+              ? [] : [names[index]];
+          }),
+          overlapping: boxes.flatMap((box, index) => boxes.slice(index + 1).flatMap((other, next) =>
+            box.left < other.right && box.right > other.left && box.top < other.bottom && box.bottom > other.top
+              ? [[names[index], names[index + next + 1]]] : [])),
+        };
+      });
+      if (width <= 1081) await page.screenshot({ path: `../.codex-tmp/admin-toolbar-${width}.png` });
+      expect(layout).toEqual({ clipped: [], covered: [], overlapping: [] });
+      const consult = toolbar.getByRole("button", { name: "영상상담", exact: true });
+      expect(await consult.locator("span").evaluate(label => {
+        const text = document.createRange();
+        text.selectNodeContents(label);
+        const [line] = text.getClientRects();
+        const button = label.parentElement!.getBoundingClientRect();
+        return text.getClientRects().length === 1 && line.left >= button.left && line.right <= button.right;
+      })).toBe(true);
+      if (width === 1024) {
+        await consult.click();
+        await page.getByRole("dialog", { name: "휴대폰 영상상담", exact: true }).waitFor();
+      }
     } finally {
       await page.close();
     }
@@ -1684,15 +3294,36 @@ describe("manual Viewer device list in a real browser", () => {
       await page.keyboard.up('Control');
     } finally { await page.close(); }
   });
-  it("automatically commits PC received files and opens only the local destination", async () => {
+  it.each(["during save", "after save"])("automatically commits PC received files with no overlay when the Agent completes %s", async (completionTiming) => {
     const page = await openViewer({connected:true,desktop:true});
     try {
       await page.getByText("PC-0",{exact:true}).waitFor();
       await page.locator(".table-row").filter({has:page.getByText("PC-0",{exact:true})}).getByRole("button",{name:"접속",exact:true}).click();
       await page.waitForFunction(() => Boolean((window as any).rtcCallbacks));
+      await page.evaluate(() => {
+        const w = window as any;
+        w.holdNativeSave = true;
+        w.rtcCallbacks.onFileStatus({type:"file-status",requestId:"native-auto",state:"sending"});
+      });
+      await page.getByText("원격 파일 수신 중",{exact:true}).waitFor();
       const text="local automatic save", sha=createHash("sha256").update(text).digest("hex");
       await page.evaluate(chunk=>(window as any).rtcCallbacks.onFileChunk(chunk,()=>true),{type:"file-chunk",transferId:"native-auto",filename:"received.txt",chunkIndex:0,totalChunks:1,totalBytes:Buffer.byteLength(text),isLast:true,fileData:Buffer.from(text).toString("base64"),chunkSha256:sha,fileSha256:sha});
+      const receiveCompletion = () => page.evaluate(async () => {
+        (window as any).rtcCallbacks.onFileStatus({type:"file-status",requestId:"native-auto",state:"complete"});
+        await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      });
+      const overlay = page.locator(".session-transfer-progress");
+      await page.getByRole("complementary",{name:"파일 전송 목록"}).getByText("검증 및 저장 중 · 99%",{exact:true}).waitFor();
+      await page.waitForFunction(() => typeof (window as any).releaseNativeSave === "function");
+      expect(await overlay.count()).toBe(0);
+      if (completionTiming === "during save") {
+        await receiveCompletion();
+        expect(await overlay.count()).toBe(0);
+      }
+      await page.evaluate(() => (window as any).releaseNativeSave());
       await page.getByText("완료 · 100% · C:/Downloads/received.txt",{exact:true}).waitFor();
+      if (completionTiming === "after save") await receiveCompletion();
+      expect(await overlay.count()).toBe(0);
       expect(await page.getByRole("button",{name:"받은 파일 저장",exact:true}).count()).toBe(0);
       await page.getByRole("button",{name:"다운로드 받은 파일 열기",exact:true}).click();
       await page.getByRole("button",{name:"내 PC 받은 폴더 열기",exact:true}).click();
@@ -1863,15 +3494,14 @@ describe("manual Viewer device list in a real browser", () => {
       }, operation);
       await page.locator(".table-row").filter({ has: page.getByText("PC-0", { exact: true }) }).getByRole("button", { name: "접속", exact: true }).click();
       const panel = page.locator(".session-panel:not(.session-panel-inactive)");
-      await panel.getByRole("button", { name: "빠름", exact: true }).click();
-      expect(await panel.getByRole("button", { name: "빠름", exact: true }).getAttribute("aria-pressed")).toBe("true");
+      await panel.getByLabel("화면 반응 속도: 빠름", {exact:true}).waitFor();
       expect(await page.evaluate(() => (window as any).readOriginalPreference("wonremote-device-view:device-0"))).toBe(await page.evaluate(() => (window as any).savedPreferenceFixture));
       await page.getByText("기기 설정을 저장하지 못했습니다. 현재 연결에는 적용되지만 다음 접속에는 유지되지 않을 수 있습니다.", { exact: true }).waitFor();
       await page.getByTestId("end-session").click();
       await page.getByText("PC-0", { exact: true }).waitFor();
       await page.evaluate(() => (window as any).restorePreferenceStorage());
       await page.locator(".table-row").filter({ has: page.getByText("PC-0", { exact: true }) }).getByRole("button", { name: "접속", exact: true }).click();
-      await expect.poll(() => panel.getByRole("button", { name: "보통", exact: true }).getAttribute("aria-pressed")).toBe("true");
+      await panel.getByLabel("화면 반응 속도: 빠름", {exact:true}).waitFor();
       expect(await page.getByText("기기 설정을 저장하지 못했습니다. 현재 연결에는 적용되지만 다음 접속에는 유지되지 않을 수 있습니다.", { exact: true }).count()).toBe(0);
     } finally { await page.close(); }
   });
@@ -1881,7 +3511,7 @@ describe("manual Viewer device list in a real browser", () => {
       await page.getByText("PC-0", { exact: true }).waitFor();
       await page.evaluate(() => {
         const device = (window as any).testState.devices[0];
-        device.displays = [0, 1].map(index => ({ index, name: `Monitor ${index}`, width: 1920, height: 1080, primary: index === 0 }));
+        device.displays = [0, 1].map(index => ({ index, name: `Monitor ${index}`, x: index * 1920, y: 0, width: 1920, height: 1080, primary: index === 0 }));
         device.activeDisplayIndex = 1;
       });
       await refresh(page).click();
@@ -1889,8 +3519,28 @@ describe("manual Viewer device list in a real browser", () => {
       await connect();
       const select = page.getByRole("combobox", { name: "모니터 선택", exact: true });
       await expect.poll(() => select.inputValue()).toBe("1");
+      await page.clock.pauseAt(new Date(Date.now()+1_000));
+      await page.locator('.remote-canvas').evaluate(canvas=>{
+        const w=window as any;w.testState.controls=[];
+        canvas.getBoundingClientRect=()=>new DOMRect(0,0,100,100);
+        canvas.setPointerCapture=()=>{}; canvas.hasPointerCapture=()=>false;
+        w.emitMonitorPointer=(clientX:number,type='pointermove')=>canvas.dispatchEvent(new PointerEvent(type,{pointerType:'mouse',pointerId:1,button:0,buttons:type==='pointerdown'?1:0,clientX,clientY:50,bubbles:true}));
+        w.emitMonitorPointer(50);
+        w.emitMonitorPointer(100);
+      });
       await select.selectOption("0");
       await expect.poll(() => select.inputValue()).toBe("0");
+      await page.clock.runFor(20);
+      expect(await page.evaluate(()=>(window as any).testState.controls)).toEqual(['move 49151 32768','switch-monitor 0']);
+      await page.evaluate(()=>(window as any).emitMonitorPointer(50));
+      expect(await page.evaluate(()=>(window as any).testState.controls.at(-1))).toBe('move 16384 32768');
+      await page.evaluate(()=>{
+        const w=window as any;
+        w.emitMonitorPointer(50,'pointerdown');
+        w.emitMonitorPointer(50,'pointerup');
+      });
+      expect(await page.evaluate(()=>(window as any).testState.controls.slice(-2))).toEqual(['mouse-down 16384 32768 left','mouse-up 16384 32768 left']);
+      await page.clock.resume();
       await page.waitForFunction(() => JSON.parse(localStorage.getItem("wonremote-device-view:device-0")!).selectedDisplayIndex === 0);
       await page.getByTestId("end-session").click();
       await connect();
@@ -1928,7 +3578,7 @@ describe("manual Viewer device list in a real browser", () => {
         }
       }
       const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("wonremote-device-view:device-0")!));
-      expect(saved).toMatchObject({ zoom: mobile ? 1 : 2, streamPerformanceMode: "normal", inputMode: "touchpad" });
+      expect(saved).toMatchObject({ zoom: mobile ? 1 : 2, streamPerformanceMode: "fast", inputMode: "touchpad" });
       if (mobile) await page.screenshot({ path: `.local-run/width-fit-${width}.png` });
     } finally { await page.close(); }
   });
@@ -1963,26 +3613,25 @@ describe("manual Viewer device list in a real browser", () => {
       await page.screenshot({path:`../.codex-tmp/ime-zoom-${viewport.width}.png`});
     } finally { await page.close(); }
   });
-  it("keeps quality preferences separate for each PC", async () => {
+  it("always starts two PCs in fast mode and removes auto/normal choices", async () => {
     const page = await openViewer({ connected: true });
     try {
       await page.getByText("PC-0", { exact: true }).waitFor();
       await page.evaluate(() => {
         localStorage.setItem("wonremote-stream-performance-mode", "normal");
-        localStorage.setItem("wonremote-device-view:device-0", JSON.stringify({ streamPerformanceMode: "fast" }));
+        localStorage.setItem("wonremote-device-view:device-0", JSON.stringify({ streamPerformanceMode: "auto" }));
       });
       await page.locator(".table-row").filter({ has: page.getByText("PC-0", { exact: true }) }).getByRole("button", { name: "접속", exact: true }).click();
       const panel = page.locator(".session-panel:not(.session-panel-inactive)");
-      await page.waitForFunction(() => document.querySelector('.session-panel .stream-mode-control button[aria-pressed="true"]')?.textContent?.trim() === "빠름");
-      await panel.getByRole("button", { name: "자동", exact: true }).click();
-      await page.waitForFunction(() => JSON.parse(localStorage.getItem("wonremote-device-view:device-0")!).streamPerformanceMode === "auto");
+      await panel.getByLabel("화면 반응 속도: 빠름", {exact:true}).waitFor();
+      expect(await panel.getByRole("button", {name:"자동",exact:true}).count()).toBe(0);
+      expect(await panel.getByRole("button", {name:"보통",exact:true}).count()).toBe(0);
+      await page.waitForFunction(() => (window as any).testState.controls.includes("set-stream-mode fast"));
       await panel.getByRole("button", { name: "장비 목록", exact: true }).click();
       await page.locator(".table-row").filter({ has: page.getByText("PC-1", { exact: true }) }).getByRole("button", { name: "접속", exact: true }).click();
-      await panel.getByRole("button", { name: "보통", exact: true }).waitFor();
-      expect(await panel.getByRole("button", { name: "보통", exact: true }).getAttribute("aria-pressed")).toBe("true");
-      await panel.getByRole("button", { name: "빠름", exact: true }).click();
+      await panel.getByLabel("화면 반응 속도: 빠름", {exact:true}).waitFor();
       await page.waitForFunction(() => JSON.parse(localStorage.getItem("wonremote-device-view:device-1")!).streamPerformanceMode === "fast");
-      expect(await page.evaluate(() => JSON.parse(localStorage.getItem("wonremote-device-view:device-0")!).streamPerformanceMode)).toBe("auto");
+      expect(await page.evaluate(() => JSON.parse(localStorage.getItem("wonremote-device-view:device-0")!).streamPerformanceMode)).toBe("fast");
       expect(await page.evaluate(() => localStorage.getItem("wonremote-stream-performance-mode"))).toBe("normal");
     } finally { await page.close(); }
   });
@@ -2076,6 +3725,7 @@ describe("manual Viewer device list in a real browser", () => {
       await panel.getByText('disk full',{exact:true}).waitFor();
       expect(await panel.getByText('실패',{exact:true}).count()).toBe(1);
       expect(await panel.getByText('완료',{exact:true}).count()).toBe(1);
+      expect(await panel.locator('.session-transfer-progress').count()).toBe(0);
       await panel.getByRole('button',{name:'내 PC 받은 폴더 열기',exact:true}).click();
       expect(await page.evaluate(() => (window as any).testState.controls.filter((value:string) => value === 'open-download-folder'))).toEqual([]);
       expect(await panel.getByRole('button',{name:'재시도',exact:true}).count()).toBe(1);
@@ -2086,6 +3736,10 @@ describe("manual Viewer device list in a real browser", () => {
       await panel.getByRole('button',{name:'재시도',exact:true}).click();
       await page.waitForFunction(() => document.querySelectorAll('.session-transfer-queue-item.completed').length===2);
       expect(await page.evaluate(() => (window as any).resumedFiles)).toEqual([{resume:true,id:await page.evaluate(() => (window as any).uploads[0].transferId)}]);
+      const transferList = panel.getByRole('complementary', {name:'파일 전송 목록'});
+      await transferList.getByRole('button', {name:'완료 항목 정리', exact:true}).click();
+      await transferList.waitFor({state:'detached'});
+      expect(await panel.locator('.session-transfer-progress').count()).toBe(0);
     } finally { await page.close(); }
   });
 
@@ -2221,6 +3875,11 @@ describe("manual Viewer device list in a real browser", () => {
       });
       await page.getByText("PC-0", { exact: true }).waitFor();
       await page.locator(".table-row").filter({ has: page.getByText("PC-0", { exact: true }) }).getByRole("button", { name: "장비 정보 수정", exact: true }).click();
+      expect(await page.locator(".device-update-options").evaluate(section=>{
+        const pause=section.querySelector("label")!.getBoundingClientRect();
+        const rollback=section.querySelector("button")!.getBoundingClientRect();
+        return rollback.top>=pause.bottom && rollback.top-pause.bottom<=10;
+      })).toBe(true);
       await page.getByRole("button", { name: "에이전트 이전 버전 복구", exact: true }).click();
       const dialog = page.getByRole("dialog", { name: "에이전트 이전 버전 복구", exact: true });
       await dialog.getByText("대상 PC: PC-0", { exact: true }).waitFor();
@@ -2233,6 +3892,47 @@ describe("manual Viewer device list in a real browser", () => {
       expect(await page.evaluate(() => (window as any).metadataSaves)).toBe(0);
       await dialog.getByRole("button", { name: "닫기" }).click();
       expect(await page.getByRole("dialog", { name: "등록 장비 수정", exact: true }).getByRole("checkbox", { name: "이 장비 업데이트 일시 중지" }).isChecked()).toBe(true);
+    } finally { await page.close(); }
+  });
+  it("adds and edits reusable tags beside Kiosk selection without saving the device early", async () => {
+    const page=await openViewer({viewport:{width:1024,height:768}});
+    try {
+      await page.getByText("PC-0", {exact:true}).waitFor();
+      const consultation = page.getByRole("button",{name:"영상상담",exact:true});
+      expect(await consultation.evaluate(button=>{
+        const range=document.createRange();range.selectNodeContents(button.querySelector("span")!);
+        return range.getClientRects().length===1 && button.getBoundingClientRect().right<=innerWidth;
+      })).toBe(true);
+      await page.evaluate(()=>{const w=window as any;w.metaCalls=[];w.testApi.updateFirebaseDeviceMetadata=async(id:string,input:any)=>{
+        w.metaCalls.push(input);const device=w.testState.devices.find((item:any)=>item.id===id);
+        Object.assign(device,Object.fromEntries(Object.entries(input).filter(([,value])=>value!==undefined)));return device;
+      };});
+      const edit=()=>page.locator(".table-row").filter({has:page.getByText(/\bAGENT-0\b/)}).getByRole("button",{name:"장비 정보 수정",exact:true}).click();
+      await edit();
+      const dialog=page.getByRole("dialog",{name:"등록 장비 수정",exact:true});
+      const type=dialog.getByLabel("장비 종류",{exact:true});
+      const values=await type.locator("option").evaluateAll(options=>options.map(option=>(option as HTMLOptionElement).value));
+      expect(values).toEqual(["메인포스","오더포스","키오스크","태블릿","custom"]);
+      await type.selectOption("키오스크");
+      await dialog.getByRole("button",{name:"자주 쓰는 태그 만들기",exact:true}).click();
+      await dialog.getByLabel("태그 이름",{exact:true}).fill("긴급");
+      await dialog.getByLabel("태그 색상",{exact:true}).fill("#bb2200");
+      await dialog.getByRole("button",{name:"태그 편집 저장",exact:true}).click();
+      await dialog.getByRole("button",{name:"긴급 태그 편집",exact:true}).click();
+      await dialog.getByLabel("태그 이름",{exact:true}).fill("현장지원");
+      await dialog.getByLabel("태그 색상",{exact:true}).fill("#129284");
+      await dialog.getByRole("button",{name:"태그 편집 저장",exact:true}).click();
+      await dialog.getByRole("button",{name:"현장지원 태그 추가",exact:true}).click();
+      expect(await dialog.getByLabel("태그",{exact:true}).inputValue()).toBe("현장지원");
+      expect(await dialog.getByRole("button",{name:"현장지원 태그 추가",exact:true}).isDisabled()).toBe(true);
+      expect(await page.evaluate(()=>(window as any).metaCalls)).toEqual([]);
+      await page.screenshot({path:"../.codex-tmp/viewer-operations-tag-editor.png"});
+      await dialog.getByRole("button",{name:"저장",exact:true}).click();
+      await dialog.waitFor({state:"detached"});
+      expect(await page.evaluate(()=>(window as any).metaCalls[0])).toMatchObject({deviceName:"키오스크",tags:["현장지원"]});
+      await edit();
+      expect(await type.inputValue()).toBe("키오스크");
+      expect(await dialog.getByRole("button",{name:"현장지원 태그 추가",exact:true}).locator("i").evaluate(i=>getComputedStyle(i).backgroundColor)).toBe("rgb(18, 146, 132)");
     } finally { await page.close(); }
   });
   it("reveals mobile reverse transfer when the Android bridge attaches after the session renders", async () => {
@@ -2351,6 +4051,7 @@ describe("manual Viewer device list in a real browser", () => {
       await page.evaluate(() => (window as any).rtcCallbacks.onFileStatus({ type: "file-status", requestId: "reverse-ui", state: "selection-failed" }));
       await page.getByText("원격 파일 선택 창을 열지 못했습니다. 로그인된 사용자 화면을 확인해 주세요.", { exact: true }).waitFor();
       await page.evaluate(() => (window as any).rtcCallbacks.onState("webrtc-file-closed"));
+      await page.getByTestId("secondary-tools").locator("summary").click();
       expect(await page.getByRole("button", { name: "원격 파일 가져오기", exact: true }).isDisabled()).toBe(true);
     } finally { await page.close(); }
   });
@@ -2562,6 +4263,79 @@ describe("manual Viewer device list in a real browser", () => {
       await page.getByText("Store · 화면 수신 대기", { exact: true }).waitFor();
     } finally { await page.close(); }
   });
+  it("commits the complete first picture without staging a full surface or exposing partial tiles", async () => {
+    const page = await openViewer({connected:true});
+    try {
+      await page.locator(".table-row").filter({has:page.getByText("PC-0",{exact:true})})
+        .getByRole("button",{name:"접속",exact:true}).click();
+      await page.getByText("Store · 화면 수신 대기",{exact:true}).waitFor();
+      await page.evaluate(() => {
+        const w = window as any;
+        const canvas = document.querySelector<HTMLCanvasElement>(".remote-canvas")!;
+        canvas.width = 64; canvas.height = 32;
+        const visible = canvas.getContext("2d",{willReadFrequently:true})!;
+        visible.fillStyle = "#ff00ff"; visible.fillRect(0,0,1,1);
+        w.firstPictureDraws = [];
+        const draw = CanvasRenderingContext2D.prototype.drawImage;
+        CanvasRenderingContext2D.prototype.drawImage = function(this: CanvasRenderingContext2D, ...args: unknown[]) {
+          w.firstPictureDraws.push([this.canvas === canvas, args[0] instanceof HTMLImageElement]);
+          if (w.failFirstPictureDraw && this.canvas === canvas && args[1] === 32) throw new Error("simulated visible canvas draw failure");
+          return Reflect.apply(draw,this,args);
+        };
+        const tiles = ["#ff0000", "#0000ff"].map((color,x) => {
+          const source = document.createElement("canvas"); source.width = source.height = 32;
+          const ctx = source.getContext("2d")!;
+          ctx.fillStyle = color; ctx.fillRect(x === 0 ? 1 : 0,0,32,32);
+          return {x,y:0,w:32,h:32,data:source.toDataURL("image/png").split(",")[1]};
+        });
+        let allocated = 0;
+        const createElement = document.createElement.bind(document);
+        document.createElement = ((name: string, options?: ElementCreationOptions) => {
+          if (name === "canvas") allocated++;
+          return createElement(name, options);
+        }) as typeof document.createElement;
+        w.sendFirstPicture = (invalid: boolean) => w.rtcCallbacks.onFrame({width:64,height:32,keyframe:true,
+          tiles:invalid?[tiles[0],{...tiles[1],data:"bad-tile"}]:tiles});
+        w.readFirstPicture = () => ({
+          pixels:[0,1,63].map(x=>Array.from(visible.getImageData(x,0,1,1).data)),draws:w.firstPictureDraws,allocated,
+        });
+        w.sendFirstPicture(true);
+      });
+      const read = () => page.evaluate(() => (window as any).readFirstPicture());
+      await page.getByText("Store · 화면 표시 오류",{exact:true}).waitFor();
+      expect(await read()).toEqual({pixels:[[255,0,255,255],[0,0,0,0],[0,0,0,0]],draws:[],allocated:0});
+      await page.evaluate(() => {
+        const w = window as any;
+        w.failFirstPictureDraw = true; w.sendFirstPicture(false);
+      });
+      await page.waitForFunction(() => (window as any).firstPictureDraws.length === 2);
+      const emptyPixels = [[0,0,0,0],[0,0,0,0],[0,0,0,0]];
+      expect((await read()).pixels).toEqual(emptyPixels);
+      await page.evaluate(() => {
+        const w = window as any;
+        w.failFirstPictureDraw = false; w.firstPictureDraws = [];
+        const NativeImage = window.Image;
+        let count = 0;
+        (window as any).Image = function () {
+          const img = new NativeImage();
+          if (++count === 2) {
+            window.Image = NativeImage;
+            Object.defineProperty(img,"onload",{set(callback) {
+              img.addEventListener("load",() => { (window as any).releaseFirstPictureTile = () => callback.call(img); },{once:true});
+            }});
+          }
+          return img;
+        };
+        (window as any).sendFirstPicture(false);
+      });
+      await page.waitForFunction(() => typeof (window as any).releaseFirstPictureTile === "function");
+      expect(await read()).toEqual({pixels:emptyPixels,draws:[],allocated:0});
+      await page.evaluate(() => (window as any).releaseFirstPictureTile());
+      await page.getByText("Store · 화면 수신 중",{exact:true}).waitFor();
+      expect(await read()).toEqual({pixels:[[0,0,0,0],[255,0,0,255],[0,0,255,255]],draws:[[true,true],[true,true]],allocated:0});
+    } finally { await page.close(); }
+  });
+
   it("requires a complete initial or resized picture while preserving incremental updates", async () => {
     const page = await openViewer({ connected: true });
     const send = async (width: number, tileWidth: number, color: string, x = 0) => {
@@ -2608,6 +4382,691 @@ describe("manual Viewer device list in a real browser", () => {
       expect(await pixel(95, 1)).toBeGreaterThan(240);
       await page.evaluate(() => (window as any).resumeOldDelta());
       expect(await pixel(0, 1)).toBeGreaterThan(240);
+    } finally { await page.close(); }
+  });
+  it("draws a complete picture without per-cell sequence writes and preserves newer pixels", async () => {
+    const page = await openViewer({connected:true});
+    try {
+      await page.locator('.table-row').filter({has:page.getByText('PC-0',{exact:true})}).getByRole('button',{name:'접속',exact:true}).click();
+      await page.waitForFunction(() => typeof (window as any).rtcCallbacks?.onFrame === 'function');
+      await page.evaluate(() => {
+        const w = window as any;
+        w.drawCalls = 0;
+        w.cellSequenceWrites = 0;
+        w.cellSequenceKeys = [];
+        const set = Map.prototype.set;
+        Map.prototype.set = function(key: unknown, value: unknown) {
+          const cells = (typeof key === 'string' && /^\d+:\d+$/.test(key)) || Number.isSafeInteger(key);
+          if (cells && [9,10,11,12,999].includes(value as number)) {
+            w.cellSequenceWrites++;
+            w.cellSequenceKeys.push(key);
+          }
+          return set.call(this, key, value);
+        };
+        const draw = CanvasRenderingContext2D.prototype.drawImage;
+        CanvasRenderingContext2D.prototype.drawImage = function(this: CanvasRenderingContext2D, ...args: unknown[]) {
+          if (args[0] instanceof HTMLImageElement) w.drawCalls++;
+          return Reflect.apply(draw, this, args);
+        };
+        w.drawRemoteTile = (sequence: number, width: number, color: string, x = 0) => {
+          const height = sequence === 10 ? 1080 : 64;
+          const source = document.createElement('canvas');
+          source.width = width; source.height = height;
+          const ctx = source.getContext('2d')!;
+          ctx.fillStyle = color; ctx.fillRect(0,0,width,height);
+          w.rtcCallbacks.onFrame({sequence, keyframe:sequence===10, width:1920, height:1080,
+            tiles:[{x, y:0, w:width, h:height, data:source.toDataURL('image/jpeg').split(',')[1]}]});
+        };
+      });
+      const canvas = page.locator('.remote-canvas');
+      const pixel = (x:number, y:number, channel:number) => canvas.evaluate((node, point) =>
+        (node as HTMLCanvasElement).getContext('2d')!.getImageData(point.x,point.y,1,1).data[point.channel], {x,y,channel});
+      const send = (sequence:number,width:number,color:string,x=0) => page.evaluate(params => (window as any).drawRemoteTile(...params), [sequence,width,color,x]);
+      const drawCalls = () => page.evaluate(() => (window as any).drawCalls);
+      await send(10,1920,'#ff0000');
+      await expect.poll(() => pixel(1919,1079,0)).toBeGreaterThan(240);
+      expect(await drawCalls()).toBe(1);
+      expect(await page.evaluate(() => (window as any).cellSequenceWrites)).toBe(0);
+      const holdDecodedTile = (key: string) => page.evaluate(key => {
+        const NativeImage = window.Image;
+        (window as any).Image = function() {
+          window.Image = NativeImage;
+          const img = new NativeImage();
+          Object.defineProperty(img,'onload',{set(callback) {
+            img.addEventListener('load',() => { (window as any)[key] = () => callback.call(img); },{once:true});
+          }});
+          return img;
+        };
+      },key);
+      await holdDecodedTile('resumeBeforeBaseline');
+      await send(9,64,'#ffffff',4);
+      await page.waitForFunction(() => Boolean((window as any).resumeBeforeBaseline));
+      await page.evaluate(() => (window as any).resumeBeforeBaseline());
+      expect(await pixel(128,0,1)).toBeLessThan(10);
+      expect(await drawCalls()).toBe(1);
+      await holdDecodedTile('resumeInvalidTile');
+      await send(999,64,'#ffffff',60);
+      await page.waitForFunction(()=>Boolean((window as any).resumeInvalidTile));
+      await page.evaluate(()=>(window as any).resumeInvalidTile());
+      await holdDecodedTile('resumeOldTile');
+      await send(11,96,'#0000ff');
+      await page.waitForFunction(()=>Boolean((window as any).resumeOldTile));
+      await send(12,64,'#00ff00');
+      await expect.poll(() => pixel(63,63,1)).toBeGreaterThan(240);
+      expect(await drawCalls()).toBe(2);
+      expect(await page.evaluate(() => (window as any).cellSequenceWrites)).toBe(4);
+      await page.evaluate(()=>(window as any).resumeOldTile());
+      await expect.poll(() => pixel(95,63,2)).toBeGreaterThan(240);
+      expect(await pixel(0,0,1)).toBeGreaterThan(240);
+      expect(await pixel(63,63,1)).toBeGreaterThan(240);
+      expect(await pixel(1919,1079,0)).toBeGreaterThan(240);
+      expect(await drawCalls()).toBe(4);
+      expect(await page.evaluate(() => (window as any).cellSequenceWrites)).toBe(6);
+      expect(await page.evaluate(() => (window as any).cellSequenceKeys)).toEqual([0,1,60,61,2,62]);
+    } finally { await page.close(); }
+  });
+  it("replaces a same-size picture without resetting the remote canvas, then applies deltas and a real resize", async () => {
+    const page = await openViewer({connected:true});
+    try {
+      await page.locator(".table-row").filter({has:page.getByText("PC-0",{exact:true})})
+        .getByRole("button",{name:"접속",exact:true}).click();
+      await page.waitForFunction(() => typeof (window as any).rtcCallbacks?.onFrame === "function");
+      await page.evaluate(() => {
+        const w = window as any;
+        w.remoteSizeWrites = [];
+        const drawImage = CanvasRenderingContext2D.prototype.drawImage;
+        CanvasRenderingContext2D.prototype.drawImage = function (this: CanvasRenderingContext2D, ...args: unknown[]) {
+          const source = args[0];
+          if (source instanceof HTMLCanvasElement && this.canvas.classList.contains("remote-canvas")) {
+            w.lastStagingContext = source.getContext("2d");
+          }
+          Reflect.apply(drawImage, this, args);
+        };
+        for (const key of ["width", "height"]) {
+          const dimension = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype,key)!;
+          Object.defineProperty(HTMLCanvasElement.prototype,key,{...dimension,set(this: HTMLCanvasElement,value: number) {
+            if (this.classList.contains("remote-canvas")) w.remoteSizeWrites.push(key);
+            dimension.set!.call(this,value);
+          }});
+        }
+        w.sendResizeFrame = (sequence:number) => {
+          const width = sequence === 8 ? 192 : sequence === 9 ? 160 : 128, height = 64;
+          const jpeg = sequence === 4 || sequence === 6 || sequence === 7;
+          const tile = document.createElement("canvas");
+          tile.width = sequence === 3 ? 32 : width;
+          tile.height = sequence === 3 ? 32 : height;
+          const ctx = tile.getContext("2d")!;
+          ctx.fillStyle = ["", "#ff0000", "#0000ff", "#ffff00", "#00ff00", "#ff0000", "#0000ff", "#ff0000", "#0000ff", "#00ff00"][sequence];
+          ctx.fillRect(sequence === 2 ? 32 : sequence === 5 ? 64 : 0,0,tile.width,tile.height);
+          w.rtcCallbacks.onFrame({sequence,width,height,keyframe:sequence!==3&&!jpeg,
+            tiles:[{x:0,y:0,w:tile.width,h:tile.height,data:tile.toDataURL(jpeg ? "image/jpeg" : "image/png").split(",")[1]}]});
+        };
+      });
+      const canvas = page.locator(".remote-canvas");
+      const send = (sequence:number) => page.evaluate(sequence => (window as any).sendResizeFrame(sequence),sequence);
+      const pixel = (x:number, y:number) => canvas.evaluate((node,{x,y}) =>
+        Array.from((node as HTMLCanvasElement).getContext("2d")!.getImageData(x,y,1,1).data),{x,y});
+      await send(1);
+      await expect.poll(() => pixel(1,1)).toEqual([255,0,0,255]);
+      await page.evaluate(() => { (window as any).remoteSizeWrites = []; });
+      await send(2);
+      await expect.poll(() => pixel(100,40)).toEqual([0,0,255,255]);
+      expect(await pixel(1,1)).toEqual([0,0,0,0]);
+      expect(await page.evaluate(() => (window as any).remoteSizeWrites)).toEqual([]);
+      await send(3);
+      await expect.poll(() => pixel(1,1)).toEqual([255,255,0,255]);
+      expect(await pixel(100,40)).toEqual([0,0,255,255]);
+      await send(4);
+      await expect.poll(async () => (await pixel(100,40))[1]).toBeGreaterThan(250);
+      await page.evaluate(() => {
+        const w = window as any;
+        w.jpegStagingContext = w.lastStagingContext;
+      });
+      await send(5);
+      await expect.poll(() => pixel(100,40)).toEqual([255,0,0,255]);
+      expect(await pixel(40,1)).toEqual([0,0,0,0]);
+      expect(await page.evaluate(() => {
+        const w = window as any;
+        return !!w.jpegStagingContext && w.lastStagingContext === w.jpegStagingContext;
+      })).toBe(true);
+      expect(await page.evaluate(() => (window as any).remoteSizeWrites)).toEqual([]);
+      await send(6);
+      await expect.poll(async () => (await pixel(100,40))[2]).toBeGreaterThan(250);
+      await page.evaluate(() => {
+        const staging: CanvasRenderingContext2D = (window as any).lastStagingContext;
+        staging.isContextLost = () => true;
+        staging.drawImage = () => {};
+        staging.clearRect = () => {};
+      });
+      await send(7);
+      await expect.poll(async () => (await pixel(100,40))[0]).toBeGreaterThan(250);
+      const lastGoodPixel = await pixel(100,40);
+      await page.evaluate(() => {
+        const staging: CanvasRenderingContext2D = (window as any).lastStagingContext;
+        staging.drawImage = () => { staging.isContextLost = () => true; };
+      });
+      await send(8);
+      const reconnect = page.getByRole("button",{name:"원격 연결 새로고침"});
+      await expect.poll(() => reconnect.isEnabled()).toBe(true);
+      expect(await pixel(100,40)).toEqual(lastGoodPixel);
+      expect(await page.evaluate(() => (window as any).remoteSizeWrites)).toEqual([]);
+      await send(9);
+      await expect.poll(() => canvas.evaluate(node => (node as HTMLCanvasElement).width)).toBe(160);
+      await expect.poll(() => reconnect.isEnabled()).toBe(false);
+      expect(await pixel(159,63)).toEqual([0,255,0,255]);
+      expect(await page.evaluate(() => (window as any).remoteSizeWrites)).toEqual(["width"]);
+    } finally { await page.close(); }
+  });
+  it.each(["same-size", "corrupt", "delta", "resize", "legacy-resize", "covered-delta", "corrupt-covered-delta", "mixed-corrupt-covered-delta", "covered-delta-background", "newer-partial-delta"])("prioritizes the newest queued full picture and preserves boundaries (%s)", async scenario => {
+    const page = await openViewer({connected:true});
+    try {
+      await page.locator(".table-row").filter({has:page.getByText("PC-0",{exact:true})})
+        .getByRole("button",{name:"접속",exact:true}).click();
+      await page.getByText("Store · 화면 수신 대기",{exact:true}).waitFor();
+      await page.evaluate(() => {
+        const w = window as any;
+        const tile = (width: number, color: string, x: number, jpeg: boolean) => {
+          const source = document.createElement("canvas"); source.width = width; source.height = 32;
+          const ctx = source.getContext("2d")!; ctx.fillStyle = color; ctx.fillRect(0,0,width,32);
+          return {x,y:0,w:width,h:32,data:source.toDataURL(jpeg?"image/jpeg":"image/png").split(",")[1]};
+        };
+        w.sendKeyframeBurst = (sequence: number | undefined, color: string, corrupt = false, delta = false, width = 64, jpeg = false) => {
+          const image = tile(delta ? 32 : width, color, delta ? 1 : 0, jpeg);
+          w.rtcCallbacks.onFrame({sequence,width,height:32,keyframe:!delta&&!jpeg,
+            tiles:[corrupt?{...image,data:jpeg?"/9j/": "invalid-frame"}:image]});
+        };
+        w.sendMixedCorruptDelta = () => w.rtcCallbacks.onFrame({sequence:14,width:64,height:32,keyframe:false,
+          tiles:[tile(32,"#00ffff",0,true),{...tile(32,"#00ffff",1,true),data:"/9j/"}]});
+        w.sendKeyframeBurst(10,"#ff0000");
+      });
+      await page.getByText("Store · 화면 수신 중",{exact:true}).waitFor();
+      await page.evaluate(scenario => {
+        const w = window as any;
+        const NativeImage = window.Image;
+        let created = 0;
+        w.burstImageCount = () => created;
+        w.Image = function() {
+          const img = new NativeImage();
+          if (++created === 1) Object.defineProperty(img,"onload",{set(callback) {
+            img.addEventListener("load",() => {w.releaseBurstFrame = () => callback.call(img);},{once:true});
+          }});
+          return img;
+        };
+        const covered = scenario.includes("covered-delta");
+        if (scenario === "newer-partial-delta") {
+          w.sendKeyframeBurst(15,"#ffff00",false,true);
+          w.sendKeyframeBurst(14,"#00ffff",false,false,64,true);
+          return;
+        }
+        w.sendKeyframeBurst(11,"#00ff00",false,false,64,covered);
+        if (scenario === "legacy-resize") {
+          w.sendKeyframeBurst(undefined,"#ff00ff",false,false,96);
+          w.sendKeyframeBurst(11,"#00ffff");
+        } else if (scenario === "delta" || scenario === "resize") {
+          w.sendKeyframeBurst(12,"#0000ff");
+          w.sendKeyframeBurst(13,"#ff00ff",false,scenario === "delta",scenario === "resize" ? 96 : 64);
+          w.sendKeyframeBurst(14,"#00ffff");
+        } else {
+          if (scenario === "corrupt" || scenario === "corrupt-covered-delta") w.sendKeyframeBurst(14,"#00ffff",true,false,64,covered);
+          if (scenario === "mixed-corrupt-covered-delta") w.sendMixedCorruptDelta();
+          w.sendKeyframeBurst(12,"#0000ff",false,false,64,covered);
+          w.sendKeyframeBurst(13,"#ff00ff",false,false,64,covered);
+          if (scenario === "same-size" || scenario === "covered-delta" || scenario === "covered-delta-background") w.sendKeyframeBurst(14,"#00ffff",false,false,64,covered);
+        }
+        if (scenario !== "legacy-resize" && scenario !== "mixed-corrupt-covered-delta") w.sendKeyframeBurst(15,"#ffff00",false,true);
+      }, scenario);
+      await page.waitForFunction(() => typeof (window as any).releaseBurstFrame === "function");
+      expect(await page.evaluate(() => (window as any).burstImageCount())).toBe(scenario === "newer-partial-delta" ? 2 : 1);
+      await page.evaluate(background => {
+        if (background) {
+          Object.defineProperty(document,"visibilityState",{configurable:true,value:"hidden"});
+          window.requestAnimationFrame = () => -1;
+          document.dispatchEvent(new Event("visibilitychange"));
+        }
+        (window as any).releaseBurstFrame();
+      }, scenario === "covered-delta-background");
+      const canvas = page.locator(".remote-canvas");
+      const pixels = () => canvas.evaluate((node, jpeg) => {
+        const ctx = (node as HTMLCanvasElement).getContext("2d")!;
+        return [0,63].map(x => Array.from(ctx.getImageData(x,0,1,1).data, value => jpeg && value < 4 ? 0 : jpeg && value > 251 ? 255 : value));
+      }, scenario.includes("covered-delta") || scenario === "newer-partial-delta");
+      await expect.poll(pixels).toEqual([scenario === "corrupt" || scenario === "corrupt-covered-delta" ? [255,0,255,255] : [0,255,255,255],
+        scenario === "legacy-resize" ? [0,255,255,255] : scenario === "mixed-corrupt-covered-delta" ? [255,0,255,255] : [255,255,0,255]]);
+      expect(await canvas.evaluate(node => (node as HTMLCanvasElement).width)).toBe(64);
+      expect(await page.evaluate(() => (window as any).burstImageCount())).toBe({"same-size":3,corrupt:4,delta:5,resize:5,"legacy-resize":3,
+        "covered-delta":3,"corrupt-covered-delta":4,"mixed-corrupt-covered-delta":4,"covered-delta-background":3,"newer-partial-delta":2}[scenario]);
+    } finally { await page.close(); }
+  });
+
+  it("keeps a dense 1080p delta visible without repeating unchanged picture and cursor state", async () => {
+    const page = await openViewer({ connected: true });
+    try {
+      await page.locator(".table-row").filter({ has: page.getByText("PC-0", { exact: true }) })
+        .getByRole("button", { name: "접속", exact: true }).click();
+      await page.waitForFunction(() => typeof (window as any).rtcCallbacks?.onFrame === "function");
+      await page.evaluate(() => {
+        const w = window as any;
+        const source = document.createElement("canvas");
+        source.width = 1920; source.height = 1080;
+        const ctx = source.getContext("2d")!;
+        ctx.fillStyle = "#ff0000"; ctx.fillRect(0, 0, 1920, 1080);
+        const frame = { width: 1920, height: 1080 };
+        w.rtcCallbacks.onFrame({ ...frame, sequence: 1, keyframe: true,
+          tiles: [{ x: 0, y: 0, w: 1920, h: 1080, data: source.toDataURL("image/jpeg").split(",")[1] }] });
+        source.width = source.height = 32;
+        const tiles = Array.from({ length: 100 }, (_, i) => {
+          ctx.fillStyle = `rgb(${i}, 255, 0)`; ctx.fillRect(0, 0, 32, 32);
+          return { x: i % 20, y: Math.floor(i / 20), w: 32, h: 32, data: source.toDataURL("image/png").split(",")[1] };
+        });
+        w.sendDenseDelta = () => {
+          w.pictureStateDispatches = [];
+          w.testPictureStateDispatch = (state: string) => w.pictureStateDispatches.push(state);
+          w.rtcCallbacks.onFrame({ ...frame, sequence: 2, keyframe: false, cursorEmbedded: true, tiles });
+        };
+        w.sendCursorDelta = (sequence: number, cursorEmbedded: boolean, x: number) =>
+          w.rtcCallbacks.onFrame({ ...frame, sequence, keyframe: false, cursorEmbedded, tiles: [{ ...tiles[0], x }] });
+      });
+      await page.getByText("Store · 화면 수신 중", { exact: true }).waitFor();
+      await page.evaluate(() => (window as any).sendDenseDelta());
+      const canvas = page.locator(".remote-canvas");
+      await expect.poll(() => canvas.evaluate(node => {
+        const pixels = (node as HTMLCanvasElement).getContext("2d")!.getImageData(0, 0, 640, 160).data;
+        return Array.from({ length: 100 }, (_, i) => pixels[((Math.floor(i / 20) * 32 + 16) * 640 + i % 20 * 32 + 16) * 4 + 1])
+          .filter(green => green === 255).length;
+      })).toBe(100);
+      await expect.poll(() => canvas.evaluate(node => getComputedStyle(node).cursor)).toBe("none");
+      const paintedGreen = (x: number) => canvas.evaluate((node, x) =>
+        (node as HTMLCanvasElement).getContext("2d")!.getImageData(x * 32 + 16, 16, 1, 1).data[1], x);
+      await page.evaluate(() => (window as any).sendCursorDelta(4, true, 20));
+      await expect.poll(() => paintedGreen(20)).toBe(255);
+      await page.evaluate(() => (window as any).sendCursorDelta(3, false, 21));
+      await expect.poll(() => paintedGreen(21)).toBe(255);
+      expect(await canvas.evaluate(node => getComputedStyle(node).cursor)).toBe("none");
+      const updates = await page.evaluate(() => (window as any).pictureStateDispatches as string[]);
+      expect(updates).toEqual(["setRemoteCursorEmbedded"]);
+    } finally { await page.close(); }
+  });
+
+  it("stops a missing visual ping, ignores its late marker and allows a clean retry", async () => {
+    const page = await openViewer({ connected: true });
+    try {
+      await page.locator(".table-row").filter({ has: page.getByText("PC-0", { exact: true }) })
+        .getByRole("button", { name: "접속", exact: true }).click();
+      await page.waitForFunction(() => typeof (window as any).rtcCallbacks?.onFrame === "function");
+      await page.evaluate(() => {
+        const w = window as any;
+        const source = document.createElement("canvas");
+        source.width = source.height = 32;
+        const ctx = source.getContext("2d")!;
+        w.sendVisualPingFrame = (sequence: number, color: string) => {
+          ctx.fillStyle = color; ctx.fillRect(0, 0, 32, 32);
+          w.rtcCallbacks.onFrame({ sequence, keyframe: sequence === 1, width: 32, height: 32,
+            tiles: [{ x: 0, y: 0, w: 32, h: 32, data: source.toDataURL("image/jpeg").split(",")[1] }] });
+        };
+        w.sendVisualPingFrame(1, "#0050c0");
+      });
+      await page.getByText("Store · 화면 수신 중", { exact: true }).waitFor();
+      const tools = page.getByTestId("secondary-tools");
+      await tools.locator("summary").click();
+      const count = () => page.evaluate(() => (window as any).testState.controls.filter((action: string) => action === "ping-color-change").length);
+      expect(await count()).toBe(0);
+      await tools.getByRole("button", { name: "Visual Ping", exact: true }).evaluate(button => {
+        (button as HTMLButtonElement).click();
+        (button as HTMLButtonElement).click();
+      });
+      expect(await count()).toBe(1);
+      await tools.locator("summary").click();
+      await tools.getByRole("button", { name: "측정 중", exact: true }).waitFor();
+      await page.clock.runFor(5_100);
+      await tools.getByRole("button", { name: "측정 시간 초과", exact: true }).waitFor();
+      await page.evaluate(() => (window as any).sendVisualPingFrame(2, "#ff00ff"));
+      await page.clock.runFor(100);
+      await tools.getByRole("button", { name: "측정 시간 초과", exact: true }).waitFor();
+
+      await page.evaluate(() => (window as any).sendVisualPingFrame(3, "#0050c0"));
+      await page.clock.runFor(100);
+      await tools.getByRole("button", { name: "측정 시간 초과", exact: true }).click();
+      expect(await count()).toBe(2);
+      await page.evaluate(() => (window as any).sendVisualPingFrame(4, "#ff00ff"));
+      await page.clock.runFor(100);
+      await tools.locator("summary").click();
+      const result = tools.getByRole("button", { name: /E2E Latency:/ });
+      await result.waitFor();
+      await page.clock.runFor(5_100);
+      await result.waitFor();
+      expect(await count()).toBe(2);
+    } finally { await page.close(); }
+  });
+
+  it("clears a running visual ping when the same Viewer panel refreshes its connection", async () => {
+    const page = await openViewer({ connected: true });
+    try {
+      await page.locator(".table-row").filter({ has: page.getByText("PC-0", { exact: true }) })
+        .getByRole("button", { name: "접속", exact: true }).click();
+      await page.waitForFunction(() => typeof (window as any).rtcCallbacks?.onFrame === "function");
+      await page.evaluate(() => {
+        const w = window as any;
+        w.previousPingTransport = w.rtcCallbacks;
+        const source = document.createElement("canvas");
+        source.width = source.height = 32;
+        const ctx = source.getContext("2d")!;
+        w.pingRefreshFrame = (sequence: number, color: string, previous = false) => {
+          ctx.fillStyle = color; ctx.fillRect(0, 0, 32, 32);
+          (previous ? w.previousPingTransport : w.rtcCallbacks).onFrame({ sequence, keyframe: sequence === 1, width: 32, height: 32,
+            tiles: [{ x: 0, y: 0, w: 32, h: 32, data: color === "invalid" ? "/invalid/" : source.toDataURL("image/jpeg").split(",")[1] }] });
+        };
+        w.pingRefreshFrame(1, "#0050c0");
+      });
+      await page.getByText("Store · 화면 수신 중", { exact: true }).waitFor();
+      const tools = page.getByTestId("secondary-tools");
+      await tools.locator("summary").click();
+      await tools.getByRole("button", { name: "Visual Ping", exact: true }).click();
+      await tools.locator("summary").click();
+      await tools.getByRole("button", { name: "측정 중", exact: true }).waitFor();
+      await page.evaluate(() => (window as any).pingRefreshFrame(2, "invalid"));
+      await page.getByRole("button", { name: "원격 연결 새로고침", exact: true }).click();
+      await page.waitForFunction(() => (window as any).testState.rtcStarts === 2);
+      await page.evaluate(() => (window as any).pingRefreshFrame(1, "#0050c0"));
+      await page.getByText("Store · 화면 수신 중", { exact: true }).waitFor();
+      await page.clock.runFor(5_100);
+      await tools.getByRole("button", { name: "Visual Ping", exact: true }).click();
+      await page.evaluate(() => (window as any).pingRefreshFrame(3, "#ff00ff", true));
+      await page.clock.runFor(100);
+      await tools.locator("summary").click();
+      await tools.getByRole("button", { name: "측정 중", exact: true }).waitFor();
+      await page.evaluate(() => (window as any).pingRefreshFrame(2, "#ff00ff"));
+      await page.clock.runFor(100);
+      await tools.getByRole("button", { name: /E2E Latency:/ }).waitFor();
+    } finally { await page.close(); }
+  });
+
+  it("skips decoding 1080p deltas already covered by the visible full picture", async () => {
+    const page = await openViewer({ connected: true });
+    try {
+      await page.locator(".table-row").filter({ has: page.getByText("PC-0", { exact: true }) })
+        .getByRole("button", { name: "접속", exact: true }).click();
+      await page.waitForFunction(() => typeof (window as any).rtcCallbacks?.onFrame === "function");
+      await page.evaluate(() => {
+        const w = window as any;
+        const source = document.createElement("canvas");
+        const tile = (x: number, y: number, width: number, height: number, color: string) => {
+          source.width = width; source.height = height;
+          const ctx = source.getContext("2d")!;
+          ctx.fillStyle = color; ctx.fillRect(0, 0, width, height);
+          return { x, y, w: width, h: height, data: source.toDataURL("image/jpeg").split(",")[1] };
+        };
+        const frame = { width: 1920, height: 1080 };
+        w.rtcCallbacks.onFrame({ ...frame, sequence: 5, keyframe: true, tiles: [tile(0, 0, 1920, 1080, "#0000ff")] });
+        const obsolete = Array.from({ length: 64 }, (_, i) => tile(i % 16, Math.floor(i / 16), 32, 32, `rgb(255, ${i * 3}, 0)`));
+        const yellow = tile(2, 0, 32, 32, "#ffff00");
+        const green = tile(0, 0, 32, 32, "#00ff00");
+        const red = tile(1, 0, 32, 32, "#ff0000");
+        w.sendCoveredDeltas = () => {
+          const NativeImage = window.Image;
+          w.coveredDeltaImages = 0;
+          w.Image = function() { w.coveredDeltaImages++; return new NativeImage(); };
+          w.rtcCallbacks.onFrame({ ...frame, sequence: 4, keyframe: false, tiles: obsolete });
+          return w.coveredDeltaImages;
+        };
+        w.sendRemainingDelta = (sequence: number) => {
+          w.rtcCallbacks.onFrame({ ...frame, sequence, keyframe: false, tiles: [sequence === 5 ? yellow : sequence === 7 ? green : red] });
+        };
+      });
+      await page.getByText("Store · 화면 수신 중", { exact: true }).waitFor();
+      const images = await page.evaluate(() => (window as any).sendCoveredDeltas());
+      expect(images).toBe(0);
+      const pixels = () => page.locator(".remote-canvas").evaluate(node => {
+        const ctx = (node as HTMLCanvasElement).getContext("2d")!;
+        return [1, 33, 65].map(x => Array.from(ctx.getImageData(x, 1, 1, 1).data.slice(0, 3)).map(channel => channel > 240));
+      });
+      const blue = [false, false, true], yellow = [true, true, false], green = [false, true, false], red = [true, false, false];
+      await expect.poll(pixels).toEqual([blue, blue, blue]);
+      await page.evaluate(() => (window as any).sendRemainingDelta(5));
+      await expect.poll(pixels).toEqual([blue, blue, yellow]);
+      await page.evaluate(() => (window as any).sendRemainingDelta(7));
+      await expect.poll(pixels).toEqual([green, blue, yellow]);
+      await page.evaluate(() => (window as any).sendRemainingDelta(6));
+      await expect.poll(pixels).toEqual([green, red, yellow]);
+      expect(await page.evaluate(() => (window as any).coveredDeltaImages)).toBe(3);
+    } finally { await page.close(); }
+  });
+
+  it("does not compare a numbered delta against a legacy picture without a sequence", async () => {
+    const page = await openViewer({ connected: true });
+    try {
+      await page.locator(".table-row").filter({ has: page.getByText("PC-0", { exact: true }) })
+        .getByRole("button", { name: "접속", exact: true }).click();
+      await page.waitForFunction(() => typeof (window as any).rtcCallbacks?.onFrame === "function");
+      await page.evaluate(() => {
+        const w = window as any;
+        const source = document.createElement("canvas");
+        const picture = (width: number, color: string) => {
+          const height = 32;
+          source.width = width; source.height = height;
+          const ctx = source.getContext("2d")!;
+          ctx.fillStyle = color; ctx.fillRect(0, 0, width, height);
+          return { width, height, tiles: [{ x: 0, y: 0, w: width, h: height, data: source.toDataURL("image/jpeg").split(",")[1] }] };
+        };
+        const frame = picture(96, "#0000ff"), modern = picture(96, "#00ff00");
+        w.rtcCallbacks.onFrame(picture(64, "#0000ff"));
+        w.sendLegacyResize = () => w.rtcCallbacks.onFrame(frame);
+        w.sendSequencedBaseline = () => w.rtcCallbacks.onFrame({ ...modern, keyframe: false, sequence: 1 });
+        w.sendSequenceZero = () => {
+          const NativeImage = window.Image;
+          let imageCount = 0;
+          w.Image = function() { imageCount++; return new NativeImage(); };
+          try {
+            w.rtcCallbacks.onFrame({ ...frame, keyframe: false, sequence: 0, tiles: [{ ...frame.tiles[0], data: "invalid" }] });
+            return imageCount;
+          } finally { w.Image = NativeImage; }
+        };
+      });
+      const status = page.getByTestId("remote-connection-status");
+      const canvas = page.locator(".remote-canvas");
+      await status.getByText(/화면 수신 중/).waitFor();
+      await page.evaluate(() => (window as any).sendLegacyResize());
+      await expect.poll(() => canvas.evaluate(node => (node as HTMLCanvasElement).width)).toBe(96);
+      expect(await page.evaluate(() => (window as any).sendSequenceZero())).toBe(1);
+      await status.getByText(/화면 표시 오류/).waitFor();
+      await page.evaluate(() => (window as any).sendSequencedBaseline());
+      await status.getByText(/화면 수신 중/).waitFor();
+      expect(await canvas.evaluate(node => (node as HTMLCanvasElement).getContext("2d")!.getImageData(1, 1, 1, 1).data[1])).toBeGreaterThan(240);
+      expect(await page.evaluate(() => (window as any).sendSequenceZero())).toBe(0);
+    } finally { await page.close(); }
+  });
+
+  it("shares partial delta images without holding ready pixels behind a slow tile", async () => {
+    const page = await openViewer({connected:true});
+    try {
+      await page.locator(".table-row").filter({has:page.getByText("PC-0",{exact:true})})
+        .getByRole("button",{name:"접속",exact:true}).click();
+      await page.waitForFunction(() => typeof (window as any).rtcCallbacks?.onFrame === "function");
+      await page.evaluate(() => {
+        const source=document.createElement("canvas");source.width=1920;source.height=1080;
+        const ctx=source.getContext("2d")!;ctx.fillStyle="#ff0000";ctx.fillRect(0,0,1920,1080);
+        (window as any).rtcCallbacks.onFrame({sequence:1,width:1920,height:1080,keyframe:true,
+          tiles:[{x:0,y:0,w:1920,h:1080,data:source.toDataURL("image/jpeg").split(",")[1]}]});
+      });
+      await page.getByText("Store · 화면 수신 중",{exact:true}).waitFor();
+      await page.evaluate(() => {
+        const w=window as any;
+        const tile=document.createElement("canvas");tile.width=tile.height=32;
+        const ctx=tile.getContext("2d")!;
+        const jpeg=(color:string)=>{ctx.fillStyle=color;ctx.fillRect(0,0,32,32);return tile.toDataURL("image/jpeg").split(",")[1];};
+        const green=jpeg("#00ff00"),blue=jpeg("#0000ff");
+        const NativeImage=window.Image;
+        w.partialDeltaImages=0;
+        w.Image=function() {
+          const img=new NativeImage();
+          if (++w.partialDeltaImages===1) Object.defineProperty(img,"onload",{set(callback) {
+            img.addEventListener("load",()=>{ w.releasePartialDelta=()=>callback.call(img); },{once:true});
+          }});
+          return img;
+        };
+        w.rtcCallbacks.onFrame({sequence:2,width:1920,height:1080,keyframe:false,
+          tiles:[blue,green,green,green].map((data,x)=>({x,y:0,w:32,h:32,data}))});
+        w.sendOverlappingDelta = () => {
+          const held: (()=>void)[] = w.overlapDeltaLoads=[];
+          let next=0;
+          w.Image=function() {
+            const img=new NativeImage(), position=next++;
+            Object.defineProperty(img,"onload",{set(callback) {
+              img.addEventListener("load",()=>{held[position]=()=>callback.call(img);},{once:true});
+            }});
+            return img;
+          };
+          w.rtcCallbacks.onFrame({sequence:3,width:1920,height:1080,keyframe:false,
+            tiles:[{x:0,data:green},{x:1,data:blue},{x:1,data:green}].map(tile=>({...tile,y:0,w:32,h:32}))});
+        };
+      });
+      const pixels=()=>page.locator(".remote-canvas").evaluate(node=>{
+        const ctx=(node as HTMLCanvasElement).getContext("2d")!;
+        return [16,48,80,112,144].map(x=>Array.from(ctx.getImageData(x,16,1,1).data).findIndex((value,index)=>index<3&&value>240));
+      });
+      await expect.poll(pixels).toEqual([0,1,1,1,0]);
+      expect(await page.evaluate(()=>(window as any).partialDeltaImages)).toBe(2);
+      await page.waitForFunction(() => typeof (window as any).releasePartialDelta === "function");
+      await page.evaluate(()=>(window as any).releasePartialDelta());
+      await expect.poll(pixels).toEqual([2,1,1,1,0]);
+      await page.evaluate(()=>(window as any).sendOverlappingDelta());
+      await page.waitForFunction(()=> (window as any).overlapDeltaLoads.filter(Boolean).length === 3);
+      await page.evaluate(()=>{const loads=(window as any).overlapDeltaLoads;loads[0]();loads[1]();});
+      await expect.poll(pixels).toEqual([1,2,1,1,0]);
+      await page.evaluate(()=>(window as any).overlapDeltaLoads[2]());
+      await expect.poll(pixels).toEqual([1,1,1,1,0]);
+    } finally { await page.close(); }
+  });
+
+  it("reuses identical images within a full tile frame without skipping any coordinates", async () => {
+    const page = await openViewer({connected:true});
+    try {
+      await page.locator(".table-row").filter({has:page.getByText("PC-0",{exact:true})})
+        .getByRole("button",{name:"접속",exact:true}).click();
+      await page.waitForFunction(() => typeof (window as any).rtcCallbacks?.onFrame === "function");
+      await page.evaluate(() => {
+        const w = window as any;
+        const source = document.createElement("canvas");
+        source.width = source.height = 32;
+        const ctx = source.getContext("2d")!;
+        const images = ["#ff0000","#00ff00"].map(color => {
+          ctx.fillStyle = color;
+          ctx.fillRect(0,0,32,32);
+          return source.toDataURL("image/jpeg").split(",")[1];
+        });
+        const NativeImage = window.Image;
+        w.repeatTileImageCount = 0;
+        w.Image = function() { w.repeatTileImageCount++; return new NativeImage(); };
+        w.repeatTileFrame = (sequence: number) => {
+          const tiles = Array.from({length:32},(_,i)=>({x:i%16,y:Math.floor(i/16),w:32,h:32,data:images[(i%2+sequence)%2]}));
+          if (sequence === 3) {
+            tiles[14].w = 64;
+            tiles.splice(15,1);
+          }
+          w.rtcCallbacks.onFrame({sequence,width:512,height:64,keyframe:sequence===1,tiles});
+        };
+        w.repeatTileFrame(1);
+      });
+      const pixels = () => page.locator(".remote-canvas").evaluate(node => {
+        const canvas = node as HTMLCanvasElement;
+        if (canvas.width !== 512 || canvas.height !== 64) return [];
+        const ctx = canvas.getContext("2d")!;
+        return Array.from({length:32},(_,i)=>{
+          const [r,g] = ctx.getImageData((i%16)*32+16,Math.floor(i/16)*32+16,1,1).data;
+          return r>240&&g<16 ? 0 : g>240&&r<16 ? 1 : -1;
+        });
+      });
+      await expect.poll(pixels).toEqual(Array.from({length:32},(_,i)=>(i+1)%2));
+      expect(await page.evaluate(() => (window as any).repeatTileImageCount)).toBe(2);
+      await page.evaluate(() => (window as any).repeatTileFrame(2));
+      await expect.poll(pixels).toEqual(Array.from({length:32},(_,i)=>i%2));
+      expect(await page.evaluate(() => (window as any).repeatTileImageCount)).toBe(4);
+      await page.evaluate(() => (window as any).repeatTileFrame(3));
+      await expect.poll(pixels).toEqual(Array.from({length:32},(_,i)=>i===14||i===15 ? i%2 : (i+1)%2));
+      expect(await page.evaluate(() => (window as any).repeatTileImageCount)).toBe(6);
+    } finally { await page.close(); }
+  });
+
+  it("does not let an older complete frame reset newer pixels or a monitor resize", async () => {
+    const page = await openViewer({connected:true});
+    try {
+      await page.locator('.table-row').filter({has:page.getByText('PC-0',{exact:true})}).getByRole('button',{name:'접속',exact:true}).click();
+      await page.waitForFunction(() => typeof (window as any).rtcCallbacks?.onFrame === 'function');
+      const send = (sequence: number | undefined, width: number, color: string, tileWidth = width, x = 0, invalid = false) => page.evaluate(input => {
+        const source = document.createElement('canvas'); source.width = input.tileWidth; source.height = 32;
+        const ctx = source.getContext('2d')!; ctx.fillStyle = input.color; ctx.fillRect(0,0,input.tileWidth,32);
+        (window as any).rtcCallbacks.onFrame({sequence:input.sequence,keyframe:input.tileWidth===input.width,
+          cursorEmbedded:input.sequence===12 || input.sequence===16,width:input.width,height:32,
+          tiles:[{x:input.x,y:0,w:input.tileWidth,h:32,data:input.invalid?'invalid':source.toDataURL('image/jpeg').split(',')[1]}]});
+      },{sequence,width,color,tileWidth,x,invalid});
+      const canvas = page.locator('.remote-canvas');
+      const pixel = (x: number, c: number) => canvas.evaluate((node, point) =>
+        (node as HTMLCanvasElement).getContext('2d')!.getImageData(point.x,0,1,1).data[point.c],{x,c});
+      const width = () => canvas.evaluate(node => (node as HTMLCanvasElement).width);
+      const pictureError = page.getByTestId('remote-connection-status').getByText(/화면 표시 오류/);
+      const holdNextDecode = (key: string, event = 'load') => page.evaluate(({key,event}) => {
+        const NativeImage = window.Image;
+        (window as any).Image = function() {
+          window.Image = NativeImage;
+          const img = new NativeImage();
+          Object.defineProperty(img,`on${event}`,{set(callback) {
+            img.addEventListener(event,() => { (window as any)[key] = () => callback.call(img); },{once:true});
+          }});
+          return img;
+        };
+      },{key,event});
+      await send(10,64,'#ff0000');
+      await expect.poll(() => pixel(63,0)).toBeGreaterThan(240);
+      await send(11,64,'#0000ff',32,1,true);
+      await pictureError.waitFor();
+      await holdNextDecode('completeLateError','error');
+      await send(11,64,'#0000ff',32,1,true);
+      await page.waitForFunction(() => Boolean((window as any).completeLateError));
+      await send(12,64,'#0000ff',32,1);
+      await expect.poll(() => pixel(63,2)).toBeGreaterThan(240);
+      await send(11,64,'#00ff00');
+      await expect.poll(() => pixel(0,1)).toBeGreaterThan(240);
+      expect(await pixel(63,2)).toBeGreaterThan(240);
+      expect(await canvas.evaluate(node => getComputedStyle(node).cursor)).toBe('none');
+      await pictureError.waitFor({state:'hidden'});
+      await page.evaluate(() => (window as any).completeLateError());
+      expect(await pictureError.count()).toBe(0);
+
+      await send(13,96,'#00ff00');
+      await expect.poll(() => pixel(95,1)).toBeGreaterThan(240);
+      await send(12,64,'#ff0000');
+      await send(14,96,'#0000ff',32,2);
+      await expect.poll(() => pixel(95,2)).toBeGreaterThan(240);
+      expect(await width()).toBe(96);
+
+      await holdNextDecode('completeNewerDelta');
+      await send(16,96,'#ff0000',32);
+      await page.waitForFunction(() => Boolean((window as any).completeNewerDelta));
+      await holdNextDecode('completeOlderKeyframe');
+      await send(15,64,'#ffffff');
+      await page.waitForFunction(() => Boolean((window as any).completeOlderKeyframe));
+      await send(12,64,'#ffffff');
+      await send(17,96,'#00ffff',32,1);
+      await page.evaluate(() => (window as any).completeNewerDelta());
+      await expect.poll(() => pixel(0,0)).toBeGreaterThan(240);
+      await page.evaluate(() => (window as any).completeOlderKeyframe());
+      await expect.poll(() => pixel(32,2)).toBeGreaterThan(240);
+      expect(await width()).toBe(96);
+      expect(await pixel(0,1)).toBeLessThan(10);
+      expect(await pixel(95,2)).toBeGreaterThan(240);
+
+      await send(18,80,'#ff0000');
+      await expect.poll(width).toBe(80);
+      await send(20,80,'#0000ff',32);
+      await expect.poll(() => pixel(0,2)).toBeGreaterThan(240);
+      await send(21,80,'#ffffff',32,1,true);
+      await pictureError.waitFor();
+      await send(19,80,'#00ff00');
+      await expect.poll(() => pixel(79,1)).toBeGreaterThan(240);
+      expect(await pictureError.count()).toBe(1);
+      await send(undefined,40,'#0000ff');
+      await expect.poll(width).toBe(40);
+      expect(await pixel(39,2)).toBeGreaterThan(240);
+      await pictureError.waitFor({state:'hidden'});
     } finally { await page.close(); }
   });
   it("records recent connection only after a real picture and retains it on the device list", async () => {
@@ -2797,6 +5256,226 @@ describe("manual Viewer device list in a real browser", () => {
       await refresh(page).click();
       await page.waitForFunction(() => (window as any).testState.reads === 2);
     } finally { await page.close(); }
+  });
+
+  it("forwards regularly spaced fast desktop pointer samples without a trailing timer", async () => {
+    const page = await openViewer({connected:true});
+    try {
+      await page.locator(".table-row").filter({has:page.getByText("PC-0",{exact:true})})
+        .getByRole("button",{name:"접속",exact:true}).click();
+      await page.waitForFunction(() => (window as any).testState.rtcStarts > 0);
+      await page.clock.pauseAt(new Date(Date.now()+1_000));
+      const canvas = page.locator(".remote-canvas");
+      const counts = [];
+      for (let index=0; index<12; index++) {
+        if (index) await page.clock.runFor(16);
+        counts.push(await canvas.evaluate((element, index) => {
+          const w = window as any;
+          const bounds = element.getBoundingClientRect();
+          element.dispatchEvent(new PointerEvent("pointermove",{
+            pointerType:"mouse",pointerId:1,bubbles:true,
+            clientX:bounds.left + bounds.width*(0.2+index/25),clientY:bounds.top+bounds.height/2,
+          }));
+          return w.testState.controls.filter((action:string)=>action.startsWith("move ")).length;
+        },index));
+      }
+      expect(counts).toEqual(Array.from({length:12},(_,index)=>index+1));
+    } finally { await page.close(); }
+  });
+
+  it("sends a new pointer position with current bounds when the previous timer is overdue", async () => {
+    const page = await openViewer({connected:true});
+    try {
+      await page.locator(".table-row").filter({has:page.getByText("PC-0",{exact:true})})
+        .getByRole("button",{name:"접속",exact:true}).click();
+      await page.waitForFunction(() => (window as any).testState.rtcStarts > 0);
+      await page.clock.pauseAt(new Date(Date.now()+1_000));
+      const canvas = page.locator(".remote-canvas");
+      await canvas.evaluate(element => {
+        const w = window as any;
+        w.overduePointerRect = new DOMRect(20,20,100,100);
+        element.getBoundingClientRect = () => w.overduePointerRect;
+        w.emitOverduePointer = (point: number) => element.dispatchEvent(new PointerEvent("pointermove",{
+          pointerType:"mouse",pointerId:1,bubbles:true,clientX:point,clientY:point,
+        }));
+        w.emitOverduePointer(30);
+      });
+      await page.clock.runFor(8);
+      await page.evaluate(() => {
+        const schedule = window.setTimeout;
+        window.setTimeout = ((handler:TimerHandler, delay?:number, ...args:unknown[]) =>
+          schedule(handler,(delay ?? 0)+120,...args)) as typeof setTimeout;
+        try { (window as any).emitOverduePointer(60); }
+        finally { window.setTimeout = schedule; }
+      });
+      const moves = () => page.evaluate(() => (window as any).testState.controls.filter((action:string)=>action.startsWith("move ")));
+      expect(await moves()).toEqual(["move 6554 6554"]);
+      await page.clock.runFor(20);
+      await page.evaluate(() => {
+        const w = window as any;
+        w.overduePointerRect = new DOMRect(40,40,200,200);
+        w.emitOverduePointer(140);
+      });
+      expect(await moves()).toEqual(["move 6554 6554","move 32768 32768"]);
+      await page.clock.runFor(200);
+      expect(await moves()).toEqual(["move 6554 6554","move 32768 32768"]);
+
+      await page.evaluate(() => (window as any).emitOverduePointer(90));
+      await page.clock.runFor(8);
+      await canvas.evaluate(element => {
+        const wall = Object.getOwnPropertyDescriptor(performance,"now");
+        const beforeLayout = performance.now();
+        const originalBounds = element.getBoundingClientRect;
+        let spent = 0;
+        Object.defineProperty(performance,"now",{configurable:true,value:()=>beforeLayout+spent});
+        element.getBoundingClientRect = () => { spent = 10; return originalBounds(); };
+        try { (window as any).emitOverduePointer(190); }
+        finally {
+          element.getBoundingClientRect = originalBounds;
+          if (wall) Object.defineProperty(performance,"now",wall);
+          else Reflect.deleteProperty(performance,"now");
+        }
+      });
+      expect((await moves()).slice(-2)).toEqual(["move 16384 16384","move 49151 49151"]);
+    } finally { await page.close(); }
+  });
+
+  it("samples one layout per pointer move burst and preserves release and wheel coordinates", async () => {
+    const page = await openViewer({connected:true});
+    try {
+      await page.locator('.table-row').filter({has:page.getByText('PC-0',{exact:true})}).getByRole('button',{name:'접속',exact:true}).click();
+      await page.getByTestId('remote-session-workspace').waitFor();
+      await page.waitForFunction(() => (window as any).testState.rtcStarts > 0);
+      await page.clock.pauseAt(new Date(Date.now()+1_000));
+      await page.locator('.remote-canvas').evaluate(canvas => {
+        const w=window as any;
+        w.layoutReads=0;
+        w.testState.controls=[];
+        w.canvasForPointerFixture=canvas;
+        w.pointerRect=new DOMRect(40,70,200,160);
+        const nativeBounds=canvas.getBoundingClientRect.bind(canvas);
+        canvas.getBoundingClientRect=()=>{w.layoutReads++;return (canvas as HTMLElement).style.display==='none'?nativeBounds():w.pointerRect;};
+        canvas.setPointerCapture=()=>{};
+        canvas.hasPointerCapture=()=>false;
+        w.emitPointer=(type:string,clientX:number,clientY:number,buttons=0)=>canvas.dispatchEvent(new PointerEvent(type,{
+          pointerType:'mouse',pointerId:1,button:0,buttons,clientX,clientY,bubbles:true,cancelable:true,
+        }));
+        w.emitWheel=()=>canvas.dispatchEvent(new WheelEvent('wheel',{clientX:240,clientY:150,deltaY:120,bubbles:true,cancelable:true}));
+        w.emitPointer('pointermove',140,150);
+        for(let i=0;i<200;i++) w.emitPointer('pointermove',40+(i%200),70+(i%160));
+        w.emitPointer('pointermove',190,190);
+      });
+      const current=()=>page.evaluate(()=>{const w=window as any;return {layout:w.layoutReads,commands:w.testState.controls};});
+      expect(await current()).toEqual({layout:2,commands:['move 32768 32768']});
+      await page.clock.runFor(17);
+      expect(await current()).toEqual({layout:3,commands:['move 32768 32768','move 49151 49151']});
+      await page.evaluate(()=>{
+        const w=window as any;w.testState.controls=[];
+        w.emitPointer('pointerdown',40,70,1);
+        w.emitPointer('pointermove',240,230,1);
+        window.dispatchEvent(new FocusEvent('blur'));
+      });
+      expect((await current()).commands).toEqual(['mouse-down 0 0 left','mouse-up 65535 65535 left']);
+      await page.evaluate(()=>{
+        const w=window as any;w.testState.controls=[];
+        w.emitPointer('pointermove',40,70);
+        w.emitWheel();
+      });
+      await page.clock.runFor(20);
+      expect((await current()).commands).toEqual(['mouse-wheel 65535 32768 -120']);
+      await page.evaluate(()=>{
+        const w=window as any;w.testState.controls=[];
+        w.emitPointer('pointermove',140,150);
+        w.emitPointer('pointermove',190,190);
+        w.pointerRect=new DOMRect(40,70,400,320);
+      });
+      await page.clock.runFor(20);
+      expect((await current()).commands).toEqual(['move 32768 32768']);
+      await page.evaluate(()=>{
+        const w=window as any;w.testState.controls=[];
+        w.pointerRect=new DOMRect(40,70,200,160);
+        w.emitPointer('pointermove',140,150);
+        w.emitPointer('pointerdown',140,150,1);
+        w.emitPointer('pointermove',240,230,1);
+        w.canvasForPointerFixture.style.display='none';
+        window.dispatchEvent(new FocusEvent('blur'));
+      });
+      expect((await current()).commands).toEqual(['move 32768 32768','mouse-down 32768 32768 left','mouse-up 32768 32768 left']);
+    } finally {await page.close();}
+  });
+  it("moves the mobile touchpad pointer without rerendering the full session panel", async () => {
+    const page = await openViewer({ connected: true, mobile: true });
+    try {
+      await page.locator(".table-row").filter({ hasText: "PC-0" }).getByRole("button", { name: "접속", exact: true }).click();
+      const panel = page.locator(".session-panel:not(.session-panel-inactive)");
+      await panel.getByRole("button", { name: "터치패드 모드", exact: true }).click();
+      const pointer = panel.getByLabel("원격 포인터", { exact: true });
+      await pointer.waitFor();
+      await page.clock.runFor(100);
+      const surface = panel.getByLabel("원격 터치패드", { exact: true });
+      const sample = await surface.evaluate(async element => {
+        const w = window as any;
+        const point = document.querySelector<SVGElement>(".mobile-remote-pointer")!;
+        const before = point.getBoundingClientRect().left;
+        const startCommands = w.testState.controls.length;
+        const startRenders = w.testSessionPanelRenders;
+        const pointerEvent = (type: string, x: number) => element.dispatchEvent(new PointerEvent(type, {
+          pointerId: 1, pointerType: "touch", clientX: x, clientY: 80, bubbles: true,
+        }));
+        (element as HTMLElement).setPointerCapture = () => {};
+        (element as HTMLElement).hasPointerCapture = () => false;
+        pointerEvent("pointerdown", 60);
+        for (let i = 1; i <= 12; i++) {
+          pointerEvent("pointermove", 60 + i * 3);
+          await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+        }
+        pointerEvent("pointerup", 96);
+        return {
+          panelRenders: w.testSessionPanelRenders - startRenders,
+          shift: point.getBoundingClientRect().left - before,
+          moves: w.testState.controls.slice(startCommands).filter((command: string) => command.startsWith("move ")) as string[],
+        };
+      });
+      expect(sample.moves).toHaveLength(12);
+      expect(sample.shift).toBeGreaterThan(35);
+      expect(sample.shift).toBeLessThan(37);
+      expect(sample.panelRenders).toBe(0);
+
+      const movedX = (await pointer.boundingBox())!.x;
+      await panel.getByRole("button", { name: "화면 및 세션 설정", exact: true }).click();
+      await panel.getByRole("button", { name: "장비 목록", exact: true }).click();
+      await page.getByText("열린 세션 1", { exact: true }).waitFor();
+      await page.evaluate(() => {
+        const w = window as any;
+        w.temporarilyMissing = w.testState.devices.shift();
+      });
+      await refresh(page).click();
+      await expect.poll(() => page.locator("canvas.remote-canvas").count()).toBe(0);
+      await page.evaluate(() => {
+        const w = window as any;
+        w.testState.devices.unshift(w.temporarilyMissing);
+      });
+      await refresh(page).click();
+      await page.getByRole("navigation", { name: "열린 세션 바로가기", exact: true })
+        .getByRole("button", { name: "PC-0", exact: true }).click();
+      await pointer.waitFor();
+      await expect.poll(async () => Math.abs((await pointer.boundingBox())!.x - movedX)).toBeLessThan(1);
+      await surface.evaluate(element => {
+        (element as HTMLElement).setPointerCapture = () => {};
+        (element as HTMLElement).hasPointerCapture = () => false;
+        for (const type of ["pointerdown", "pointerup"]) {
+          element.dispatchEvent(new PointerEvent(type, {
+            pointerId: 1, pointerType: "touch", clientX: 60, clientY: 80, bubbles: true,
+          }));
+        }
+      });
+      const coordinates = sample.moves[sample.moves.length - 1].slice("move ".length);
+      await expect.poll(() => page.evaluate(() => (window as any).testState.controls.filter((action: string) =>
+        action.startsWith("mouse-down ") || action.startsWith("mouse-up ")).slice(-2)))
+        .toEqual([`mouse-down ${coordinates} left`, `mouse-up ${coordinates} left`]);
+    } finally {
+      await page.close();
+    }
   });
 
   it("keeps two Android Viewer sessions alive with reachable portrait and landscape controls", async () => {

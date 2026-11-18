@@ -5,9 +5,39 @@ import {
 } from "../domain/updateManifest";
 import { resolveProductionUpdatePublicKey, VIEWER_UPDATE_MANIFEST_URL } from "../domain/updateTrust";
 import { isHigherVersion } from "../domain/versioning";
+import { decideUpdateEligibility, type UpdateFleetRollout } from "../domain/updateFleetPolicy";
 
 export const DEFAULT_PRODUCTION_UPDATE_MANIFEST_URL =
   "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/wonremote-update-manifest.json";
+
+const STABLE_VERSION = /^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/;
+
+export async function loadProductionAgentUpdateCandidate(
+  deviceId: string,
+  currentVersion: string,
+  rollout: UpdateFleetRollout | null,
+  env: Parameters<typeof loadProductionInstallerUpdateMetadata>[0] = process.env,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ metadata: ProductionUpdateMetadata | null; selected: boolean }> {
+  const version = rollout?.targetVersion;
+  if (rollout?.targetDeviceIds === undefined || !version || !STABLE_VERSION.test(version)
+      || !isHigherVersion(version, currentVersion) || resolveRuntimeUpdateKind(env) !== "installer"
+      || resolveRuntimeUpdateProduct(env) !== "agent"
+      || !decideUpdateEligibility({ id: deviceId, version: currentVersion, selectedRolloutVersion: currentVersion }, rollout).eligible) {
+    return { metadata: await loadProductionInstallerUpdateMetadata(env, fetchImpl), selected: false };
+  }
+
+  const base = `https://github.com/hoguengine-stack/Wonremote/releases/download/v${version}/`;
+  const metadata = await loadProductionInstallerUpdateMetadata({
+    ...env, WONREMOTE_UPDATE_MANIFEST_URL: `${base}wonremote-update-manifest.json`,
+  }, fetchImpl);
+  const name = env.WONREMOTE_AGENT_FILE_UPDATE === "1" ? "WonRemote-Agent-Update.exe" : "WonRemote-Agent-Setup.exe";
+  if (!metadata || metadata.latestVersion !== version || metadata.forceUpdate
+      || metadata.assetName !== name || metadata.downloadUrl !== `${base}${name}`) {
+    throw new Error("Selected Agent update requires the signed version-pinned Agent installer.");
+  }
+  return { metadata, selected: true };
+}
 
 export async function loadProductionRollbackMetadata(
   requestedVersion: string,
@@ -15,8 +45,7 @@ export async function loadProductionRollbackMetadata(
   env: Parameters<typeof loadProductionInstallerUpdateMetadata>[0] = process.env,
   fetchImpl: typeof fetch = fetch,
 ): Promise<ProductionUpdateMetadata> {
-  const stableVersion = /^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/;
-  if (!stableVersion.test(requestedVersion) || !stableVersion.test(currentVersion)
+  if (!STABLE_VERSION.test(requestedVersion) || !STABLE_VERSION.test(currentVersion)
       || !isHigherVersion(currentVersion, requestedVersion)) throw new Error("Select an older stable version to restore.");
   if (resolveRuntimeUpdateKind(env) !== "installer") throw new Error("Rollback requires an installed product.");
   const releaseBase = `https://github.com/hoguengine-stack/Wonremote/releases/download/v${requestedVersion}/`;

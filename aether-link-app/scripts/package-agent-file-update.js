@@ -18,9 +18,12 @@ export function nsisHostBytes(source) {
 export function stageAgentFileUpdate(root, hostPath, destination) {
   if (fs.existsSync(destination)) throw new Error(`Agent update staging must be fresh: ${destination}`);
   const config = JSON.parse(fs.readFileSync(path.join(root, "src-tauri", "tauri.conf.json"), "utf8"));
+  const agentConfig = JSON.parse(fs.readFileSync(path.join(root, "src-tauri", "tauri.agent.x86.conf.json"), "utf8"));
+  const resources = { ...config.bundle.resources, ...agentConfig.bundle.resources };
+  if (!Object.values(resources).includes("updater/index.mjs")) throw new Error("Missing installed Agent updater resource.");
   const entries = [[hostPath, "wonremote-viewer.exe"]];
-  for (const [source, target] of Object.entries(config.bundle.resources)) {
-    if (!/^(agent|server|runtime|bin|node_modules|icons)\//.test(target) || target.includes("..")) {
+  for (const [source, target] of Object.entries(resources)) {
+    if (!(target === "updater/index.mjs" || /^(agent|server|runtime|bin|node_modules|icons)\//.test(target)) || target.includes("..")) {
       throw new Error(`Unexpected Agent resource destination: ${target}`);
     }
     entries.push([path.resolve(root, "src-tauri", source), target]);

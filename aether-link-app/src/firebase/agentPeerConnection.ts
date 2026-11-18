@@ -1,3 +1,4 @@
+import type { RTCPeerConnection as WeriftPeerConnection } from "werift";
 import { formatNodeDataChannelUnavailableError } from "./agentWebRtcStatus";
 import {
   parseWebRtcControlAction,
@@ -73,37 +74,70 @@ export interface AgentPeerConnectionLike {
 }
 
 // Candidate events expose a usable local SDP before Werift finishes STUN gathering.
-// Publish once while gathering continues; keep the original candidate writer intact.
+// Queue the answer first, then forward candidates while gathering and the answer ACK continue.
 export async function publishAnswerDuringGathering(
   peer: AgentPeerConnectionLike,
   answer: { sdp: string; type: string },
   publish: (description: { sdp: string; type: string }) => Promise<void>,
   isCurrent: () => boolean,
+  signal?: AbortSignal,
 ): Promise<void> {
+  if (signal?.aborted) return;
   const previous = peer.onicecandidate;
-  let publication: Promise<void> | undefined;
-  let publicationError: unknown;
-  const publishOnce = () => {
-    if (publication || !isCurrent()) return;
-    const description = peer.localDescription;
-    if (!description?.sdp || description.type !== "answer") return;
-    publication = Promise.resolve().then(() => isCurrent() ? publish(description) : undefined).catch(error => { publicationError = error; });
+  type CandidateEvent = Parameters<NonNullable<AgentPeerConnectionLike["onicecandidate"]>>[0];
+  const pending: CandidateEvent[] = [];
+  let live = true;
+  let answerQueued = false;
+  let publicationStarted = false;
+  let resolvePublication!: () => void;
+  let rejectPublication!: (error: unknown) => void;
+  const publication = new Promise<void>((resolve, reject) => {
+    resolvePublication = resolve;
+    rejectPublication = reject;
+  });
+  let cancel!: () => void;
+  const cancelled = new Promise<void>(resolve => { cancel = resolve; });
+  signal?.addEventListener("abort", cancel, { once: true });
+  const canSend = () => live && !signal?.aborted && isCurrent();
+  const publishOnce = (description: {sdp:string;type:string}) => {
+    if (publicationStarted || !live) return;
+    publicationStarted = true;
+    void Promise.resolve().then(async () => {
+      if (!canSend()) return;
+      const write = publish(description);
+      const forwardPending = async () => {
+        answerQueued = true;
+        for (const event of pending.splice(0)) {
+          if (!canSend()) break;
+          previous?.(event);
+        }
+      };
+      await Promise.all([write, forwardPending()]);
+    }).then(resolvePublication, error => { live = false; rejectPublication(error); });
   };
   const onCandidate: NonNullable<AgentPeerConnectionLike["onicecandidate"]> = event => {
-    previous?.(event);
-    publishOnce();
+    if (!canSend()) return;
+    if (answerQueued) {
+      previous?.(event);
+      return;
+    }
+    pending.push(event);
+    const local = peer.localDescription;
+    if (local?.sdp && local.type === "answer") publishOnce(local);
   };
   peer.onicecandidate = onCandidate;
+  let completed = false;
   try {
-    await peer.setLocalDescription(answer);
-    publishOnce();
-    if (!publication && isCurrent()) {
-      publication = publish(resolveAgentLocalDescription(peer, answer)).catch(error => { publicationError = error; });
-    }
-    await publication;
-    if (publicationError !== undefined) throw publicationError;
+    const gathering = peer.setLocalDescription(answer).then(() => {
+      publishOnce(resolveAgentLocalDescription(peer, answer));
+    });
+    await Promise.race([Promise.all([gathering, publication]), cancelled]);
+    completed = canSend();
   } finally {
-    if (peer.onicecandidate === onCandidate) peer.onicecandidate = previous;
+    live = false;
+    signal?.removeEventListener("abort", cancel);
+    pending.length = 0;
+    if (peer.onicecandidate === onCandidate) peer.onicecandidate = completed ? previous : undefined;
   }
 }
 
@@ -136,7 +170,7 @@ export async function createAgentPeerConnection(
       const rtcModule = await (options.importWerift ?? importWerift)();
       const PeerConnection = requirePeerConnectionConstructor(rtcModule, "werift");
       console.log(`[WebRTC] ${X86_WEBRTC_RUNTIME_MARKER}`);
-      return new PeerConnection(normalizeWeriftConfig(config));
+      return trackWeriftLocalGathering(new PeerConnection(normalizeWeriftConfig(config)));
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       throw new Error(`32-bit pure-JS WebRTC runtime unavailable; realtime tile channel cannot start: ${detail}`);
@@ -150,6 +184,33 @@ export async function createAgentPeerConnection(
   } catch (error) {
     throw new Error(formatNodeDataChannelUnavailableError(error, arch));
   }
+}
+
+function trackWeriftLocalGathering(peer: AgentPeerConnectionLike & Partial<Pick<WeriftPeerConnection, "iceTransports">>): AgentPeerConnectionLike {
+  const setLocalDescription = peer.setLocalDescription.bind(peer);
+  const close = peer.close.bind(peer);
+  let gathering: Promise<unknown> | undefined;
+  let closing: Promise<void> | undefined;
+  peer.setLocalDescription = description => {
+    const work = setLocalDescription(description);
+    gathering = work;
+    const clear = () => { if (gathering === work) gathering = undefined; };
+    void work.then(clear, clear);
+    return work;
+  };
+  peer.close = () => {
+    if (closing) return closing;
+    const inFlight = gathering;
+    const iceConnections = inFlight ? peer.iceTransports?.map(transport => transport.connection) : undefined;
+    closing = Promise.resolve(close());
+    if (inFlight && iceConnections?.length) {
+      // Werift can register new sockets after close; reap them without blocking the next peer.
+      void Promise.allSettled([closing, inFlight]).then(() =>
+        Promise.allSettled(iceConnections.map(connection => connection.close())));
+    }
+    return closing;
+  };
+  return peer;
 }
 
 export async function prewarmAgentPeerConnectionRuntime(
@@ -300,7 +361,7 @@ export function serializeFrameChunks(
     keyframe: frame.keyframe,
     ...cursorMetadata,
   }));
-  const chunkTiles: unknown[][] = [];
+  const chunkTiles: string[][] = [];
   let serializedTiles: string[] = [];
   let chunkBytes = fixedBytes;
 
@@ -315,7 +376,7 @@ export function serializeFrameChunks(
       throw new RangeError("A WebRTC frame tile exceeds the configured data-channel message limit.");
     }
     if (serializedTiles.length > 0 && chunkBytes + separatorBytes + tileBytes > maxMessageBytes) {
-      chunkTiles.push(serializedTiles.map((value) => JSON.parse(value)));
+      chunkTiles.push(serializedTiles);
       serializedTiles = [];
       chunkBytes = fixedBytes;
     }
@@ -324,12 +385,11 @@ export function serializeFrameChunks(
   }
 
   if (serializedTiles.length > 0 || frame.tiles.length === 0) {
-    chunkTiles.push(serializedTiles.map((value) => JSON.parse(value)));
+    chunkTiles.push(serializedTiles);
   }
   const frameChunkCount = chunkTiles.length;
   return chunkTiles.map((tiles, frameChunkIndex) => {
-    const payload = JSON.stringify({
-      tiles,
+    const metadata = JSON.stringify({
       width: frame.width,
       height: frame.height,
       sequence: frame.sequence,
@@ -338,6 +398,8 @@ export function serializeFrameChunks(
       frameChunkIndex,
       frameChunkCount,
     });
+    // Reuse complete JSON values produced by JSON.stringify above.
+    const payload = `{"tiles":[${tiles.join(",")}],${metadata.slice(1)}`;
     if (Buffer.byteLength(payload) > maxMessageBytes) {
       throw new RangeError("A WebRTC frame chunk exceeds the configured data-channel message limit.");
     }
@@ -348,10 +410,13 @@ export function serializeFrameChunks(
 export function sendFrameWithBackpressure(
   channel: AgentDataChannelLike | null,
   frame: { tiles: unknown[]; width: number; height: number; sequence: number; keyframe: boolean; cursorEmbedded?: boolean },
-  options: { maxBufferedAmount: number; maxMessageBytes: number },
+  options: { maxBufferedAmount: number; maxMessageBytes: number; preserveUnavailableOnSaturation?: boolean },
 ): AgentFrameSendResult {
   if (channel?.readyState !== "open" || !channel.send) {
     return "unavailable";
+  }
+  if (!options.preserveUnavailableOnSaturation && dataChannelBufferedAmount(channel) >= options.maxBufferedAmount) {
+    return "backpressure";
   }
 
   let payloads: string[];
@@ -384,6 +449,8 @@ export function sendFrameWithBackpressure(
 export function normalizeWeriftConfig(config: AgentPeerConnectionConfig): AgentPeerConnectionConfig {
   return {
     ...config,
+    // Werift can launch untracked host binds when a TURN allocation is the only intended route.
+    ...(config.iceTransportPolicy === "relay" ? { iceUseIpv4: false, iceUseIpv6: false } : {}),
     iceServers: config.iceServers.flatMap((server) => {
       const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
       return urls.map((url) => ({

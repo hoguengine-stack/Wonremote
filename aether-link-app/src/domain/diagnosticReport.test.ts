@@ -23,3 +23,9 @@ it("does not export arbitrary strings smuggled into typed fields", () => {
   const report = createDiagnosticReport({ version: "SECRET", status: "SECRET", streamDiagnostics: { rtcState: "SECRET", bufferedAmount: "SECRET" } } as unknown as ManagedDevice, "SECRET");
   expect(JSON.stringify(report)).not.toContain("SECRET");
 });
+
+it("does not export a timed-out refresh as confirmed offline", () => {
+  const device = { status: "offline", presenceCheckTimedOut: true } as ManagedDevice;
+  expect(createDiagnosticReport(device, "0.1.123").presence).toBeNull();
+  expect(createDiagnosticReport({ ...device, presenceCheckTimedOut: undefined }, "0.1.123").presence).toBe("offline");
+});

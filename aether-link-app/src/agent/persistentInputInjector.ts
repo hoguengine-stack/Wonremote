@@ -40,6 +40,7 @@ interface PendingInputRequest {
 
 export class PersistentInputInjector {
   private child: InputServerChild | null = null;
+  private preparation: { owner: object; onFailure?: (error: Error) => void } | null = null;
   private readonly pending = new Map<string, PendingInputRequest>();
   private readonly requestTimeoutMs: number;
   private readonly spawnInputServer: SpawnInputServer;
@@ -54,6 +55,16 @@ export class PersistentInputInjector {
     this.spawnInputServer = options.spawnInputServer ?? defaultSpawnInputServer;
   }
 
+  prepare(owner: object, onFailure?: (error: Error) => void): void {
+    if (!this.child) this.ensureChild();
+    else if (!this.preparation) return;
+    this.preparation = { owner, onFailure };
+  }
+
+  discardPreparation(owner: object): void {
+    if (this.preparation?.owner === owner) this.close();
+  }
+
   inject(action: string): Promise<void> {
     let child: InputServerChild;
     try {
@@ -61,6 +72,7 @@ export class PersistentInputInjector {
     } catch (error) {
       return Promise.reject(toError(error, "Failed to start Agent input server."));
     }
+    this.preparation = null;
 
     const id = `input-${++this.nextRequestId}`;
     return new Promise<void>((resolve, reject) => {
@@ -84,6 +96,7 @@ export class PersistentInputInjector {
   close(reason = "Agent input server closed."): void {
     const child = this.child;
     this.child = null;
+    this.preparation = null;
     this.stdoutBuffer = "";
     this.rejectAllPending(new Error(reason));
     if (child) {
@@ -172,7 +185,9 @@ export class PersistentInputInjector {
     if (this.child !== child) {
       return;
     }
+    const preparation = this.preparation;
     this.child = null;
+    this.preparation = null;
     this.stdoutBuffer = "";
     this.rejectAllPending(error);
     if (terminate) {
@@ -182,6 +197,7 @@ export class PersistentInputInjector {
         // Process or pipe may already be closed.
       }
     }
+    preparation?.onFailure?.(error);
   }
 
   private rejectAllPending(error: Error): void {

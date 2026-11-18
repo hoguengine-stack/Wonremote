@@ -1,8 +1,10 @@
+import { createSocket } from "node:dgram";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { isIPv4 } from "node:net";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
-import type { RTCDataChannel, RTCPeerConnection } from "werift";
+import { describe, expect, it, vi } from "vitest";
+import { Message, classes, methods, parseMessage, type RTCDataChannel, type RTCPeerConnection } from "werift";
 import { computeSha256 } from "../agent/checksum";
 import { processWebRtcFileChunk } from "../agent/webrtcFileReceiver";
 import {
@@ -28,6 +30,87 @@ import {
 const WEBRTC_TIMEOUT_MS = 10_000;
 
 describe("installed x86 werift runtime smoke", () => {
+  it("gathers only TURN and reaps a real allocation delivered after relay-only peer close", async () => {
+    const relay = createSocket("udp4");
+    const ready = new Promise<void>((resolve, reject) => { relay.once("error", reject); relay.bind(0, "127.0.0.1", resolve); });
+    const direct = { iceServers: [], iceTransportPolicy: "all" as const };
+    let offerer: RTCPeerConnection | undefined;
+    let answerer: RTCPeerConnection | undefined;
+    let gathering: Promise<unknown> | undefined;
+    let respond: (() => void) | undefined;
+    try {
+      await ready;
+      const turnPort = relay.address().port;
+      relay.on("message", (packet, source) => {
+        const request = parseMessage(packet);
+        if (!request || request.messageClass !== classes.REQUEST) return;
+        const response = new Message(request.messageMethod, classes.RESPONSE, request.transactionId).setAttribute("LIFETIME", 1);
+        if (request.messageMethod === methods.ALLOCATE) {
+          response.setAttribute("XOR-RELAYED-ADDRESS", ["127.0.0.1", turnPort]);
+          response.setAttribute("XOR-MAPPED-ADDRESS", [source.address, source.port]);
+          respond = () => { relay.send(response.bytes, source.port, source.address); respond = undefined; };
+        } else if (request.messageMethod === methods.REFRESH) relay.send(response.bytes, source.port, source.address);
+      });
+      offerer = await createAgentPeerConnection(direct, { arch: "ia32" }) as unknown as RTCPeerConnection;
+      answerer = await createAgentPeerConnection({ iceTransportPolicy: "relay", iceServers: [
+        { urls: `turn:127.0.0.1:${turnPort}`, username: "loopback", credential: "test-only" },
+      ] }, { arch: "ia32" }) as unknown as RTCPeerConnection;
+      offerer.createDataChannel("relay-close");
+      await answerer.setRemoteDescription(await offerer.createOffer());
+      const [{ connection }] = answerer.iceTransports;
+      connection.stunServer = undefined;
+      const getCandidates = vi.spyOn(connection as unknown as { getCandidatePromises: (hosts: string[], timeout: number) => unknown[] }, "getCandidatePromises");
+      const observed: string[] = [];
+      connection.onIceCandidate.subscribe(candidate => { observed.push(candidate.type); });
+      const protocols = connection as unknown as { protocols: unknown[] };
+      gathering = answerer.setLocalDescription(await answerer.createAnswer());
+      await vi.waitFor(() => expect(respond).toBeTypeOf("function"));
+      await withTimeout(answerer.close());
+      respond!();
+      await gathering;
+      await vi.waitFor(() => expect(protocols.protocols).toHaveLength(0));
+      expect(getCandidates.mock.calls[0][0]).toEqual([]);
+      expect(observed).toEqual(["relay"]);
+    } finally {
+      respond?.();
+      await gathering?.catch(() => undefined);
+      await Promise.allSettled([answerer?.close(), offerer?.close()]);
+      await Promise.allSettled(answerer?.iceTransports.map(ice => ice.connection.close()) ?? []);
+      await new Promise<void>(resolve => relay.close(() => resolve()));
+    }
+  }, WEBRTC_TIMEOUT_MS);
+
+  it("cleans up a real ICE socket registered after the peer closes during gathering", async () => {
+    const config = { iceServers: [], iceTransportPolicy: "all" as const };
+    const offerer = await createAgentPeerConnection(config, { arch: "ia32" }) as unknown as RTCPeerConnection;
+    const answerer = await createAgentPeerConnection(config, { arch: "ia32" }) as unknown as RTCPeerConnection;
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    let gathering: Promise<unknown> | undefined;
+    try {
+      offerer.createDataChannel("late-gather");
+      await answerer.setRemoteDescription(await offerer.createOffer());
+      const [ice] = answerer.iceTransports;
+      ice.connection.stunServer = undefined;
+      const gather = ice.gather.bind(ice);
+      // Hold the real gather before it opens the host UDP sockets.
+      const delayed = vi.spyOn(ice, "gather").mockImplementationOnce(async () => { await held; await gather(); });
+      const protocols = ice.connection as unknown as { protocols: unknown[] };
+      gathering = answerer.setLocalDescription(await answerer.createAnswer());
+      await vi.waitFor(() => expect(delayed).toHaveBeenCalledOnce());
+      await withTimeout(answerer.close());
+      expect(protocols.protocols).toHaveLength(0);
+      release();
+      await gathering;
+      await vi.waitFor(() => expect(protocols.protocols).toHaveLength(0));
+    } finally {
+      release();
+      await gathering?.catch(() => undefined);
+      await Promise.allSettled([answerer.close(), offerer.close()]);
+      await Promise.allSettled(answerer.iceTransports.map(ice => ice.connection.close()));
+    }
+  }, WEBRTC_TIMEOUT_MS);
+
   it("negotiates two peers and exchanges data-channel messages in both directions", async () => {
     const config = { iceServers: [], iceTransportPolicy: "all" as const };
     const offerer = await createAgentPeerConnection(config, { arch: "ia32" }) as unknown as RTCPeerConnection;
@@ -59,10 +142,18 @@ describe("installed x86 werift runtime smoke", () => {
       const offerControl = offerer.createDataChannel(WEBRTC_CONTROL_CHANNEL_LABEL, { ordered: true });
       const offerFile = offerer.createDataChannel(WEBRTC_FILE_CHANNEL_LABEL, { ordered: true });
 
+      for (const ice of offerer.iceTransports) ice.connection.stunServer = undefined;
       await offerer.setLocalDescription(await offerer.createOffer());
       const offer = offerer.localDescription;
       expect(offer?.sdp).toContain("a=candidate:");
+      const offeredHost = offerer.iceTransports[0].connection.localCandidates.find(candidate =>
+        candidate.type === "host" && candidate.transport === "udp" && isIPv4(candidate.host));
+      expect(offeredHost).toBeDefined();
       await answerer.setRemoteDescription(offer!);
+      await vi.waitFor(() => expect(answerer.iceTransports[0].connection.remoteCandidates).toContainEqual(expect.objectContaining({
+        host: offeredHost!.host, port: offeredHost!.port, transport: "udp", type: "host",
+      })));
+      for (const ice of answerer.iceTransports) ice.connection.stunServer = undefined;
 
       let publications = 0;
       let answerApplied = false;

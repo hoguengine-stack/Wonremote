@@ -33,9 +33,9 @@ describe("Windows installer product boundaries", () => {
     expect(js).toContain("Agent 가동 중");
   }, 20_000);
 
-  it("excludes the Agent runtime from the Viewer updater and rejects Agent startup before network access", async () => {
+  it.each(["viewer", "agent"] as const)("runs the %s updater without the Agent runtime and rejects wrong-role startup before network access", async (product) => {
     const result = await bundleNode({
-      entryPoints: ["src/agent/viewerUpdater.ts"],
+      entryPoints: [`src/agent/${product}Updater.ts`],
       platform: "node",
       format: "esm",
       bundle: true,
@@ -52,7 +52,8 @@ describe("Windows installer product boundaries", () => {
         timeout: 5_000,
         windowsHide: true,
       });
-    for (const args of [[], ["--watch"], ["--update-once", "--restart-mode", "agent"]]) {
+    const otherProduct = product === "agent" ? "viewer" : "agent";
+    for (const args of [[], ["--watch"], ["--update-once", "--restart-mode", otherProduct]]) {
       const cli = run(args, 'globalThis.fetch = () => { throw new Error("unexpected network"); };');
       expect(cli.status).toBe(2);
       expect(cli.stderr).not.toContain("unexpected network");
@@ -60,11 +61,11 @@ describe("Windows installer product boundaries", () => {
 
     const { privateKey, publicKey } = generateKeyPairSync("ed25519");
     const version = "9.9.9";
-    const name = "WonRemote-Viewer-Setup.exe";
+    const name = product === "agent" ? "WonRemote-Agent-Update.exe" : "WonRemote-Viewer-Setup.exe";
     const url = `https://github.com/hoguengine-stack/Wonremote/releases/download/v${version}/${name}`;
     const sha256 = "a".repeat(64);
     const signed = { assetName: name, downloadUrl: url, checksum: sha256, latestVersion: version };
-    const manifest = { version, viewerWindows: { x86: {
+    const manifest = { version, [product === "agent" ? "agentFileUpdates" : "viewerWindows"]: { x86: {
       name, url, sha256,
       signature: sign(null, Buffer.from(buildProductionUpdateSignaturePayload(signed)), privateKey).toString("base64"),
       signatureV2: sign(null, Buffer.from(buildProductionUpdateSignaturePayloadV2({
@@ -73,16 +74,20 @@ describe("Windows installer product boundaries", () => {
     } } };
     const env = {
       ...process.env,
-      WONREMOTE_UPDATE_PRODUCT: "agent",
+      WONREMOTE_UPDATE_PRODUCT: otherProduct,
+      WONREMOTE_AGENT_FILE_UPDATE: product === "agent" ? "1" : "0",
       WONREMOTE_SELECTED_VIEWER_UPDATE: "0",
       WONREMOTE_PACKAGE_KIND: "installer",
       WONREMOTE_BUILD_ARCH: "x86",
       WONREMOTE_UPDATE_MANIFEST_URL: "",
       WONREMOTE_UPDATE_MANIFEST_PUBLIC_KEY: publicKey.export({ type: "spki", format: "pem" }).toString(),
     };
+    const discovery = product === "agent"
+      ? "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/wonremote-update-manifest.json?"
+      : "https://wonremote-a7fd3.web.app/updates/viewer-latest.json?";
     const check = (body: object) => run(["--check-update"], `
       globalThis.fetch = async url => {
-        if (!String(url).startsWith("https://wonremote-a7fd3.web.app/updates/viewer-latest.json?")) {
+        if (!String(url).startsWith(${JSON.stringify(discovery)})) {
           throw new Error("unexpected endpoint");
         }
         return new Response(${JSON.stringify(JSON.stringify(body))});

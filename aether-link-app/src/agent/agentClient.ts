@@ -43,6 +43,7 @@ interface PollAgentCommandsOptions {
   deviceId: string;
   fetchImpl?: typeof fetch;
   installId: string;
+  healthChallengeId?: string;
 }
 
 interface PostAgentSessionApprovalOptions {
@@ -158,6 +159,7 @@ export async function pollAgentCommands({
   deviceId,
   fetchImpl = fetch,
   installId,
+  healthChallengeId,
 }: PollAgentCommandsOptions): Promise<AgentCommandPollResult> {
   if (isAgentFirebaseEnabled(process.env)) {
     return withAgentOperationContext("firebase command poll", () =>
@@ -174,6 +176,7 @@ export async function pollAgentCommands({
       body: JSON.stringify({
         deviceId,
         installId,
+        healthChallengeId,
       }),
       headers: { "content-type": "application/json" },
       method: "POST",

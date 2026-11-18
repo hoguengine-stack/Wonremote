@@ -6,7 +6,7 @@ const CENTRAL_VIEWER_UID = "Xjjdvk0Nx1eqCvND4yIOHbM53tl1";
 
 const mockState = vi.hoisted(() => ({
   services: {
-    auth: { app: "auth", currentUser: null },
+    auth: { app: "auth", currentUser: null as { uid: string; email: string } | null },
     db: {},
     functions: {},
   },
@@ -39,6 +39,7 @@ vi.mock("firebase/auth", () => ({
 describe("Viewer Firebase authentication", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockState.services.auth.currentUser = null;
   });
 
   it("rejects business-number login because Agent accounts are not central Viewer accounts", async () => {
@@ -80,7 +81,7 @@ describe("Viewer Firebase authentication", () => {
 
   it("rejects a persisted Agent account instead of opening the central Viewer", async () => {
     vi.mocked(onAuthStateChanged).mockImplementationOnce(((_auth: unknown, onNext: (user: unknown) => void) => {
-      onNext({ uid: "agent-uid", email: "1234567890@agents.wonremote.app" });
+      onNext(mockState.services.auth.currentUser = { uid: "agent-uid", email: "1234567890@agents.wonremote.app" });
       return vi.fn();
     }) as any);
     const onAuthenticated = vi.fn();
@@ -97,7 +98,7 @@ describe("Viewer Firebase authentication", () => {
 
   it("accepts a persisted central Viewer account", async () => {
     vi.mocked(onAuthStateChanged).mockImplementationOnce(((_auth: unknown, onNext: (user: unknown) => void) => {
-      onNext({ uid: CENTRAL_VIEWER_UID, email: "owner@example.com" });
+      onNext(mockState.services.auth.currentUser = { uid: CENTRAL_VIEWER_UID, email: "owner@example.com" });
       return vi.fn();
     }) as any);
     const onAuthenticated = vi.fn();
@@ -105,8 +106,33 @@ describe("Viewer Firebase authentication", () => {
 
     subscribeViewerAuthState(onAuthenticated, onError);
 
-    await vi.waitFor(() => expect(onAuthenticated).toHaveBeenCalledWith(true));
+    await vi.waitFor(() => expect(onAuthenticated).toHaveBeenCalledWith(true, CENTRAL_VIEWER_UID));
     expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("clears the previous Viewer immediately and ignores stale authorization after an account switch", async () => {
+    let emit!: (user: typeof mockState.services.auth.currentUser) => void;
+    vi.mocked(onAuthStateChanged).mockImplementationOnce(((_auth: unknown, onNext: typeof emit) => {
+      emit = user => onNext(mockState.services.auth.currentUser = user);
+      return vi.fn();
+    }) as any);
+    const onAuthenticated = vi.fn();
+    const onError = vi.fn();
+    subscribeViewerAuthState(onAuthenticated, onError);
+    const owner = { uid: CENTRAL_VIEWER_UID, email: "owner@example.com" };
+    emit(owner);
+    await vi.waitFor(() => expect(onAuthenticated).toHaveBeenLastCalledWith(true, CENTRAL_VIEWER_UID));
+    let resolve!: (value: any) => void;
+    vi.mocked(getIdTokenResult).mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    emit({uid:"second-viewer", email:"other@example.com"});
+    expect(onAuthenticated).toHaveBeenLastCalledWith(false);
+    emit(owner);
+    await vi.waitFor(() => expect(onAuthenticated).toHaveBeenLastCalledWith(true, CENTRAL_VIEWER_UID));
+    resolve({claims:{wonremoteViewer:true}});
+    await new Promise(done => setTimeout(done, 0));
+    expect(onAuthenticated.mock.calls).toEqual([[true,CENTRAL_VIEWER_UID], [false], [true,CENTRAL_VIEWER_UID]]);
+    expect(onError).not.toHaveBeenCalled();
+    expect(signOut).not.toHaveBeenCalled();
   });
 
   it("accepts a Viewer account carrying the wonremoteViewer claim", async () => {

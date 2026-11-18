@@ -1,18 +1,28 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
 import { MousePointer2 } from "lucide-react";
 import { MobileTouchpad } from "./MobileTouchpad";
 
-export function MobileRemoteGesturePad({ canvas, viewport, revision, onGesture, portrait = true, pointer, touchpad }: {
+type PointerPosition = { dx: number; dy: number };
+
+export function MobileRemoteGesturePad({
+  canvas, viewport, revision, onGesture, portrait = true, initialPointer, pointerSink, showPointer, pointerStart, pointerEnd, touchpad,
+}: {
   touchpad?: {move: (x: number, y: number) => void; button: (down: boolean) => void; scroll: (delta: number) => void};
   canvas: RefObject<HTMLCanvasElement | null>;
   viewport: RefObject<HTMLDivElement | null>;
   revision: string;
   portrait?: boolean;
-  pointer?: {dx: number; dy: number};
+  initialPointer: RefObject<PointerPosition>;
+  pointerSink: RefObject<((point: PointerPosition) => void) | null>;
+  showPointer: boolean;
+  pointerStart: PointerPosition;
+  pointerEnd: PointerPosition;
   onGesture: (dx: number, dy: number, factor: number) => void;
 }) {
   const [bounds, setBounds] = useState({width: 0, height: 0, left: 0, top: 0, right: 0, bottom: 0, imageWidth: 0, imageHeight: 0});
+  const [pointer, setPointer] = useState(() => initialPointer.current);
+  useImperativeHandle(pointerSink, () => setPointer, []);
   const points = useRef(new Map<number, {x: number; y: number}>());
   useLayoutEffect(() => {
     const measure = () => {
@@ -67,8 +77,10 @@ export function MobileRemoteGesturePad({ canvas, viewport, revision, onGesture, 
     onContextMenu={event => event.preventDefault()}
   >
     {touchpad ? <MobileTouchpad {...touchpad}/> : regions.map((region, index) => <div key={index} className="mobile-gesture-region" style={region} />)}
-    {pointer && <MousePointer2 className="mobile-remote-pointer" aria-label="원격 포인터" size={24}
-      style={{left: bounds.left + pointer.dx/65535*bounds.imageWidth-3,
-        top: bounds.top + pointer.dy/65535*bounds.imageHeight-3}} />}
+    {showPointer && <MousePointer2 className="mobile-remote-pointer" aria-label="원격 포인터" size={24}
+      style={{
+        left: bounds.left + (pointer.dx - pointerStart.dx) / Math.max(1, pointerEnd.dx - pointerStart.dx) * bounds.imageWidth - 3,
+        top: bounds.top + (pointer.dy - pointerStart.dy) / Math.max(1, pointerEnd.dy - pointerStart.dy) * bounds.imageHeight - 3,
+      }} />}
   </div>;
 }

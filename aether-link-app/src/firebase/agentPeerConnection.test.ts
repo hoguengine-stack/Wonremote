@@ -310,6 +310,45 @@ describe("Agent data-channel backpressure", () => {
     expect(parsed.flatMap((frame) => frame.tiles)).toEqual(tiles);
   });
 
+  it("preserves encoded tile content without changing the frame envelope", () => {
+    const tile = { x: 0, y: 0, w: 32, h: 32, data: 'quote"\\\n\uD55C]},{"tiles":[' };
+    const toJSON = vi.fn(() => tile);
+    const frame = { tiles: [{ toJSON }, undefined, null], width: 32, height: 32, sequence: 8, keyframe: false };
+    expect(serializeFrameChunks(frame, 2_000)).toEqual([
+      JSON.stringify({ tiles: [tile, null], width: 32, height: 32, sequence: 8, keyframe: false, frameChunkIndex: 0, frameChunkCount: 1 }),
+    ]);
+    expect(toJSON).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not serialize tiles when the channel buffer is already full", () => {
+    const encodeTile = vi.fn(() => ({ image: "tile" }));
+    const send = vi.fn();
+    expect(
+      sendFrameWithBackpressure(
+        { readyState: "open", bufferedAmount: 64 * 1024, send },
+        { tiles: [{ toJSON: encodeTile }], width: 800, height: 600, sequence: 1, keyframe: true },
+        { maxBufferedAmount: 64 * 1024, maxMessageBytes: 20_000 },
+      ),
+    ).toBe("backpressure");
+    expect(encodeTile).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("checks the queue again after serialization before sending any chunk", () => {
+    const maxBufferedAmount = 64 * 1024;
+    const channel = { readyState: "open", bufferedAmount: 0, send: vi.fn() };
+    const tiles = [{ toJSON: () => {
+      channel.bufferedAmount = maxBufferedAmount;
+      return { image: "tile" };
+    } }];
+    expect(sendFrameWithBackpressure(
+      channel,
+      { tiles, width: 800, height: 600, sequence: 1, keyframe: true },
+      { maxBufferedAmount, maxMessageBytes: 20_000 },
+    )).toBe("backpressure");
+    expect(channel.send).not.toHaveBeenCalled();
+  });
+
   it("drops a frame only when queued data would exceed the limit and never sends partial frames", () => {
     const frame = {
       tiles: Array.from({ length: 4 }, (_, index) => ({ index, image: "b".repeat(8_000) })),

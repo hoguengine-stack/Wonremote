@@ -1,0 +1,58 @@
+name: Verify installed Agent without publishing
+
+on:
+  push:
+    branches: ["codex/verify-agent-install/*"]
+
+permissions:
+  contents: read
+
+jobs:
+  installed-agent-proof:
+    if: github.repository == 'hoguengine-stack/Wonremote'
+    runs-on: windows-2022
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: aether-link-app
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build the disposable Windows candidate
+        run: |
+          npm ci
+          node --test scripts/agent-install-proof-trust.test.mjs
+          rustup target add i686-pc-windows-msvc
+          npm run release:exes
+
+      - name: Sign the disposable manifest with a fresh test key
+        run: |
+          $env:WONREMOTE_PROOF_PUBLIC_KEY_FILE = Join-Path $env:RUNNER_TEMP 'wonremote-install-proof-public.pem'
+          @'
+          import { generateKeyPairSync } from "node:crypto";
+          import { execFileSync } from "node:child_process";
+          import { writeFileSync } from "node:fs";
+          const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+          writeFileSync(process.env.WONREMOTE_PROOF_PUBLIC_KEY_FILE, publicKey.export({ type: "spki", format: "pem" }), { flag: "wx" });
+          execFileSync(process.execPath, ["scripts/create-update-manifest.js", "--release-tag", `isolated-install-proof-${process.env.GITHUB_RUN_ID}`], {
+            stdio: "inherit",
+            env: { ...process.env, WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY: privateKey.export({ type: "pkcs8", format: "pem" }) },
+          });
+          '@ | node --input-type=module -
+
+      - name: Install signed baseline, force rollback, retry and check launches
+        run: |
+          # This is an unregistered desktop: the test key cannot alter public discovery.
+          ./scripts/verify-installed-agent-release.ps1 -BaselineTag v0.1.123 -CandidatePublicKeyFile (Join-Path $env:RUNNER_TEMP 'wonremote-install-proof-public.pem')
+          "Commit: $env:GITHUB_SHA" >> $env:GITHUB_STEP_SUMMARY
+          "Proof: test-signed candidate; no authenticated remote picture or production trust claim." >> $env:GITHUB_STEP_SUMMARY
+          Get-ChildItem release-exe -File | ForEach-Object {
+            "- $($_.Name): $((Get-FileHash -LiteralPath $_.FullName).Hash)" >> $env:GITHUB_STEP_SUMMARY
+          }

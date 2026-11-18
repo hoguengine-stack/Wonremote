@@ -21,6 +21,7 @@
   },
   "bundle": {
     "icon": ["icons/agent.ico"],
+    "resources": { "../dist-agent/updater.mjs": "updater/index.mjs" },
     "windows": {
       "nsis": {
         "compression": "zlib",

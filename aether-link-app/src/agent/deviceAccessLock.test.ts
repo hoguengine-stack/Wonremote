@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AgentDeviceAccessLock } from "./deviceAccessLock";
 import { encryptDeviceAccessRequest, type DeviceAccessOperation } from "../domain/deviceAccessLock";
 
@@ -34,14 +34,34 @@ describe("installed-platform device access boundary", () => {
       expect(lock.publicState).toEqual(first);
       lock = await AgentDeviceAccessLock.load(file, "device-1");
       await expect(lock.authorize(await request("connect", "pass-1234"))).resolves.toEqual(first);
-      const beforeCleanConnect = (await stat(file)).mtimeMs;
       const beforeCleanBytes = await readFile(file);
+      const publish = vi.fn();
+      const rotatedLock = async () => { throw new Error("server lock rotated"); };
+      await expect(lock.authorize(await request("connect", "wrong"), Date.now(), publish, rotatedLock)).rejects.toThrow("server lock rotated");
+      await expect(lock.authorize(await request("connect", "pass-1234"), Date.now(), publish, rotatedLock)).rejects.toThrow("server lock rotated");
+      expect(publish).not.toHaveBeenCalled();
+      expect(await readFile(file)).toEqual(beforeCleanBytes);
+      const readStarted = Date.now();
+      const wrong = await request("connect", "wrong");
+      for (let attempt = 0; attempt < 4; attempt++) {
+        await expect(lock.authorize(wrong, readStarted)).rejects.toThrow("일치하지");
+      }
+      const clock = vi.spyOn(Date, "now").mockReturnValue(readStarted + 15_000);
+      try {
+        await expect(lock.authorize(wrong, readStarted, publish, async () => {})).rejects.toThrow("일치하지");
+        await expect(lock.authorize(connect, readStarted + 60_001)).rejects.toThrow("잠시 후");
+        await expect(lock.authorize(connect, readStarted + 74_000, publish, async () => {
+          clock.mockReturnValue(readStarted + 75_001);
+        })).resolves.toEqual(first);
+      } finally { clock.mockRestore(); }
+      const afterLockWindow = await stat(file);
+      const afterLockBytes = await readFile(file);
       await lock.authorize(await request("connect", "pass-1234"));
-      expect((await stat(file)).mtimeMs === beforeCleanConnect).toBe(true);
-      expect(await readFile(file)).toEqual(beforeCleanBytes);
+      expect((await stat(file)).mtimeMs === afterLockWindow.mtimeMs).toBe(true);
+      expect(await readFile(file)).toEqual(afterLockBytes);
       await expect(lock.authorize(await request("connect", "pass-1234"), Date.now(), async()=>{throw Error("connect publish failed");})).rejects.toThrow("connect publish failed");
-      expect((await stat(file)).mtimeMs === beforeCleanConnect).toBe(true);
-      expect(await readFile(file)).toEqual(beforeCleanBytes);
+      expect((await stat(file)).mtimeMs === afterLockWindow.mtimeMs).toBe(true);
+      expect(await readFile(file)).toEqual(afterLockBytes);
       await lock.authorize(await request("set", "pass-1234", "updated-password"));
       lock = await AgentDeviceAccessLock.load(file, "device-1");
       expect(lock.publicState.publicKey).toBe(first.publicKey);

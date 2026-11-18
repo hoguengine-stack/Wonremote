@@ -21,6 +21,11 @@ describe("persistent Agent input injector", () => {
     );
     const injector = new PersistentInputInjector("C:\\WonRemote\\wonremote-poc.exe", { spawnInputServer });
 
+    const owner = {};
+    injector.prepare(owner);
+    injector.prepare(owner);
+    expect(spawnInputServer).toHaveBeenCalledOnce();
+    expect(child.requests).toEqual([]);
     await injector.inject("key-down A");
     await injector.inject("key-up A");
 
@@ -36,6 +41,75 @@ describe("persistent Agent input injector", () => {
       { id: "input-2", action: "key-up A" },
     ]);
     injector.close();
+  });
+
+  it("starts on demand if preparation could not launch or its idle child exited", async () => {
+    const idleChild = new FakeInputServerChild();
+    const liveChild = new FakeInputServerChild(request => liveChild.respond({id:request.id,ok:true}));
+    const spawnInputServer = vi.fn<SpawnInputServer>(() => liveChild as unknown as InputServerChild)
+      .mockImplementationOnce(() => { throw new Error("startup unavailable"); })
+      .mockReturnValueOnce(idleChild as unknown as InputServerChild);
+    const injector = new PersistentInputInjector("poc.exe", {spawnInputServer});
+
+    const owner = {};
+    expect(() => injector.prepare(owner)).toThrow("startup unavailable");
+    const failed = vi.fn();
+    injector.prepare(owner, failed);
+    idleChild.emit("exit",1,null);
+    expect(failed).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({message:expect.stringContaining("exited")}));
+    expect(idleChild.requests).toEqual([]);
+    await injector.inject("move 1 2");
+    expect(liveChild.requests).toEqual([{id:"input-1",action:"move 1 2"}]);
+    expect(spawnInputServer).toHaveBeenCalledTimes(3);
+    injector.close();
+  });
+
+  it("cleans up only an unused preparation without interrupting a used input child", async () => {
+    const unused = new FakeInputServerChild();
+    const used = new FakeInputServerChild(request => used.respond({id:request.id,ok:true}));
+    const spawnInputServer = vi.fn<SpawnInputServer>(() => used as unknown as InputServerChild)
+      .mockReturnValueOnce(unused as unknown as InputServerChild);
+    const injector = new PersistentInputInjector("poc.exe", {spawnInputServer});
+    const failed = vi.fn();
+    const first = {}, replacement = {};
+    injector.prepare(first, failed);
+    injector.prepare(replacement, failed);
+    injector.discardPreparation(first);
+    expect(unused.kill).not.toHaveBeenCalled();
+    injector.discardPreparation(replacement);
+    injector.discardPreparation(replacement);
+    expect(unused.kill).toHaveBeenCalledOnce();
+    expect(failed).not.toHaveBeenCalled();
+    injector.prepare(replacement, failed);
+    await injector.inject("mouse-down 1 2 left");
+    injector.prepare(replacement, failed);
+    injector.discardPreparation(replacement);
+    expect(used.kill).not.toHaveBeenCalled();
+    await injector.inject("mouse-up 1 2 left");
+    expect(used.requests.map(request=>request.action)).toEqual(["mouse-down 1 2 left","mouse-up 1 2 left"]);
+    injector.close();
+  });
+
+  it.each([false,true])("keeps a modeled helper startup off the first-action wait when prepared: %s", async prepared => {
+    vi.useFakeTimers();
+    const spawnInputServer: SpawnInputServer = () => {
+      const readyAt = Date.now() + 40;
+      const child = new FakeInputServerChild(request => {
+        setTimeout(() => child.respond({id:request.id,ok:true}), Math.max(0, readyAt - Date.now()));
+      });
+      return child as unknown as InputServerChild;
+    };
+    const injector = new PersistentInputInjector("poc.exe", {spawnInputServer});
+    try {
+      if (prepared) {
+        injector.prepare({});
+        await vi.advanceTimersByTimeAsync(40);
+      }
+      const start = Date.now();
+      const elapsed = injector.inject("move 1 2").then(() => Date.now() - start);
+      await vi.advanceTimersByTimeAsync(40);
+      await expect(elapsed).resolves.toBe(prepared ? 0 : 40);
+    } finally { injector.close(); }
   });
 
   it("matches responses by id and ignores unrelated response IDs", async () => {

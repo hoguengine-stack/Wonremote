@@ -7,6 +7,7 @@ import { prepareInstallerHandoff } from "./productionInstallerUpdate";
 import {
   UPDATE_ONCE_EXIT,
   UpdateOnceError,
+  handleUpdateOnceCli,
   launchInstallerHandoff,
   parseUpdateOnceOptions,
   runUpdateOnce,
@@ -61,6 +62,20 @@ function updateDeps(overrides: Record<string, unknown> = {}) {
 }
 
 describe("non-interactive bundled updater", () => {
+  it("refuses to report an installed Agent handoff started without its protected broker", () => {
+    expect(() => launchInstallerHandoff({
+      args: [], command: "invalid-test-command", creationFlags: 0,
+      installerPath: "installer.exe", installerSha256: "a".repeat(64), logPath: "handoff.log",
+      protectedAcknowledgementPath: "protected/installer-started.accepted",
+      requestId: "request", scriptPath: "handoff.ps1", scriptSha256: "b".repeat(64),
+    }, {})).toThrow(/protected.*broker/i);
+  });
+  it("rejects the installed Agent CLI before lookup when the broker or restart target is absent", async () => {
+    const args = ["--update-once", "--restart-mode", "agent"];
+    const env = { WONREMOTE_TAURI_UPDATE_BROKER: "1" };
+    await expect(handleUpdateOnceCli(args, env, "agent")).resolves.toBe(UPDATE_ONCE_EXIT.invalidArguments);
+    await expect(handleUpdateOnceCli([...args, "--restart-executable", "agent.exe"], {}, "agent")).resolves.toBe(UPDATE_ONCE_EXIT.invalidArguments);
+  });
   it.each(["agent", "viewer"] as const)("routes confirmed %s installer through its correct broker protocol", async (restartMode) => {
     const baseDir = await mkdtemp(path.join(os.tmpdir(), "wonremote-manual-update-"));
     try {

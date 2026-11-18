@@ -15,6 +15,7 @@ export function writeCaptureControl(
   input: CaptureControlInput | null | undefined,
   command: string,
   onFailure: (error: Error) => void,
+  onWritten?: () => void,
 ): boolean {
   if (!input || input.destroyed || input.writableEnded) {
     return false;
@@ -24,6 +25,8 @@ export function writeCaptureControl(
     input.write(command, (error) => {
       if (error) {
         onFailure(error);
+      } else {
+        onWritten?.();
       }
     });
     return true;

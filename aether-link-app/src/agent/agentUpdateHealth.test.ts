@@ -6,11 +6,54 @@ import { build } from "esbuild";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { createApiServer } from "../server/apiServer";
 import { createAgentHealthReporter } from "./agentUpdateHealth";
 
 const identity = { registeredDeviceId: "business:AGENT-82220F6D", installId: "agent-82220f6d" };
 
 describe("Agent update online readiness", () => {
+  it("checks for updates from the real local Agent watcher after registering and receiving its command challenge", async () => {
+    const baseDir = await mkdtemp(path.join(os.tmpdir(), "wonremote-local-update-"));
+    const server = createApiServer();
+    let child: ReturnType<typeof spawn> | undefined;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let stderr = "";
+    let checks = 0;
+    try {
+      server.listen(0, "127.0.0.1");
+      await once(server, "listening");
+      const port = (server.address() as { port: number }).port;
+      const checked = new Promise<void>((resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error(`No automatic local update request: ${stderr}`)), 12000);
+        server.on("request", request => {
+          if (request.url === "/api/update/check") { checks++; resolve(); }
+        });
+        child = spawn(process.execPath, ["--import", "tsx", "src/agent/index.ts", "--watch"], {
+          env: { ...process.env, APPDATA: baseDir, LOCALAPPDATA: baseDir, NODE_ENV: "production",
+            WONREMOTE_DISABLE_FIREBASE: "1", WONREMOTE_API_URL: `http://127.0.0.1:${port}`,
+            WONREMOTE_AGENT_CONFIG: path.join(baseDir, "agent-config.json"),
+            WONREMOTE_AGENT_ID: "999-99-90000", WONREMOTE_AGENT_PASSWORD: "1234",
+            WONREMOTE_POC_PATH: path.join(baseDir, "nonexistent-capture.exe") },
+          stdio: ["ignore", "ignore", "pipe"], windowsHide: true,
+        });
+        child.stderr!.on("data", bytes => { stderr = (stderr + bytes).slice(-1600); });
+        child.once("error", reject);
+        child.once("exit", code => reject(new Error(`Local Agent exited (${code}): ${stderr}`)));
+      });
+      await checked;
+      const receipt = JSON.parse(await readFile(path.join(baseDir, "WonRemote", "agent-online.json"), "utf8"));
+      expect(receipt).toMatchObject({ deviceId: expect.stringMatching(/^999-99-90000:AGENT-/), pid: child?.pid,
+        commandReceiverReadyAt: expect.any(String), commandRoundTripAt: expect.any(String) });
+      expect(checks).toBe(1);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      if (child?.pid && child.exitCode === null && child.signalCode === null) { const stopped = once(child, "exit"); child.kill(); await stopped; }
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      await rm(baseDir, { recursive: true, force: true });
+    }
+  }, 15000);
+
   it("starts background update work only after the complete persisted availability receipt", async () => {
     let release!: () => void;
     const saved = new Promise<void>(resolve => { release = resolve; });

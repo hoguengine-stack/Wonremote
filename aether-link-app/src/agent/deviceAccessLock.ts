@@ -90,7 +90,7 @@ export class AgentDeviceAccessLock {
     this.state = state;
   }
 
-  async authorize(request: DeviceAccessRequest, now = Date.now(), publish?: (state: DeviceAccessState) => Promise<void>): Promise<DeviceAccessState> {
+  private async verifyCredentials(request: DeviceAccessRequest, now: number): Promise<{credentials: DeviceAccessCredentials; accepted: boolean}> {
     if (request.deviceId !== this.state.deviceId || !request.ownerUid || !request.id || !["connect", "set", "disable", "reset"].includes(request.operation)) throw new Error("잘못된 접속 잠금 요청입니다.");
     if (this.state.blockedUntil > now) throw new Error("비밀번호 오류가 반복되었습니다. 잠시 후 다시 시도하세요.");
     if (request.key.length > 400 || request.iv.length > 32 || request.ciphertext.length > 2048) throw new Error("접속 잠금 요청이 너무 큽니다.");
@@ -107,6 +107,27 @@ export class AgentDeviceAccessLock {
     const accepted = typeof password === "string" && password.length <= 64 && (request.operation === "reset"
       ? await matches(password, RECOVERY_VERIFIER)
       : this.state.password ? await matches(password, this.state.password) : request.operation === "set");
+    return {credentials, accepted};
+  }
+
+  async authorize(request: DeviceAccessRequest, now = Date.now(), publish?: (state: DeviceAccessState) => Promise<void>, verifyCurrentLock?: () => Promise<void>): Promise<DeviceAccessState> {
+    let checked: Awaited<ReturnType<AgentDeviceAccessLock["verifyCredentials"]>>;
+    if (verifyCurrentLock) {
+      const confirmedAt = verifyCurrentLock().then(() => Date.now());
+      if (this.state.blockedUntil > now) {
+        // A blocked request must not start hashing before the server-confirmed time.
+        now = await confirmedAt;
+        checked = await this.verifyCredentials(request, now);
+      } else {
+        const [server, local] = await Promise.allSettled([confirmedAt, this.verifyCredentials(request, now)]);
+        if (server.status === "rejected") throw server.reason;
+        now = server.value;
+        if (this.state.blockedUntil > now) throw new Error("비밀번호 오류가 반복되었습니다. 잠시 후 다시 시도하세요.");
+        if (local.status === "rejected") throw local.reason;
+        checked = local.value;
+      }
+    } else checked = await this.verifyCredentials(request, now);
+    const {credentials, accepted} = checked;
     if (!accepted) {
       const attempts = this.state.attempts + 1;
       await this.save({...this.state, attempts:attempts >= 5 ? 0 : attempts, blockedUntil:attempts >= 5 ? now + 60_000 : 0});

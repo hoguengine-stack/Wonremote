@@ -49,6 +49,7 @@ import {
 } from "lucide-react";
 import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { nativeCommandErrorMessage } from "./domain/nativeCommandError";
 import {useLoginInputState} from "./components/useLoginInputState";
 import {trackAgentUpdate,type AgentUpdateNotice} from "./domain/agentUpdateTracker";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -86,9 +87,12 @@ import { fetchViewerUpdateMetadata } from "./api/viewerUpdate";
 import type { SessionData } from "./domain/sessionData";
 import {
   isViewerFirebaseEnabled,
+  queuePreparedFirebaseViewerOffer,
   startFirebaseViewerWebRtcTransport,
   getFirebaseViewerStorageOwner,
   subscribeViewerAuthState,
+  subscribeViewerGrouping,
+  saveViewerGrouping,
   loadFirebaseUpdateRollout,
   saveFirebaseUpdateRollout,
   updateFirebaseDeviceRollout,
@@ -101,7 +105,8 @@ import { ViewerAccountManager } from "./components/ViewerAccountManager";
 import { VideoConsultation } from "./components/VideoConsultation";
 import { DeviceAccessLockDialog, type DeviceUnlockChoice } from "./components/DeviceAccessLockDialog";
 import { ViewerGroups } from "./components/ViewerGroups";
-import { groupDeviceIds } from "./domain/viewerGroups";
+import { DeviceTagPresets } from "./components/DeviceTagPresets";
+import { groupDeviceIds, readViewerGrouping, ungroupedViewerDevices, viewerInventoryBlocks, type ViewerGroup, type ViewerGrouping } from "./domain/viewerGroups";
 import { IosCapabilityProbe } from "./components/IosCapabilityProbe";
 import { isMobileViewerPath } from "./domain/mobileViewer";
 import { MobileRemoteControls, useMobileRemoteHeight } from "./components/MobileRemoteControls";
@@ -124,6 +129,7 @@ import {
 import { mergeScopedDeviceRefresh } from "./domain/devicePresenceRefresh";
 import {
   scheduleVisualPingPresentedMeasurement,
+  VISUAL_PING_TIMEOUT_MS,
 } from "./domain/visualPing";
 import { getViewerVersion, isHigherVersion } from "./domain/versioning";
 import {
@@ -138,8 +144,6 @@ import {
 import { shouldPollViewerTileFallback } from "./domain/realtimeTransportPolicy";
 import {
   buildSetStreamModeCommand,
-  normalizeStreamPerformanceMode,
-  type StreamPerformanceMode,
 } from "./domain/streamPerformanceMode";
 import {
   ACTIVE_SESSION_STORAGE_KEY,
@@ -243,7 +247,7 @@ import { IncomingFileAssembler } from "./domain/incomingFile";
 import { saveDesktopFile } from "./domain/desktopFileSave";
 import { startSelectedViewerScheduler } from "./domain/selectedViewerScheduler";
 import { PersistentFileReceiver } from "./domain/persistentFileReceiver";
-import { hasCompleteTileCoverage } from "./domain/webrtcFrameAssembly";
+import { hasCompleteTileCoverage, hasNonOverlappingTileCoverage } from "./domain/webrtcFrameAssembly";
 
 type DeviceEditTarget =
   | { mode: "device"; devices: [ManagedDevice] }
@@ -384,6 +388,8 @@ function SharedApp() {
   return appMode === "agent" ? <AgentFirstRunApp /> : <ViewerApp />;
 }
 
+const EMPTY_VIEWER_GROUPING: ViewerGrouping = {customGroups: [], groupOrder: []};
+
 function ViewerApp() {
   const isMobileViewer = isMobileViewerPath(window.location.pathname);
   const [isVideoConsultationOpen,setIsVideoConsultationOpen]=useState(false);
@@ -398,6 +404,15 @@ function ViewerApp() {
   const [groupDrop, setGroupDrop] = useState<{ storeName: string; after: boolean } | null>(null);
   const [listPreferences, setListPreferences] = useState(() =>
     readDeviceListPreferences(window.localStorage.getItem(VIEWER_LIST_STORAGE_KEY)));
+  const [viewerUid, setViewerUid] = useState<string | null>(null);
+  const [sharedGrouping, setSharedGrouping] = useState<{ uid: string; grouping: ViewerGrouping } | null>(null);
+  const [groupingFailure, setGroupingFailure] = useState<{uid: string; message: string} | null>(null);
+  const [groupingAttempt, setGroupingAttempt] = useState(0);
+  const useSharedGrouping = isViewerFirebaseEnabled();
+  const loadedGrouping = sharedGrouping?.uid === viewerUid ? sharedGrouping?.grouping : undefined;
+  const grouping = useSharedGrouping ? loadedGrouping ?? EMPTY_VIEWER_GROUPING : listPreferences;
+  const customGroups = grouping.customGroups ?? EMPTY_VIEWER_GROUPING.customGroups;
+  const legacyGrouping = useMemo(() => readViewerGrouping(listPreferences), [listPreferences]);
   const groupMover = useMemo(() => createDeviceGroupMover(updateDeviceMetadata), [isAuthenticated]);
   useEffect(() => { groupMover.activate(); return () => groupMover.dispose(); }, [groupMover]);
   const [sessions, setSessions] = useState<RemoteSession[]>([]);
@@ -482,7 +497,12 @@ function ViewerApp() {
       if (!isAuthenticated || !devices.some(device => device.id === id && device.accessLocked && device.accessLockVersion === remembered.lockVersion)) forgetDevicePassword(id);
     }
   }, [devices, isAuthenticated]);
-  useEffect(() => () => { devicePasswordResolver.current?.(null); devicePasswordResolver.current = null; forgetAllDevicePasswords(); }, []);
+  useEffect(() => () => {
+    connectionEpochRef.current += 1;
+    devicePasswordResolver.current?.(null);
+    devicePasswordResolver.current = null;
+    forgetAllDevicePasswords();
+  }, []);
   function closeDeviceAccessDialog(choice: DeviceUnlockChoice | null = null) {
     const resolve = devicePasswordResolver.current;
     devicePasswordResolver.current = null;
@@ -513,11 +533,13 @@ function ViewerApp() {
 
     let cancelled = false;
     const unsubscribe = subscribeViewerAuthState(
-      (hasSession) => {
+      (hasSession, uid) => {
         if (cancelled) {
           return;
         }
         setIsAuthenticated(hasSession);
+        setViewerUid(hasSession ? uid ?? null : null);
+        setSharedGrouping(current => hasSession && current?.uid === uid ? current : null);
         if (!hasSession) { deviceRefreshTargetIdsRef.current=undefined; forgetAllDevicePasswords(); closeDeviceAccessDialog(); setDeviceListRefreshKey(0); setIsRefreshingDevices(false); setIsLoadingDeviceList(false); setPresenceChecks({}); setDevices([]); setConnectionHistory([]); }
         if (hasSession) {
           setDeviceListRefreshKey((current) => current || 1);
@@ -540,6 +562,39 @@ function ViewerApp() {
       unsubscribe();
     };
   }, []);
+
+  useEffect(() => {
+    setSelectedStore("전체");
+  }, [viewerUid, isAuthenticated]);
+
+  useEffect(() => {
+    if (!viewerUid || !isAuthenticated) return;
+    let active = true;
+    const unsubscribe = subscribeViewerGrouping(viewerUid, grouping => {
+      if (active) {
+        setGroupingFailure(null);
+        setSharedGrouping({uid: viewerUid, grouping});
+      }
+    }, (error) => {
+      if (active) {
+        setSharedGrouping(null);
+        setGroupingFailure({uid: viewerUid, message: (error as {code?: string}).code === "permission-denied"
+          ? "계정 그룹에 접근할 권한을 확인할 수 없습니다."
+          : "계정 그룹 설정을 불러오지 못했습니다."});
+      }
+    });
+    return () => { active = false; unsubscribe(); };
+  }, [viewerUid, isAuthenticated, groupingAttempt]);
+
+  const changeGrouping = async (change: (current: ViewerGrouping) => ViewerGrouping) => {
+    if (useSharedGrouping) {
+      if (!viewerUid || !loadedGrouping) throw new Error("계정 그룹 설정을 먼저 불러와야 합니다.");
+      await saveViewerGrouping(viewerUid, change);
+    } else {
+      const next = change(readViewerGrouping(listPreferences));
+      setListPreferences(current => ({...current, ...next}));
+    }
+  };
 
   useEffect(() => {
     if (!isAuthenticated || !isViewerFirebaseEnabled()) {
@@ -642,9 +697,7 @@ function ViewerApp() {
         setViewerUpdateDialog({ kind: "current", version: currentViewerVersion });
       }
     } catch (error) {
-      const message = error instanceof Error && error.message.trim()
-        ? error.message.trim()
-        : "The signed update server could not be reached.";
+      const message = nativeCommandErrorMessage(error, "업데이트 확인에 실패했습니다. 오류 상세를 받지 못했습니다.");
       setViewerUpdateDialog({ kind: "error", message });
     } finally {
       setIsManualUpdateChecking(false);
@@ -662,14 +715,14 @@ function ViewerApp() {
     } catch (error) {
       setViewerUpdateDialog({
         kind: "error",
-        message: error instanceof Error ? error.message : "업데이트를 시작할 수 없습니다.",
+        message: nativeCommandErrorMessage(error, "업데이트를 시작할 수 없습니다."),
       });
     }
   };
 
   const handleRefreshDeviceList = () => {
     if (!deviceListRequestRef.current && !isRefreshingDevices) {
-      deviceRefreshTargetIdsRef.current=query.trim()?filteredDevices.map(device=>device.id):undefined;
+      deviceRefreshTargetIdsRef.current=query.trim() || selectedStore !== "전체" ? filteredDevices.map(device=>device.id):undefined;
       setDeviceListRefreshKey((current) => current + 1);
     }
   };
@@ -707,10 +760,12 @@ function ViewerApp() {
       : device));
   };
 
-  const groups = useMemo(() => orderStoreGroups(groupDevicesByStore(devices), listPreferences.groupOrder, listPreferences.newDeviceIds), [devices, listPreferences.groupOrder, listPreferences.newDeviceIds]);
+  const ungroupedDevices = useMemo(() => ungroupedViewerDevices(devices, customGroups), [devices, customGroups]);
+  const groups = useMemo(() => orderStoreGroups(groupDevicesByStore(ungroupedDevices), grouping.groupOrder, useSharedGrouping ? [] : listPreferences.newDeviceIds), [ungroupedDevices, grouping.groupOrder, listPreferences.newDeviceIds, useSharedGrouping]);
+  const selectedCustomGroup = selectedStore.startsWith("custom:") ? selectedStore.slice(7) : null;
   const filteredDevices = useMemo(() => {
-    const custom = selectedStore.startsWith("custom:") ? groupDeviceIds(listPreferences.customGroups ?? [], selectedStore.slice(7)) : null;
-    return filterDeviceWorkspace(custom ? devices.filter(d => custom.has(d.id)) : devices, {
+    const custom = selectedCustomGroup ? groupDeviceIds(customGroups, selectedCustomGroup) : null;
+    return filterDeviceWorkspace(custom ? devices.filter(d => custom.has(d.id)) : selectedStore === "전체" ? devices : ungroupedDevices, {
       favoriteDeviceIds,
       newDeviceIds: listPreferences.newDeviceIds,
       favoriteOnly,
@@ -718,7 +773,7 @@ function ViewerApp() {
       selectedStore: custom ? "전체" : selectedStore,
       status: statusFilter,
     });
-  }, [devices, favoriteDeviceIds, favoriteOnly, query, selectedStore, statusFilter, listPreferences]);
+  }, [devices, ungroupedDevices, customGroups, selectedCustomGroup, favoriteDeviceIds, favoriteOnly, query, selectedStore, statusFilter, listPreferences.newDeviceIds]);
 
   useEffect(()=>{
     if (!isAuthenticated || !devices.length) return;
@@ -755,7 +810,8 @@ function ViewerApp() {
     const updateAttention = devices.filter(
       (device) => ["active", "attention"].includes(resolveDeviceUpdateInfo(device).kind),
     ).length;
-    return { online, offline: devices.length - online, updateAttention };
+    const offline = devices.filter((device) => device.status === "offline" && !device.presenceCheckTimedOut).length;
+    return { online, offline, updateAttention };
   }, [devices]);
 
   const session = sessions.find((item) => item.id === activeSessionId) ?? null;
@@ -1015,7 +1071,11 @@ function ViewerApp() {
       const passwordOwner = rememberedDevicePasswords.current;
       try {
         const choice = await requireDevicePassword(deviceId);
-        if (choice === null || sessionShutdownInProgressRef.current || connectionEpoch !== connectionEpochRef.current || selectedUpdateInstallingRef.current) return {cleanupSucceeded:true, connected:false, session:null};
+        if (choice === null || sessionShutdownInProgressRef.current || connectionEpoch !== connectionEpochRef.current || selectedUpdateInstallingRef.current) {
+          markConnectionTiming(deviceId, "cancelled");
+          return {cleanupSucceeded:true, connected:false, session:null};
+        }
+        markConnectionTiming(deviceId, "connect-request");
         const result = await openRequest(choice?.password);
         createdSessionId = result.session.id;
         bindConnectionTiming(deviceId, result.session.id);
@@ -1024,6 +1084,7 @@ function ViewerApp() {
           sessionShutdownInProgressRef.current ||
           connectionEpoch !== connectionEpochRef.current
         ) {
+          markConnectionTiming(result.session.id, "cancelled");
           enqueueSessionCleanup(window.localStorage, result.session);
           await closeSession(result.session.id);
           removeSessionCleanup(window.localStorage, result.session.id);
@@ -1038,6 +1099,10 @@ function ViewerApp() {
             if (rememberedDevicePasswords.current.get(deviceId) === remembered) forgetDevicePassword(deviceId);
           }, duration);
           rememberedDevicePasswords.current.set(deviceId, remembered);
+        }
+        if (result.session.state === "connected" && unlockContext.current.isAuthenticated
+          && unlockContext.current.devices.some(device => device.id === deviceId)) {
+          queuePreparedFirebaseViewerOffer(result.session.id);
         }
         setSessions((current) => upsertSessionTab(current, result.session));
         setActiveSessionId(result.session.id);
@@ -1356,12 +1421,10 @@ function ViewerApp() {
 
       setDevices(nextDeviceState);
       const firstUpdated = updatedDevices[0];
-      if (firstUpdated && firstUpdated.storeName !== previousStore
+      if (firstUpdated && firstUpdated.storeName !== previousStore && grouping.groupOrder.includes(previousStore)
         && !nextDeviceState.some((device) => device.storeName === previousStore)) {
-        setListPreferences((current) => {
-          const groupOrder = renameStoreGroup(current.groupOrder, previousStore, firstUpdated.storeName);
-          return groupOrder === current.groupOrder ? current : { ...current, groupOrder };
-        });
+        void changeGrouping(current => ({...current, groupOrder:renameStoreGroup(current.groupOrder, previousStore, firstUpdated.storeName)}))
+          .catch(() => setApiError("장비 이름은 저장했지만 계정의 목록 순서를 갱신하지 못했습니다."));
       }
       if (firstUpdated && selectedStore === previousStore) {
         setSelectedStore(firstUpdated.storeName);
@@ -1448,13 +1511,21 @@ function ViewerApp() {
           <b>{devices.length}</b>
         </button>
 
-        <ViewerGroups groups={listPreferences.customGroups ?? []} devices={devices}
-          selected={selectedStore.startsWith("custom:") ? selectedStore.slice(7) : null}
+        <ViewerGroups key={viewerUid ?? "local"} groups={customGroups} devices={devices}
+          editable={!useSharedGrouping || !!loadedGrouping}
+          loadError={useSharedGrouping && groupingFailure?.uid === viewerUid ? groupingFailure?.message : undefined}
+          retryLoad={() => { setGroupingFailure(null); setGroupingAttempt(attempt => attempt + 1); }}
+          selected={selectedCustomGroup}
           select={id=>setSelectedStore(id ? `custom:${id}` : "전체")}
-          change={customGroups=>setListPreferences(current=>({...current,customGroups}))}/>
-        <section className="sidebar-section" aria-label="매장 그룹">
+          change={change=>changeGrouping(current=>({...current,customGroups:change(current.customGroups)}))}
+          importLocal={useSharedGrouping && loadedGrouping && !customGroups.length && !grouping.groupOrder.length && (legacyGrouping.customGroups.length || legacyGrouping.groupOrder.length)
+            ? () => changeGrouping(current => {
+              if (current.customGroups.length || current.groupOrder.length) throw new Error("계정에 이미 그룹 설정이 있습니다.");
+              return legacyGrouping;
+            }) : undefined}/>
+        <section className="sidebar-section" aria-label="장비 목록">
           <div className="sidebar-section-heading">
-            <span>매장 그룹</span>
+            <span>장비 목록</span>
             <b>{groups.length}</b>
           </div>
           <div className="group-list">
@@ -1493,8 +1564,13 @@ function ViewerApp() {
                 if (draggedGroup) {
                   const names = groups.map((item) => item.storeName);
                   const after = event.clientY >= event.currentTarget.getBoundingClientRect().top + event.currentTarget.clientHeight / 2;
-                  const reordered = moveStoreGroup(names, draggedGroup, group.storeName, after);
-                  if (reordered !== names) setListPreferences((current) => ({ ...current, groupOrder: reordered }));
+                  if (moveStoreGroup(names, draggedGroup, group.storeName, after) === names) return;
+                  try {
+                    await changeGrouping(current => {
+                      const ordered = orderStoreGroups(groups, current.groupOrder, useSharedGrouping ? [] : listPreferences.newDeviceIds).map(item=>item.storeName);
+                      return {...current, groupOrder:[...moveStoreGroup(ordered, draggedGroup, group.storeName, after), ...current.groupOrder.filter(name=>!names.includes(name))]};
+                    });
+                  } catch { setApiError("목록 순서를 저장하지 못했습니다."); }
                   return;
                 }
                 const device = devices.find((item) => item.id === event.dataTransfer.getData(DEVICE_DRAG_TYPE));
@@ -1538,13 +1614,13 @@ function ViewerApp() {
           <div className="workspace-title">
             <span className="eyebrow">DEVICE OPERATIONS</span>
             <div className="workspace-heading-line">
-              <h1>{selectedStore === "전체" ? "전체 장비" : selectedStore.startsWith("custom:") ? listPreferences.customGroups?.find(g=>g.id===selectedStore.slice(7))?.name ?? "그룹" : selectedStore}</h1>
+              <h1>{selectedStore === "전체" ? "전체 장비" : selectedCustomGroup ? customGroups.find(g=>g.id===selectedCustomGroup)?.name ?? "그룹" : selectedStore}</h1>
               <span className="workspace-live-status">
                 <i aria-hidden="true" />
                 {fleetSummary.online}대 온라인
               </span>
             </div>
-            <p>{devices.length}대 등록 · {groups.length}개 매장</p>
+            <p>{devices.length}대 등록 · {new Set(devices.map(device=>device.storeName)).size}개 매장</p>
           </div>
           <div className="topbar-tools">
           <label className="search-box">
@@ -1555,7 +1631,7 @@ function ViewerApp() {
               placeholder="매장, 장비, 담당자, 연락처, 메모 검색"
             />
           </label>
-          {isViewerFirebaseEnabled()&&<button className="secondary-button" type="button" onClick={()=>setIsVideoConsultationOpen(true)}><Video size={17}/><span>영상상담</span></button>}
+          {isViewerFirebaseEnabled()&&<button className="secondary-button video-consultation-button" type="button" onClick={()=>setIsVideoConsultationOpen(true)}><Video size={17}/><span>영상상담</span></button>}
           {!isMobileViewer && <button
             className="viewer-update-button"
             type="button"
@@ -1672,6 +1748,9 @@ function ViewerApp() {
             </section>
             <DeviceTable
               devices={filteredDevices}
+              customGroups={customGroups}
+              selectedCustomGroup={selectedCustomGroup}
+              expandMatches={!!query.trim() || favoriteOnly || statusFilter !== "all"}
               newDeviceIds={listPreferences.newDeviceIds}
               connectionHistory={connectionHistory}
               observedConnections={observedConnections}
@@ -2016,6 +2095,7 @@ function DeviceEditDialog({
               <label>
                 장비 종류
                 <select
+                  aria-label="장비 종류"
                   value={deviceTypeChoice}
                   onPointerDown={openSelectFromPrimaryPointer}
                   onChange={(event) => {
@@ -2082,6 +2162,9 @@ function DeviceEditDialog({
                   placeholder="예: 메인, 1층, 긴급"
                 />
               </label>
+              <DeviceTagPresets value={form.tagText} add={name=>setForm(prev=>({
+                ...prev, tagText:[...prev.tagText.split(",").map(tag=>tag.trim()).filter(Boolean),name].join(", "),
+              }))}/>
               <label className="device-notes-field">
                 메모 / 장애 이력
                 <textarea
@@ -2103,6 +2186,7 @@ function DeviceEditDialog({
                   <option value="general">General</option>
                 </select>
               </label>
+              <div className="device-update-options">
               <label className="toggle-field">
                 <input type="checkbox" checked={updatePaused} onChange={(event) => setUpdatePaused(event.target.checked)} />
                 {isGroupEdit ? "선택 장비 업데이트 일시 중지" : "이 장비 업데이트 일시 중지"}
@@ -2113,6 +2197,7 @@ function DeviceEditDialog({
                   setUpdatePaused(true);
                 }} />
               )}
+              </div>
             </>
           )}
         </div>
@@ -2730,7 +2815,7 @@ function AgentFirstRunApp() {
       }
       setIsRestartDialogOpen(false);
     } catch (restartError) {
-      setError(restartError instanceof Error ? restartError.message : "에이전트 재시작에 실패했습니다.");
+      setError(nativeCommandErrorMessage(restartError, "에이전트 재시작에 실패했습니다. 오류 상세를 받지 못했습니다."));
       setIsRestartDialogOpen(false);
     } finally {
       setIsRestarting(false);
@@ -2748,7 +2833,7 @@ function AgentFirstRunApp() {
     } catch (updateError) {
       setAgentUpdateDialog({
         kind: "error",
-        message: updateError instanceof Error ? updateError.message : "업데이트 서버를 확인할 수 없습니다.",
+        message: nativeCommandErrorMessage(updateError, "업데이트 확인에 실패했습니다. 오류 상세를 받지 못했습니다."),
       });
     } finally {
       setIsAgentUpdateChecking(false);
@@ -2762,7 +2847,7 @@ function AgentFirstRunApp() {
     } catch (updateError) {
       setAgentUpdateDialog({
         kind: "error",
-        message: updateError instanceof Error ? updateError.message : "업데이트를 시작할 수 없습니다.",
+        message: nativeCommandErrorMessage(updateError, "업데이트를 시작할 수 없습니다."),
       });
     }
   }
@@ -3022,6 +3107,9 @@ function getOrCreateAgentInstallId(): string {
 function DeviceTable({
   activeDeviceIds,
   devices,
+  customGroups,
+  selectedCustomGroup,
+  expandMatches,
   newDeviceIds,
   connectionHistory,
   observedConnections,
@@ -3042,6 +3130,9 @@ function DeviceTable({
 }: {
   activeDeviceIds: string[];
   devices: ManagedDevice[];
+  customGroups: ViewerGroup[];
+  selectedCustomGroup: string | null;
+  expandMatches: boolean;
   newDeviceIds: string[];
   connectionHistory: ConnectionHistoryEntry[];
   observedConnections: Record<string, string>;
@@ -3060,6 +3151,14 @@ function DeviceTable({
   presenceChecks: Record<string, "checking" | "failed">;
   selectedDeviceIds: string[];
 }) {
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
+  const blocks = useMemo(() => viewerInventoryBlocks(devices, customGroups, selectedCustomGroup), [devices, customGroups, selectedCustomGroup]);
+  const rows = blocks.flatMap(({group,devices: members}) => {
+    const expanded = expandMatches || !!group && expandedGroups.has(group.id);
+    return (expanded ? members : members.slice(0,1)).map((device,index)=>({
+      device, group, expanded, child:index>0, memberCount:members.length,
+    }));
+  });
   const recentConnections = useMemo(() => {
     const latest = new Map<string, string>(Object.entries(observedConnections));
     for (const entry of connectionHistory) {
@@ -3070,10 +3169,10 @@ function DeviceTable({
     }
     return latest;
   }, [connectionHistory, observedConnections]);
-  const allSelected = devices.length > 0 && devices.every((device) => selectedDeviceIds.includes(device.id));
+  const allSelected = rows.length > 0 && rows.every(({device}) => selectedDeviceIds.includes(device.id));
 
   const toggleAllVisibleDevices = () => {
-    devices.forEach((device) => {
+    rows.forEach(({device}) => {
       if (allSelected === selectedDeviceIds.includes(device.id)) {
         onToggleSelected(device.id);
       }
@@ -3088,7 +3187,7 @@ function DeviceTable({
           <h2>등록 장비</h2>
         </div>
         <div className="section-heading-actions">
-          <span><strong>{devices.length}</strong>대 표시</span>
+          <span><strong>{rows.length}</strong>대 표시</span>
           <button
             className="section-refresh-button"
             type="button"
@@ -3118,14 +3217,16 @@ function DeviceTable({
           <span>시스템</span>
           <span>작업</span>
         </div>
-        {devices.map((device) => {
+        {rows.map(({device, group, expanded, child, memberCount}) => {
           const check = presenceChecks[device.id];
-          const isOnline = !check && device.status === "online";
+          const timedOut = device.presenceCheckTimedOut;
+          const unconfirmed = check || timedOut;
+          const isOnline = !unconfirmed && device.status === "online";
           const updateInfo = resolveDeviceUpdateInfo(device);
           const systemSummary = formatDeviceSystemInfo(device.systemInfo);
           return (
             <div
-              className="table-row"
+              className={`table-row${child ? " device-group-child" : ""}`}
               key={device.id}
               draggable
               onDragStart={(event) => {
@@ -3149,9 +3250,9 @@ function DeviceTable({
                   aria-label={`${device.desktopName} 선택`}
                   onChange={() => onToggleSelected(device.id)}
                 />
-                <span className={`status-pill ${check ? "checking" : isOnline ? "online" : "offline"}`} title={check ? "응답 대기 또는 확인 실패" : "마지막 조회 시 상태"}>
-                  {check ? <CircleDot size={14} /> : isOnline ? <Wifi size={14} /> : <WifiOff size={14} />}
-                  {check === "checking" ? "확인 중" : check === "failed" ? "확인 실패" : isOnline ? "온라인" : "오프라인"}
+                <span className={`status-pill ${unconfirmed ? "checking" : isOnline ? "online" : "offline"}`} title={check ? "응답 대기 또는 확인 실패" : timedOut ? "5초 내 상태 응답을 확인하지 못했습니다." : "마지막 조회 시 상태"}>
+                  {unconfirmed ? <CircleDot size={14} /> : isOnline ? <Wifi size={14} /> : <WifiOff size={14} />}
+                  {check === "checking" ? "확인 중" : check === "failed" ? "확인 실패" : timedOut ? "응답 없음" : isOnline ? "온라인" : "오프라인"}
                 </span>
               </span>
               <span className="store-cell">
@@ -3184,6 +3285,14 @@ function DeviceTable({
                 </details>}
               </span>
               <span className="device-identity-cell">
+                {group && !child && !expandMatches && memberCount > 1 && (
+                  <button type="button" className="device-inventory-group-toggle" aria-expanded={expanded}
+                    title={group.name} onClick={() => setExpandedGroups(current => {
+                      const next = new Set(current);
+                      if (next.has(group.id)) next.delete(group.id); else next.add(group.id);
+                      return next;
+                    })}><ChevronDown size={14} /><span>{group.name}</span><small>{memberCount}대</small></button>
+                )}
                 <b>{device.desktopName}</b>
                 <small>{device.deviceName} · {device.deviceNumber}</small>
                 {device.tags && device.tags.length > 0 && (
@@ -3297,7 +3406,9 @@ function DeviceDiagnosticsDialog({ device, onClose }: { device: ManagedDevice; o
             <span className="section-kicker">장비 상태</span>
             <h2 id="device-diagnostics-title">{device.desktopName}</h2>
           </div>
-          <span className={`status-pill ${device.status}`}>{device.status === "online" ? "온라인" : "오프라인"}</span>
+          <span className={`status-pill ${device.presenceCheckTimedOut ? "checking" : device.status}`}>
+            {device.presenceCheckTimedOut ? "응답 없음" : device.status === "online" ? "온라인" : "오프라인"}
+          </span>
         </div>
         <div className="diagnostics-summary-grid">
           <div><small>장비 ID</small><strong>{device.id}</strong></div>
@@ -3490,6 +3601,7 @@ function RemoteSessionPanel({
         incomingProgressRef.current = null;
         incomingStopIntentRef.current = null;
         setIncomingStopPending(null);
+        setRemoteFileStatus(previous => previous === "원격 파일 수신 중" ? "" : previous);
         setSessionDataError(previous => previous === "파일을 수신하지 못했습니다. 저장 공간을 확인한 뒤 다시 시도해 주세요." ? "" : previous);
         setTransferPanelOpen(true);
         receivedFileRef.current = ready; setReceivedFile(ready); setInterruptedFile(null); setReceivedDownloadRequested(false);
@@ -3506,6 +3618,8 @@ function RemoteSessionPanel({
   useEffect(() => () => incomingFilesRef.current.clear(), [sessionId]);
   const imeInputRef = React.useRef<HTMLTextAreaElement | null>(null);
   const mobileRemote = isMobileViewerPath(window.location.pathname);
+  const [controlEnabled, setControlEnabled] = useState(true);
+  const controlEnabledRef = useRef(true);
   const [mobileToolsOpen, setMobileToolsOpen] = useState(false);
   useEffect(() => {
     if (!isActive || !isVisible) {
@@ -3522,19 +3636,23 @@ function RemoteSessionPanel({
   const suppressNextImeValueRef = React.useRef("");
   const remotePreviewRef = React.useRef<HTMLDivElement | null>(null);
   const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
+  const alternatePictureRef = React.useRef<HTMLCanvasElement | null>(null);
+  const firstPictureVisibilityRef = React.useRef<(() => void) | null>(null);
   const pressedKeysRef = React.useRef<Map<string, string>>(new Map());
   const suppressedKeyUpsRef = React.useRef<Set<string>>(new Set());
   const pressedButtonsRef = React.useRef<Set<MouseButtonCode>>(new Set());
+  const mobileTouchpadPressedRef = useRef(false);
   const activePointerIdRef = React.useRef<number | null>(null);
-  const moveFrameRef = React.useRef<number | null>(null);
   const moveDelayTimerRef = React.useRef<number | null>(null);
   const lastMoveSentAtRef = React.useRef(0);
-  const pendingMoveRef = React.useRef<{ dx: number; dy: number } | null>(null);
+  const pendingMoveRef = React.useRef<{ clientX: number; clientY: number; rect: DOMRect; mapPoint: typeof mapRemotePoint } | null>(null);
   const lastPointerPointRef = React.useRef({ dx: 32768, dy: 32768 });
-  const [mobilePointer, setMobilePointer] = useState({ dx: 32768, dy: 32768 });
+  const mobilePointerSink = useRef<((point: { dx: number; dy: number }) => void) | null>(null);
   const [remoteCursorEmbedded, setRemoteCursorEmbedded] = useState(false);
+  const [showViewerPointer, setShowViewerPointer] = useState(false);
   const [mobileKeyboardEnabled, setMobileKeyboardEnabled] = useState(false);
-  const pingStateRef = React.useRef<{ start: number } | null>(null);
+  type VisualPingAttempt = { start: number; deadline: number };
+  const pingStateRef = React.useRef<VisualPingAttempt | null>(null);
   const activeTransferIdRef = React.useRef<string>("");
   const storageTransfersRef = React.useRef(
     parseStorageTransferCleanup(window.localStorage.getItem(STORAGE_TRANSFER_CLEANUP_KEY)),
@@ -3545,7 +3663,6 @@ function RemoteSessionPanel({
   const [sessionDataError, setSessionDataError] = useState("");
   const [sessionDataRetry, setSessionDataRetry] = useState(0);
   const sessionDataHandlerRef = useRef<(data: SessionData, isCurrent: () => boolean) => Promise<void>>(async () => {});
-  const tileSequenceRef = React.useRef<Map<string, number>>(new Map());
   const receivedFrameSequenceRef = React.useRef(0);
   const webRtcTransportRef = React.useRef<ViewerWebRtcTransport | null>(null);
   const lastDisplayCommandRef = React.useRef<number | null>(null);
@@ -3554,23 +3671,28 @@ function RemoteSessionPanel({
     activeSessionIdRef.current = activeSessionId;
   }, [activeSessionId]);
   const onInputEvent = React.useCallback((action: string) => {
+    if (!controlEnabledRef.current && /^(?:key[-_]|keypress\b|move\b|mouse-|paste\b|paste[-_]|text-)/.test(action.trimStart())) return;
     const transport = webRtcTransportRef.current;
     const sentOverWebRtc = transport?.isControlReady() === true
       ? transport.sendControl(action)
       : false;
-    return sendInputEvent(action, {
-      localOnly: sentOverWebRtc || !shouldUseReliableInputFallback(action),
-    });
+    if (!shouldUseReliableInputFallback(action)) return;
+    return sendInputEvent(action, { localOnly: sentOverWebRtc });
   }, [sendInputEvent]);
   const dangerConfirmUntilRef = React.useRef<Record<string, number>>({});
   const [latencyReport, setLatencyReport] = useState<string>("");
-  const [pingState, setPingState] = useState<{ start: number } | null>(null);
+  const finishVisualPing = React.useCallback((attempt: VisualPingAttempt, report?: string) => {
+    if (pingStateRef.current !== attempt) return;
+    pingStateRef.current = null;
+    window.clearTimeout(attempt.deadline);
+    if (report !== undefined) setLatencyReport(report);
+  }, []);
   const [zoom, setZoom] = useState(mobileRemote ? 1 : initialViewPreferences.zoom);
   useEffect(() => {
     if (mobileRemote) {
       setZoom(1);
       setMobilePan({x: 0, y: 0});
-      setMobilePointer({dx: 32768, dy: 32768});
+      mobilePointerSink.current?.({dx: 32768, dy: 32768});
       setMobileKeyboardEnabled(false);
       imeInputRef.current?.blur();
     }
@@ -3593,16 +3715,22 @@ function RemoteSessionPanel({
     if(mobileRemote||!isSessionFullscreen||!isVisible)return;
     const canvas=canvasRef.current,preview=remotePreviewRef.current;
     if(!canvas||!preview)return;
+    const surfaces = alternatePictureRef.current ? [canvas, alternatePictureRef.current] : [canvas];
     const fit=()=>{
       if(canvas.width<=0||canvas.height<=0)return;
       const scale=Math.min(preview.clientWidth/canvas.width,preview.clientHeight/canvas.height);
-      canvas.style.setProperty("width",`${canvas.width*scale}px`,"important");
-      canvas.style.setProperty("height",`${canvas.height*scale}px`,"important");
+      for (const surface of surfaces) {
+        surface.style.setProperty("width",`${canvas.width*scale}px`,"important");
+        surface.style.setProperty("height",`${canvas.height*scale}px`,"important");
+      }
     };
     const resize=new ResizeObserver(fit),dimensions=new MutationObserver(fit);
     resize.observe(preview);dimensions.observe(canvas,{attributes:true,attributeFilter:["width","height"]});fit();
-    return()=>{resize.disconnect();dimensions.disconnect();canvas.style.removeProperty("width");canvas.style.removeProperty("height");};
-  },[mobileRemote,isSessionFullscreen,isVisible,session?.state]);
+    return()=>{
+      resize.disconnect();dimensions.disconnect();
+      for (const surface of surfaces) { surface.style.removeProperty("width");surface.style.removeProperty("height"); }
+    };
+  },[mobileRemote,isSessionFullscreen,isVisible,session?.state,device?.id]);
   const [isWebRtcConnectionReady, setIsWebRtcConnectionReady] = useState(false);
   const [picturePresented, setPicturePresented] = useState(false);
   const reportedPictureSessionRef = useRef<string | null>(null);
@@ -3636,7 +3764,7 @@ function RemoteSessionPanel({
     pictureError,
     receiveError,
   });
-  const remoteInputAvailable = isRemoteInputAvailable({
+  const remoteSessionInputReady = isRemoteInputAvailable({
     active: isActive && !inputSuspended,
     visible: isVisible,
     sessionConnected: session?.state === "connected",
@@ -3644,12 +3772,10 @@ function RemoteSessionPanel({
     firebaseEnabled: isViewerFirebaseEnabled(),
     transportReady: isWebRtcConnectionReady,
   });
+  const remoteInputAvailable = remoteSessionInputReady && controlEnabled;
   React.useEffect(() => {
     rebootReconnectStateRef.current = rebootReconnectState;
   }, [rebootReconnectState]);
-  const [streamPerformanceMode, setStreamPerformanceMode] = useState<StreamPerformanceMode>(() =>
-    initialViewPreferences.streamPerformanceMode ?? normalizeStreamPerformanceMode(window.localStorage.getItem("wonremote-stream-performance-mode")),
-  );
   const [selectedDisplayIndex, setSelectedDisplayIndex] = useState(() => {
     if (storedViewPreferences) return initialViewPreferences.selectedDisplayIndex;
     const display = device?.displays?.find(item => item.index === device.activeDisplayIndex)
@@ -3697,14 +3823,14 @@ function RemoteSessionPanel({
         fullscreen: isSessionFullscreen,
         selectedDisplayIndex,
         zoom,
-        streamPerformanceMode,
+        streamPerformanceMode: "fast",
         inputMode: mobileInputMode,
       }));
       setPreferenceSaveFailed(false);
     } catch {
       setPreferenceSaveFailed(true);
     }
-  }, [isSessionFullscreen, preferenceDeviceId, preferenceSnapshot.failed, selectedDisplayIndex, zoom, streamPerformanceMode, mobileInputMode]);
+  }, [isSessionFullscreen, preferenceDeviceId, preferenceSnapshot.failed, selectedDisplayIndex, zoom, mobileInputMode]);
 
   useEffect(() => {
     if ((window as any).__TAURI_INTERNALS__) return;
@@ -3796,6 +3922,8 @@ function RemoteSessionPanel({
       device?.displays?.find((display) => display.index === selectedDisplayIndex),
       device?.displays,
     );
+  const mapRemotePointRef = React.useRef(mapRemotePoint);
+  React.useLayoutEffect(() => { mapRemotePointRef.current = mapRemotePoint; });
   const mobileDisplayCorner = (edge: number) => mapCanvasPointToVirtualDesktopAbsolute(
     edge, edge, {left: 0, top: 0, width: 1, height: 1},
     device?.displays?.find(display => display.index === selectedDisplayIndex), device?.displays,
@@ -3826,6 +3954,7 @@ function RemoteSessionPanel({
       return;
     }
     lastDisplayCommandRef.current = selectedDisplayIndex;
+    cancelPendingPointerMove();
     onInputEvent(buildSwitchMonitorCommand(selectedDisplayIndex));
   }, [isWebRtcConnectionReady, onInputEvent, selectedDisplayIndex]);
 
@@ -3839,15 +3968,9 @@ function RemoteSessionPanel({
     if (!sessionId || session?.state !== "connected") {
       return;
     }
-    if (isViewerFirebaseEnabled() && !isWebRtcConnectionReady) {
-      return;
-    }
-    void onInputEvent(buildSetStreamModeCommand(streamPerformanceMode));
-  }, [isWebRtcConnectionReady, sessionId, session?.state, streamPerformanceMode]);
-
-  useEffect(() => {
-    pingStateRef.current = pingState;
-  }, [pingState]);
+    if (isViewerFirebaseEnabled()) return;
+    void onInputEvent(buildSetStreamModeCommand("fast"));
+  }, [sessionId, session?.state]);
 
   sessionDataHandlerRef.current = async (data, isCurrent) => {
         if (!isCurrent()) return;
@@ -3920,14 +4043,8 @@ function RemoteSessionPanel({
         if (activeTransferIdRef.current && receipts.length > 0) {
           const receipt = receipts.find((item) => item.transferId === activeTransferIdRef.current);
           if (receipt?.status === "received") {
-            setTransferProgress({
-              fileName: receipt.filename,
-              progress: 100,
-              speed: "저장 완료",
-              timeLeft: "0s",
-            });
             activeTransferIdRef.current = "";
-            window.setTimeout(() => setTransferProgress(null), 2500);
+            setTransferProgress(null);
           } else if (receipt?.status === "failed") {
             activeTransferIdRef.current = "";
             setTransferProgress(null);
@@ -3993,27 +4110,113 @@ function RemoteSessionPanel({
   // Stream Frame drawing
   useEffect(() => {
     setRemoteCursorEmbedded(false);
+    setLatencyReport("");
     if (!device || !sessionId || !session || session.state !== "connected") {
       return;
     }
 
-    tileSequenceRef.current.clear();
     receivedFrameSequenceRef.current = 0;
     let active = true;
     let webRtcTransport: ViewerWebRtcTransport | null = null;
     let webRtcStartInFlight = false;
     let webRtcConnectionOpen = false;
+    const firebaseEnabled = isViewerFirebaseEnabled();
+    const shouldPollTiles = shouldPollViewerTileFallback({firebaseEnabled, env: import.meta.env});
     type TileFrame = { tiles?: any[]; width?: number; height?: number; sequence?: number; keyframe?: boolean; cursorEmbedded?: boolean };
     let cursorFrameSequence = -1;
+    let paintedCursorEmbedded = false;
     const applyPaintedCursor = (data: TileFrame, sequence: number) => {
       if (sequence < cursorFrameSequence) return;
       cursorFrameSequence = sequence;
-      setRemoteCursorEmbedded(data.cursorEmbedded === true);
+      const embedded = data.cursorEmbedded === true;
+      if (embedded === paintedCursorEmbedded) return;
+      paintedCursorEmbedded = embedded;
+      setRemoteCursorEmbedded(embedded);
+    };
+    let pictureReported = false;
+    const markPicturePresented = () => {
+      if (pictureReported) return;
+      pictureReported = true;
+      setPicturePresented(true);
     };
     let keyframeRenderPending = false;
     let hasPresentedBaseline = false;
+    let isBaselineSourceLive: (() => boolean) | undefined;
+    let firstPictureMeasurementFinished = false;
+    let firstPictureAnimation: number | null = null;
+    const cancelFirstPictureMeasurement = () => {
+      if (firstPictureAnimation === null) return;
+      cancelAnimationFrame(firstPictureAnimation);
+      firstPictureAnimation = null;
+    };
+    const pictureCanvas = () => remotePreviewRef.current?.dataset.pictureBuffer === "alternate"
+      ? alternatePictureRef.current ?? canvasRef.current : canvasRef.current;
+    const finishFirstPictureMeasurement = () => {
+      cancelFirstPictureMeasurement();
+      firstPictureMeasurementFinished = true;
+      document.removeEventListener("visibilitychange", onFirstPictureVisibilityChange);
+    };
+    const scheduleFirstPictureMeasurement = (drawnThisFrame = false) => {
+      if (!active || !hasPresentedBaseline || firstPictureMeasurementFinished || firstPictureAnimation !== null) return;
+      const canvas = canvasRef.current;
+      const isShowingPicture = () => active && canvas === canvasRef.current &&
+        (isBaselineSourceLive?.() ?? true) && document.visibilityState === "visible" && Boolean(canvas?.getClientRects().length);
+      if (!isShowingPicture()) return;
+      const record = () => {
+        firstPictureAnimation = null;
+        if (!isShowingPicture()) return;
+        finishFirstPictureMeasurement();
+        markConnectionTiming(sessionId, "first-picture");
+      };
+      // A reveal, unlike the existing draw callback, may occur before the first visible paint.
+      firstPictureAnimation = requestAnimationFrame(drawnThisFrame ? record : () => {
+        firstPictureAnimation = isShowingPicture() ? requestAnimationFrame(record) : null;
+      });
+    };
+    const onFirstPictureVisibilityChange = () => {
+      cancelFirstPictureMeasurement();
+      scheduleFirstPictureMeasurement();
+    };
+    firstPictureVisibilityRef.current = onFirstPictureVisibilityChange;
+    document.addEventListener("visibilitychange", onFirstPictureVisibilityChange);
+    let stagingContext: CanvasRenderingContext2D | null = null;
+    const reportWebRtcPictureFailure = () => {
+      if (pingStateRef.current) finishVisualPing(pingStateRef.current, "측정 중단");
+      stagingContext = null;
+      if (shouldPollTiles) {
+        onFirstPictureVisibilityChange();
+      } else {
+        finishFirstPictureMeasurement();
+        markConnectionTiming(sessionId, "failed");
+      }
+    };
     let baselineRevision = 0;
-    const queuedDuringKeyframe: TileFrame[] = [];
+    let baselinePaintedSequence = -1;
+    let displayedRtcBaselineSequence: number | undefined;
+    const tileSequences = new Map<number, number>();
+    let latestPaintedSequence = -Infinity;
+    // Explicit WebRTC sequences are comparable only within this connection effect.
+    let newestPaintedRtcSequence = -1;
+    let newestRtcBaselineSequence = -1;
+    let newestStartedRtcDeltaSequence = -1;
+    let newestRtcPictureError = -1;
+    let unsequencedPictureError = false;
+    const recordRtcPaint = (sequence: number | undefined) => {
+      if (sequence !== undefined) newestPaintedRtcSequence = Math.max(newestPaintedRtcSequence, sequence);
+    };
+    const isOlderRtcFrame = (sequence: number | undefined) => sequence !== undefined && sequence < newestPaintedRtcSequence;
+    const reportPictureError = (sequence: number | undefined) => {
+      if (sequence === undefined) unsequencedPictureError = true;
+      else if (sequence <= newestRtcBaselineSequence) return;
+      else newestRtcPictureError = Math.max(newestRtcPictureError, sequence);
+      setPictureError(true);
+    };
+    const clearRecoveredPictureError = (sequence: number | undefined, replaced: boolean) => {
+      if (sequence === undefined || sequence >= newestRtcPictureError) newestRtcPictureError = -1;
+      if (replaced) unsequencedPictureError = false;
+      if (!unsequencedPictureError && newestRtcPictureError < 0) setPictureError(false);
+    };
+    const queuedDuringKeyframe: { data: TileFrame; coversPicture: boolean; rtcSequence?: number; isSourceLive?: () => boolean }[] = [];
 
     const resolveFrameSequence = (data: TileFrame) => Number.isFinite(data.sequence)
       ? Number(data.sequence)
@@ -4026,42 +4229,45 @@ function RemoteSessionPanel({
       img.src = `data:image/jpeg;base64,${tile.data}`;
     });
 
-    const drawTileCells = (
+    const drawDeltaTile = (
       ctx: CanvasRenderingContext2D,
-      img: CanvasImageSource,
+      img: HTMLImageElement,
       tile: any,
       frameSequence: number,
-      enforceSequence: boolean,
-    ) => {
+    ): boolean => {
       const tileX = Number(tile.x) * 32;
       const tileY = Number(tile.y) * 32;
       const tileWidth = Number(tile.w);
       const tileHeight = Number(tile.h);
-      for (let offsetY = 0; offsetY < tileHeight; offsetY += 32) {
-        for (let offsetX = 0; offsetX < tileWidth; offsetX += 32) {
-          const cellWidth = Math.min(32, tileWidth - offsetX);
-          const cellHeight = Math.min(32, tileHeight - offsetY);
-          const cellKey = `${Math.floor((tileX + offsetX) / 32)}:${Math.floor((tileY + offsetY) / 32)}`;
-          const previousSequence = tileSequenceRef.current.get(cellKey) ?? -1;
-          if (enforceSequence && frameSequence < previousSequence) {
-            continue;
+      if (tileX < 0 || tileY < 0 || tileX % 32 !== 0 || tileY % 32 !== 0
+        || tileWidth <= 0 || tileHeight <= 0 || img.naturalWidth !== tileWidth || img.naturalHeight !== tileHeight
+        || tileX + tileWidth > ctx.canvas.width || tileY + tileHeight > ctx.canvas.height) return false;
+      const drawWholeTile = frameSequence >= Math.max(0, latestPaintedSequence);
+      let painted = drawWholeTile;
+      if (drawWholeTile) ctx.drawImage(img, tileX, tileY);
+      const columns = Math.ceil(ctx.canvas.width / 32);
+      const firstColumn = tileX / 32;
+      for (let offsetY = 0, row = (tileY / 32) * columns; offsetY < tileHeight; offsetY += 32, row += columns) {
+        for (let offsetX = 0, cellKey = row + firstColumn; offsetX < tileWidth; offsetX += 32, cellKey++) {
+          if (!drawWholeTile) {
+            if (frameSequence < (tileSequences.get(cellKey) ?? baselinePaintedSequence)) continue;
+            const cellWidth = Math.min(32, tileWidth - offsetX);
+            const cellHeight = Math.min(32, tileHeight - offsetY);
+            ctx.drawImage(img, offsetX, offsetY, cellWidth, cellHeight,
+              tileX + offsetX, tileY + offsetY, cellWidth, cellHeight);
+            painted = true;
           }
-          ctx.drawImage(
-            img,
-            offsetX,
-            offsetY,
-            cellWidth,
-            cellHeight,
-            tileX + offsetX,
-            tileY + offsetY,
-            cellWidth,
-            cellHeight,
-          );
-          if (enforceSequence) {
-            tileSequenceRef.current.set(cellKey, frameSequence);
-          }
+          tileSequences.set(cellKey, frameSequence);
         }
       }
+      if (painted) latestPaintedSequence = Math.max(latestPaintedSequence, frameSequence);
+      return painted;
+    };
+
+    const markDeltaPresented = (data: TileFrame, frameSequence: number, rtcSequence?: number) => {
+      recordRtcPaint(rtcSequence);
+      markPicturePresented();
+      applyPaintedCursor(data, frameSequence);
     };
 
     const measurePresentedPing = (ctx: CanvasRenderingContext2D) => {
@@ -4070,7 +4276,9 @@ function RemoteSessionPanel({
         return;
       }
       scheduleVisualPingPresentedMeasurement({
-        requestAnimationFrame: (callback) => requestAnimationFrame(() => active && callback()),
+        requestAnimationFrame: (callback) => requestAnimationFrame(() => {
+          if (active && pingStateRef.current === activePingState) callback();
+        }),
         startedAtMs: activePingState.start,
         readPixel: () => {
           const imgData = ctx.getImageData(5, 5, 1, 1).data;
@@ -4079,135 +4287,286 @@ function RemoteSessionPanel({
         nowMs: () => performance.now(),
         onPresented: ({ latencyMs }) => {
           if (!active) return;
-          setLatencyReport(`E2E Latency: ${latencyMs.toFixed(1)}ms`);
-          setPingState(null);
+          finishVisualPing(activePingState, latencyMs >= VISUAL_PING_TIMEOUT_MS
+            ? "측정 시간 초과" : `E2E Latency: ${latencyMs.toFixed(1)}ms`);
         },
       });
     };
 
-    const renderDeltaFrame = (data: TileFrame) => {
+    const renderDeltaFrame = (data: TileFrame, rtcSequence?: number, isSourceLive?: () => boolean) => {
       if (!active) return;
 
-      const canvas = canvasRef.current;
+      const canvas = pictureCanvas();
       if (!canvas) return;
       const ctx = canvas.getContext("2d", { willReadFrequently: true });
       if (!ctx) return;
 
-      if (data.tiles && data.tiles.length > 0) {
+      const tiles = data.tiles;
+      if (tiles?.length) {
         const frameSequence = resolveFrameSequence(data);
         const revision = baselineRevision;
+        const canDraw = () => active && revision === baselineRevision && (isSourceLive?.() ?? true);
         let loadedCount = 0;
-        for (const tile of data.tiles) {
+        let batches: any[][] = [];
+        if (tiles.length > 1 && rtcSequence !== undefined && isSourceLive !== undefined) {
+          const byImage = new Map<string, any[]>();
+          for (const tile of tiles) {
+            const payload = tile?.data;
+            const shared = typeof payload === "string" ? byImage.get(payload) : undefined;
+            if (shared) shared.push(tile);
+            else {
+              const placements = [tile];
+              batches.push(placements);
+              if (typeof payload === "string") byImage.set(payload, placements);
+            }
+          }
+          // A later placement may overwrite an earlier one in a fallback or overlapping frame.
+          if (batches.length < tiles.length && !hasNonOverlappingTileCoverage(canvas.width, canvas.height, tiles)) batches = [];
+        }
+        for (const placements of batches.length ? batches : tiles.map(tile => [tile])) {
+          const payload = placements[0]?.data;
           const img = new Image();
           img.onload = () => {
-            if (active && revision === baselineRevision) {
-              drawTileCells(ctx, img, tile, frameSequence, true);
-              if (img.naturalWidth > 0 && Number(tile.w) > 0 && Number(tile.h) > 0) {
-                setPicturePresented(true);
-                applyPaintedCursor(data, frameSequence);
+            if (canDraw()) {
+              let painted = false;
+              for (const placement of placements) {
+                if (drawDeltaTile(ctx, img, placement, frameSequence)) painted = true;
               }
+              if (painted) markDeltaPresented(data, frameSequence, rtcSequence);
             }
-            loadedCount++;
-            if (loadedCount === data.tiles!.length) {
+            loadedCount += placements.length;
+            if (loadedCount === tiles.length && (isSourceLive?.() ?? true)) {
               measurePresentedPing(ctx);
             }
           };
-          img.onerror = () => { if (active && revision === baselineRevision) setPictureError(true); };
-          img.src = `data:image/jpeg;base64,${tile.data}`;
+          img.onerror = () => { if (canDraw()) reportPictureError(rtcSequence); };
+          img.src = `data:image/jpeg;base64,${payload}`;
         }
       }
     };
 
-    const renderKeyframeAtomically = async (data: TileFrame) => {
-      const canvas = canvasRef.current;
+    const renderKeyframeAtomically = async (data: TileFrame, rtcSequence?: number, isSourceLive?: () => boolean, coversPicture = false) => {
+      const canvas = pictureCanvas();
+      const primary = canvasRef.current;
       const width = Number(data.width ?? 0);
       const height = Number(data.height ?? 0);
       const tiles = data.tiles ?? [];
-      if (!active || !canvas) {
+      if (!active || !canvas || !primary) {
         return;
       }
-      if (!hasCompleteTileCoverage(width, height, tiles)) { setPictureError(true); return; }
+      const isObsolete = () => isSourceLive?.() === false || isOlderRtcFrame(rtcSequence) && (
+        rtcSequence! <= newestRtcBaselineSequence || canvas.width !== width || canvas.height !== height
+      );
+      if (isObsolete()) return;
+      if (!hasCompleteTileCoverage(width, height, tiles)) {
+        if (!isOlderRtcFrame(rtcSequence)) reportPictureError(rtcSequence);
+        return;
+      }
       const frameSequence = resolveFrameSequence(data);
-      const staging = document.createElement("canvas");
-      staging.width = width;
-      staging.height = height;
-      const stagingContext = staging.getContext("2d");
-      if (!stagingContext) {
-        return;
-      }
-      stagingContext.fillStyle = "#1e1e2e";
-      stagingContext.fillRect(0, 0, width, height);
-      const decodedTiles = await Promise.all(tiles.map(async (tile) => ({ tile, img: await loadTileImage(tile) })));
-      if (!active) {
+      const images = new Map<string, ReturnType<typeof loadTileImage>>();
+      const decodedTiles = await Promise.all(tiles.map(async (tile) => {
+        if (typeof tile.data !== "string") return { tile, img: await loadTileImage(tile) };
+        let image = images.get(tile.data);
+        if (!image) images.set(tile.data, image = loadTileImage(tile));
+        return { tile, img: await image };
+      }));
+      if (!active || isObsolete()) {
         return;
       }
       if (decodedTiles.some(({ tile, img }) => !img || img.naturalWidth !== tile.w || img.naturalHeight !== tile.h)) {
-        setPictureError(true);
+        if (coversPicture) {
+          // A damaged delta can still supply good cells, but cannot replace the baseline.
+          const ctx = canvas.getContext("2d", { willReadFrequently: true });
+          let painted = false;
+          if (ctx) for (const { tile, img } of decodedTiles) {
+            if (img && drawDeltaTile(ctx, img, tile, frameSequence)) painted = true;
+          }
+          if (painted) markDeltaPresented(data, frameSequence, rtcSequence);
+        }
+        if (coversPicture || !isOlderRtcFrame(rtcSequence)) reportPictureError(rtcSequence);
         return;
       }
-      for (const { tile, img } of decodedTiles) {
-        if (img) {
-          drawTileCells(stagingContext, img, tile, frameSequence, false);
+      const olderFrame = isOlderRtcFrame(rtcSequence);
+      const firstBaseline = !hasPresentedBaseline && !olderFrame;
+      const preview = remotePreviewRef.current;
+      const alternate = preview ? alternatePictureRef.current : null;
+      const back = coversPicture && alternate && width * height >= 1920 * 1080
+        ? (canvas === alternate ? primary : alternate) : null;
+      let staging: CanvasRenderingContext2D | null = null;
+      if (!firstBaseline && !olderFrame) {
+        if (stagingContext?.isContextLost?.()) stagingContext = null;
+        const backContext = back?.getContext("2d", { willReadFrequently: true });
+        staging = backContext && !backContext.isContextLost?.()
+          ? backContext : stagingContext ?? document.createElement("canvas").getContext("2d");
+        if (!staging || staging.isContextLost?.()) {
+          stagingContext = null;
+          reportPictureError(rtcSequence);
+          return;
+        }
+        stagingContext = coversPicture && staging.canvas !== back ? staging : null;
+        const surface = staging.canvas;
+        if (surface.width !== width) surface.width = width;
+        if (surface.height !== height) surface.height = height;
+        // Only complete opaque JPEG deltas are guaranteed to overwrite every pixel.
+        if (!coversPicture) staging.clearRect(0, 0, width, height);
+        try {
+          for (const { tile, img } of decodedTiles) {
+            if (img) staging.drawImage(img, Number(tile.x) * 32, Number(tile.y) * 32);
+          }
+        } catch {
+          stagingContext = null;
+          reportPictureError(rtcSequence);
+          return;
         }
       }
-      await new Promise<void>((resolve) => requestAnimationFrame(() => {
-        if (active) {
-          canvas.width = width;
-          canvas.height = height;
-          const visibleContext = canvas.getContext("2d", { willReadFrequently: true });
-          visibleContext?.drawImage(staging, 0, 0);
-          tileSequenceRef.current.clear();
-          for (const { tile } of decodedTiles) {
-            const tileX = Number(tile.x) * 32;
-            const tileY = Number(tile.y) * 32;
-            for (let y = 0; y < Number(tile.h); y += 32) {
-              for (let x = 0; x < Number(tile.w); x += 32) {
-                tileSequenceRef.current.set(`${(tileX + x) / 32}:${(tileY + y) / 32}`, frameSequence);
+      const paint = (resolve: () => void) => {
+        if (!active || isObsolete()) { resolve(); return; }
+        if (rtcSequence !== undefined && isOlderRtcFrame(rtcSequence)) {
+          // Recover the rest of the baseline without resetting any newer cells.
+          const ctx = canvas.getContext("2d", { willReadFrequently: true });
+          if (ctx) {
+            for (const { tile, img } of decodedTiles) {
+              if (img) drawDeltaTile(ctx, img, tile, frameSequence);
+            }
+            newestRtcBaselineSequence = rtcSequence;
+            clearRecoveredPictureError(rtcSequence, false);
+          }
+        } else if (firstBaseline || staging) {
+          if (staging?.isContextLost?.()) {
+            stagingContext = null;
+            reportPictureError(rtcSequence);
+            resolve();
+            return;
+          }
+          const swap = staging && staging.canvas === back ? staging : null;
+          const target = coversPicture ? canvas : primary;
+          const visibleContext = swap ?? target.getContext("2d", { willReadFrequently: true });
+          if (!visibleContext || visibleContext.isContextLost?.()) {
+            reportPictureError(rtcSequence);
+            resolve();
+            return;
+          }
+          const previousWidth = target.width, previousHeight = target.height;
+          try {
+            if (!swap) {
+              if (target.width !== width) target.width = width;
+              if (target.height !== height) target.height = height;
+            }
+            if (staging && !swap) {
+              // Replace transparent pixels too, without resetting a same-size canvas.
+              visibleContext.save();
+              try {
+                visibleContext.globalCompositeOperation = "copy";
+                visibleContext.drawImage(staging.canvas, 0, 0);
+              } finally {
+                visibleContext.restore();
+              }
+            } else if (!staging) {
+              // A fully decoded initial picture can replace the canvas in this single paint callback.
+              visibleContext.clearRect(0, 0, width, height);
+              for (const { tile, img } of decodedTiles) {
+                if (img) visibleContext.drawImage(img, Number(tile.x) * 32, Number(tile.y) * 32);
               }
             }
-          }
-          if (visibleContext) {
-            applyPaintedCursor(data, frameSequence);
-            markConnectionTiming(sessionId, "first-picture");
-            hasPresentedBaseline = true;
-            baselineRevision++;
-            if (decodedTiles.some(({ img }) => img && img.naturalWidth > 0)) {
-              setPicturePresented(true);
-              setPictureError(false);
+          } catch {
+            if (target === canvas && !staging) {
+              try { visibleContext.clearRect(0, 0, width, height); } catch { /* Context may be lost. */ }
             }
-            measurePresentedPing(visibleContext);
+            if (target !== canvas) { target.width = previousWidth; target.height = previousHeight; }
+            reportPictureError(rtcSequence);
+            resolve();
+            return;
           }
+          if (visibleContext.isContextLost?.()) {
+            if (target !== canvas) { target.width = previousWidth; target.height = previousHeight; }
+            reportPictureError(rtcSequence);
+            resolve();
+            return;
+          }
+          if (preview && swap) {
+            preview.dataset.pictureBuffer = swap.canvas === alternate ? "alternate" : "primary";
+          } else if (!coversPicture && preview?.hasAttribute("data-picture-buffer")) {
+            preview.removeAttribute("data-picture-buffer");
+            if (alternate) { alternate.width = 0; alternate.height = 0; }
+          }
+          // A complete baseline has the same sequence in every cell.
+          tileSequences.clear();
+          baselinePaintedSequence = frameSequence;
+          displayedRtcBaselineSequence = rtcSequence;
+          latestPaintedSequence = frameSequence;
+          recordRtcPaint(rtcSequence);
+          if (rtcSequence !== undefined) newestRtcBaselineSequence = rtcSequence;
+          applyPaintedCursor(data, frameSequence);
+          hasPresentedBaseline = true;
+          isBaselineSourceLive = isSourceLive;
+          baselineRevision++;
+          if (decodedTiles.some(({ img }) => img && img.naturalWidth > 0)) {
+            markPicturePresented();
+            clearRecoveredPictureError(rtcSequence, true);
+          }
+          scheduleFirstPictureMeasurement(!coversPicture);
+          measurePresentedPing(visibleContext);
         }
         resolve();
-      }));
+      };
+      await new Promise<void>((resolve) => {
+        if (coversPicture) paint(resolve);
+        else requestAnimationFrame(() => paint(resolve));
+      });
     };
 
-    const drawTileFrame = (data: TileFrame) => {
-      if (!active) return;
+    const drawTileFrame = (data: TileFrame, rtcSequence?: number, isSourceLive?: () => boolean) => {
+      if (!active || isSourceLive?.() === false) return;
+      const canvas = pictureCanvas();
+      // Every cell already contains newer pixels from this same complete WebRTC picture.
+      if (data.keyframe === false && rtcSequence !== undefined && displayedRtcBaselineSequence !== undefined
+        && rtcSequence < displayedRtcBaselineSequence
+        && isSourceLive !== undefined && isSourceLive === isBaselineSourceLive && canvas !== null
+        && data.width === canvas.width && data.height === canvas.height && !pingStateRef.current) return;
+      const tiles = data.tiles ?? [];
+      // Do not reset the baseline behind a later partial decode, or treat transparent tiles as replacements.
+      const coversPicture = data.keyframe === false && rtcSequence !== undefined && rtcSequence > newestStartedRtcDeltaSequence
+        && isSourceLive !== undefined && isSourceLive === isBaselineSourceLive
+        && canvas !== null && data.width === canvas.width && data.height === canvas.height
+        && tiles.reduce((area, tile) => area + tile?.w * tile?.h, 0) === canvas.width * canvas.height
+        && tiles.every(tile => typeof tile?.data === "string" && tile.data.startsWith("/9j/"))
+        && hasCompleteTileCoverage(canvas.width, canvas.height, tiles);
       if (keyframeRenderPending) {
-        queuedDuringKeyframe.push(data);
+        queuedDuringKeyframe.push({ data, coversPicture, rtcSequence, isSourceLive });
         return;
       }
-      const canvas = canvasRef.current;
       const needsBaseline = !hasPresentedBaseline ||
         (data.width !== undefined && data.width !== canvas?.width) ||
         (data.height !== undefined && data.height !== canvas?.height);
       // Legacy senders may omit keyframe; a resize still needs a complete picture.
-      if (data.keyframe || (needsBaseline && (data.tiles?.length ?? 0) > 0)) {
+      if (data.keyframe || coversPicture || (needsBaseline && tiles.length > 0)) {
         keyframeRenderPending = true;
-        void renderKeyframeAtomically(data).finally(() => {
+        void renderKeyframeAtomically(data, rtcSequence, isSourceLive, coversPicture).finally(() => {
           keyframeRenderPending = false;
           const queued = queuedDuringKeyframe.splice(0);
-          for (const frame of queued) {
-            drawTileFrame(frame);
+          if (!active || !queued.length) return;
+          const visible = pictureCanvas();
+          const sameBaseline = (frame: typeof queued[number]) => (frame.data.keyframe === true || frame.coversPicture) && frame.rtcSequence !== undefined
+            && frame.isSourceLive !== undefined && frame.isSourceLive === isBaselineSourceLive && frame.isSourceLive()
+            && visible !== null && frame.data.width === visible.width && frame.data.height === visible.height;
+          let newest = 0;
+          let comparableCount = 0;
+          // Only the consecutive prefix shares this displayed baseline; a transition can change it.
+          for (; comparableCount < queued.length && sameBaseline(queued[comparableCount]); comparableCount++) {
+            if (queued[comparableCount].rtcSequence! > queued[newest].rtcSequence!) newest = comparableCount;
+          }
+          if (newest) queued.unshift(...queued.splice(newest, 1));
+          for (const [index, frame] of queued.entries()) {
+            if (index < comparableCount && frame.rtcSequence! <= newestRtcBaselineSequence) continue;
+            drawTileFrame(frame.data, frame.rtcSequence, frame.isSourceLive);
           }
         });
         return;
       }
-      renderDeltaFrame(data);
+      if (rtcSequence !== undefined) newestStartedRtcDeltaSequence = Math.max(newestStartedRtcDeltaSequence, rtcSequence);
+      renderDeltaFrame(data, rtcSequence, isSourceLive);
     };
 
-    const firebaseEnabled = isViewerFirebaseEnabled();
     if (firebaseEnabled) {
       const startWebRtc = async () => {
         if (!active || webRtcStartInFlight) {
@@ -4217,6 +4576,7 @@ function RemoteSessionPanel({
         setNeedsManualReconnect(false);
         webRtcConnectionOpen = false;
         setIsWebRtcConnectionReady(false);
+        pictureReported = false;
         setPicturePresented(false);
         setPictureError(false);
         setReverseFileSupported(false);
@@ -4227,14 +4587,20 @@ function RemoteSessionPanel({
         webRtcTransport = null;
         webRtcTransportRef.current = null;
         let failed = false;
+        const isSourceLive = () => !failed;
         try {
           const transport = await startFirebaseViewerWebRtcTransport(sessionId, {
-            onFrame: frame => { markConnectionTiming(sessionId, "frame-received"); drawTileFrame(frame); },
+            startInFastMode: true,
+            onFrame: frame => {
+              markConnectionTiming(sessionId, "frame-received");
+              const sequence = frame.sequence;
+              drawTileFrame(frame, typeof sequence === "number" && Number.isSafeInteger(sequence) && sequence >= 0 ? sequence : undefined, isSourceLive);
+            },
             onReverseFileSupport: resumeSupported => { if (active) { setReverseFileSupported(true); setReverseResumeSupported(resumeSupported === true); } },
             onFileCollisionSupport: () => { if (active) setFileCollisionSupported(true); },
             onFileStatus: status => {
               if (!active) return;
-              const labels = { selecting: "원격 PC에서 파일 선택 중", sending: "원격 파일 수신 중", complete: "전송 완료 · 검증 및 저장 중",
+              const labels = { selecting: "원격 PC에서 파일 선택 중", sending: "원격 파일 수신 중", complete: "",
                 cancelled: "원격 파일 가져오기 취소됨", "selection-failed": "원격 파일 선택 창을 열지 못했습니다. 로그인된 사용자 화면을 확인해 주세요.",
                 "send-failed": "원격 파일을 가져오지 못했습니다. 연결과 저장 공간을 확인해 주세요." };
               if (status.state === "selecting" || status.state === "sending") {
@@ -4307,8 +4673,9 @@ function RemoteSessionPanel({
             },
             onError: (error) => {
               if (!active) return;
-              markReceiveInterrupted();
               failed = true;
+              reportWebRtcPictureFailure();
+              markReceiveInterrupted();
               webRtcConnectionOpen = false;
               setIsWebRtcConnectionReady(false);
               if (rebootReconnectStateRef.current !== "idle") {
@@ -4332,7 +4699,11 @@ function RemoteSessionPanel({
           if (rebootReconnectStateRef.current !== "idle") {
             setRebootReconnectState("reconnecting");
           }
-          if (active) setNeedsManualReconnect(true);
+          if (active) {
+            failed = true;
+            reportWebRtcPictureFailure();
+            setNeedsManualReconnect(true);
+          }
         } finally {
           webRtcStartInFlight = false;
         }
@@ -4340,11 +4711,6 @@ function RemoteSessionPanel({
 
       queueMicrotask(() => { void startWebRtc(); });
     }
-
-    const shouldPollTiles = shouldPollViewerTileFallback({
-      firebaseEnabled,
-      env: import.meta.env,
-    });
 
     let tileRequestSequence = 0;
     let latestTileResponse = 0;
@@ -4378,6 +4744,10 @@ function RemoteSessionPanel({
 
     return () => {
       active = false;
+      if (pingStateRef.current) finishVisualPing(pingStateRef.current);
+      stagingContext = null;
+      firstPictureVisibilityRef.current = null;
+      finishFirstPictureMeasurement();
       webRtcConnectionOpen = false;
       webRtcTransport?.close();
       if (webRtcTransportRef.current === webRtcTransport) {
@@ -4387,24 +4757,41 @@ function RemoteSessionPanel({
         clearInterval(intervalId);
       }
     };
-  }, [device?.id, sessionId, session?.id, session?.state, webRtcReconnectGeneration]);
+  }, [device?.id, sessionId, session?.id, session?.state, webRtcReconnectGeneration, finishVisualPing]);
+
+  useEffect(() => {
+    firstPictureVisibilityRef.current?.();
+  }, [isVisible]);
 
   const cancelPendingPointerMove = () => {
+    webRtcTransportRef.current?.cancelPointerMove?.();
     pendingMoveRef.current = null;
-    if (moveFrameRef.current !== null) {
-      window.cancelAnimationFrame(moveFrameRef.current);
-      moveFrameRef.current = null;
-    }
     if (moveDelayTimerRef.current !== null) {
       window.clearTimeout(moveDelayTimerRef.current);
       moveDelayTimerRef.current = null;
     }
   };
 
-  const releaseAllInputs = (): Promise<void> => {
+  const mapPendingPointerMove = (verifyLayout = true) => {
+    const sample = pendingMoveRef.current;
+    const canvas = canvasRef.current;
+    if (!sample || !canvas || sample.rect.width <= 0 || sample.rect.height <= 0) return null;
+    if (verifyLayout) {
+      const current = canvas.getBoundingClientRect();
+      const previous = sample.rect;
+      if (current.left !== previous.left || current.top !== previous.top
+        || current.width !== previous.width || current.height !== previous.height) return null;
+    }
+    return sample.mapPoint(sample.clientX, sample.clientY, sample.rect);
+  };
+
+  const releaseAllInputs = (releaseMobileKeys = false): Promise<void> => {
     const releaseTasks: Promise<unknown>[] = [];
+    if (pressedButtonsRef.current.size > 0) {
+      lastPointerPointRef.current = mapPendingPointerMove() ?? lastPointerPointRef.current;
+    }
     cancelPendingPointerMove();
-    if (pressedKeysRef.current.size > 0 || suppressedKeyUpsRef.current.size > 0) {
+    if (releaseMobileKeys || pressedKeysRef.current.size > 0 || suppressedKeyUpsRef.current.size > 0) {
       pressedKeysRef.current.clear();
       releaseTasks.push(Promise.resolve(onInputEvent("key-release-all")));
     }
@@ -4416,6 +4803,11 @@ function RemoteSessionPanel({
       }
       pressedButtonsRef.current.clear();
     }
+    if (mobileTouchpadPressedRef.current) {
+      mobileTouchpadPressedRef.current = false;
+      const point = lastPointerPointRef.current;
+      releaseTasks.push(Promise.resolve(onInputEvent(buildMouseCommand("up", point.dx, point.dy))));
+    }
     const pointerId = activePointerIdRef.current;
     activePointerIdRef.current = null;
     const canvas = canvasRef.current;
@@ -4423,6 +4815,19 @@ function RemoteSessionPanel({
       canvas.releasePointerCapture(pointerId);
     }
     return Promise.allSettled(releaseTasks).then(() => undefined);
+  };
+
+  const toggleRemoteControl = () => {
+    if (controlEnabledRef.current) {
+      void releaseAllInputs(mobileRemote && remoteSessionInputReady);
+      imeComposingRef.current = false;
+      imeEnterCommittedRef.current = false;
+      imeCompositionValueRef.current = "";
+      suppressNextImeValueRef.current = "";
+      if (imeInputRef.current) imeInputRef.current.value = "";
+    }
+    controlEnabledRef.current = !controlEnabledRef.current;
+    setControlEnabled(controlEnabledRef.current);
   };
 
   useEffect(() => {
@@ -4453,12 +4858,13 @@ function RemoteSessionPanel({
     const rect = canvas.getBoundingClientRect();
     const point = mapRemotePoint(e.clientX, e.clientY, rect);
     lastPointerPointRef.current = point;
-    if (mobileRemote) setMobilePointer(point);
+    mobilePointerSink.current?.(point);
     const { dx, dy } = point;
     const button = pressTrackedMouseButton(pressedButtonsRef.current, e.button);
     if (button === null) {
       return;
     }
+    cancelPendingPointerMove();
     activePointerIdRef.current = e.pointerId;
     e.currentTarget.setPointerCapture(e.pointerId);
     if (!mobileRemote) imeInputRef.current?.focus({ preventScroll: true });
@@ -4477,7 +4883,7 @@ function RemoteSessionPanel({
     const rect = canvas.getBoundingClientRect();
     const point = mapRemotePoint(e.clientX, e.clientY, rect);
     lastPointerPointRef.current = point;
-    if (mobileRemote) setMobilePointer(point);
+    mobilePointerSink.current?.(point);
     const { dx, dy } = point;
     cancelPendingPointerMove();
     const button = releaseTrackedMouseButton(pressedButtonsRef.current, e.button);
@@ -4502,14 +4908,11 @@ function RemoteSessionPanel({
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const rect = canvas.getBoundingClientRect();
-    const point = mapRemotePoint(e.clientX, e.clientY, rect);
-    lastPointerPointRef.current = point;
-    const releasedButtons = releaseTrackedMouseButtonsMissingFromMask(
-      pressedButtonsRef.current,
-      e.buttons,
-    );
+    const releasedButtons = pressedButtonsRef.current.size > 0
+      ? releaseTrackedMouseButtonsMissingFromMask(pressedButtonsRef.current, e.buttons) : [];
     if (releasedButtons.length > 0) {
+      const point = mapRemotePoint(e.clientX, e.clientY, canvas.getBoundingClientRect());
+      lastPointerPointRef.current = point;
       cancelPendingPointerMove();
       for (const button of releasedButtons) {
         onInputEvent(buildMouseCommand("up", point.dx, point.dy, button));
@@ -4518,30 +4921,35 @@ function RemoteSessionPanel({
         activePointerIdRef.current = null;
       }
     }
-    pendingMoveRef.current = point;
-    if (moveFrameRef.current !== null || moveDelayTimerRef.current !== null) {
+    const intervalMs = mobileRemote ? 33 : 16;
+    if (moveDelayTimerRef.current !== null && performance.now() - lastMoveSentAtRef.current >= intervalMs) {
+      window.clearTimeout(moveDelayTimerRef.current);
+      moveDelayTimerRef.current = null;
+      pendingMoveRef.current = null;
+    }
+    const rect = pendingMoveRef.current?.rect ?? canvas.getBoundingClientRect();
+    pendingMoveRef.current = { clientX: e.clientX, clientY: e.clientY, rect, mapPoint: mapRemotePoint };
+    if (moveDelayTimerRef.current !== null) {
       return;
     }
 
-    const sendLatestMove = () => {
-      moveFrameRef.current = window.requestAnimationFrame(() => {
-        moveFrameRef.current = null;
-        const point = pendingMoveRef.current;
-        if (point) {
-          if (mobileRemote) setMobilePointer(point);
-          lastMoveSentAtRef.current = performance.now();
-          onInputEvent(buildMouseCommand("move", point.dx, point.dy));
-        }
-      });
+    const sendLatestMove = (verifyLayout: boolean) => {
+      const point = mapPendingPointerMove(verifyLayout);
+      pendingMoveRef.current = null;
+      if (!point) return;
+      lastPointerPointRef.current = point;
+      mobilePointerSink.current?.(point);
+      lastMoveSentAtRef.current = performance.now();
+      onInputEvent(buildMouseCommand("move", point.dx, point.dy));
     };
-    const waitMs = Math.max(0, 33 - (performance.now() - lastMoveSentAtRef.current));
+    const waitMs = Math.max(0, intervalMs - (performance.now() - lastMoveSentAtRef.current));
     if (waitMs === 0) {
-      sendLatestMove();
+      sendLatestMove(false);
       return;
     }
     moveDelayTimerRef.current = window.setTimeout(() => {
       moveDelayTimerRef.current = null;
-      sendLatestMove();
+      sendLatestMove(true);
     }, waitMs);
   };
 
@@ -4554,8 +4962,10 @@ function RemoteSessionPanel({
     if (activePointerIdRef.current !== null && activePointerIdRef.current !== e.pointerId) {
       return;
     }
+    const point = pressedButtonsRef.current.size > 0
+      ? mapPendingPointerMove() ?? lastPointerPointRef.current : lastPointerPointRef.current;
+    lastPointerPointRef.current = point;
     cancelPendingPointerMove();
-    const point = lastPointerPointRef.current;
     for (const button of pressedButtonsRef.current) {
       onInputEvent(buildMouseCommand("up", point.dx, point.dy, button));
     }
@@ -4576,10 +4986,11 @@ function RemoteSessionPanel({
     const rect = canvas.getBoundingClientRect();
     const point = mapRemotePoint(e.clientX, e.clientY, rect);
     lastPointerPointRef.current = point;
-    if (mobileRemote) setMobilePointer(point);
+    mobilePointerSink.current?.(point);
     const { dx, dy } = point;
     const delta = normalizeWheelDelta(e.deltaY);
     if (delta !== 0) {
+      cancelPendingPointerMove();
       onInputEvent(buildMouseCommand("wheel", dx, dy, 0, delta));
     }
   };
@@ -4595,6 +5006,15 @@ function RemoteSessionPanel({
       imeInputRef.current.focus({ preventScroll: true });
     }
     imeComposingRef.current = false;
+  };
+
+  const sendRemoteWindowsShortcut = (key: "D" | "V") => {
+    if (!remoteInputAvailable) return;
+    commitImeBeforeRemoteKey();
+    for (const modifier of releaseTrackedModifierKeys(pressedKeysRef.current)) onInputEvent(`key-up ${modifier}`);
+    onInputEvent("key-down Win");
+    onInputEvent(`keypress ${key}`);
+    onInputEvent("key-up Win");
   };
 
   const handleKeyDown = async (event: RemoteKeyboardEvent) => {
@@ -4690,7 +5110,7 @@ function RemoteSessionPanel({
   };
 
   const handleImeCompositionStart = () => {
-    if (!isActive) {
+    if (!isActive || !controlEnabledRef.current) {
       return;
     }
     imeComposingRef.current = true;
@@ -4708,14 +5128,14 @@ function RemoteSessionPanel({
   };
 
   const handleImeCompositionUpdate = (event: React.CompositionEvent<HTMLTextAreaElement>) => {
-    if (!isActive || imeEnterCommittedRef.current) {
+    if (!isActive || !controlEnabledRef.current || imeEnterCommittedRef.current) {
       return;
     }
     sendImeCompositionReplacement(event.data);
   };
 
   const handleImeCompositionEnd = (event: React.CompositionEvent<HTMLTextAreaElement>) => {
-    if (!isActive) {
+    if (!isActive || !controlEnabledRef.current) {
       event.currentTarget.value = "";
       return;
     }
@@ -4730,7 +5150,7 @@ function RemoteSessionPanel({
 
   const handleImeInput = (event: React.FormEvent<HTMLTextAreaElement>) => {
     const input = event.currentTarget;
-    if (!isActive) {
+    if (!isActive || !controlEnabledRef.current) {
       input.value = "";
       return;
     }
@@ -4767,8 +5187,8 @@ function RemoteSessionPanel({
       }
       const canvas = canvasRef.current;
       const rect = canvas?.getBoundingClientRect();
-      const point = rect
-        ? mapRemotePoint(event.clientX, event.clientY, rect)
+      const point = rect && rect.width > 0 && rect.height > 0
+        ? mapRemotePointRef.current(event.clientX, event.clientY, rect)
         : lastPointerPointRef.current;
       lastPointerPointRef.current = point;
       onInputEvent(buildMouseCommand("up", point.dx, point.dy, button));
@@ -4803,12 +5223,16 @@ function RemoteSessionPanel({
   }, [sessionId]);
 
   const startVisualPing = () => {
-    setPingState({ start: performance.now() });
-    onInputEvent("ping-color-change");
-  };
-
-  const selectStreamPerformanceMode = (mode: StreamPerformanceMode) => {
-    setStreamPerformanceMode(mode);
+    if (!remoteSessionInputReady || pingStateRef.current) return;
+    const attempt: VisualPingAttempt = {
+      start: performance.now(),
+      deadline: window.setTimeout(() => finishVisualPing(attempt, "측정 시간 초과"), VISUAL_PING_TIMEOUT_MS),
+    };
+    pingStateRef.current = attempt;
+    setLatencyReport("측정 중");
+    const failed = () => finishVisualPing(attempt, "측정 실패");
+    try { void Promise.resolve(onInputEvent("ping-color-change")).catch(failed); }
+    catch { failed(); }
   };
 
   // Recording
@@ -5069,12 +5493,8 @@ function RemoteSessionPanel({
           });
           if (sentOverWebRtc) {
             updateTransferQueueItem(transferId, completeFileTransfer);
-            setTransferProgress({
-              fileName: remoteFilename,
-              ...formatTransferStats(file.size, file.size, startedAtMs, performance.now()),
-            });
+            clearActiveTransferProgress(transferId);
             transferAbortControllersRef.current.delete(transferId);
-            scheduleTransferProgressClear(transferId);
             return;
           }
         } catch (error) {
@@ -5326,6 +5746,7 @@ function RemoteSessionPanel({
   };
 
   const handleSwitchDisplay = (index: number) => {
+    cancelPendingPointerMove();
     setSelectedDisplayIndex(index);
     lastDisplayCommandRef.current = index;
     onInputEvent(buildSwitchMonitorCommand(index));
@@ -5338,7 +5759,7 @@ function RemoteSessionPanel({
       if (confirmUntil < now) {
         dangerConfirmUntilRef.current[command] = now + 5000;
         alert("위험 명령입니다. 5초 안에 같은 버튼을 한 번 더 누르면 실행됩니다.");
-        return;
+        return false;
       }
       dangerConfirmUntilRef.current[command] = 0;
     }
@@ -5347,6 +5768,7 @@ function RemoteSessionPanel({
       setIsWebRtcConnectionReady(false);
     }
     onInputEvent(buildSystemCommand(command));
+    return true;
   };
 
   const triggerBeepSound = async () => {
@@ -5497,16 +5919,22 @@ function RemoteSessionPanel({
               onWheel={handleCanvasWheel}
               style={{
                 display: "block",
-                cursor: remoteCursorEmbedded ? "none" : "default",
+                cursor: !controlEnabled ? "default" : !mobileRemote && showViewerPointer ? "crosshair" : remoteCursorEmbedded ? "none" : "default",
                 transform: mobileRemote ? `translate(${mobilePan.x}px, ${mobilePan.y}px) scale(${zoom})` : `scale(${zoom})`,
                 transformOrigin: portraitRemote ? "center top" : "center center",
               }}
             />
+            {!mobileRemote && <canvas
+              ref={alternatePictureRef}
+              className="remote-picture-alternate"
+              aria-hidden="true"
+              style={{ transform: `scale(${zoom})`, transformOrigin: portraitRemote ? "center top" : "center center" }}
+            />}
             {mobileRemote && <MobileRemoteGesturePad
               canvas={canvasRef} viewport={remotePreviewRef}
-              pointer={remoteCursorEmbedded ? undefined : {dx: (mobilePointer.dx-mobileDisplayStart.dx)/Math.max(1,mobileDisplayEnd.dx-mobileDisplayStart.dx)*65535,
-                dy: (mobilePointer.dy-mobileDisplayStart.dy)/Math.max(1,mobileDisplayEnd.dy-mobileDisplayStart.dy)*65535}} portrait={portraitRemote}
-              touchpad={mobileInputMode === "touchpad" && isVisible && isActive ? {
+              initialPointer={lastPointerPointRef} pointerSink={mobilePointerSink} showPointer={!remoteCursorEmbedded}
+              pointerStart={mobileDisplayStart} pointerEnd={mobileDisplayEnd} portrait={portraitRemote}
+              touchpad={mobileInputMode === "touchpad" && isVisible && isActive && controlEnabled ? {
                 move: (x, y) => {
                   const rect = canvasRef.current?.getBoundingClientRect();
                   if (!rect || rect.width <= 0 || rect.height <= 0) return;
@@ -5514,15 +5942,17 @@ function RemoteSessionPanel({
                   const point = {dx: Math.round(Math.max(mobileDisplayStart.dx, Math.min(mobileDisplayEnd.dx, previous.dx+x/rect.width*(mobileDisplayEnd.dx-mobileDisplayStart.dx)))),
                     dy: Math.round(Math.max(mobileDisplayStart.dy, Math.min(mobileDisplayEnd.dy, previous.dy+y/rect.height*(mobileDisplayEnd.dy-mobileDisplayStart.dy))))};
                   lastPointerPointRef.current = point;
-                  setMobilePointer(point);
+                  mobilePointerSink.current?.(point);
                   onInputEvent(buildMouseCommand("move", point.dx, point.dy, 0));
                 },
                 button: (down) => {
+                  if (mobileTouchpadPressedRef.current === down || !controlEnabledRef.current) return;
+                  mobileTouchpadPressedRef.current = down;
                   const previous = lastPointerPointRef.current;
                   const point = {dx: Math.max(mobileDisplayStart.dx, Math.min(mobileDisplayEnd.dx, previous.dx)),
                     dy: Math.max(mobileDisplayStart.dy, Math.min(mobileDisplayEnd.dy, previous.dy))};
                   lastPointerPointRef.current = point;
-                  setMobilePointer(point);
+                  mobilePointerSink.current?.(point);
                   onInputEvent(buildMouseCommand(down ? "down" : "up", point.dx, point.dy, 0));
                 },
                 scroll: (delta) => {
@@ -5776,6 +6206,7 @@ function RemoteSessionPanel({
 
        {mobileRemote && isVisible && isActive && <MobileRemoteControls
         key={sessionId}
+        inputEnabled={controlEnabled}
         connectionStatus={connectionStatus}
         deviceName={device.desktopName}
         touchpad={mobileInputMode === "touchpad"}
@@ -5791,6 +6222,7 @@ function RemoteSessionPanel({
           onInputEvent(buildMouseCommand("wheel", dx, dy, 0, delta));
         }}
         keyboard={() => {
+          if (!controlEnabledRef.current) return;
           if (document.activeElement === imeInputRef.current) {
             imeInputRef.current?.blur();
           } else {
@@ -5867,35 +6299,7 @@ function RemoteSessionPanel({
             onClick={() => { if (needsManualReconnect) void reconnectSession(); else { setRebootReconnectState("idle"); setWebRtcReconnectGeneration((value) => value + 1); } }}>
             <RotateCcw size={16} />
           </button>
-          <div className="stream-mode-control" role="group" aria-label="화면 반응 속도">
-            <button
-              type="button"
-              className={streamPerformanceMode === "auto" ? "active" : ""}
-              aria-pressed={streamPerformanceMode === "auto"}
-              onClick={() => selectStreamPerformanceMode("auto")}
-              title="네트워크와 Agent 부하에 맞춰 자동 조절합니다"
-            >
-              자동
-            </button>
-            <button
-              type="button"
-              className={streamPerformanceMode === "fast" ? "active" : ""}
-              aria-pressed={streamPerformanceMode === "fast"}
-              onClick={() => selectStreamPerformanceMode("fast")}
-              title="스크롤과 새 창 표시를 우선합니다"
-            >
-              빠름
-            </button>
-            <button
-              type="button"
-              className={streamPerformanceMode === "normal" ? "active" : ""}
-              aria-pressed={streamPerformanceMode === "normal"}
-              onClick={() => selectStreamPerformanceMode("normal")}
-              title="화질과 네트워크 안정성을 우선합니다"
-            >
-              보통
-            </button>
-          </div>
+          <span className="stream-mode-indicator" aria-label="화면 반응 속도: 빠름">빠름</span>
           <div className="display-scale-control" role="group" aria-label="화면 배율">
             <button type="button" onClick={setFitZoom} title="화면에 맞춤">Fit</button>
             <button type="button" onClick={setActualSizeZoom} title="실제 크기">100%</button>
@@ -5924,11 +6328,19 @@ function RemoteSessionPanel({
               ))}
             </select>
           )}
+          {device.platform !== "android" && <button type="button" className="session-desktop-button" disabled={!remoteInputAvailable}
+            title="원격 바탕화면 (Win+D)" aria-label="원격 바탕화면 (Win+D)" onClick={() => sendRemoteWindowsShortcut("D")}>
+            <Monitor size={16} aria-hidden="true" />
+          </button>}
+          <button type="button" className="session-desktop-button session-control-toggle" aria-pressed={controlEnabled}
+            title={controlEnabled ? "제어 끄기" : "제어 켜기"} onClick={toggleRemoteControl}>
+            <MousePointerClick size={16} aria-hidden="true" />제어모드
+          </button>
         </div>
 
         <div className="session-command-actions">
           <button type="button" className="viewer-shortcut viewer-shortcut-toss"
-            disabled={!remoteInputAvailable || Boolean(device.version && !isHigherVersion(device.version, "0.1.111"))}
+            disabled={!remoteSessionInputReady || Boolean(device.version && !isHigherVersion(device.version, "0.1.111"))}
             title="TossEmergencyOrders · 원격 PC 다운로드 폴더에 저장 (Agent 0.1.112 이상 필요)" aria-label="TossEmergencyOrders 다운로드"
             onClick={() => onInputEvent("system toss-emergency-download")}>
             <Download size={24} aria-hidden="true" /><span>TossEmergencyOrders</span>
@@ -5937,18 +6349,14 @@ function RemoteSessionPanel({
             {id:"edge", label:"Download", name:"Microsoft Edge 다운로드", logo:edgeLogo, url:"https://c2rsetup.officeapps.live.com/c2r/downloadEdge.aspx?platform=Default&source=EdgeStablePage&Channel=Stable&language=ko&Consent=0&brand=M100"},
             {id:"asp", label:"ASP", name:"FirstPOS ASP 열기", logo:aspLogo, url:"https://asp.firstpos.co.kr/login/login_form.do"},
           ].map(shortcut => <button key={shortcut.id} type="button" className="viewer-shortcut"
-            disabled={!remoteInputAvailable} title={`${shortcut.name} · 원격 PC 기본 브라우저`} aria-label={shortcut.name}
+            disabled={!remoteSessionInputReady} title={`${shortcut.name} · 원격 PC 기본 브라우저`} aria-label={shortcut.name}
             onClick={() => onInputEvent(`system ${shortcut.id === "edge" ? "edge-download" : "asp-login"}`)}>
             <img src={shortcut.logo} alt=""/><span>{shortcut.label}</span></button>)}
           <button className="secondary-button" type="button" onClick={handleSendClipboard} title="클립보드 동기화: 내 PC → 원격 PC" aria-label="클립보드 동기화: 내 PC → 원격 PC">
             <Clipboard size={17} />
             {mobileRemote && <span>클립보드 보내기</span>}
           </button>
-          <button className="secondary-button" type="button" disabled={!remoteInputAvailable} title="원격 클립보드 열기 (Win+V)" aria-label="원격 클립보드 열기 (Win+V)" onClick={()=>{
-            commitImeBeforeRemoteKey();
-            for(const modifier of releaseTrackedModifierKeys(pressedKeysRef.current)) onInputEvent(`key-up ${modifier}`);
-            onInputEvent("key-down Win"); onInputEvent("keypress V"); onInputEvent("key-up Win");
-          }}><ClipboardList size={17}/></button>
+          <button className="secondary-button" type="button" disabled={!remoteInputAvailable} title="원격 클립보드 열기 (Win+V)" aria-label="원격 클립보드 열기 (Win+V)" onClick={() => sendRemoteWindowsShortcut("V")}><ClipboardList size={17}/></button>
           <details className="session-tool-menu" data-testid="secondary-tools" open={mobileRemote ? mobileToolsOpen : undefined} onToggle={async event => {
             if (!event.currentTarget.open || !isViewerFirebaseEnabled()) return;
             try {
@@ -5969,10 +6377,19 @@ function RemoteSessionPanel({
               <span>도구</span>
               <ChevronDown size={15} />
             </summary>
-            <div className="session-tool-menu-content">
+            <div className="session-tool-menu-content" onClick={event => {
+              if (event.defaultPrevented || !(event.target instanceof Element) || !event.target.closest("button:enabled")) return;
+              const menu = event.currentTarget.closest("details");
+              if (menu) menu.open = false;
+              if (mobileRemote) setMobileToolsOpen(false);
+            }}>
               <section className="session-tool-group" aria-label="시스템 도구">
                 <span className="session-tool-heading">시스템</span>
                 <div className="session-tool-grid">
+                  {!mobileRemote && <button className="secondary-button" type="button" aria-pressed={showViewerPointer}
+                    title="원격 화면 위에 이 PC의 포인터를 표시합니다" onClick={()=>setShowViewerPointer(value=>!value)}>
+                    <MousePointerClick size={17}/><span>{showViewerPointer ? "포인터 끄기" : "포인터 켜기"}</span>
+                  </button>}
                   {[
                     ["services.msc", "서비스"],
                     ["taskmgr", "작업 관리자"],
@@ -5989,7 +6406,7 @@ function RemoteSessionPanel({
                       key={command}
                       className={`secondary-button${DANGEROUS_SYSTEM_COMMANDS.has(command) ? " dangerous-tool" : ""}`}
                       type="button"
-                      onClick={() => handleSystemCommand(command)}
+                      onClick={event => { if (!handleSystemCommand(command)) event.preventDefault(); }}
                       title={DANGEROUS_SYSTEM_COMMANDS.has(command) ? "두 번 눌러 실행" : label}
                     >
                       {DANGEROUS_SYSTEM_COMMANDS.has(command) ? <Power size={17} /> : <RotateCcw size={17} />}
@@ -6050,7 +6467,7 @@ function RemoteSessionPanel({
                     onChange={handleFileUpload}
                     style={{ display: "none" }}
                   />
-                  <button className="secondary-button" type="button" onClick={startVisualPing}>
+                  <button className="secondary-button" type="button" onClick={startVisualPing} disabled={!remoteSessionInputReady || latencyReport === "측정 중"}>
                     <MousePointerClick size={17} />
                     <span>{latencyReport || "Visual Ping"}</span>
                   </button>

@@ -35,6 +35,7 @@ export interface ManagedDevice {
   selectedRolloutVersion?: string;
   rollbackSupportVersion?: string;
   presenceMode?: "manual";
+  presenceCheckTimedOut?: true;
   heartbeatRequestId?: string;
   id: string;
   businessNumber: string;
@@ -164,6 +165,7 @@ export interface AgentCommand {
 export interface AgentCommandPollInput {
   deviceId: string;
   installId: string;
+  healthChallengeId?: string;
 }
 
 export interface DeviceMetadataUpdateInput {

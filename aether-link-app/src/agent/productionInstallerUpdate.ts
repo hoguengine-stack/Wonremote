@@ -376,6 +376,8 @@ function Stop-WonRemoteProcesses {
 }
 
 function Get-WonRemoteInstallRoots {
+  $brokeredRoot = Get-BrokeredAgentInstallRoot
+  if ($brokeredRoot) { return $brokeredRoot }
   $roots = if ($RestartMode -eq 'agent') {
     @("$env:LOCALAPPDATA\\WonRemote\\Agent", "$env:LOCALAPPDATA\\WonRemote Agent")
   } else {
@@ -390,6 +392,50 @@ function Get-WonRemoteInstallRoots {
     Select-Object -Unique
 }
 
+function Get-BrokeredAgentInstallRoot {
+  if ($RestartMode -ne 'agent') { return }
+  $handoff = Split-Path -Parent $PSScriptRoot
+  if ((Split-Path -Leaf $handoff) -eq '.update-handoff') {
+    return Split-Path -Parent $handoff
+  }
+}
+
+function Assert-TrustedRollbackDirectory([string]$Path, [string[]]$ProtectedRoots) {
+  $trusted = @('S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+  $write = [int][Security.AccessControl.FileSystemRights]'Write, Delete, DeleteSubdirectoriesAndFiles, ChangePermissions, TakeOwnership' -bor 0x50000000
+  $item = Get-Item -LiteralPath $Path -Force
+  while ($item -and (Test-UnderPath $item.FullName $ProtectedRoots)) {
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Rollback cannot traverse a reparse point: $($item.FullName)" }
+    $acl = Get-Acl -LiteralPath $item.FullName
+    if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin $trusted) {
+      throw "Rollback directory has an untrusted owner: $($item.FullName)"
+    }
+    foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+      $sid = $rule.IdentityReference.Value
+      if ($sid -eq 'S-1-3-0' -and ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly)) { continue }
+      if ($rule.AccessControlType -eq 'Allow' -and $sid -notin $trusted -and ([int]$rule.FileSystemRights -band $write)) {
+        throw "Rollback directory is user-writable: $($item.FullName)"
+      }
+    }
+    $item = $item.Parent
+  }
+}
+
+function Assert-WonRemoteRollbackBoundary([string[]]$InstallRoots) {
+  if ($RestartMode -ne 'agent') { return }
+  $protectedRoots = @($env:ProgramFiles, \${env:ProgramFiles(x86)})
+  $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+  $protectedInstall = @($InstallRoots | Where-Object { Test-UnderPath $_ $protectedRoots }).Count -gt 0
+  if (-not ($protectedInstall -or $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))) { return }
+  if (-not (Test-UnderPath $RollbackRoot $protectedRoots) -or
+      @($InstallRoots | Where-Object { -not (Test-UnderPath $_ $protectedRoots) }).Count -gt 0) {
+    throw 'Refusing privileged rollback from or into a user-writable legacy installation; use the protected Agent update task.'
+  }
+  $backupDirectory = if (Test-Path -LiteralPath $RollbackRoot -PathType Container) { $RollbackRoot } else { Split-Path -Parent $RollbackRoot }
+  Assert-TrustedRollbackDirectory $backupDirectory $protectedRoots
+  foreach ($root in $InstallRoots) { Assert-TrustedRollbackDirectory $root $protectedRoots }
+}
+
 function Backup-WonRemoteInstall {
   if ($RestartMode -eq 'agent') {
     $configPath = Join-Path (Split-Path -Parent (Split-Path -Parent $OriginalInstallerPath)) 'agent-config.json'
@@ -401,12 +447,13 @@ function Backup-WonRemoteInstall {
       $script:RollbackRoot = Join-Path $PSScriptRoot ('rollback-' + [guid]::NewGuid().ToString())
     }
   }
+  $roots = @(Get-WonRemoteInstallRoots | Where-Object { Test-Path -LiteralPath $_ -PathType Container })
+  Assert-WonRemoteRollbackBoundary $roots
   New-Item -ItemType Directory -Path $RollbackRoot -Force | Out-Null
   $pendingEntries = @()
   $index = 0
   try {
-    foreach ($root in @(Get-WonRemoteInstallRoots)) {
-      if (-not (Test-Path -LiteralPath $root -PathType Container)) { continue }
+    foreach ($root in $roots) {
       $backupPath = Join-Path $RollbackRoot ([string]$index)
       New-Item -ItemType Directory -Path $backupPath -Force | Out-Null
       Get-ChildItem -LiteralPath $root -Force | Where-Object { $_.Name -ne '.update-handoff' } |
@@ -435,24 +482,46 @@ function Restore-WonRemoteInstall {
   if ($script:RollbackEntries.Count -eq 0) {
     throw 'No previous WonRemote installation was available to restore.'
   }
-  if ($RestartMode -eq 'agent') {
-    $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
-    if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-      $protectedRoots = @($env:ProgramFiles, \${env:ProgramFiles(x86)})
-      if (-not (Test-UnderPath $RollbackRoot $protectedRoots) -or
-          @($script:RollbackEntries | Where-Object { -not (Test-UnderPath $_.Root $protectedRoots) }).Count -gt 0) {
-        throw 'Refusing privileged rollback from or into a user-writable legacy installation; recovery files retained.'
-      }
-    }
-  }
+  Assert-WonRemoteRollbackBoundary @($script:RollbackEntries | ForEach-Object Root)
   Stop-WonRemoteProcesses
   foreach ($entry in $script:RollbackEntries) {
-    if (Test-Path -LiteralPath $entry.Root) {
-      Get-ChildItem -LiteralPath $entry.Root -Force | Where-Object { $_.Name -ne '.update-handoff' } |
-        Remove-Item -Recurse -Force
+    if (-not (Test-Path -LiteralPath $entry.Backup -PathType Container)) {
+      throw "Rollback backup is missing: $($entry.Backup)"
     }
+    $backupFiles = @(Get-ChildItem -LiteralPath $entry.Backup -File -Recurse -Force)
+    if ($backupFiles.Count -eq 0) { throw "Rollback backup is empty: $($entry.Backup)" }
     New-Item -ItemType Directory -Path $entry.Root -Force | Out-Null
-    Get-ChildItem -LiteralPath $entry.Backup -Force | Copy-Item -Destination $entry.Root -Recurse -Force
+    foreach ($directory in @(Get-ChildItem -LiteralPath $entry.Backup -Directory -Recurse -Force)) {
+      $relative = $directory.FullName.Substring($entry.Backup.TrimEnd('\\').Length + 1)
+      New-Item -ItemType Directory -Path (Join-Path $entry.Root $relative) -Force | Out-Null
+    }
+    foreach ($file in $backupFiles) {
+      $relative = $file.FullName.Substring($entry.Backup.TrimEnd('\\').Length + 1)
+      $target = Join-Path $entry.Root $relative
+      New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
+      $temporary = $target + '.' + [guid]::NewGuid().ToString() + '.rollback-tmp'
+      try {
+        # Never remove the receiver before restoration; a locked target retains its original bytes.
+        Copy-Item -LiteralPath $file.FullName -Destination $temporary -Force
+        if (Test-Path -LiteralPath $target -PathType Leaf) {
+          [IO.File]::Replace($temporary, $target, [NullString]::Value)
+        } else {
+          [IO.File]::Move($temporary, $target)
+        }
+      } finally {
+        if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
+      }
+    }
+    $installed = @(Get-ChildItem -LiteralPath $entry.Root -Force | Where-Object { $_.Name -ne '.update-handoff' } | ForEach-Object {
+      $_
+      if ($_.PSIsContainer) { Get-ChildItem -LiteralPath $_.FullName -Recurse -Force }
+    })
+    foreach ($item in @($installed | Sort-Object { $_.FullName.Length } -Descending)) {
+      $relative = $item.FullName.Substring($entry.Root.TrimEnd('\\').Length + 1)
+      if (-not (Test-Path -LiteralPath (Join-Path $entry.Backup $relative))) {
+        Remove-Item -LiteralPath $item.FullName -Force
+      }
+    }
     Write-HandoffLog "Restored WonRemote install root: $($entry.Root)"
   }
   ${restartCommand}
@@ -473,6 +542,8 @@ function Test-WonRemoteAgentRunning([string[]]$Roots) {
 }
 
 function Get-WonRemoteAgentRoots {
+  $brokeredRoot = Get-BrokeredAgentInstallRoot
+  if ($brokeredRoot) { return $brokeredRoot }
   return @(
     $(if ($env:ProgramFiles) { Join-Path $env:ProgramFiles 'WonRemote Agent' }),
     $(if (\${env:ProgramFiles(x86)}) { Join-Path \${env:ProgramFiles(x86)} 'WonRemote Agent' }),

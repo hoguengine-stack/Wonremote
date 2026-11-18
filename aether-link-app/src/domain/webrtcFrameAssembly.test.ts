@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { WebRtcFrameAssembler, hasCompleteTileCoverage } from "./webrtcFrameAssembly";
+import { describe, expect, it, vi } from "vitest";
+import { WebRtcFrameAssembler, hasCompleteTileCoverage, hasNonOverlappingTileCoverage } from "./webrtcFrameAssembly";
 
 describe("full frame tile coverage", () => {
   it("accepts merged cells and clipped display edges", () => {
@@ -13,6 +13,13 @@ describe("full frame tile coverage", () => {
     }
     expect(hasCompleteTileCoverage(32769,32,[left])).toBe(false);
     expect(hasCompleteTileCoverage(0,32,[left])).toBe(false);
+  });
+  it("allows gaps but rejects overlapping or unconvertible partial tile geometry", () => {
+    const left = {x:0,y:0,w:32,h:32}, right = {...left,x:2};
+    expect(hasNonOverlappingTileCoverage(96,32,[left,right])).toBe(true);
+    expect(hasCompleteTileCoverage(96,32,[left,right])).toBe(false);
+    expect(hasNonOverlappingTileCoverage(96,32,[left,right,right])).toBe(false);
+    expect(hasNonOverlappingTileCoverage(96,32,[left,{...right,x:{valueOf:null,toString:null}}])).toBe(false);
   });
 });
 
@@ -124,6 +131,61 @@ describe("WebRTC frame assembly", () => {
       keyframe: false,
     }]);
     expect(assembler.push(chunk(1, false, "older-than-keyframe"))).toEqual([]);
+  });
+
+  it("keeps earlier picture fragments when an already complete packet arrives at the pending limit", () => {
+    const assembler = new WebRtcFrameAssembler();
+    const packet = (sequence: number, frameChunkCount: number, frameChunkIndex: number, id: string) => JSON.stringify({
+      tiles: [{ id }], width: 1920, height: 1080, sequence, keyframe: sequence === 1, frameChunkCount, frameChunkIndex,
+    });
+    expect(assembler.push(packet(1, 1, 0, "baseline"))).toHaveLength(1);
+    for (let sequence = 2; sequence <= 9; sequence++) expect(assembler.push(packet(sequence, 2, 0, `first-${sequence}`))).toEqual([]);
+    expect(assembler.push(packet(10, 1, 0, "ready"))[0].tiles).toEqual([{ id: "ready" }]);
+    expect(assembler.push(packet(2, 2, 1, "last-2"))[0]?.tiles).toEqual([{ id: "first-2" }, { id: "last-2" }]);
+    // Genuine incomplete frames still consume slots and evict the oldest on overflow.
+    expect(assembler.push(packet(11, 2, 0, "first-11"))).toEqual([]);
+    expect(assembler.push(packet(12, 2, 0, "first-12"))).toEqual([]);
+    expect(assembler.push(packet(3, 2, 1, "last-3"))).toEqual([]);
+  });
+
+  it("does not bypass inconsistent packet metadata for a sequence already being assembled", () => {
+    const assembler = new WebRtcFrameAssembler();
+    const packet = { tiles: [{ id: "fixture" }], width: 64, height: 32, sequence: 1, keyframe: true };
+    expect(assembler.push(JSON.stringify({ ...packet, frameChunkCount: 2, frameChunkIndex: 0 }))).toEqual([]);
+    expect(assembler.push(JSON.stringify({ ...packet, frameChunkCount: 1, frameChunkIndex: 0 }))).toEqual([]);
+    expect(assembler.push(JSON.stringify({ ...packet, frameChunkCount: 2, frameChunkIndex: 1 }))).toEqual([]);
+  });
+
+  it("expires abandoned fragments on incoming traffic without expiring a fresh frame", () => {
+    vi.useFakeTimers({ toFake: ["performance"] });
+    try {
+      const assembler = new WebRtcFrameAssembler();
+      const packet = (sequence: number, frameChunkIndex: number, frameChunkCount = 2) =>
+        JSON.stringify({ tiles: [{ sequence, frameChunkIndex }], width: 64, height: 32,
+          sequence, frameChunkIndex, frameChunkCount, keyframe: sequence === 1 });
+      expect(assembler.push(packet(1, 0, 1))).toHaveLength(1);
+      expect(assembler.push(packet(2, 0))).toEqual([]);
+      vi.advanceTimersByTime(4_999);
+      expect(assembler.push(packet(3, 0))).toEqual([]);
+      vi.advanceTimersByTime(1);
+      expect(assembler.push(packet(4, 0, 1))).toHaveLength(1);
+      expect(assembler.push(packet(2, 1))).toEqual([]);
+      expect(assembler.push(packet(3, 1))[0].tiles).toEqual([{ sequence: 3, frameChunkIndex: 0 }, { sequence: 3, frameChunkIndex: 1 }]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("releases incomplete storage already superseded by the first delivered keyframe", () => {
+    const assembler = new WebRtcFrameAssembler();
+    const packet = (sequence: number, frameChunkIndex: number, frameChunkCount = 2) =>
+      JSON.stringify({ tiles: [{ sequence, frameChunkIndex }], width: 64, height: 32,
+        sequence, frameChunkIndex, frameChunkCount, keyframe: sequence === 2 });
+    expect(assembler.push(packet(1, 0))).toEqual([]);
+    expect(assembler.push(packet(3, 0))).toEqual([]);
+    expect(assembler.push(packet(2, 0, 1))).toHaveLength(1);
+    // Verify retained tile storage, not just the pre-existing rejection of late sequence 1.
+    expect([...Reflect.get(assembler, "pending").keys()]).toEqual([3]);
+    expect(assembler.push(packet(1, 1))).toEqual([]);
+    expect(assembler.push(packet(3, 1))).toHaveLength(1);
   });
 
   it("rejects malformed or inconsistent chunk metadata", () => {

@@ -53,6 +53,7 @@ import {
   type AgentCommandRuntime,
 } from "./agentCommandExecution";
 import {
+  GDI_CAPTURE_MIN_INTERVAL_MS,
   nextStreamCaptureBackend,
   nextStreamRestartDelayMs,
   canPostFirestoreTileFallbackFrame,
@@ -83,7 +84,7 @@ import {
   isInstallerUpdateMetadata,
   type SafeInstallerUpdateMetadata,
 } from "./productionInstallerUpdate";
-import { loadProductionInstallerUpdateMetadata, loadProductionRollbackMetadata } from "./productionUpdateMetadata";
+import { loadProductionAgentUpdateCandidate, loadProductionInstallerUpdateMetadata, loadProductionRollbackMetadata } from "./productionUpdateMetadata";
 import { parseAgentRollbackRequest, runPausedAgentRollback } from "./agentRollback";
 import { handleUpdateOnceCli } from "./agentUpdateOnce";
 import {
@@ -131,6 +132,7 @@ import {
   fetchActiveFirebaseSessionsForAgent,
   subscribeAgentSessionData,
   isAgentFirebaseEnabled,
+  loadAgentUpdateRolloutPolicyWithFirebase,
   loadAgentUpdateRolloutWithFirebase,
   postChatWithFirebase,
   postClipboardWithFirebase,
@@ -169,10 +171,12 @@ const execAsync = promisify(exec);
 async function execFileHidden(
   file: string,
   args: string[],
+  timeout?: number,
 ): Promise<{ stdout: string; stderr: string }> {
   const result = await execFileAsync(file, args, {
     encoding: "utf8",
     windowsHide: true,
+    timeout,
   } as any) as any;
   return {
     stderr: String(result.stderr ?? ""),
@@ -224,6 +228,7 @@ async function releaseInputAndCompleteUpdateHandoff(
     requestId: string;
     scriptSha256: string;
   },
+  beforeBrokerDispatch?: () => Promise<void>,
 ): Promise<never> {
   await agentCommandQueue.enqueue(() => releasePressedInputAndClose(
     persistentInputInjector,
@@ -236,6 +241,7 @@ async function releaseInputAndCompleteUpdateHandoff(
       throw new Error("Protected Agent update acknowledgement path is unavailable.");
     }
     const request = formatPreparedUpdateHandoff({ scriptPath, ...installerHandoff });
+    if (beforeBrokerDispatch) await beforeBrokerDispatch();
     await new Promise<void>((resolve, reject) => {
       process.stdout.write(`${request}\n`, (error) => {
         if (error) reject(error);
@@ -269,6 +275,7 @@ let streamDesired = false;
 let streamRestartTimer: any = null;
 let streamFailureCount = 0;
 let streamBackend: StreamCaptureBackend = "dxgi";
+let confirmedGdiCaptureGeneration: number | null = null;
 let streamSecureDesktop = false;
 let captureGeneration = 0;
 let sessionGeneration = 0;
@@ -294,6 +301,7 @@ type StreamFramePayload = Parameters<AgentWebRtcTransport["sendFrame"]>[0];
 let pendingInitialKeyframe: {
   sessionGeneration: number;
   frame: StreamFramePayload;
+  idleReplacementAvailable?: boolean;
 } | null = null;
 let firestoreTileFallbackStartedAtMs = Date.now();
 let firestoreTileFallbackFrameCount = 0;
@@ -306,8 +314,12 @@ const agentHeartbeatGate = createAgentCommandPollGate();
 let heartbeatRetryAtMs = 0;
 let firebaseCommandUnsubscribe: (() => void) | null = null;
 let firebaseCommandRetryTimer: ReturnType<typeof setTimeout> | null = null;
-let displayCache: { loadedAtMs: number; displays: DeviceDisplayInfo[] } | null = null;
+let displayCache: { loadedAtMs: number; displays: DeviceDisplayInfo[] | undefined } | null = null;
 let controlDiagnosticsCache: { loadedAtMs: number; diagnostics: AgentControlDiagnostics | undefined } | null = null;
+const DIAGNOSTICS_CACHE_AGE_MS = 60_000;
+const HEARTBEAT_DIAGNOSTICS_WAIT_MS = 150;
+const NATIVE_DIAGNOSTICS_TIMEOUT_MS = 3_000;
+let heartbeatDiagnosticsInFlight: Promise<[DeviceDisplayInfo[] | undefined, AgentControlDiagnostics | undefined]> | undefined;
 const DIAGNOSTIC_FAILURE_RETRY_MS = 5 * 60_000;
 const diagnosticFailureCache = new Map<string, { loggedAtMs: number; message: string }>();
 
@@ -341,6 +353,7 @@ const reverseFileRequest = createReverseFileRequest({
   onError: error => console.warn("[Reverse file transfer failed]", error instanceof Error ? error.message : "Unknown error"),
 });
 let sessionDataUnsubscribe: (() => void) | null = null;
+let pendingClipboardPublication: { outstanding: number; done: Promise<void> } | null = null;
 let activeSessionRecoveryPermissionBlocked = false;
 let lastActiveSessionRecoveryWarning = "";
 
@@ -348,7 +361,8 @@ function flushPendingInitialKeyframe(expectedSessionGeneration: number): boolean
   if (!pendingInitialKeyframe) {
     return false;
   }
-  if (pendingInitialKeyframe.sessionGeneration !== expectedSessionGeneration) {
+  if (pendingInitialKeyframe.sessionGeneration !== expectedSessionGeneration ||
+      pendingInitialKeyframe.idleReplacementAvailable) {
     pendingInitialKeyframe = null;
     return false;
   }
@@ -411,6 +425,7 @@ async function startStreaming(
     // Capture/profile/desktop restarts keep the same approved session; lock changes stop it.
     authorizedAccessSession = {id:sessionId, version:readyDeviceAccessLock?.publicState.version ?? null};
   }
+  if (selectedUpdateHandoffClaimed) throw new Error("Selected Agent update handoff is in progress.");
   const previousSessionId = activeSessionId;
   const generationTransition = beginAgentCaptureGeneration({
     activeSessionId,
@@ -423,7 +438,11 @@ async function startStreaming(
   const captureRunGeneration = captureGeneration;
   const transportGeneration = sessionGeneration;
   const { sessionChanged } = generationTransition;
-  if (sessionChanged) reverseFileRequest.cancel();
+  if (sessionChanged) {
+    reverseFileRequest.cancel();
+    currentStreamMode = "fast";
+    loopSleepMs = getStreamPerformanceProfile(currentStreamMode).loopSleepMs;
+  }
   pendingInitialKeyframe = null;
   streamDesired = true;
   streamBackend = backend;
@@ -468,9 +487,13 @@ async function startStreaming(
     );
   }
 
-  // Auxiliary subscriptions outlive capture restarts, but not the remote session.
-  if (sessionChanged || !sessionDataUnsubscribe) {
-    startSessionData(sessionId);
+  // Let signaling and capture start first without making auxiliary data depend on a successful spawn.
+  if (!sessionDataUnsubscribe) {
+    queueMicrotask(() => {
+      if (!sessionDataUnsubscribe && isCurrentWebRtcSessionGeneration(transportGeneration, sessionGeneration, sessionId, activeSessionId)) {
+        startSessionData(sessionId);
+      }
+    });
   }
 
   const pocPath = POC_PATH;
@@ -525,6 +548,66 @@ async function startStreaming(
     }
   });
 
+  const observeCaptureBackend = (line: string): boolean => {
+    if (!line.startsWith("Capture backend: GDI / ")
+      || !/^Capture backend: GDI \/ .+ \(\d+x\d+\)$/.test(line)
+      || streamProcess !== child || captureRunGeneration !== captureGeneration) {
+      return false;
+    }
+    confirmedGdiCaptureGeneration = captureRunGeneration;
+    return true;
+  };
+  const keyframeRetryDelayMs = 250;
+  let lastBackpressureRecoveryAt = -Infinity;
+  let earlyRecovery: { timer: ReturnType<typeof setTimeout>; deadlinePassed: boolean } | null = null;
+  const recoverBackpressuredPicture = (onComplete?: (written: boolean) => void) => {
+    if (streamProcess !== child || !streamDesired || captureRunGeneration !== captureGeneration) {
+      onComplete?.(false);
+      return;
+    }
+    lastBackpressureRecoveryAt = performance.now();
+    if (flushPendingInitialKeyframe(transportGeneration)) {
+      onComplete?.(true);
+      return;
+    }
+    const queued = writeCaptureControl(streamProcess.stdin, "request-keyframe\n", (error) => {
+      console.warn(`[Capture keyframe request failed] ${error.message}`);
+      onComplete?.(false);
+    }, onComplete && (() => onComplete(true)));
+    if (!queued) onComplete?.(false);
+  };
+  const cancelPictureRecovery = () => {
+    if (keyframeRetryTimer !== null) clearTimeout(keyframeRetryTimer);
+    keyframeRetryTimer = null;
+  };
+  const onPictureRecoveryDeadline = () => {
+    if (earlyRecovery && earlyRecovery.timer === keyframeRetryTimer) {
+      earlyRecovery.deadlinePassed = true;
+      return;
+    }
+    keyframeRetryTimer = null;
+    recoverBackpressuredPicture();
+  };
+  const tryEarlyPictureRecovery = (timer: ReturnType<typeof setTimeout>) => {
+    const attempt = { timer, deadlinePassed: false };
+    earlyRecovery = attempt;
+    recoverBackpressuredPicture((written) => {
+      if (earlyRecovery !== attempt) return;
+      earlyRecovery = null;
+      if (keyframeRetryTimer !== timer) return;
+      if (written) {
+        cancelPictureRecovery();
+        // A full frame rejected while the write was pending still needs delivery.
+        if (pendingInitialKeyframe) {
+          keyframeRetryTimer = setTimeout(onPictureRecoveryDeadline,
+            Math.max(0, lastBackpressureRecoveryAt + keyframeRetryDelayMs - performance.now()));
+        }
+      } else if (attempt.deadlinePassed) {
+        onPictureRecoveryDeadline();
+      }
+    });
+  };
+
   const rl = readline.createInterface({
     input: child.stdout,
     terminal: false
@@ -537,6 +620,8 @@ async function startStreaming(
     ) {
       return;
     }
+    // The protected capture broker forwards worker stderr on the picture pipe.
+    if (observeCaptureBackend(line)) return;
     try {
       const data = JSON.parse(line);
       if (desktopTransitionRestartRequested) return;
@@ -589,30 +674,29 @@ async function startStreaming(
           pendingInitialKeyframe = sendResult === "sent"
             ? null
             : { sessionGeneration: transportGeneration, frame: framePayload };
+        } else if (pendingInitialKeyframe) {
+          // Older and protected captures may need the cached baseline until their desktop changes.
+          pendingInitialKeyframe.idleReplacementAvailable = data.idleKeyframeAvailable === true;
         }
         if (sendResult === "sent") {
           if (framePayload.keyframe) markConnectionTiming(sessionId, "first-frame-sent");
           streamTransport = "webrtc";
           streamBackpressured = false;
           streamBufferedAmount = webRtcTransport?.getBufferedAmount() ?? 0;
+          if (keyframeRetryTimer !== null) {
+            if (framePayload.keyframe) cancelPictureRecovery();
+            else if (!earlyRecovery && streamBufferedAmount <= currentStreamProfile.maxBufferedAmount / 4
+              && performance.now() - lastBackpressureRecoveryAt >= keyframeRetryDelayMs) {
+              tryEarlyPictureRecovery(keyframeRetryTimer);
+            }
+          }
         } else if (sendResult === "backpressure") {
           streamTransport = "webrtc";
           streamDroppedFrameCount += 1;
           streamBackpressured = true;
           streamBufferedAmount = webRtcTransport?.getBufferedAmount() ?? 0;
           if (keyframeRetryTimer === null) {
-            keyframeRetryTimer = setTimeout(() => {
-              keyframeRetryTimer = null;
-              if (
-                !flushPendingInitialKeyframe(transportGeneration) &&
-                streamProcess === child &&
-                streamDesired
-              ) {
-                writeCaptureControl(streamProcess.stdin, "request-keyframe\n", (error) => {
-                  console.warn(`[Capture keyframe request failed] ${error.message}`);
-                });
-              }
-            }, 250);
+            keyframeRetryTimer = setTimeout(onPictureRecoveryDeadline, keyframeRetryDelayMs);
           }
         } else if (USE_FIREBASE) {
           streamBackpressured = false;
@@ -651,6 +735,7 @@ async function startStreaming(
   const flushStreamLogLine = (line: string) => {
     const trimmed = line.trim();
     if (!trimmed) return;
+    observeCaptureBackend(trimmed);
     if (/error|failed|denied|HRESULT|access is denied|permission/i.test(trimmed)) {
       lastStreamError = trimmed.slice(0, 500);
       console.error(`[POC Stream Error] ${trimmed}`);
@@ -683,7 +768,7 @@ async function startStreaming(
       const nextBackend = desktopTransitionRestartRequested
         ? streamBackend
         : nextStreamCaptureBackend(streamBackend, finalStderr);
-      const nextSleep = nextBackend === "gdi" ? Math.max(loopSleepMs, 125) : loopSleepMs;
+      const nextSleep = nextBackend === "gdi" ? Math.max(loopSleepMs, GDI_CAPTURE_MIN_INTERVAL_MS) : loopSleepMs;
       const delayMs = desktopTransitionRestartRequested
         ? 0
         : nextStreamRestartDelayMs(streamFailureCount);
@@ -715,7 +800,7 @@ function ensureSessionWebRtcTransport(
 ): void {
   if (
     !USE_FIREBASE ||
-    webRtcTransport ||
+    (webRtcTransport && !webRtcTransport.isClosed()) ||
     webRtcTransportStartGeneration === expectedSessionGeneration ||
     !isCurrentWebRtcSessionGeneration(
       expectedSessionGeneration,
@@ -730,6 +815,11 @@ function ensureSessionWebRtcTransport(
   webRtcTransportStartGeneration = expectedSessionGeneration;
   rtcState = "starting";
   rtcError = undefined;
+  let controlRuntime: AgentCommandRuntime | undefined;
+  let attemptedInputChannel: ((requireOpen?: boolean) => boolean) | undefined;
+  const isCurrentSession = () => isCurrentWebRtcSessionGeneration(
+    expectedSessionGeneration, sessionGeneration, sessionId, activeSessionId,
+  );
   let initialFrameSynchronized = false;
   const synchronizeInitialFrame = () => {
     if (
@@ -753,31 +843,36 @@ function ensureSessionWebRtcTransport(
   };
   void startAgentWebRtcTransportWithFirebase(sessionId, {
     onControl: (action, isCurrentChannel) => {
-      void agentCommandQueue.enqueue(async () => {
-        if (
-          !isCurrentChannel() ||
-          !isCurrentWebRtcSessionGeneration(
-            expectedSessionGeneration,
-            sessionGeneration,
-            sessionId,
-            activeSessionId,
-          )
-        ) {
+      const execute = async () => {
+        if (!isCurrentChannel() || !isCurrentSession()) {
           console.warn(`[WebRTC] Ignoring stale control action for session ${sessionId}.`);
           return;
         }
         if (action === "request-keyframe") {
-          writeCaptureControl(streamProcess?.stdin, "request-keyframe\n", (error) => {
+          const capture = streamProcess;
+          writeCaptureControl(capture?.stdin, "request-keyframe\n", (error) => {
             console.warn(`[Capture keyframe request failed] ${error.message}`);
+          }, () => {
+            if (attemptedInputChannel === isCurrentChannel || process.platform !== "win32" || capture !== streamProcess
+              || !isCurrentChannel(true) || !isCurrentSession()) return;
+            attemptedInputChannel = isCurrentChannel;
+            const failed = (error: unknown) => console.warn(`[Agent input preparation failed] ${error instanceof Error ? error.message : error}`);
+            try { persistentInputInjector.prepare(isCurrentChannel, failed); }
+            catch (error) { failed(error); }
           });
           return;
         }
-        await executeAgentCommand(action, "webrtc", createAgentCommandRuntime(deviceId));
-      }).catch((error) => {
+        const canPublishClipboard = action.trim() === "clipboard-request" ? () => isCurrentSession() && isCurrentChannel(true) : undefined;
+        await executeAgentCommand(action, "webrtc", controlRuntime ??= createAgentCommandRuntime(deviceId), canPublishClipboard);
+      };
+      const queued = action.startsWith("move ")
+        ? agentCommandQueue.enqueueLatestPointerMove(isCurrentChannel, execute)
+        : agentCommandQueue.enqueue(execute);
+      void queued?.catch((error) => {
         console.error(`[WebRTC control failed] ${error instanceof Error ? error.message : error}`);
       });
     },
-    onControlClosed: () => {
+    onControlClosed: (channel) => {
       if (isCurrentWebRtcSessionGeneration(expectedSessionGeneration, sessionGeneration, sessionId, activeSessionId)) {
         reverseFileRequest.cancel();
       }
@@ -790,10 +885,14 @@ function ensureSessionWebRtcTransport(
         )) {
           return;
         }
-        await releasePressedInput(
-          persistentInputInjector,
-          { pointer: pointerState, pressedKeys },
-        );
+        try {
+          await releasePressedInput(
+            persistentInputInjector,
+            { pointer: pointerState, pressedKeys },
+          );
+        } finally {
+          persistentInputInjector.discardPreparation(channel);
+        }
       }).catch((error) => {
         console.error(`[WebRTC input release failed] ${error instanceof Error ? error.message : error}`);
       });
@@ -851,18 +950,13 @@ function ensureSessionWebRtcTransport(
         sessionId,
         activeSessionId,
       );
-      if (!transport || !isCurrent) {
-        await transport?.close();
-        if (!transport && isCurrent) {
-          markWebRtcUnavailable("WebRTC offer or native realtime channel was unavailable.");
-        }
+      if (!isCurrent) {
+        await transport.close();
         return;
       }
       webRtcTransport = transport;
       if (rtcState === "ready") {
         synchronizeInitialFrame();
-      } else {
-        rtcState = "starting";
       }
       console.log("[WebRTC] Agent tile, control, and file data channels are waiting to open.");
     })
@@ -893,10 +987,14 @@ function startSessionData(sessionId: string) {
     sessionDataUnsubscribe = null;
     console.error(`[Agent session data] ${error.message}`);
   };
-  const stop = USE_FIREBASE
-    ? subscribeAgentSessionData(sessionId, onData, onError)
-    : subscribeLocalSessionData(API_BASE_URL, sessionId, "agent", onData, onError);
-  sessionDataUnsubscribe = active ? () => { active = false; stop(); } : null;
+  try {
+    const stop = USE_FIREBASE
+      ? subscribeAgentSessionData(sessionId, onData, onError)
+      : subscribeLocalSessionData(API_BASE_URL, sessionId, "agent", onData, onError);
+    sessionDataUnsubscribe = active ? () => { active = false; stop(); } : null;
+  } catch (error) {
+    onError(error instanceof Error ? error : new Error(String(error)));
+  }
 }
 
 async function stopSessionPolling(): Promise<void> {
@@ -1057,6 +1155,8 @@ async function postFileTransferReceipt(
 }
 
 
+declare const __WONREMOTE_SPLIT_AGENT_UPDATER__: boolean;
+
 async function main() {
   if (process.argv.includes("--runtime-smoke")) {
     const runtime = await runAgentWebRtcRuntimeSmoke();
@@ -1064,13 +1164,13 @@ async function main() {
     return;
   }
 
-  if (process.argv.includes("--check-update")) {
-    process.exitCode = await handleUpdateCheckCli();
-    return;
-  }
-
-  if (process.argv.includes("--update-once")) {
-    process.exitCode = await handleUpdateOnceCli();
+  if (process.argv.includes("--check-update") || process.argv.includes("--update-once")) {
+    if (typeof __WONREMOTE_SPLIT_AGENT_UPDATER__ !== "undefined" && __WONREMOTE_SPLIT_AGENT_UPDATER__) {
+      console.error("[WonRemote Agent] Use the installed updater for update commands.");
+      process.exitCode = 2;
+    } else {
+      process.exitCode = process.argv.includes("--check-update") ? await handleUpdateCheckCli() : await handleUpdateOnceCli();
+    }
     return;
   }
 
@@ -1302,14 +1402,12 @@ async function main() {
           activeConfig = nextConfig;
         });
       }, COMMAND_POLL_INTERVAL_MS);
-      await agentHealthReporter.commandReceiverReady(activeConfig).catch((error) => {
-        console.warn(`[Agent] Command readiness receipt could not be saved: ${error instanceof Error ? error.message : error}`);
-      });
     }
   }
 }
 
 let isUpdating = false;
+let selectedUpdateHandoffClaimed = false;
 const remoteUpdateRequest = createRemoteUpdateRequest(() => shouldDeferAgentUpdateForSession({
   activeSessionId,
   firebaseEnabled: USE_FIREBASE,
@@ -1367,7 +1465,13 @@ async function checkUpdate(config: AgentLocalConfig, manual = false) {
     if (!retainedFailure) {
       await setUpdateTelemetry(config, { error: undefined, progress: 0, state: "checking", targetVersion: undefined }, manual);
     }
-    const data = await loadUpdateCheckData();
+    const deviceId = config.registeredDeviceId;
+    const installedWindowsAgent = USE_FIREBASE && process.platform === "win32" && deviceId
+      && process.env.WONREMOTE_PACKAGE_KIND === "installer";
+    const candidate = installedWindowsAgent ? await loadProductionAgentUpdateCandidate(
+      deviceId, currentVersion, await loadAgentUpdateRolloutPolicyWithFirebase().catch(() => null),
+    ) : { metadata: await loadUpdateCheckData(), selected: false };
+    const data = candidate.metadata;
     if (!data) {
       await setUpdateTelemetry(config, { error: "Update metadata is unavailable.", state: "failed" });
       scheduleAgentUpdateRetry();
@@ -1394,27 +1498,24 @@ async function checkUpdate(config: AgentLocalConfig, manual = false) {
     }
 
     if (data.latestVersion && (data.forceUpdate || isHigherVersion(data.latestVersion, currentVersion))) {
-      const sessionUpdateState = await prepareAgentUpdateSession(
-        { activeSessionId, firebaseEnabled: USE_FIREBASE, rtcState },
-        stopSessionPolling,
-      );
-      if (sessionUpdateState === "defer") {
+      if (activeSessionId && (candidate.selected || shouldDeferAgentUpdateForSession({ activeSessionId, firebaseEnabled: USE_FIREBASE, rtcState }))) {
         remoteUpdateRequest.defer(() => checkUpdate(config, true));
         await setUpdateTelemetry(config, {state:"idle",error:"원격 세션 종료 후 업데이트 대기"});
         isUpdating = false;
         return;
       }
-      if (USE_FIREBASE && config.registeredDeviceId) {
-        const rolloutControl = await loadAgentUpdateRolloutWithFirebase(config.registeredDeviceId);
+      let beforeLaunch: (() => Promise<void>) | undefined;
+      let selected = false;
+      if (USE_FIREBASE && deviceId) {
+        const rolloutControl = await loadAgentUpdateRolloutWithFirebase(deviceId, undefined, candidate.selected);
+        const deviceVersion = { id: deviceId, version: currentVersion, selectedRolloutVersion: currentVersion, updateCurrentVersion: currentVersion };
         const decision = decideUpdateEligibility({
-          id: config.registeredDeviceId,
-          version: currentVersion,
-          selectedRolloutVersion: currentVersion,
-          updateCurrentVersion: currentVersion,
+          ...deviceVersion,
           updatePaused: rolloutControl?.updatePaused,
           updateRing: rolloutControl?.updateRing,
         }, rolloutControl?.rollout);
-        if (rolloutControl?.rollout.targetVersion !== data.latestVersion || !decision.eligible) {
+        if (!rolloutControl || rolloutControl.rollout.targetVersion !== data.latestVersion || !decision.eligible
+            || (candidate.selected && rolloutControl.rollout.targetDeviceIds === undefined)) {
           await setUpdateTelemetry(config, {
             error: undefined,
             progress: 0,
@@ -1425,6 +1526,23 @@ async function checkUpdate(config: AgentLocalConfig, manual = false) {
           isUpdating = false;
           return;
         }
+        selected = rolloutControl.rollout.targetDeviceIds !== undefined;
+        if (selected) beforeLaunch = async () => {
+          const fresh = await loadAgentUpdateRolloutWithFirebase(deviceId, undefined, true);
+          if (!fresh || fresh.rollout.targetVersion !== data.latestVersion || fresh.rollout.targetDeviceIds === undefined
+              || !decideUpdateEligibility({ ...deviceVersion, updatePaused: fresh.updatePaused }, fresh.rollout).eligible) {
+            throw new Error("Selected Agent rollout was changed before installation.");
+          }
+        };
+      }
+      const sessionUpdateState = selected && activeSessionId ? "defer" : await prepareAgentUpdateSession(
+        { activeSessionId, firebaseEnabled: USE_FIREBASE, rtcState }, stopSessionPolling,
+      );
+      if (sessionUpdateState === "defer") {
+        remoteUpdateRequest.defer(() => checkUpdate(config, true));
+        await setUpdateTelemetry(config, {state:"idle",error:"원격 세션 종료 후 업데이트 대기"});
+        isUpdating = false;
+        return;
       }
       await setUpdateTelemetry(config, {
         error: undefined,
@@ -1437,7 +1555,7 @@ async function checkUpdate(config: AgentLocalConfig, manual = false) {
         return;
       }
       if (isInstallerUpdateMetadata(data)) {
-        await handoffToProductionInstallerUpdate(data, config);
+        await handoffToProductionInstallerUpdate(data, config, undefined, beforeLaunch, false, selected);
         return;
       }
 
@@ -1615,6 +1733,7 @@ if exist "${path.join(baseDir, "WonRemote", ".update_success")}" (
       isUpdating = false;
     }
   } catch (e) {
+    selectedUpdateHandoffClaimed = false;
     console.error("[Update Failed]:", e instanceof Error ? e.message : e);
     await setUpdateTelemetry(config, {
       error: e instanceof Error ? e.message : String(e),
@@ -1671,7 +1790,9 @@ async function handoffToProductionInstallerUpdate(
   retry: () => Promise<void> = () => checkUpdate(config, true),
   beforeLaunch?: () => Promise<void>,
   legacyRollback = false,
+  selected = false,
 ): Promise<void> {
+  if (selected && !beforeLaunch) throw new Error("Selected Agent update requires final rollout verification.");
   const baseDir = process.env.APPDATA ?? process.cwd();
   const download = await downloadInstallerUpdate(data, {
     baseDir,
@@ -1686,7 +1807,7 @@ async function handoffToProductionInstallerUpdate(
       };
     },
   });
-  const handoffSessionState = await prepareAgentUpdateSession(
+  const handoffSessionState = selected && activeSessionId ? "defer" : await prepareAgentUpdateSession(
     { activeSessionId, firebaseEnabled: USE_FIREBASE, rtcState },
     stopSessionPolling,
   );
@@ -1696,8 +1817,8 @@ async function handoffToProductionInstallerUpdate(
     isUpdating = false;
     return;
   }
-  await beforeLaunch?.();
-  const launchSessionState = await prepareAgentUpdateSession(
+  if (!selected) await beforeLaunch?.();
+  const launchSessionState = selected && activeSessionId ? "defer" : await prepareAgentUpdateSession(
     { activeSessionId, firebaseEnabled: USE_FIREBASE, rtcState },
     stopSessionPolling,
   );
@@ -1720,7 +1841,23 @@ async function handoffToProductionInstallerUpdate(
   console.log(`[WonRemote Agent] Installer handoff script: ${handoff.scriptPath}`);
   console.log(`[WonRemote Agent] Installer handoff log: ${handoff.logPath}`);
 
-  if (!isUpdateHandoffBrokerEnabled(process.env.WONREMOTE_TAURI_UPDATE_BROKER)) {
+  const brokered = isUpdateHandoffBrokerEnabled(process.env.WONREMOTE_TAURI_UPDATE_BROKER);
+  const claimSelectedHandoff = async () => {
+    if (activeSessionId) {
+      remoteUpdateRequest.defer(retry);
+      await setUpdateTelemetry(config, { state: "idle", error: "원격 세션 종료 후 업데이트 대기" });
+      isUpdating = false;
+      return false;
+    }
+    // Keep session admission closed while input drains and the broker accepts or fails.
+    selectedUpdateHandoffClaimed = true;
+    return true;
+  };
+  if (!brokered) {
+    if (selected) {
+      await beforeLaunch?.();
+      if (!await claimSelectedHandoff()) return;
+    }
     const installerProcess = spawn(handoff.command, handoff.args, {
       detached: true,
       stdio: "ignore",
@@ -1730,14 +1867,14 @@ async function handoffToProductionInstallerUpdate(
     installerProcess.unref();
   }
 
+  console.log("[WonRemote Agent] Handed off to production installer and exiting current Agent.");
+  await setUpdateTelemetry(config, { progress: 100, state: "restarting" });
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  if (brokered && selected && !await claimSelectedHandoff()) return;
   if (streamProcess) {
     streamProcess.kill();
     streamProcess = null;
   }
-
-  console.log("[WonRemote Agent] Handed off to production installer and exiting current Agent.");
-  await setUpdateTelemetry(config, { progress: 100, state: "restarting" });
-  await new Promise((resolve) => setTimeout(resolve, 500));
   await releaseInputAndCompleteUpdateHandoff(
     handoff.scriptPath,
     "Agent update handoff started.",
@@ -1748,6 +1885,7 @@ async function handoffToProductionInstallerUpdate(
       requestId: handoff.requestId,
       scriptSha256: handoff.scriptSha256,
     },
+    brokered && selected ? beforeLaunch : undefined,
   );
 }
 
@@ -2083,14 +2221,39 @@ async function ensureFirebaseAgentAuth(config: AgentLocalConfig): Promise<void> 
   });
 }
 
+async function readHeartbeatDiagnostics(heartbeatRequestId?: string) {
+  const startedAt = Date.now();
+  if (displayCache && startedAt - displayCache.loadedAtMs < DIAGNOSTICS_CACHE_AGE_MS &&
+      controlDiagnosticsCache && startedAt - controlDiagnosticsCache.loadedAtMs < DIAGNOSTICS_CACHE_AGE_MS) {
+    return [displayCache.displays, controlDiagnosticsCache.diagnostics] as const;
+  }
+
+  const deadline = performance.now() + HEARTBEAT_DIAGNOSTICS_WAIT_MS;
+  const diagnostics = heartbeatDiagnosticsInFlight ??= Promise.all([
+    discoverDisplays(),
+    discoverControlDiagnostics(),
+  ]).finally(() => { heartbeatDiagnosticsInFlight = undefined; });
+  if (!heartbeatRequestId) return diagnostics;
+
+  // A manual presence reply does not need to wait for optional diagnostics.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([diagnostics, new Promise<readonly [DeviceDisplayInfo[] | undefined, AgentControlDiagnostics | undefined]>(resolve => {
+      timer = setTimeout(() => resolve([displayCache?.displays, controlDiagnosticsCache?.diagnostics]),
+        Math.max(0, deadline - performance.now()));
+    })]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function sendHeartbeat(config: AgentLocalConfig, heartbeatRequestId?: string, zookResult?: { appliedNumber?: string; error?: string }): Promise<void> {
   if (!config.registeredDeviceId) {
     throw new Error("Agent registered device ID is missing.");
   }
 
-  const displays = await discoverDisplays();
+  const [displays, controlDiagnostics] = await readHeartbeatDiagnostics(heartbeatRequestId);
   const macAddresses = discoverMacAddresses();
-  const controlDiagnostics = await discoverControlDiagnostics();
   const streamDiagnostics = buildStreamDiagnostics();
   if (!zookResult && process.platform === "win32") {
     try { const appliedNumber = await readLocalZookNumber(getAgentConfigPath()); if (appliedNumber) zookResult = {appliedNumber}; }
@@ -2130,13 +2293,21 @@ async function pollCommands(config: AgentLocalConfig): Promise<void> {
     throw new Error("Agent registered device ID is missing.");
   }
 
-  const result = await pollAgentCommands({
-    apiBaseUrl: API_BASE_URL,
-    deviceId: config.registeredDeviceId,
-    installId: config.installId,
-  });
-
-  await executeReceivedCommands(config, result.commands);
+  const challenge = USE_FIREBASE ? null : agentHealthReporter.takeCommandChallenge(config);
+  try {
+    const result = await pollAgentCommands({
+      apiBaseUrl: API_BASE_URL,
+      deviceId: config.registeredDeviceId,
+      installId: config.installId,
+      healthChallengeId: challenge?.slice("agent-health-check ".length),
+    });
+    if (challenge && result.commands.some(command => command.action === challenge)) {
+      await agentHealthReporter.commandReceiverReady(config);
+    }
+    await executeReceivedCommands(config, result.commands);
+  } finally {
+    if (challenge) agentHealthReporter.commandChallengeFailed(challenge);
+  }
 }
 
 async function executeReceivedCommands(config: AgentLocalConfig, commands: AgentCommand[]): Promise<void> {
@@ -2199,7 +2370,8 @@ async function executeReceivedCommands(config: AgentLocalConfig, commands: Agent
       }
       continue;
     }
-    console.log(`Command received: ${command.action}`);
+    const pointerMove = /^\s*move\s/.test(command.action);
+    if (!pointerMove) console.log(`Command received: ${command.action}`);
     try {
       await agentCommandQueue.enqueue(() => {
         if (isStaleSessionInputCommand(command, activeSessionId, USE_FIREBASE && readyDeviceAccessLock?.publicState.enabled === true)) {
@@ -2211,7 +2383,7 @@ async function executeReceivedCommands(config: AgentLocalConfig, commands: Agent
         return executeAgentCommand(command.action, "poll", createAgentCommandRuntime(config.registeredDeviceId!));
       });
     } catch (error) {
-      console.error(`[Inject Failed] ${error instanceof Error ? error.message : error}`);
+      console.error(`[Inject Failed] ${pointerMove ? "move: " : ""}${error instanceof Error ? error.message : error}`);
     }
   }
 }
@@ -2229,7 +2401,8 @@ function createAgentCommandRuntime(deviceId: string): AgentCommandRuntime {
       recordPendingPointerAction(action, pointerState);
       await persistentInputInjector.inject(action);
       recordSuccessfulPointerAction(action, pointerState);
-      console.log(`[Inject Success] ${action}`);
+      // The Windows host persists each stdout line; do not log every motion sample.
+      if (!/^move\s/.test(action)) console.log(`[Inject Success] ${action}`);
     },
     requestApproval: () => {
       console.log("\n==============================================");
@@ -2238,18 +2411,39 @@ function createAgentCommandRuntime(deviceId: string): AgentCommandRuntime {
       console.log("==============================================");
       isApprovalPending = true;
     },
-    requestClipboard: async (sessionId) => {
+    requestClipboard: async (sessionId, canPublish) => {
+      const prior = pendingClipboardPublication;
+      // Allow one in-flight response and one queued snapshot before falling back to ordered backpressure.
+      const defer = canPublish !== undefined && (prior?.outstanding ?? 0) < 2;
+      if (!defer && prior) await prior.done;
+      const authorized = () => (!USE_FIREBASE || activeSessionId === sessionId) && canPublish?.() !== false;
+      if (!authorized()) return;
       const text = await getClipboardText();
-      if (USE_FIREBASE) {
-        await postClipboardWithFirebase(sessionId, { text, sender: "agent" });
-      } else {
-        await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/clipboard`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ text, sender: "agent" }),
-        });
-      }
-      console.log("[Clipboard] Current agent clipboard sent to viewer");
+      if (!authorized()) return;
+      const publish = async () => {
+        if (USE_FIREBASE) {
+          await postClipboardWithFirebase(sessionId, { text, sender: "agent" });
+        } else {
+          await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/clipboard`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ text, sender: "agent" }),
+          });
+        }
+        console.log("[Clipboard] Current agent clipboard sent to viewer");
+      };
+      if (!defer) return publish();
+      // The snapshot is ordered with input, but the WebRTC caller waits for a separate response.
+      const publication = prior ?? { outstanding: 0, done: Promise.resolve() };
+      publication.outstanding++;
+      publication.done = publication.done.then(() => {
+        if (authorized()) return publish();
+      }).catch(() => {
+        console.warn("[Clipboard] Could not send the response to the Viewer.");
+      }).finally(() => {
+        if (--publication.outstanding === 0 && pendingClipboardPublication === publication) pendingClipboardPublication = null;
+      });
+      pendingClipboardPublication = publication;
     },
     sendWakeOnLan: async (macAddress) => {
       await sendWakeOnLanMagicPacket(macAddress);
@@ -2328,21 +2522,21 @@ function createAgentCommandRuntime(deviceId: string): AgentCommandRuntime {
 
 async function discoverDisplays(): Promise<DeviceDisplayInfo[] | undefined> {
   const now = Date.now();
-  if (displayCache && now - displayCache.loadedAtMs < 60_000) {
+  if (displayCache && now - displayCache.loadedAtMs < DIAGNOSTICS_CACHE_AGE_MS) {
     return displayCache.displays;
   }
 
   try {
-    const { stdout } = await execFileHidden(POC_PATH, ["--mode", "list-displays"]);
+    const { stdout } = await execFileHidden(POC_PATH, ["--mode", "list-displays"], NATIVE_DIAGNOSTICS_TIMEOUT_MS);
     const displays = parseAgentDisplayInventory(JSON.parse(stdout));
 
     displayCache = { loadedAtMs: now, displays };
     return displays;
   } catch (error) {
     warnDiagnosticFailureOnce("display-inventory", "Display inventory unavailable", error);
-    const displays = displayCache?.displays ?? [];
+    const displays = displayCache?.displays;
     displayCache = { loadedAtMs: now, displays };
-    return displays.length > 0 ? displays : undefined;
+    return displays;
   }
 }
 
@@ -2361,12 +2555,12 @@ function discoverMacAddresses(): string[] | undefined {
 
 async function discoverControlDiagnostics(): Promise<AgentControlDiagnostics | undefined> {
   const now = Date.now();
-  if (controlDiagnosticsCache && now - controlDiagnosticsCache.loadedAtMs < 60_000) {
+  if (controlDiagnosticsCache && now - controlDiagnosticsCache.loadedAtMs < DIAGNOSTICS_CACHE_AGE_MS) {
     return controlDiagnosticsCache.diagnostics;
   }
 
   try {
-    const { stdout } = await execFileHidden(POC_PATH, ["--mode", "diagnostics"]);
+    const { stdout } = await execFileHidden(POC_PATH, ["--mode", "diagnostics"], NATIVE_DIAGNOSTICS_TIMEOUT_MS);
     const parsed = JSON.parse(stdout) as {
       elevated?: unknown;
       integrity_level?: unknown;
@@ -2435,12 +2629,14 @@ function truncateDiagnosticText(value: string): string {
 }
 
 function buildStreamDiagnostics(): AgentStreamDiagnostics {
+  const running = Boolean(streamProcess);
+  const confirmedGdi = running && confirmedGdiCaptureGeneration === captureGeneration;
   return {
-    backend: streamBackend,
+    backend: confirmedGdi ? "gdi" : streamBackend,
     desired: streamDesired,
-    running: Boolean(streamProcess),
+    running,
     restartCount: streamRestartCount,
-    loopSleepMs: currentLoopSleepMs,
+    loopSleepMs: confirmedGdi ? Math.max(currentLoopSleepMs, GDI_CAPTURE_MIN_INTERVAL_MS) : currentLoopSleepMs,
     outputIndex: currentOutputIndex,
     lastFrameAt: lastStreamFrameAt,
     lastError: lastStreamError,

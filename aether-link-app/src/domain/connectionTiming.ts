@@ -1,5 +1,5 @@
 // Process-local monotonic timings only: no payloads, identifiers or network calls.
-type Stage = "connect-click" | "device-validated" | "command-dispatched" | "offer-sent" | "session-ready" | "command-received" | "command-acknowledged" | "capture-start" | "capture-first-frame" | "channel-open" | "frame-received" | "first-frame-sent" | "first-picture" | "failed";
+type Stage = "connect-click" | "connect-request" | "device-validated" | "access-request-queued" | "access-request-acknowledged" | "access-approved" | "command-dispatched" | "offer-queued" | "offer-sent" | "session-ready" | "command-received" | "command-acknowledged" | "capture-start" | "capture-first-frame" | "channel-open" | "frame-received" | "first-frame-sent" | "first-picture" | "failed" | "cancelled";
 const traces = new Map<string, { role: "viewer" | "agent"; start: number; stages: Set<Stage>; attempt: number }>();
 let attempt = 0;
 export function beginConnectionTiming(key: string, role: "viewer" | "agent"): void {
@@ -18,5 +18,5 @@ export function markConnectionTiming(key: string, stage: Stage): void {
   trace.stages.add(stage);
   // Deliberately exclude the map key, errors, SDP, device and frame contents.
   console.info(`[ConnectionTiming] ${JSON.stringify({ role: trace.role, attempt: trace.attempt, stage, elapsedMs: Math.round(Math.max(0, performance.now() - trace.start)) })}`);
-  if (stage === "first-picture" || stage === "first-frame-sent" || stage === "failed") traces.delete(key);
+  if (stage === "first-picture" || stage === "first-frame-sent" || stage === "failed" || stage === "cancelled") traces.delete(key);
 }

@@ -512,13 +512,32 @@ fn same_executable_path(left: &str, right: &str) -> bool {
 }
 
 pub(crate) fn active_input_desktop_is_secure() -> Result<bool, String> {
+    active_input_desktop_kind().map(|kind| kind == InputDesktopKind::Secure)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InputDesktopKind {
+    Default,
+    Secure,
+    Other,
+}
+
+pub(crate) fn active_input_desktop_kind() -> Result<InputDesktopKind, String> {
     unsafe {
         let desktop = match OpenInputDesktop(Default::default(), false, DESKTOP_READOBJECTS) {
             Ok(desktop) => desktop,
-            Err(error) if error.code() == E_ACCESSDENIED => return Ok(true),
+            Err(error) if error.code() == E_ACCESSDENIED => return Ok(InputDesktopKind::Secure),
             Err(error) => return Err(format!("cannot open active input desktop: {error}")),
         };
-        let result = input_desktop_name(desktop).map(|name| desktop_name_is_secure(&name));
+        let result = input_desktop_name(desktop).map(|name| {
+            if desktop_name_is_secure(&name) {
+                InputDesktopKind::Secure
+            } else if name.eq_ignore_ascii_case("Default") {
+                InputDesktopKind::Default
+            } else {
+                InputDesktopKind::Other
+            }
+        });
         let _ = CloseDesktop(desktop);
         result
     }

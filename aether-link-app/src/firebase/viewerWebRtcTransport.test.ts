@@ -57,6 +57,8 @@ vi.mock("./firestoreWrite", () => ({
 
 class FakeDataChannel {
   bufferedAmount = 0;
+  bufferedAmountLowThreshold = 0;
+  onbufferedamountlow: (() => void) | null = null;
   onclose: (() => void) | null = null;
   onerror: (() => void) | null = null;
   onmessage: ((event: { data: unknown }) => void) | null = null;
@@ -96,6 +98,99 @@ class FakePeerConnection {
 }
 
 describe("Viewer WebRTC transport", () => {
+  it("requests fast mode once before asking the Agent for the first picture", async () => {
+    const {startFirebaseViewerWebRtcTransport} = await import("./viewerFirebase");
+    const transport=await startFirebaseViewerWebRtcTransport("first-picture-fast",{startInFastMode:true,onFrame:vi.fn()},{} as ImportMetaEnv);
+    try {
+      const control = FakePeerConnection.latest.channels.get("wonremote-control")!;
+      const tiles = FakePeerConnection.latest.channels.get("wonremote-tiles")!;
+      control.readyState = "open";
+      tiles.readyState = "open";
+      control.onopen?.(); tiles.onopen?.(); tiles.onopen?.();
+      expect(control.send.mock.calls.map(([payload])=>parseWebRtcControlAction(payload))).toEqual(["set-stream-mode fast", "request-keyframe"]);
+    } finally { transport.close(); }
+  });
+  it("keeps only the newest congested mouse move and never flushes it after an ordered click or cancel", async () => {
+    const {startFirebaseViewerWebRtcTransport} = await import("./viewerFirebase");
+    const transport = await startFirebaseViewerWebRtcTransport("pointer-cadence", {onFrame: vi.fn()}, {} as ImportMetaEnv);
+    try {
+      const control = FakePeerConnection.latest.channels.get("wonremote-control")!;
+      control.readyState = "open";
+      control.onopen?.();
+      control.bufferedAmount = control.bufferedAmountLowThreshold + 1;
+      transport.sendControl("move 1 1");
+      transport.sendControl("move 2 2");
+      expect(control.send).not.toHaveBeenCalled();
+      control.bufferedAmount = 0;
+      control.onbufferedamountlow?.();
+      expect(control.send.mock.calls.map(([payload])=>parseWebRtcControlAction(payload))).toEqual(["move 2 2"]);
+      control.bufferedAmount = control.bufferedAmountLowThreshold + 1;
+      transport.sendControl("move 3 3");
+      transport.sendControl("down 4 4 0");
+      transport.sendControl("up 4 4 0");
+      transport.sendControl("move 5 5");
+      transport.cancelPointerMove?.();
+      control.bufferedAmount = 0;
+      control.onbufferedamountlow?.();
+      expect(control.send.mock.calls.map(([payload])=>parseWebRtcControlAction(payload))).toEqual(["move 2 2", "down 4 4 0", "up 4 4 0"]);
+    } finally { transport.close(); }
+  });
+  it("keeps only one unsent position while the channel is draining a small backlog", async () => {
+    const { startFirebaseViewerWebRtcTransport } = await import("./viewerFirebase");
+    const onError = vi.fn();
+    const transport = await startFirebaseViewerWebRtcTransport("small-pointer-backlog", { onFrame: vi.fn(), onError }, {} as ImportMetaEnv);
+    onError.mockImplementation(() => transport.close());
+    try {
+      const control = FakePeerConnection.latest.channels.get("wonremote-control")!;
+      control.readyState = "open";
+      control.onopen?.();
+      control.send.mockImplementation((payload: string) => { control.bufferedAmount += Buffer.byteLength(payload); });
+      const sent = () => control.send.mock.calls.map(([payload]) => parseWebRtcControlAction(payload));
+      const drainTo = (remaining: number) => {
+        const wasAbove = control.bufferedAmount > control.bufferedAmountLowThreshold;
+        control.bufferedAmount = remaining;
+        if (wasAbove && remaining <= control.bufferedAmountLowThreshold) control.onbufferedamountlow?.();
+      };
+      for (let i = 1; i <= 60; i++) expect(transport.sendControl(`move ${i} ${i}`)).toBe(true);
+      expect(sent()).toEqual(["move 1 1"]);
+      drainTo(1);
+      expect(sent()).toEqual(["move 1 1"]);
+      drainTo(0);
+      expect(sent()).toEqual(["move 1 1", "move 60 60"]);
+
+      transport.sendControl("key-down Shift");
+      transport.sendControl("move 61 61");
+      transport.sendControl("key-up Shift");
+      transport.sendControl("move 62 62");
+      transport.sendControl("mouse-down 63 63 left");
+      transport.sendControl("move 64 64");
+      transport.sendControl("mouse-wheel 65 65 120");
+      transport.sendControl("mouse-up 66 66 left");
+      drainTo(0);
+      expect(sent()).toEqual([
+        "move 1 1", "move 60 60", "key-down Shift", "move 61 61", "key-up Shift",
+        "mouse-down 63 63 left", "mouse-wheel 65 65 120", "mouse-up 66 66 left",
+      ]);
+      for (const action of ["keypress Win", "text-base64 YQ==", "text-replace-base64 1 Yg=="]) {
+        control.bufferedAmount = 1;
+        transport.sendControl("move 67 67");
+        expect(transport.sendControl(action)).toBe(true);
+        expect(sent().slice(-2)).toEqual(["move 67 67", action]);
+      }
+      transport.sendControl("move 67 67");
+      const error = new Error("Test motion send failure");
+      control.send.mockImplementationOnce(() => { throw error; });
+      expect(transport.sendControl("key-up Alt")).toBe(true);
+      expect(sent().slice(-2)).toEqual(["move 67 67", "key-up Alt"]);
+      expect(onError).not.toHaveBeenCalled();
+      expect(transport.isControlReady()).toBe(true);
+
+      control.send.mockImplementationOnce(() => { throw error; });
+      expect(transport.sendControl("key-up Ctrl")).toBe(false);
+      expect(onError).toHaveBeenCalledExactlyOnceWith(error);
+      expect(transport.isControlReady()).toBe(false);
+    } finally { transport.close(); }
+  });
   it("accepts capability only from the active open file channel with the supported protocol", async () => {
     const { startFirebaseViewerWebRtcTransport } = await import("./viewerFirebase");
     const onReverseFileSupport = vi.fn();

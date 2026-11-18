@@ -203,6 +203,16 @@ struct NodeResourcePaths {
     poc: PathBuf,
 }
 
+impl NodeResourcePaths {
+    fn update_entry(&self, installed_agent: bool) -> PathBuf {
+        if installed_agent {
+            self.root.join("updater").join("index.mjs")
+        } else {
+            self.agent.clone()
+        }
+    }
+}
+
 struct SingleInstanceGuard {
     handle: HANDLE,
 }
@@ -2032,6 +2042,14 @@ fn bundled_agent_path(resource_dir: &Path) -> PathBuf {
     resource_dir.join("agent").join("index.mjs")
 }
 
+#[test]
+fn installed_agent_update_and_connection_have_independent_entries() {
+    let resources = node_resource_paths(Path::new(r"C:\Program Files\WonRemote Agent"));
+    assert_eq!(resources.agent, resources.root.join("agent").join("index.mjs"));
+    assert_eq!(resources.update_entry(true), resources.root.join("updater").join("index.mjs"));
+    assert_eq!(resources.update_entry(false), resources.agent);
+}
+
 fn node_resource_paths(resource_dir: &Path) -> NodeResourcePaths {
     let root = node_compatible_path(resource_dir);
     NodeResourcePaths {
@@ -2189,7 +2207,8 @@ fn start_installer_update_inner(
 
     ensure_resource_exists(&resources.node, "bundled Node runtime")
         .map_err(|error| error.to_string())?;
-    ensure_resource_exists(&resources.agent, "bundled updater").map_err(|error| error.to_string())?;
+    let update_entry = resources.update_entry(INSTALLED_AGENT_MODE.get() == Some(&true));
+    ensure_resource_exists(&update_entry, "bundled updater").map_err(|error| error.to_string())?;
 
     let build_arch = runtime_build_arch();
     let package_kind = packaged_update_kind(&resources.root);
@@ -2218,7 +2237,7 @@ fn start_installer_update_inner(
     }
     let mut command = Command::new(&resources.node);
     command
-        .arg(&resources.agent)
+        .arg(&update_entry)
         .args(["--update-once", "--restart-mode", restart_mode])
         .arg("--restart-executable")
         .arg(&restart_executable)
@@ -2376,11 +2395,12 @@ fn check_installer_update_for(
         .map_err(|error| error.to_string())?);
     ensure_resource_exists(&resources.node, "bundled Node runtime")
         .map_err(|error| error.to_string())?;
-    ensure_resource_exists(&resources.agent, "bundled updater").map_err(|error| error.to_string())?;
+    let update_entry = resources.update_entry(INSTALLED_AGENT_MODE.get() == Some(&true));
+    ensure_resource_exists(&update_entry, "bundled updater").map_err(|error| error.to_string())?;
 
     let mut command = Command::new(&resources.node);
     command
-        .arg(&resources.agent)
+        .arg(&update_entry)
         .arg("--check-update")
         .env("NODE_ENV", "production")
         .env("WONREMOTE_APP_DIR", &resources.root)

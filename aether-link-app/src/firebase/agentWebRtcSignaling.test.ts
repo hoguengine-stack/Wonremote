@@ -3,7 +3,7 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AgentDataChannelLike } from "./agentPeerConnection";
-import { WEBRTC_TILE_CHANNEL_LABEL } from "../domain/webrtcControl";
+import { serializeWebRtcControlAction, WEBRTC_CONTROL_CHANNEL_LABEL, WEBRTC_TILE_CHANNEL_LABEL } from "../domain/webrtcControl";
 import { parseWebRtcFileChunk, serializeWebRtcFileAck, WEBRTC_FILE_CHANNEL_LABEL } from "../domain/webrtcFileTransfer";
 
 const mocks = vi.hoisted(() => {
@@ -39,15 +39,19 @@ const mocks = vi.hoisted(() => {
     getDocs: vi.fn(async () => ({ docs: [], empty: true })),
     limit: vi.fn((count: number) => ({ kind: "limit", count })),
     offerSignal,
+    snapshotOptions: vi.fn(),
     onSnapshot: vi.fn<SnapshotListener>(() => () => undefined),
     orderBy: vi.fn((field: string, direction: string) => ({ kind: "orderBy", field, direction })),
     peer,
     query: vi.fn((target: { path?: string }, ...constraints: unknown[]) => ({ ...target, constraints })),
     safeAddDoc: vi.fn(async () => ({ id: "candidate" })),
     safeSetDoc: vi.fn(async () => undefined),
+    turn: vi.fn(),
     unsubscribe: vi.fn(),
   };
 });
+
+vi.mock("firebase/functions", () => ({httpsCallable: () => mocks.turn}));
 
 vi.mock("firebase/firestore", () => ({
   collection: vi.fn((_db: unknown, ...segments: string[]) => ({ path: segments.join("/") })),
@@ -55,7 +59,11 @@ vi.mock("firebase/firestore", () => ({
   getDoc: mocks.getDoc,
   getDocs: mocks.getDocs,
   limit: mocks.limit,
-  onSnapshot: mocks.onSnapshot,
+  onSnapshot: (target: any, options: any, next: any, error?: (failure: Error) => void) => {
+    if (typeof options === "function") return mocks.onSnapshot(target, options, next);
+    mocks.snapshotOptions(target, options);
+    return mocks.onSnapshot(target, next, error);
+  },
   orderBy: mocks.orderBy,
   query: mocks.query,
   runTransaction: vi.fn(),
@@ -81,6 +89,29 @@ vi.mock("./agentPeerConnection", async (importOriginal) => ({
 }));
 
 describe("Agent WebRTC Firebase signaling", () => {
+  it("keeps a control channel identity through close and exposes strict readiness separately", async () => {
+    const {startAgentWebRtcTransportWithFirebase}=await import("./agentFirebase");
+    const onControl = vi.fn<(action: string, channel: (requireOpen?: boolean) => boolean) => void>();
+    const onControlClosed = vi.fn();
+    const transport = await startAgentWebRtcTransportWithFirebase("control-owner",{onControl,onControlClosed},firebaseEnv());
+    try {
+      await vi.waitFor(() => expect(mocks.safeSetDoc).toHaveBeenCalledOnce());
+      const peer = mocks.peer as unknown as {ondatachannel:(event:{channel:AgentDataChannelLike})=>void};
+      const channel: AgentDataChannelLike = {label:WEBRTC_CONTROL_CHANNEL_LABEL,readyState:"open"};
+      peer.ondatachannel({channel});
+      channel.onmessage?.({data:serializeWebRtcControlAction("request-keyframe")});
+      expect(onControl).toHaveBeenCalledOnce();
+      const owner = onControl.mock.calls[0][1];
+      expect(owner(true)).toBe(true);
+      channel.readyState = "closing";
+      expect(owner()).toBe(true);
+      expect(owner(true)).toBe(false);
+      channel.onclose?.();
+      expect(owner()).toBe(false);
+      expect(onControlClosed).toHaveBeenCalledExactlyOnceWith(owner);
+    } finally { await transport.close(); }
+  });
+
   it("isolates buffered Viewer candidates across A-to-B renegotiation", async () => {
     const {startAgentWebRtcTransportWithFirebase}=await import("./agentFirebase");
     const transport=await startAgentWebRtcTransportWithFirebase("renegotiation-buffer",{},firebaseEnv());
@@ -94,7 +125,7 @@ describe("Agent WebRTC Firebase signaling", () => {
       expect(mocks.peer.addIceCandidate).toHaveBeenCalledExactlyOnceWith({candidate:"host-a"});
       const blocked=new Promise<void>(resolve=>{ready=resolve;});
       mocks.peer.setRemoteDescription.mockImplementationOnce(async()=>{await blocked;});
-      signalListeners[1][1]({data:()=>({negotiationId:"rtc-next",offer:{negotiationId:"rtc-next",type:"offer",sdp:"v=0\r\n"}})} as any);
+      signalListeners[0][1]({data:()=>({negotiationId:"rtc-next",offer:{negotiationId:"rtc-next",type:"offer",sdp:"v=0\r\n"}})} as any);
       await vi.waitFor(()=>expect(mocks.peer.setRemoteDescription).toHaveBeenCalledTimes(2));
       const next={candidate:"host-b"};
       const docs=[old,{id:"b",data:()=>({negotiationId:"rtc-next",candidate:next})}];
@@ -160,6 +191,49 @@ describe("Agent WebRTC Firebase signaling", () => {
       expect(mocks.peer.addIceCandidate).toHaveBeenCalledOnce();
     } finally {ready();await transport?.close();}
   });
+
+  it.each(["fresh", "cached", "pending", "old", "malformed", "prflx", "mdns", "metadata-only", "metadata-back-to-cache", "watch-denied", "late-watch-denied", "add-rejected"])("makes at most one fallback candidate query for %s snapshots", async scenario => {
+    const address = scenario === "mdns" ? "fixture.local" : "192.0.2.1";
+    const type = scenario === "prflx" ? "prflx" : "host";
+    const candidate = {candidate:scenario === "malformed" ? "candidate:invalid" : `candidate:1 1 udp 2122260223 ${address} 5000 typ ${type}`};
+    const docs = [{id:"host",data:() => ({negotiationId:scenario === "old" ? "rtc-old" : "rtc-current",candidate})}];
+    const warn = vi.spyOn(console,"warn").mockImplementation(() => {});
+    let denyWatch: ((error: Error) => void) | undefined;
+    let deliver: ((snapshot: any) => void) | undefined;
+    if (scenario === "add-rejected") {
+      mocks.peer.addIceCandidate.mockRejectedValueOnce(new Error("candidate add rejected"));
+      mocks.getDocs.mockResolvedValueOnce({docs,empty:false} as any);
+    }
+    mocks.onSnapshot.mockImplementation((target, next, failure) => {
+      if (target.path.endsWith("webrtc/signal")) next({data:() => mocks.offerSignal});
+      else {
+        deliver = next;
+        denyWatch = failure;
+        if (scenario === "metadata-only") next({docs,metadata:{fromCache:true,hasPendingWrites:false}} as any);
+        if (scenario === "metadata-back-to-cache") next({docs,metadata:{fromCache:false,hasPendingWrites:false}} as any);
+        next({docs,metadata:{fromCache:scenario === "cached" || scenario === "metadata-back-to-cache",hasPendingWrites:scenario === "pending"}} as any);
+        if (scenario === "watch-denied") failure?.(new Error("candidate watch denied"));
+      }
+      return mocks.unsubscribe;
+    });
+    const {startAgentWebRtcTransportWithFirebase} = await import("./agentFirebase");
+    const transport = await startAgentWebRtcTransportWithFirebase("candidate-snapshot-fallback", {}, firebaseEnv());
+    try {
+      await vi.waitFor(() => expect(mocks.safeSetDoc).toHaveBeenCalledOnce());
+      expect(mocks.getDocs).toHaveBeenCalledTimes(["fresh", "metadata-only", "late-watch-denied"].includes(scenario) ? 0 : 1);
+      if (scenario === "metadata-only") expect(mocks.snapshotOptions).toHaveBeenCalledExactlyOnceWith(expect.anything(),{includeMetadataChanges:true});
+      if (scenario === "late-watch-denied") {
+        denyWatch?.(new Error("candidate watch lost"));
+        deliver?.({docs:[{id:"stale-listener",data:() => ({negotiationId:"rtc-current",candidate:{candidate:"late candidate"}})}]});
+        denyWatch?.(new Error("candidate watch lost again"));
+        expect(mocks.getDocs).toHaveBeenCalledOnce();
+      }
+      if (scenario === "old") expect(mocks.peer.addIceCandidate).not.toHaveBeenCalled();
+      else if (scenario === "add-rejected") expect(mocks.peer.addIceCandidate.mock.calls).toEqual([[candidate],[candidate]]);
+      else expect(mocks.peer.addIceCandidate).toHaveBeenCalledExactlyOnceWith(candidate);
+    } finally {await transport?.close();warn.mockRestore();}
+  });
+
   it("applies late Viewer ICE within100ms while local gathering is still pending", async () => {
     vi.useFakeTimers();
     let finish!: () => void;
@@ -203,6 +277,30 @@ describe("Agent WebRTC Firebase signaling", () => {
       expect(mocks.safeSetDoc).toHaveBeenCalledTimes(1);
     } finally { finish(); await (await pending)?.close(); }
   });
+  it("preserves diagnostic fallback classification when an oversized tile meets a saturated queue", async () => {
+    const { startAgentWebRtcTransportWithFirebase } = await import("./agentFirebase");
+    const transport = await startAgentWebRtcTransportWithFirebase("diagnostic-frame", {}, firebaseEnv({
+      WONREMOTE_ALLOW_FIRESTORE_STREAM_FALLBACK: "diagnostic",
+      WONREMOTE_WEBRTC_MAX_MESSAGE_BYTES: "20000",
+    }));
+    try {
+      await vi.waitFor(() => expect(mocks.peer.ondatachannel).toBeTypeOf("function"));
+      const maxBufferedAmount = 64 * 1024;
+      const send = vi.fn();
+      const channel: AgentDataChannelLike = {
+        label: WEBRTC_TILE_CHANNEL_LABEL, readyState: "open", bufferedAmount: maxBufferedAmount, send,
+      };
+      (mocks.peer as unknown as { ondatachannel: (event: { channel: AgentDataChannelLike }) => void })
+        .ondatachannel({ channel });
+      const frame = { tiles: [{ image: "a".repeat(20_000) }], width: 800, height: 600, sequence: 1, keyframe: true };
+      expect(transport?.sendFrame(frame, maxBufferedAmount)).toBe("unavailable");
+      expect(transport?.sendFrame({ ...frame, tiles: [] }, maxBufferedAmount)).toBe("backpressure");
+      expect(send).not.toHaveBeenCalled();
+    } finally {
+      await transport?.close();
+    }
+  });
+
   it("writes one answer and all candidates before delayed gathering completes", async () => {
     let finish!: () => void;
     const gathering = new Promise<void>(resolve => { finish = resolve; });
@@ -216,6 +314,7 @@ describe("Agent WebRTC Firebase signaling", () => {
     try {
       await vi.waitFor(() => expect(mocks.safeSetDoc).toHaveBeenCalledTimes(1));
       expect(mocks.safeAddDoc).toHaveBeenCalledTimes(2);
+      expect(mocks.safeSetDoc.mock.invocationCallOrder[0]).toBeLessThan(mocks.safeAddDoc.mock.invocationCallOrder[0]);
     } finally { finish(); }
     const transport = await pending;
     expect(mocks.safeSetDoc).toHaveBeenCalledTimes(1);
@@ -279,11 +378,11 @@ describe("Agent WebRTC Firebase signaling", () => {
       (mocks.peer as unknown as {ondatachannel:(event:{channel:AgentDataChannelLike})=>void}).ondatachannel({channel});
       channel.onopen?.();
       const signalListeners = mocks.onSnapshot.mock.calls.filter(([target]) => target.path.endsWith("webrtc/signal"));
-      expect(signalListeners).toHaveLength(2);
-      for (let click = 0; click < 10; click++) signalListeners[1][1]({data:()=>mocks.offerSignal});
+      expect(signalListeners).toHaveLength(1);
+      for (let click = 0; click < 10; click++) signalListeners[0][1]({data:()=>mocks.offerSignal});
       await vi.advanceTimersByTimeAsync(86_400_000);
       expect(mocks.peer.setRemoteDescription).toHaveBeenCalledOnce();
-      expect(mocks.onSnapshot).toHaveBeenCalledTimes(3);
+      expect(mocks.onSnapshot).toHaveBeenCalledTimes(2);
       expect(mocks.getDoc).not.toHaveBeenCalled();
       expect(mocks.getDocs).toHaveBeenCalledOnce();
       expect(mocks.safeSetDoc).toHaveBeenCalledOnce();
@@ -370,7 +469,7 @@ describe("Agent WebRTC Firebase signaling", () => {
     });
   });
 
-  it("answers an offer delivered by the realtime listener without waiting for the 250ms poll", async () => {
+  it("answers immediately through the same realtime listener without a poll or resubscribe", async () => {
     vi.useFakeTimers();
     mocks.getDoc.mockImplementation(async () => ({ data: () => undefined }));
     mocks.onSnapshot.mockImplementation((target: any, onNext: (snapshot: any) => void) => {
@@ -396,7 +495,8 @@ describe("Agent WebRTC Firebase signaling", () => {
         { merge: true },
       );
       expect(mocks.getDoc).not.toHaveBeenCalled();
-      expect(mocks.unsubscribe).toHaveBeenCalledTimes(1);
+      expect(mocks.unsubscribe).not.toHaveBeenCalled();
+      expect(mocks.onSnapshot.mock.calls.filter(([target])=>target.path.endsWith("webrtc/signal"))).toHaveLength(1);
       transport = await transportPromise;
     } finally {
       if (transport === undefined) {
@@ -408,26 +508,159 @@ describe("Agent WebRTC Firebase signaling", () => {
     }
   });
 
-  it("unsubscribes the one-shot offer listener when the connect timeout expires", async () => {
+  it("closes the signal listener when the first offer never arrives", async () => {
     vi.useFakeTimers();
     mocks.onSnapshot.mockImplementation(() => mocks.unsubscribe);
     const onState = vi.fn();
 
     try {
       const { startAgentWebRtcTransportWithFirebase } = await import("./agentFirebase");
-      const transportPromise = startAgentWebRtcTransportWithFirebase(
+      const transport = await startAgentWebRtcTransportWithFirebase(
         "session-timeout",
         { onState },
         firebaseEnv({ WONREMOTE_RTC_CONNECT_TIMEOUT_MS: "2000" }),
       );
       await vi.advanceTimersByTimeAsync(2_000);
 
-      await expect(transportPromise).resolves.toBeNull();
       expect(mocks.unsubscribe).toHaveBeenCalledTimes(1);
       expect(onState).toHaveBeenCalledWith("error", expect.stringContaining("without a Viewer offer"));
+      expect(mocks.onSnapshot).toHaveBeenCalledOnce();
+      expect(mocks.getDocs).not.toHaveBeenCalled();
+      expect(mocks.safeSetDoc).not.toHaveBeenCalled();
+      expect(transport.isClosed()).toBe(true);
+      await transport.close();
+      expect(mocks.unsubscribe).toHaveBeenCalledOnce();
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("can stop before the first offer and ignores late callbacks without creating candidates or an answer", async () => {
+    vi.useFakeTimers();
+    mocks.onSnapshot.mockImplementation(() => mocks.unsubscribe);
+    try {
+      const {startAgentWebRtcTransportWithFirebase}=await import("./agentFirebase");
+      const onState=vi.fn();
+      const transport=await startAgentWebRtcTransportWithFirebase("cancel-before-offer",{onState},firebaseEnv({WONREMOTE_RTC_DYNAMIC_CREDENTIALS:"true"}));
+      const [, next, error]=mocks.onSnapshot.mock.calls[0];
+      await transport.close();
+      next({data:()=>mocks.offerSignal});
+      error?.(new Error("old listener failure"));
+      await vi.advanceTimersByTimeAsync(86_400_000);
+      expect(mocks.unsubscribe).toHaveBeenCalledOnce();
+      expect(mocks.onSnapshot).toHaveBeenCalledOnce();
+      expect(mocks.peer.createAnswer).not.toHaveBeenCalled();
+      expect(mocks.safeSetDoc).not.toHaveBeenCalled();
+      expect(mocks.getDocs).not.toHaveBeenCalled();
+      expect(mocks.turn).not.toHaveBeenCalled();
+      expect(onState).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {vi.useRealTimers();}
+  });
+
+  it("closes on an initial listener error without starting a retry or touching TURN", async () => {
+    vi.useFakeTimers();
+    mocks.onSnapshot.mockImplementation((_target, _next, error) => {
+      error?.(new Error("signal permission denied"));
+      return mocks.unsubscribe;
+    });
+    try {
+      const {startAgentWebRtcTransportWithFirebase}=await import("./agentFirebase");
+      const onState=vi.fn();
+      const transport=await startAgentWebRtcTransportWithFirebase("first-listener-error",{onState},firebaseEnv({WONREMOTE_RTC_DYNAMIC_CREDENTIALS:"true"}));
+      await vi.advanceTimersByTimeAsync(86_400_000);
+      expect(transport.isClosed()).toBe(true);
+      expect(mocks.onSnapshot).toHaveBeenCalledOnce();
+      expect(mocks.unsubscribe).toHaveBeenCalledOnce();
+      expect(mocks.turn).not.toHaveBeenCalled();
+      expect(mocks.safeSetDoc).not.toHaveBeenCalled();
+      expect(onState).toHaveBeenCalledExactlyOnceWith("error",expect.stringContaining("signal permission denied"));
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {vi.useRealTimers();}
+  });
+
+  it("stops before a slow TURN lookup completes without starting candidate reads or an answer", async () => {
+    let resolveTurn!: (value: unknown) => void;
+    mocks.turn.mockImplementationOnce(()=>new Promise(resolve=>{resolveTurn=resolve;}));
+    const {startAgentWebRtcTransportWithFirebase}=await import("./agentFirebase");
+    const transport=await startAgentWebRtcTransportWithFirebase("slow-turn-close",{},firebaseEnv({WONREMOTE_RTC_DYNAMIC_CREDENTIALS:"true"}));
+    try {
+      await vi.waitFor(()=>expect(mocks.turn).toHaveBeenCalledOnce());
+      await transport.close();
+      resolveTurn({data:{iceServers:[{urls:["turn:relay.test:3478"]}]}});
+      await Promise.resolve();
+      await new Promise(resolve=>setTimeout(resolve,0));
+      expect(mocks.onSnapshot).toHaveBeenCalledOnce();
+      expect(mocks.unsubscribe).toHaveBeenCalledOnce();
+      expect(mocks.getDocs).not.toHaveBeenCalled();
+      expect(mocks.safeSetDoc).not.toHaveBeenCalled();
+    } finally {await transport.close();}
+  });
+
+  it("keeps only the most recent replacement offer received while forming the first answer", async () => {
+    let release!:()=>void;
+    mocks.peer.setLocalDescription.mockImplementationOnce(()=>new Promise(resolve=>{release=()=>resolve(undefined);}));
+    const {startAgentWebRtcTransportWithFirebase}=await import("./agentFirebase");
+    const transport=await startAgentWebRtcTransportWithFirebase("offer-replaced-while-answering",{},firebaseEnv());
+    try {
+      await vi.waitFor(()=>expect(mocks.peer.setLocalDescription).toHaveBeenCalledOnce());
+      const [, next]=mocks.onSnapshot.mock.calls.find(([target])=>target.path.endsWith("webrtc/signal"))!;
+      const offer = (negotiationId: string) => ({data:()=>({negotiationId,offer:{...mocks.offerSignal.offer,negotiationId}})});
+      next(offer("rtc-superseded"));
+      next(offer("rtc-newest"));
+      next(offer("rtc-newest"));
+      await vi.waitFor(()=>expect(mocks.safeSetDoc).toHaveBeenCalledOnce());
+      expect(mocks.safeSetDoc).toHaveBeenLastCalledWith(expect.anything(),expect.objectContaining({answer:expect.objectContaining({negotiationId:"rtc-newest"})}),{merge:true});
+      expect(mocks.onSnapshot.mock.calls.filter(([target])=>target.path.endsWith("webrtc/signal"))).toHaveLength(1);
+      release();
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(mocks.safeSetDoc).toHaveBeenCalledOnce();
+    } finally {release?.();await transport.close();}
+  });
+
+  it("closes on failed initial relay-only configuration so a new start can retry the same offer", async () => {
+    const env=firebaseEnv({WONREMOTE_RTC_DYNAMIC_CREDENTIALS:"true",WONREMOTE_RTC_RELAY_ONLY:"true"});
+    mocks.turn.mockRejectedValueOnce(new Error("TURN unavailable"))
+      .mockResolvedValueOnce({data:{iceServers:[{urls:["turn:relay.test:3478"]}],iceTransportPolicy:"relay"}});
+    const {startAgentWebRtcTransportWithFirebase}=await import("./agentFirebase");
+    const onState=vi.fn();
+    const first=await startAgentWebRtcTransportWithFirebase("retry-initial-turn",{onState},env);
+    await vi.waitFor(()=>expect(first.isClosed()).toBe(true));
+    expect(onState).toHaveBeenCalledWith("error",expect.stringContaining("TURN unavailable"));
+    expect(mocks.onSnapshot).toHaveBeenCalledOnce();
+    expect(mocks.safeSetDoc).not.toHaveBeenCalled();
+    const second=await startAgentWebRtcTransportWithFirebase("retry-initial-turn",{},env);
+    try {
+      await vi.waitFor(()=>expect(mocks.safeSetDoc).toHaveBeenCalledOnce());
+      expect(mocks.turn).toHaveBeenCalledTimes(2);
+    } finally {await second.close();}
+  });
+
+  it("does not replace the current offer identity when an older answer finishes during resubscribe", async () => {
+    vi.useFakeTimers();
+    let document = mocks.offerSignal;
+    let finishAnswer!: () => void;
+    mocks.onSnapshot.mockImplementation((target, next) => {
+      if (target.path.endsWith("webrtc/signal")) next({data:()=>document});
+      return mocks.unsubscribe;
+    });
+    mocks.safeSetDoc.mockImplementationOnce((...args:unknown[]) => new Promise(resolve => {
+      finishAnswer=()=>{document={...document, ...(args[1] as object)}; resolve(undefined);};
+    }));
+    const {startAgentWebRtcTransportWithFirebase}=await import("./agentFirebase");
+    const transport=await startAgentWebRtcTransportWithFirebase("late-answer-new-offer",{},firebaseEnv());
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.safeSetDoc).toHaveBeenCalledOnce();
+      const [, , onError]=mocks.onSnapshot.mock.calls.find(([target])=>target.path.endsWith("webrtc/signal"))!;
+      onError?.(new Error("signal listener offline"));
+      document={...document, negotiationId:"rtc-new",offer:{...document.offer,negotiationId:"rtc-new"}};
+      finishAnswer();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(document.negotiationId).toBe("rtc-new");
+      expect(mocks.safeSetDoc).toHaveBeenCalledTimes(2);
+      expect(mocks.safeSetDoc).toHaveBeenLastCalledWith(expect.anything(),expect.objectContaining({answer:expect.objectContaining({negotiationId:"rtc-new"})}),{merge:true});
+    } finally {finishAnswer?.();await transport.close();vi.useRealTimers();}
   });
 
   it("writes the gathered local Answer SDP containing ICE candidates", async () => {
@@ -488,11 +721,7 @@ describe("Agent WebRTC Firebase signaling", () => {
     mocks.onSnapshot.mockImplementation((target: any, onNext: (snapshot: any) => void, onError?: (error: Error) => void) => {
       if (String(target?.path ?? "").endsWith("webrtc/signal")) {
         signalSubscriptionCount += 1;
-        if (signalSubscriptionCount === 2) {
-          queueMicrotask(() => onError?.(new Error("listener offline")));
-        } else {
-          onNext({ data: () => mocks.offerSignal });
-        }
+        onNext({ data: () => mocks.offerSignal });
       }
       return mocks.unsubscribe;
     });
@@ -503,9 +732,14 @@ describe("Agent WebRTC Firebase signaling", () => {
       {},
       firebaseEnv({ WONREMOTE_RTC_CONNECT_TIMEOUT_MS: "2000" }),
     );
+    await vi.advanceTimersByTimeAsync(0);
+    const [, staleNext, onError] = mocks.onSnapshot.mock.calls.find(([target])=>target.path.endsWith("webrtc/signal"))!;
+    onError?.(new Error("listener offline"));
+    staleNext({data:()=>({negotiationId:"rtc-stale",offer:{...mocks.offerSignal.offer,negotiationId:"rtc-stale"}})});
     await vi.advanceTimersByTimeAsync(1_000);
 
-    expect(signalSubscriptionCount).toBe(3);
+    expect(signalSubscriptionCount).toBe(2);
+    expect(mocks.peer.setRemoteDescription).toHaveBeenCalledOnce();
     expect(mocks.peer.close).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("resubscribing"));
     await transport?.close();

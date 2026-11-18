@@ -27,7 +27,7 @@ export function filterDeviceWorkspace(
     if (status === "online" && device.status !== "online") {
       return false;
     }
-    if (status === "offline" && device.status !== "offline") {
+    if (status === "offline" && (device.status !== "offline" || device.presenceCheckTimedOut)) {
       return false;
     }
     if (status === "update-attention" && !hasUpdateAttention(device)) {

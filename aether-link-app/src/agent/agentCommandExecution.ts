@@ -33,7 +33,7 @@ export interface AgentCommandRuntime {
   getActiveSessionId: () => string | null;
   injectAction: (action: string) => MaybePromise;
   requestApproval: () => MaybePromise;
-  requestClipboard: (sessionId: string) => MaybePromise;
+  requestClipboard: (sessionId: string, canPublish?: () => boolean) => MaybePromise;
   openDownloadFolder: () => MaybePromise;
   requestFileSend: (resumeTransferId?: string) => void;
   cancelFileSend: () => void;
@@ -51,6 +51,7 @@ export interface AgentCommandRuntime {
 
 export interface SerializedAgentCommandQueue {
   enqueue<T>(task: () => Promise<T> | T): Promise<T>;
+  enqueueLatestPointerMove(channel: () => boolean, task: () => Promise<void> | void): Promise<void> | undefined;
 }
 
 export type SingleFlightResult<T> =
@@ -65,6 +66,7 @@ export async function executeAgentCommand(
   action: string,
   source: AgentCommandSource,
   runtime: AgentCommandRuntime,
+  canPublishClipboard?: () => boolean,
 ): Promise<AgentCommandExecutionResult> {
   const normalizedAction = action.trim();
   if (["system edge-download", "system asp-login", "system toss-emergency-download"].includes(normalizedAction) && !runtime.getActiveSessionId()) return "ignored";
@@ -175,7 +177,8 @@ export async function executeAgentCommand(
       runtime.warn?.("Ignoring clipboard-request because no active Firebase session exists.");
       return "ignored";
     }
-    await runtime.requestClipboard(sessionId);
+    if (source === "webrtc" && canPublishClipboard) await runtime.requestClipboard(sessionId, canPublishClipboard);
+    else await runtime.requestClipboard(sessionId);
     return "executed";
   }
 
@@ -311,11 +314,28 @@ export function isCurrentWebRtcSessionGeneration(
 
 export function createSerializedAgentCommandQueue(): SerializedAgentCommandQueue {
   let tail: Promise<void> = Promise.resolve();
+  let pendingMove: { channel: () => boolean; task: () => Promise<void> | void } | undefined;
+  const append = <T>(task: () => Promise<T> | T): Promise<T> => {
+    const result = tail.then(task);
+    tail = result.then(() => undefined, () => undefined);
+    return result;
+  };
   return {
-    enqueue<T>(task: () => Promise<T> | T): Promise<T> {
-      const result = tail.then(task, task);
-      tail = result.then(() => undefined, () => undefined);
-      return result;
+    enqueue(task) {
+      pendingMove = undefined;
+      return append(task);
+    },
+    enqueueLatestPointerMove(channel, task) {
+      if (pendingMove?.channel === channel) {
+        pendingMove.task = task;
+        return;
+      }
+      const move = { channel, task };
+      pendingMove = move;
+      return append(() => {
+        if (pendingMove === move) pendingMove = undefined;
+        return move.task();
+      });
     },
   };
 }

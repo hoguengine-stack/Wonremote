@@ -20,7 +20,7 @@ export function createDiagnosticReport(device: ManagedDevice, viewerVersion: str
     viewerVersion: version(viewerVersion),
     agentVersion: version(device.version),
     protocolVersion: number(device.protocolVersion),
-    presence: choice(device.status, ["online", "offline"]),
+    presence: device.presenceCheckTimedOut ? null : choice(device.status, ["online", "offline"]),
     lastResponseAt: date(device.lastSeenAt),
     screen: {
       backend: choice(stream?.backend, ["dxgi", "gdi"]),

@@ -14,7 +14,7 @@ import {
   type InstallerHandoffResult,
   type InstallerRestartMode,
 } from "./productionInstallerUpdate";
-import { loadProductionInstallerUpdateMetadata, loadProductionRollbackMetadata } from "./productionUpdateMetadata";
+import { loadProductionInstallerUpdateMetadata, loadProductionRollbackMetadata, resolveRuntimeUpdateKind } from "./productionUpdateMetadata";
 import { loadSelectedViewerUpdate } from "./selectedViewerUpdate";
 import {
   downloadPortableUpdate,
@@ -226,13 +226,17 @@ async function prepareVerifiedPortableUpdate(
 
 export async function handleUpdateOnceCli(
   argv: string[] = process.argv.slice(2),
-  env: Partial<Record<"APPDATA", string>> = process.env,
+  env: Partial<Record<"APPDATA" | "WONREMOTE_PACKAGE_KIND" | "WONREMOTE_TAURI_UPDATE_BROKER", string>> = process.env,
   requiredRestartMode?: InstallerRestartMode,
 ): Promise<number> {
   try {
     const options = parseUpdateOnceOptions(argv, env);
     if (requiredRestartMode && options.restartMode !== requiredRestartMode) {
       throw new UpdateOnceError("Update restart mode does not match the installed product.", UPDATE_ONCE_EXIT.invalidArguments);
+    }
+    if (options.restartMode === "agent" && resolveRuntimeUpdateKind(env) === "installer" &&
+        (!options.restartExecutablePath || !isUpdateHandoffBrokerEnabled(env.WONREMOTE_TAURI_UPDATE_BROKER))) {
+      throw new UpdateOnceError("Installed Agent updates require the protected update broker and restart target.", UPDATE_ONCE_EXIT.invalidArguments);
     }
     const result = await runUpdateOnce(options);
     console.log(
@@ -283,6 +287,9 @@ export function launchInstallerHandoff(
   if (isUpdateHandoffBrokerEnabled(env.WONREMOTE_TAURI_UPDATE_BROKER)) {
     writeBrokerRequest(formatPreparedUpdateHandoff(handoff));
     return;
+  }
+  if ("protectedAcknowledgementPath" in handoff && handoff.protectedAcknowledgementPath) {
+    throw new Error("Installed Agent updates require the protected update broker.");
   }
   const child = spawn(handoff.command, handoff.args, {
     detached: true,

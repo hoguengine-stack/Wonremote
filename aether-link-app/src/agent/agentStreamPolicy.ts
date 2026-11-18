@@ -1,4 +1,5 @@
 export type StreamCaptureBackend = "dxgi" | "gdi";
+export const GDI_CAPTURE_MIN_INTERVAL_MS = 125;
 
 export interface FirestoreTileFallbackPolicy {
   enabled: boolean;

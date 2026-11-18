@@ -36,10 +36,11 @@ describe("on-demand Agent presence", () => {
     }, send, undefined, progress);
     expect(progress).toHaveBeenCalledExactlyOnceWith([device, other], [device.id, other.id]);
     next({ ...device, desktopName: "Fresh", heartbeatRequestId: "nonce" });
+    await Promise.resolve();
     expect(progress.mock.lastCall?.[0][0].desktopName).toBe("Fresh");
     expect(progress.mock.lastCall?.[1]).toEqual([other.id]);
     await vi.advanceTimersByTimeAsync(5_000);
-    expect((await result)[1].status).toBe("offline");
+    expect((await result)[1]).toMatchObject({ status: "offline", presenceCheckTimedOut: true });
     const updates = progress.mock.calls.length;
     next({ ...other, heartbeatRequestId: "nonce" });
     await vi.advanceTimersByTimeAsync(86_400_000);
@@ -47,6 +48,24 @@ describe("on-demand Agent presence", () => {
     expect(send).toHaveBeenCalledTimes(2);
     expect(stop).toHaveBeenCalledOnce();
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("paints one grouped result for a burst of 199 replies before the final device responds", async () => {
+    const devices = Array.from({length:200}, (_, index) => ({...device, id:`agent-${index}`}));
+    const progress = vi.fn();
+    const send = vi.fn().mockResolvedValue(undefined);
+    const stop = vi.fn();
+    let next!: (value: ManagedDevice) => void;
+    const result = collectDevicePresence(devices, "nonce", callback => { next = callback; return stop; }, send, undefined, progress);
+    for (const item of devices.slice(0,-1)) next({...item, heartbeatRequestId:"nonce"});
+    await Promise.resolve();
+    expect(progress).toHaveBeenCalledTimes(2);
+    expect(progress.mock.lastCall?.[1]).toEqual(["agent-199"]);
+    next({...devices[199], heartbeatRequestId:"nonce"});
+    expect(await result).toHaveLength(200);
+    expect(progress).toHaveBeenCalledTimes(3);
+    expect(send).toHaveBeenCalledTimes(200);
+    expect(stop).toHaveBeenCalledOnce();
   });
 
   it("accepts only the requested reply, closes its listener and has zero idle repeats", async () => {
@@ -58,10 +77,44 @@ describe("on-demand Agent presence", () => {
     next({ ...device, heartbeatRequestId: "old" });
     expect(stop).not.toHaveBeenCalled();
     next({ ...device, heartbeatRequestId: "nonce" });
-    expect((await result)[0].status).toBe("online");
+    const [refreshed] = await result;
+    expect(refreshed.status).toBe("online");
+    expect(refreshed).not.toHaveProperty("presenceCheckTimedOut");
     expect(stop).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(86_400_000);
     expect(send).toHaveBeenCalledOnce(); expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("marks 500 simultaneous timeouts with one list update without expiring a later target", async () => {
+    vi.useFakeTimers();
+    const devices = Array.from({ length: 500 }, (_, index) => ({ ...device, id: `agent-${index}` }));
+    const later = { ...device, id: "late-list-agent" };
+    let finishRead!: (items: ManagedDevice[]) => void;
+    const read = new Promise<ManagedDevice[]>(resolve => { finishRead = resolve; });
+    let next!: (item: ManagedDevice) => void;
+    const stop = vi.fn();
+    const send = vi.fn().mockResolvedValue(undefined);
+    const progress = vi.fn<(items: ManagedDevice[], pending: string[]) => void>();
+    const result = collectDevicePresence(devices, "nonce", callback => { next = callback; return stop; },
+      send, undefined, progress, read);
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(2_500);
+    finishRead([...devices, later]);
+    await vi.advanceTimersByTimeAsync(2_499);
+    expect(progress).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(progress).toHaveBeenCalledTimes(3);
+    expect(progress.mock.lastCall?.[0].filter(item => item.presenceCheckTimedOut)).toHaveLength(500);
+    expect(progress.mock.lastCall?.[1]).toEqual([later.id]);
+    expect(vi.getTimerCount()).toBe(1);
+    expect(stop).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(2_499);
+    next({ ...later, heartbeatRequestId: "nonce" });
+    expect((await result)[500]).toMatchObject({ status: "online", heartbeatRequestId: "nonce" });
+    expect(send.mock.calls).toEqual([...devices, later].map(item => [item, "refresh-status nonce"]));
+    expect(stop).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("times out unavailable targets without changing persistent state or looping", async () => {

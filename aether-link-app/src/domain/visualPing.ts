@@ -4,6 +4,8 @@ export type VisualPingPixel = {
   b: number;
 };
 
+export const VISUAL_PING_TIMEOUT_MS = 5_000;
+
 export type VisualPingLatencyInput = {
   startedAtMs: number;
   presentedAtMs: number;

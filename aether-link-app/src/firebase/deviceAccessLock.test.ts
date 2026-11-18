@@ -62,9 +62,32 @@ describe("Viewer-to-Agent encrypted device access request",()=>{
     state.documents.set(requestPath,{id,deviceId:'device-1',ownerUid:'viewer-1',operation,sessionId:'s1',lockVersion:'v1',state:'pending',createdAt:{toMillis:()=>Date.now()}});
     state.documents.set(lockPath,{enabled:true,version:'v1'});
     const publicState={enabled:true,version:'v1',publicKey:'synthetic'};
-    const lock={publicState,authorize:vi.fn(async(_request, _now, publish)=>{await publish(publicState);return publicState;}),signApproval:vi.fn(()=> 'synthetic-signature')} as unknown as AgentDeviceAccessLock;
+    const lock={publicState,authorize:vi.fn(async(_request, _now, publish, confirm)=>{await confirm?.();await publish(publicState);return publicState;}),signApproval:vi.fn(()=> 'synthetic-signature')} as unknown as AgentDeviceAccessLock;
     return {id,requestPath,lockPath,lock};
   }
+  it.each([false,true])('starts matching password work while the fresh lock read is held (rotated=%s)',async rotated=>{
+    const {id,requestPath,lockPath,lock}=pendingApproval();
+    let release!:()=>void;
+    const hold=new Promise<void>(resolve=>{release=resolve;});
+    vi.mocked(getDocFromServer)
+      .mockImplementationOnce(async ref=>{state.reads++;return snapshot(ref as any) as any;})
+      .mockImplementationOnce(async ref=>{state.reads++;await hold;return snapshot(ref as any) as any;});
+    const stop=vi.fn();
+    const pending=processAgentDeviceAccessRequest('device-1',id,lock,stop);
+    try {
+      await vi.waitFor(()=>expect(lock.authorize).toHaveBeenCalledOnce(),{timeout:200});
+      expect(state.reads).toBe(2);
+      expect(state.writes).toBe(0);
+      expect(lock.signApproval).not.toHaveBeenCalled();
+      if(rotated) state.documents.set(lockPath,{enabled:true,version:'v2'});
+      release();await pending;
+      expect(state.documents.get(requestPath).state).toBe(rotated?'denied':'approved');
+      expect(state.reads).toBe(rotated?2:4);
+      expect(state.writes).toBe(1);
+      expect(lock.signApproval).toHaveBeenCalledTimes(rotated?0:1);
+      expect(stop).not.toHaveBeenCalled();
+    } finally {release();await pending;}
+  });
   it('starts both approval transaction reads before either resolves and writes only after both',async()=>{
     const {id,requestPath,lockPath,lock}=pendingApproval();
     const started:string[]=[];
@@ -175,18 +198,24 @@ describe("Viewer-to-Agent encrypted device access request",()=>{
     expect(await isAgentDeviceAccessSessionAllowed("device-1","s1",null)).toBe(!enabled);
     expect(state.reads).toBe(1);expect(state.writes).toBe(0);
   });
-  it("overlaps fresh lock/session reads, keeps grant verification and uses three reads per locked start", async () => {
-    const lock = {publicState:{enabled:true,version:"v1"},verifyApproval:vi.fn(()=>true)} as unknown as AgentDeviceAccessLock;
+  function signedSessionFixture() {
     state.documents.set("deviceAccessLocks/device-1",{enabled:true,version:"v1"});
     state.documents.set("sessions/s1",{deviceId:"device-1",state:"connected",accessLockVersion:"v1",accessRequestId:"r1",ownerUid:"viewer-1"});
     state.documents.set("deviceAccessRequests/r1",{state:"approved",operation:"connect",sessionId:"s1",deviceId:"device-1",ownerUid:"viewer-1",approvedVersion:"v1",approvalSignature:"signature"});
+    return {publicState:{enabled:true,version:"v1"},verifyApproval:vi.fn(()=>true)} as unknown as AgentDeviceAccessLock;
+  }
+  it("looks up a session's grant while the fresh lock is held, then verifies it only after the lock check", async () => {
+    const lock = signedSessionFixture();
     let release!:()=>void;
     const blocked = new Promise<void>(resolve=>{release=resolve;});
     vi.mocked(getDocFromServer).mockImplementationOnce(async ref=>{state.reads++;await blocked;return snapshot(ref as any) as any;});
-    const pending=isAgentDeviceAccessSessionAllowed("device-1","s1",lock);
-    expect(state.reads).toBe(2);
-    expect(lock.verifyApproval).not.toHaveBeenCalled();
-    release();
+    let decided = false;
+    const pending=isAgentDeviceAccessSessionAllowed("device-1","s1",lock).finally(() => { decided = true; });
+    try {
+      await vi.waitFor(()=>expect(state.reads).toBe(3),{timeout:250});
+      expect(decided).toBe(false);
+      expect(lock.verifyApproval).not.toHaveBeenCalled();
+    } finally {release();await pending;}
     expect(await pending).toBe(true);
     expect(state.reads).toBe(3);
     expect(lock.verifyApproval).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({sessionId:"s1"}),"v1","signature");
@@ -196,6 +225,33 @@ describe("Viewer-to-Agent encrypted device access request",()=>{
     vi.useFakeTimers();await vi.advanceTimersByTimeAsync(86_400_000);
     expect({reads:state.reads,writes:state.writes,listeners:state.listenCount}).toEqual(counts);
     expect(vi.getTimerCount()).toBe(0);
+  });
+  it.each(["known", "late-read-error", "late-sync-error"])("never verifies a rotated lock's approval (%s)", async scenario => {
+    const late = scenario !== "known";
+    const lock = signedSessionFixture();
+    const store = () => state.documents.set("deviceAccessLocks/device-1",{enabled:true,version:"v2"});
+    if (!late) store();
+    let release!:()=>void;
+    const blocked = new Promise<void>(resolve=>{release=resolve;});
+    if (late) {
+      vi.mocked(getDocFromServer).mockImplementationOnce(async ref=>{state.reads++;await blocked;return snapshot(ref as any) as any;});
+      vi.mocked(getDocFromServer).mockImplementationOnce(async ref=>{state.reads++;return snapshot(ref as any) as any;});
+      const fail = () => {state.reads++;throw new Error("speculative approval lookup failed");};
+      vi.mocked(getDocFromServer).mockImplementationOnce(scenario === "late-sync-error" ? fail : async () => fail());
+    } else {
+      vi.mocked(getDocFromServer).mockImplementationOnce(async ref=>{state.reads++;return snapshot(ref as any) as any;});
+      vi.mocked(getDocFromServer).mockImplementationOnce(async ref=>{state.reads++;await blocked;return snapshot(ref as any) as any;});
+    }
+    const pending = isAgentDeviceAccessSessionAllowed("device-1","s1",lock);
+    try {
+      if (late) await vi.waitFor(()=>expect(state.reads).toBe(3),{timeout:250});
+      else await new Promise(resolve=>setTimeout(resolve,0));
+      store(); release();
+      expect(await pending).toBe(false);
+      expect(state.reads).toBe(late ? 3 : 2);
+      expect(lock.verifyApproval).not.toHaveBeenCalled();
+      expect(state.writes).toBe(0); expect(state.listenCount).toBe(0);
+    } finally {store();release();await pending;}
   });
   it.each(["unlocked","local-mismatch","version","device","closed","request-owner","signature","read-error"])("preserves denial and bounded reads for %s", async scenario => {
     const lock={publicState:{enabled:scenario!=="unlocked",version:"v1"},verifyApproval:vi.fn(()=>scenario!=="signature")} as unknown as AgentDeviceAccessLock;

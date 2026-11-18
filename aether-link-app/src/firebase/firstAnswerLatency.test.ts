@@ -17,11 +17,36 @@ describe("first answer critical path", () => {
     let done = false;
     const pending = publishAnswerDuringGathering(peer, answer, publish, () => true).then(() => { done = true; });
     const event = { candidate: { toJSON: () => ({ candidate: "host" }) } };
-    peer.onicecandidate?.(event); peer.onicecandidate?.(event);
-    await vi.waitFor(() => expect(publish).toHaveBeenCalledExactlyOnceWith(answer));
-    expect(done).toBe(false); expect(candidateWriter).toHaveBeenCalledTimes(2);
-    finish(); await pending;
+    try {
+      peer.onicecandidate?.(event); peer.onicecandidate?.(event);
+      await vi.waitFor(() => expect(publish).toHaveBeenCalledExactlyOnceWith(answer));
+      expect(done).toBe(false); expect(candidateWriter).toHaveBeenCalledTimes(2);
+      expect(publish.mock.invocationCallOrder[0]).toBeLessThan(candidateWriter.mock.invocationCallOrder[0]);
+    } finally { finish(); await pending; }
     expect(publish).toHaveBeenCalledTimes(1); expect(peer.onicecandidate).toBe(candidateWriter);
+  });
+  it("holds candidates emitted before usable SDP and flushes them without waiting for answer acknowledgement", async () => {
+    const {peer,answer,finish,candidateWriter}=fixture();
+    let acknowledge!: () => void;
+    const acknowledgement=new Promise<void>(resolve=>{acknowledge=resolve;});
+    const publish=vi.fn(()=>acknowledgement);
+    const pending=publishAnswerDuringGathering(peer,answer,publish,()=>true);
+    const early={candidate:{toJSON:()=>({candidate:"early"})}};
+    const next={candidate:{toJSON:()=>({candidate:"next"})}};
+    try {
+      peer.localDescription=null;
+      peer.onicecandidate?.(early);
+      expect(candidateWriter).not.toHaveBeenCalled();
+      peer.localDescription=answer;
+      peer.onicecandidate?.(next);
+      await vi.waitFor(()=>expect(candidateWriter.mock.calls).toEqual([[early],[next]]));
+      expect(publish).toHaveBeenCalledExactlyOnceWith(answer);
+      expect(publish.mock.invocationCallOrder[0]).toBeLessThan(candidateWriter.mock.invocationCallOrder[0]);
+    } finally {
+      acknowledge();
+      finish();
+      await pending;
+    }
   });
   it("falls back after gathering for runtimes with no candidate events", async () => {
     const { peer, answer, finish } = fixture(); const publish = vi.fn(async () => undefined);
@@ -30,17 +55,29 @@ describe("first answer critical path", () => {
     expect(publish).toHaveBeenCalledExactlyOnceWith(answer);
   });
   it("does not publish a stale negotiation and keeps gathering intact", async () => {
-    const { peer, answer, finish } = fixture(); let current = true;
+    const { peer, answer, finish, candidateWriter } = fixture(); let current = true;
     const publish = vi.fn(async () => undefined);
     const pending = publishAnswerDuringGathering(peer, answer, publish, () => current);
-    peer.onicecandidate?.({candidate: null}); current = false;
-    finish(); await pending; expect(publish).not.toHaveBeenCalled();
+    const event = {candidate:{toJSON:()=>({candidate:"former"})}};
+    peer.onicecandidate?.(event); current = false;
+    peer.onicecandidate?.(event);
+    finish(); await pending;
+    expect(publish).not.toHaveBeenCalled();
+    expect(candidateWriter).not.toHaveBeenCalled();
   });
-  it("propagates publication failure and restores candidate handling", async () => {
+  it("propagates publication failure and drops subsequent candidates before gathering ends", async () => {
     const { peer, answer, finish, candidateWriter } = fixture();
     const publish = vi.fn(async () => { throw new Error("denied"); });
     const pending = publishAnswerDuringGathering(peer, answer, publish, () => true);
-    peer.onicecandidate?.({candidate: null}); await Promise.resolve(); finish();
-    await expect(pending).rejects.toThrow("denied"); expect(peer.onicecandidate).toBe(candidateWriter);
+    let error: unknown;
+    const outcome = pending.catch(reason => { error = reason; });
+    const emit = peer.onicecandidate;
+    try {
+      emit?.({candidate: null});
+      await vi.waitFor(() => expect(error).toEqual(new Error("denied")), {timeout: 400});
+      emit?.({candidate: { toJSON: () => ({ candidate: "late" }) }});
+      peer.onicecandidate?.({candidate: { toJSON: () => ({ candidate: "also-late" }) }});
+      expect(candidateWriter).toHaveBeenCalledExactlyOnceWith({candidate: null});
+    } finally { finish(); await outcome; }
   });
 });

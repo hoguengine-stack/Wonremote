@@ -1,8 +1,10 @@
+import { isIP } from "node:net";
 import { beginConnectionTiming, markConnectionTiming } from "../domain/connectionTiming";
 import { createUserWithEmailAndPassword, signInWithEmailAndPassword } from "firebase/auth";
 import { subscribeFirebaseSessionData } from "./sessionData";
 import { DEVICE_ACCESS_TTL_MS, type DeviceAccessRequest, type DeviceAccessState } from "../domain/deviceAccessLock";
 import type { AgentDeviceAccessLock } from "../agent/deviceAccessLock";
+import { resolveFirestoreTileFallbackPolicy } from "../agent/agentStreamPolicy";
 import {
   collection,
   doc,
@@ -16,8 +18,12 @@ import {
   query,
   runTransaction,
   serverTimestamp,
+  Timestamp,
   where,
   writeBatch,
+  type DocumentData,
+  type DocumentReference,
+  type DocumentSnapshot,
   type Unsubscribe,
 } from "firebase/firestore";
 import { getDownloadURL, ref } from "firebase/storage";
@@ -87,6 +93,7 @@ type AgentFirebaseEnv = Record<string, string | undefined>;
 import { createFileChannelSender, type AgentFileSendInput } from "../agent/fileChannelSender";
 
 export interface AgentWebRtcTransport {
+  isClosed: () => boolean;
   sendFileStatus: (status: WebRtcFileStatusMessage) => boolean;
   sendFile: (input: AgentFileSendInput) => Promise<void>;
   close: () => Promise<void>;
@@ -97,9 +104,11 @@ export interface AgentWebRtcTransport {
   ) => "backpressure" | "sent" | "unavailable";
 }
 
+type ControlChannelOwner = (requireOpen?: boolean) => boolean;
+
 export interface AgentWebRtcTransportHandlers {
-  onControl?: (action: string, isCurrentChannel: () => boolean) => void;
-  onControlClosed?: () => void;
+  onControl?: (action: string, isCurrentChannel: ControlChannelOwner) => void;
+  onControlClosed?: (channel: ControlChannelOwner) => void;
   onFileChunk?: (
     chunk: WebRtcFileChunkMessage,
     isCurrentChannel: () => boolean,
@@ -154,7 +163,7 @@ export async function registerAgentFirstRunWithFirebase(
     try {
       credential = await createUserWithEmailAndPassword(services.auth, email, authPassword);
     } catch (createError) {
-      if (isFirebaseAuthCode(createError, "auth/email-already-in-use")) {
+      if (hasFirebaseErrorCode(createError, "auth/email-already-in-use")) {
         credential = await signInWithEmailAndPassword(services.auth, email, authPassword);
       } else {
         throwExplainedFirebaseAuthError(createError);
@@ -281,13 +290,13 @@ export async function sendAgentHeartbeatWithFirebase(
       presenceMode: input.presenceMode,
       heartbeatRequestId: input.heartbeatRequestId,
       activeDisplayIndex: input.activeDisplayIndex,
-      displays: input.displays ?? [],
+      ...(input.displays !== undefined ? {displays:input.displays} : {}),
       installId: input.installId,
       lastSeenAt: nowIso,
       lastSeenAtServer: serverTimestamp(),
       macAddresses: input.macAddresses ?? [],
       systemInfo: input.systemInfo ?? null,
-      controlDiagnostics: input.controlDiagnostics ?? null,
+      ...(input.controlDiagnostics !== undefined ? {controlDiagnostics:input.controlDiagnostics} : {}),
       deletedAt: null,
       streamDiagnostics: input.streamDiagnostics ?? null,
       status: "online",
@@ -355,9 +364,14 @@ export async function processAgentDeviceAccessRequest(
     const createdAt = request.createdAt?.toMillis?.();
     if (!Number.isFinite(createdAt) || createdAt > Date.now() + 5_000 || createdAt < Date.now() - DEVICE_ACCESS_TTL_MS) throw new Error("접속 잠금 요청 시간이 만료되었습니다.");
     if (request.deviceId !== deviceId || request.id !== requestId) throw new Error("다른 장비의 잠금 요청입니다.");
-    const previous = await readAgentDeviceAccessState(deviceId, env);
-    if (request.lockVersion !== previous.version) throw new Error("잠금 설정이 변경되었습니다. 장비 목록을 새로고침하세요.");
-    if (previous.enabled && !lock.publicState.enabled && request.operation !== "reset") throw new Error("잠금 설정 복구가 필요합니다. 관리자 비밀번호로 재설정하세요.");
+    const verifyCurrentLock = async () => {
+      const previous = await readAgentDeviceAccessState(deviceId, env);
+      if (request.lockVersion !== previous.version) throw new Error("잠금 설정이 변경되었습니다. 장비 목록을 새로고침하세요.");
+      if (previous.enabled && !lock.publicState.enabled && request.operation !== "reset") throw new Error("잠금 설정 복구가 필요합니다. 관리자 비밀번호로 재설정하세요.");
+    };
+    const local = lock.publicState;
+    const overlap = request.operation === "connect" && local.enabled && local.version === request.lockVersion;
+    if (!overlap) await verifyCurrentLock();
     await lock.authorize(request, Date.now(), async (state: DeviceAccessState) => {
       if (request.operation !== "connect") await stopActiveSession();
       await runTransaction(db, async transaction => {
@@ -365,14 +379,14 @@ export async function processAgentDeviceAccessRequest(
         const [currentRequest, currentLock] = await Promise.all([
           transaction.get(requestRef), transaction.get(lockRef),
         ]);
-        if (currentRequest.data()?.state !== "pending" || (currentLock.data()?.version ?? "") !== previous.version) throw new Error("잠금 요청이 이미 처리되었거나 설정이 변경되었습니다.");
+        if (currentRequest.data()?.state !== "pending" || (currentLock.data()?.version ?? "") !== request.lockVersion) throw new Error("잠금 요청이 이미 처리되었거나 설정이 변경되었습니다.");
         if (request.operation !== "connect") {
           transaction.set(lockRef, {enabled:state.enabled, version:state.version, updatedAt:serverTimestamp()});
           transaction.update(doc(db, "devices", deviceId), {accessLocked:state.enabled, accessLockVersion:state.version});
         }
         transaction.update(requestRef, {state:"approved", approvedVersion:state.version, approvalSignature:lock.signApproval(request, state.version), updatedAt:serverTimestamp()});
       });
-    });
+    }, overlap ? verifyCurrentLock : undefined);
   } catch (error) {
     await safeUpdateDoc(requestRef, {state:"denied", error:error instanceof Error ? error.message : "접속 잠금 요청을 처리하지 못했습니다.", updatedAt:serverTimestamp()});
   }
@@ -380,18 +394,29 @@ export async function processAgentDeviceAccessRequest(
 
 export async function isAgentDeviceAccessSessionAllowed(deviceId: string, sessionId: string, lock: AgentDeviceAccessLock | null, env: AgentFirebaseEnv = process.env): Promise<boolean> {
   const {db} = getAgentFirebaseServices(env);
-  // Both reads remain server-fresh; overlap them only for a locally locked device.
-  const [current, sessionSnapshot] = await Promise.all([
-    readAgentDeviceAccessState(deviceId, env),
-    lock?.publicState.enabled ? getDocFromServer(doc(db, "sessions", sessionId)) : undefined,
-  ]);
+  let observedLock: Awaited<ReturnType<typeof readAgentDeviceAccessState>> | null | undefined;
+  const lockRead = readAgentDeviceAccessState(deviceId, env).then(state => observedLock = state, error => {
+    observedLock = null;
+    throw error;
+  });
+  const admissionRead = lock?.publicState.enabled ? getDocFromServer(doc(db, "sessions", sessionId)).then(snapshot => {
+    const session = snapshot.data();
+    if (session?.deviceId !== deviceId || session.state !== "connected" || !lock.publicState.enabled
+      || session.accessLockVersion !== lock.publicState.version || typeof session.accessRequestId !== "string"
+      || observedLock === null || (observedLock && (!observedLock.enabled || observedLock.version !== session.accessLockVersion))) return null;
+    // Approval is immutable after it is granted. Prefetch it, but never authorize before the fresh lock read.
+    const readRequest = async () => (await getDocFromServer(doc(db, "deviceAccessRequests", session.accessRequestId))).data();
+    const requestRead = readRequest().then(request => ({request}), error => ({error}));
+    return {session, requestRead};
+  }) : undefined;
+  const [current, admission] = await Promise.all([lockRead, admissionRead]);
   if (!current.enabled) return lock?.publicState.enabled !== true;
-  if (!lock?.publicState.enabled || lock.publicState.version !== current.version) return false;
-  const session = sessionSnapshot?.data();
-  if (session?.deviceId !== deviceId || session.state !== "connected" || session.accessLockVersion !== current.version || typeof session.accessRequestId !== "string") return false;
-  const request = (await getDocFromServer(doc(db, "deviceAccessRequests", session.accessRequestId))).data();
+  if (!lock?.publicState.enabled || lock.publicState.version !== current.version || admission?.session.accessLockVersion !== current.version) return false;
+  const result = await admission.requestRead;
+  if ("error" in result) throw result.error;
+  const {request} = result;
   return request?.state === "approved" && request.operation === "connect" && request.sessionId === sessionId
-    && request.deviceId === deviceId && request.ownerUid === session.ownerUid && request.approvedVersion === current.version
+    && request.deviceId === deviceId && request.ownerUid === admission.session.ownerUid && request.approvedVersion === current.version
     && lock.verifyApproval(request as DeviceAccessRequest, current.version, request.approvalSignature);
 }
 
@@ -410,28 +435,57 @@ export async function reportAgentUpdateTelemetryWithFirebase(
 export async function loadAgentUpdateRolloutWithFirebase(
   deviceId: string,
   env: AgentFirebaseEnv = process.env,
+  requireServer = false,
 ): Promise<{ rollout: UpdateFleetRollout; updatePaused: boolean; updateRing: DeviceUpdateRing } | null> {
   const services = getAgentFirebaseServices(env);
+  const read = requireServer ? readAgentUpdateServerDocument : getDoc;
   const [deviceSnapshot, rolloutSnapshot] = await Promise.all([
-    getDoc(doc(services.db, "devices", deviceId)),
-    getDoc(doc(services.db, "configuration", "updateRollout")),
+    read(doc(services.db, "devices", deviceId)),
+    read(doc(services.db, "configuration", "updateRollout")),
   ]);
-  if (!deviceSnapshot.exists() || !rolloutSnapshot.exists()) return null;
+  const rollout = parseAgentUpdateRollout(rolloutSnapshot.data());
+  if (!deviceSnapshot.exists() || !rollout) return null;
   const device = deviceSnapshot.data() as Record<string, unknown>;
-  const rollout = rolloutSnapshot.data() as Record<string, unknown>;
+  return { rollout, updatePaused: device.updatePaused === true, updateRing: sanitizeUpdateRing(device.updateRing) ?? "general" };
+}
+
+export async function loadAgentUpdateRolloutPolicyWithFirebase(env: AgentFirebaseEnv = process.env): Promise<UpdateFleetRollout | null> {
+  const { db } = getAgentFirebaseServices(env);
+  return parseAgentUpdateRollout((await readAgentUpdateServerDocument(doc(db, "configuration", "updateRollout"))).data());
+}
+
+function readAgentUpdateServerDocument(ref: DocumentReference<DocumentData>): Promise<DocumentSnapshot<DocumentData>> {
+  return new Promise((resolve, reject) => {
+    let stop: Unsubscribe | undefined;
+    const finish = () => { clearTimeout(deadline); stop?.(); };
+    const deadline = setTimeout(() => {
+      finish();
+      reject(new Error("Agent update policy read timed out."));
+    }, 5_000);
+    try {
+      stop = onSnapshot(ref, { includeMetadataChanges: true }, snapshot => {
+        if (snapshot.metadata.fromCache) return;
+        finish();
+        resolve(snapshot);
+      }, error => { finish(); reject(error); });
+    } catch (error) {
+      finish();
+      reject(error);
+    }
+  });
+}
+
+function parseAgentUpdateRollout(rollout: Record<string, unknown> | undefined): UpdateFleetRollout | null {
+  if (!rollout) return null;
   const targetVersion = typeof rollout.targetVersion === "string" ? rollout.targetVersion.trim() : "";
   const stage = sanitizeUpdateRing(rollout.stage);
   if (!targetVersion || !stage) return null;
   return {
-    rollout: {
-      targetVersion,
-      stage,
-      ...parseRolloutSelection(rollout.targetDeviceIds),
-      paused: rollout.paused === true,
-      percentage: typeof rollout.percentage === "number" ? rollout.percentage : 100,
-    },
-    updatePaused: device.updatePaused === true,
-    updateRing: sanitizeUpdateRing(device.updateRing) ?? "general",
+    targetVersion,
+    stage,
+    ...parseRolloutSelection(rollout.targetDeviceIds),
+    paused: rollout.paused === true,
+    percentage: typeof rollout.percentage === "number" ? rollout.percentage : 100,
   };
 }
 
@@ -473,28 +527,62 @@ export async function pollAgentCommandsWithFirebase(
     limit(50),
   );
   const snapshot = await getDocs(commandQuery);
-  return { commands: orderAgentCommands(await acknowledgeAgentCommands(services.db, commandQuery, snapshot.docs, input.deviceId)) };
+  const health = snapshot.docs.find(document => document.id === AGENT_HEALTH_COMMAND_ID);
+  const verifiedHealth = health ? await acknowledgeAgentHealthCommand(services.db, health, input.deviceId) : null;
+  const commands = await acknowledgeAgentCommands(services.db, commandQuery,
+    snapshot.docs.filter(document => document.id !== AGENT_HEALTH_COMMAND_ID), input.deviceId);
+  if (verifiedHealth) commands.push(verifiedHealth);
+  return { commands: orderAgentCommands(commands) };
 }
+
+const AGENT_HEALTH_COMMAND_ID = "agent-health";
+const AGENT_HEALTH_ACTION_PREFIX = "agent-health-check ";
+const AGENT_HEALTH_CHALLENGE_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
+type AgentCommandDocument = { id: string; ref: DocumentReference<unknown>; data: () => unknown };
 
 export async function queueAgentHealthChallengeWithFirebase(
   input: { deviceId: string; challengeId: string },
   env: AgentFirebaseEnv = process.env,
 ): Promise<void> {
-  if (!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(input.challengeId)) {
+  if (!AGENT_HEALTH_CHALLENGE_ID.test(input.challengeId)) {
     throw new Error("Invalid Agent health challenge.");
   }
   const services = getAgentFirebaseServices(env);
-  await safeSetDoc(doc(services.db, "devices", input.deviceId, "commands", "agent-health"), {
-    action: `agent-health-check ${input.challengeId}`,
+  await safeSetDoc(doc(services.db, "devices", input.deviceId, "commands", AGENT_HEALTH_COMMAND_ID), {
+    action: AGENT_HEALTH_ACTION_PREFIX + input.challengeId,
     createdAt: serverTimestamp(),
     state: "pending",
   });
 }
 
+async function acknowledgeAgentHealthCommand(
+  db: Parameters<typeof runTransaction>[0],
+  document: AgentCommandDocument,
+  deviceId: string,
+  isActive: () => boolean = () => true,
+): Promise<AgentCommand | null> {
+  const {action} = document.data() as {action?: unknown};
+  const valid = typeof action === "string" && action.startsWith(AGENT_HEALTH_ACTION_PREFIX) &&
+    AGENT_HEALTH_CHALLENGE_ID.test(action.slice(AGENT_HEALTH_ACTION_PREFIX.length));
+  try {
+    return await runTransaction(db, async transaction => {
+      if (!isActive()) return null;
+      const current = (await transaction.get(document.ref)).data() as {action?: unknown; state?: unknown; createdAt?: unknown} | undefined;
+      if (!isActive() || current?.state !== "pending" || current.action !== action) return null;
+      safeBatchUpdate(transaction, document.ref, {state:valid ? "delivered" : "ignored", deliveredAt:serverTimestamp()});
+      return valid ? {id:document.id,action,deviceId,createdAt:coerceCreatedAt(current.createdAt)} : null;
+    }, {maxAttempts:2});
+  } catch (error) {
+    // A displaced challenge does not end the ordinary command listener.
+    if (["aborted", "failed-precondition", "not-found"].some(code => hasFirebaseErrorCode(error, code))) return null;
+    throw error;
+  }
+}
+
 async function acknowledgeAgentCommands(
   db: Parameters<typeof writeBatch>[0],
   commandQuery: Parameters<typeof getDocsFromServer>[0],
-  documents: readonly { id: string; ref: unknown; data: () => unknown }[],
+  documents: readonly AgentCommandDocument[],
   deviceId: string,
   isActive: () => boolean = () => true,
   allowRecovery = true,
@@ -513,18 +601,45 @@ async function acknowledgeAgentCommands(
     if (action.startsWith("start-stream ") && command?.sessionId) beginConnectionTiming(command.sessionId, "agent");
     return {
       ref: document.ref,
+      data,
       update: { state: command ? "delivered" : "ignored", deliveredAt: serverTimestamp() },
       command,
     };
   });
+  const acknowledged = (committed: typeof entries) => {
+    for (const entry of committed) {
+      if (entry.command?.action.startsWith("start-stream ") && entry.command.sessionId) markConnectionTiming(entry.command.sessionId, "command-acknowledged");
+    }
+    return committed.flatMap(entry => entry.command ? [entry.command] : []);
+  };
   const batch = writeBatch(db);
   for (const entry of entries) safeBatchUpdate(batch, entry.ref, entry.update);
   try {
     await batch.commit();
-    for (const entry of entries) if (entry.command?.action.startsWith("start-stream ") && entry.command.sessionId) markConnectionTiming(entry.command.sessionId, "command-acknowledged");
-    return entries.flatMap((entry) => entry.command ? [entry.command] : []);
+    return acknowledged(entries);
   } catch (error) {
-    if (!allowRecovery || !isFirebaseNotFoundError(error)) throw error;
+    if (!allowRecovery) throw error;
+    if (hasFirebaseErrorCode(error, "permission-denied")) {
+      if (!isActive()) return [];
+      // A deleted document can fail rule evaluation before the write reports NOT_FOUND.
+      const committed = await runTransaction(db, async transaction => {
+        if (!isActive()) return [];
+        const current = await Promise.all(entries.map(entry => transaction.get(entry.ref)));
+        if (!isActive()) return [];
+        if (current.every(snapshot => snapshot.exists())) throw error;
+        const survivors = entries.filter(({data}, index) => {
+          const fresh = current[index].data() as (typeof data & {state?: unknown}) | undefined;
+          if (fresh?.state !== "pending" || fresh.action !== data.action || fresh.sessionId !== data.sessionId) return false;
+          const originalTime = data.createdAt;
+          return typeof originalTime === "string" ? fresh.createdAt === originalTime :
+            originalTime instanceof Timestamp && fresh.createdAt instanceof Timestamp && originalTime.isEqual(fresh.createdAt);
+        });
+        for (const entry of survivors) safeBatchUpdate(transaction, entry.ref, entry.update);
+        return survivors;
+      }, {maxAttempts:1});
+      return isActive() ? acknowledged(committed) : [];
+    }
+    if (!isFirebaseNotFoundError(error)) throw error;
   }
 
   if (!isActive()) return [];
@@ -533,7 +648,7 @@ async function acknowledgeAgentCommands(
   const ids = new Set(documents.map((document) => document.id));
   const current = await getDocsFromServer(commandQuery);
   return acknowledgeAgentCommands(db, commandQuery,
-    current.docs.filter((document) => ids.has(document.id)), deviceId, isActive, false);
+    current.docs.filter(document => ids.has(document.id)), deviceId, isActive, false);
 }
 
 export async function subscribeAgentCommandsWithFirebase(
@@ -567,8 +682,10 @@ export async function subscribeAgentCommandsWithFirebase(
   let active = true;
   let ready = false;
   let serialized = Promise.resolve();
+  let healthTasks = Promise.resolve();
   let unsubscribe: Unsubscribe | undefined;
   const queuedIds = new Set<string>();
+  let lastQueuedHealthAction: string | undefined;
   const stop = () => {
     active = false;
     unsubscribe?.();
@@ -582,6 +699,7 @@ export async function subscribeAgentCommandsWithFirebase(
   };
   unsubscribe = onSnapshot(
     commandQuery,
+    { includeMetadataChanges: true },
     (snapshot) => {
       if (!active) return;
       if (!ready) {
@@ -594,10 +712,24 @@ export async function subscribeAgentCommandsWithFirebase(
         }
       }
       const documents = snapshot.docChanges()
-        .filter((change) => change.type === "added" && !queuedIds.has(change.doc.id))
+        .filter(change => change.type === "added" && change.doc.id !== AGENT_HEALTH_COMMAND_ID && !queuedIds.has(change.doc.id))
         .map((change) => change.doc);
-      if (documents.length === 0) return;
       for (const document of documents) queuedIds.add(document.id);
+      // The fixed health document can change without a new ADDED event.
+      const health = snapshot.metadata?.fromCache ? undefined : snapshot.docs.find(document =>
+        document.id === AGENT_HEALTH_COMMAND_ID && !document.metadata?.hasPendingWrites);
+      if (health) {
+        const action = String(health.data().action ?? "");
+        if (action !== lastQueuedHealthAction) {
+          lastQueuedHealthAction = action;
+          healthTasks = healthTasks.then(async () => {
+            if (!active) return;
+            const command = await acknowledgeAgentHealthCommand(services.db, health, input.deviceId, () => active);
+            if (active && command) await onCommands([command]);
+          }).catch(fail);
+        }
+      }
+      if (documents.length === 0) return;
       serialized = serialized.then(async () => {
         if (!active) return;
         const commands = await acknowledgeAgentCommands(services.db, commandQuery, documents, input.deviceId, () => active);
@@ -668,21 +800,10 @@ export async function startAgentWebRtcTransportWithFirebase(
   sessionId: string,
   handlers: AgentWebRtcTransportHandlers = {},
   env: AgentFirebaseEnv = process.env,
-): Promise<AgentWebRtcTransport | null> {
+): Promise<AgentWebRtcTransport> {
   const services = getAgentFirebaseServices(env);
   const signalRef = doc(services.db, "sessions", sessionId, "webrtc", "signal");
   const connectTimeoutMs = resolveWebRtcConnectTimeoutMs(env);
-  const signalSnapshot = await waitForWebRtcOffer(signalRef, connectTimeoutMs);
-  if (!signalSnapshot) {
-    handlers.onState?.(
-      "error",
-      formatWebRtcConnectionFailure("timeout", `${connectTimeoutMs}ms without a Viewer offer`),
-    );
-    return null;
-  }
-  const rtcConfiguration = await resolveRtcConfiguration(env, async () =>
-    httpsCallable(services.functions, "getRtcConfiguration")({}),
-  );
   const agentCandidates = collection(services.db, "sessions", sessionId, "agentCandidates");
   const viewerCandidates = collection(services.db, "sessions", sessionId, "viewerCandidates");
   const recentViewerCandidates = query(
@@ -693,7 +814,9 @@ export async function startAgentWebRtcTransportWithFirebase(
   const recentNegotiationIds = new Set<string>();
   const appliedViewerCandidates = new Set<string>();
   let latestViewerCandidateDocs: readonly { id: string; data: () => Record<string, any> }[] = [];
+  let viewerCandidatesFromServer = false;
   const maxMessageBytes = resolveWebRtcMaxMessageBytes(env);
+  const preserveUnavailableOnSaturation = resolveFirestoreTileFallbackPolicy(env).enabled;
   let activeNegotiationId: string | null = null;
   let activePeer: AgentPeerConnectionLike | null = null;
   let activeRemoteDescriptionSet = false;
@@ -704,14 +827,29 @@ export async function startAgentWebRtcTransportWithFirebase(
   let fileSender: ReturnType<typeof createFileChannelSender> | null = null;
   let channelOpened = false;
   let closedByCaller = false;
+  let receivedOffer = false;
+  let watchingCandidates = false;
+  let initialOfferWatchdog: ReturnType<typeof setTimeout> | null = null;
   let connectWatchdog: ReturnType<typeof setTimeout> | null = null;
   let unsubscribeSignal: Unsubscribe | null = null;
+  let signalListenerGeneration = 0;
   let unsubscribeViewerCandidates: Unsubscribe | null = null;
+  let viewerCandidateListenerGeneration = 0;
+  let recoverViewerCandidates: (() => void) | undefined;
   let signalRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let viewerCandidateRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let signalRetryAttempt = 0;
   let viewerCandidateRetryAttempt = 0;
-  let negotiationQueue = Promise.resolve();
+  let pendingOffer: NonNullable<ReturnType<typeof parseAgentWebRtcOffer>> | undefined;
+  let negotiating = false;
+  let answerGathering: AbortController | null = null;
+  let rtcConfiguration: ReturnType<typeof resolveRtcConfiguration> | undefined;
+
+  const clearInitialOfferWatchdog = () => {
+    if (!initialOfferWatchdog) return;
+    clearTimeout(initialOfferWatchdog);
+    initialOfferWatchdog = null;
+  };
 
   const clearConnectWatchdog = () => {
     if (connectWatchdog) {
@@ -731,6 +869,7 @@ export async function startAgentWebRtcTransportWithFirebase(
     if (expectedNegotiationId && activeNegotiationId !== expectedNegotiationId) {
       return;
     }
+    answerGathering?.abort();
     clearConnectWatchdog();
     const previousTileChannel = tileChannel;
     fileSender?.close();
@@ -745,6 +884,7 @@ export async function startAgentWebRtcTransportWithFirebase(
     fileChannelTasks = null;
     activePeer = null;
     activeRemoteDescriptionSet = false;
+    recoverViewerCandidates = undefined;
     previousFileChannelTasks?.close();
     previousTileChannel?.close?.();
     previousControlChannel?.close?.();
@@ -769,37 +909,35 @@ export async function startAgentWebRtcTransportWithFirebase(
 
   const applyViewerCandidateDocs = (
     docs: readonly { id: string; data: () => Record<string, any> }[],
+    onRejected?: () => void,
   ) => {
     const negotiationId = activeNegotiationId;
     const peer = activePeer;
     if (!negotiationId || !peer || !activeRemoteDescriptionSet) {
-      return;
+      return false;
     }
-    docs.forEach((candidateDoc) => {
+    let matched = false;
+    for (const candidateDoc of docs) {
       const candidateData = candidateDoc.data();
+      if (!candidateMatchesNegotiation(candidateData, negotiationId)) continue;
+      const line = candidateData.candidate.candidate;
+      // Werift may silently ignore unsupported types or an unresolved mDNS host.
+      const endpoint = typeof line === "string" && /^candidate:[\w+/]{1,32} +[12] +(?:udp|tcp) +\d{1,10} +(\S+) +([1-9]\d{0,4}) +typ +(?:host|srflx|relay)(?: +|$)/i.exec(line.trim());
+      if (endpoint && isIP(endpoint[1]) && Number(endpoint[2]) <= 65535) matched = true;
       const candidateKey = `${negotiationId}:${candidateDoc.id}`;
-      if (
-        appliedViewerCandidates.has(candidateKey) ||
-        !candidateMatchesNegotiation(candidateData, negotiationId)
-      ) {
-        return;
-      }
+      if (appliedViewerCandidates.has(candidateKey)) continue;
       appliedViewerCandidates.add(candidateKey);
       void peer.addIceCandidate(candidateData.candidate).catch((error: unknown) => {
         appliedViewerCandidates.delete(candidateKey);
         console.warn(`[WebRTC] Failed to add Viewer ICE candidate: ${error instanceof Error ? error.message : error}`);
+        onRejected?.();
       });
-    });
+    }
+    return matched;
   };
 
-  const activateNegotiation = async (signal: unknown) => {
-    const offer = parseAgentWebRtcOffer(signal);
-    if (!offer || closedByCaller) {
-      return;
-    }
-    if (!rememberNegotiationAttempt(recentNegotiationIds, offer.negotiationId)) {
-      return;
-    }
+  const activateNegotiation = async (offer: NonNullable<ReturnType<typeof parseAgentWebRtcOffer>>) => {
+    if (closedByCaller) return;
 
     handlers.onState?.("negotiating");
     await closeActivePeer();
@@ -810,18 +948,28 @@ export async function startAgentWebRtcTransportWithFirebase(
     activeNegotiationId = offer.negotiationId;
     activeRemoteDescriptionSet = false;
     channelOpened = false;
+    const configuration = await (rtcConfiguration ??= resolveRtcConfiguration(env, async () =>
+      httpsCallable(services.functions, "getRtcConfiguration")({}),
+    ).catch(error => { rtcConfiguration = undefined; throw error; }));
+    if (closedByCaller || activeNegotiationId !== offer.negotiationId) return;
+    if (!watchingCandidates) {
+      watchingCandidates = true;
+      subscribeViewerCandidateUpdates();
+    }
     const peer = await createAgentPeerConnection({
-      iceServers: rtcConfiguration.iceServers,
-      iceTransportPolicy: rtcConfiguration.iceTransportPolicy,
+      iceServers: configuration.iceServers,
+      iceTransportPolicy: configuration.iceTransportPolicy,
     });
     if (closedByCaller || activeNegotiationId !== offer.negotiationId) {
       await peer.close();
       return;
     }
     activePeer = peer;
+    const canPublishAnswer = () => !closedByCaller && activePeer === peer
+      && activeNegotiationId === offer.negotiationId && !pendingOffer;
 
     peer.onicecandidate = (event) => {
-      if (!event.candidate || closedByCaller || activePeer !== peer || activeNegotiationId !== offer.negotiationId) {
+      if (!event.candidate || !canPublishAnswer()) {
         return;
       }
       const candidate = event.candidate.toJSON?.() ?? event.candidate;
@@ -876,10 +1024,11 @@ export async function startAgentWebRtcTransportWithFirebase(
             return;
           }
           controlChannel = channel;
-          const isCurrentChannel = () => !(
+          const isCurrentChannel = (requireOpen = false) => !(
             closedByCaller ||
             activeNegotiationId !== offer.negotiationId ||
-            controlChannel !== channel
+            controlChannel !== channel ||
+            (requireOpen && channel.readyState !== "open")
           );
           let controlChannelEnded = false;
           const clearControlChannel = () => {
@@ -891,7 +1040,7 @@ export async function startAgentWebRtcTransportWithFirebase(
             if (controlChannel === channel) {
               controlChannel = null;
             }
-            handlers.onControlClosed?.();
+            handlers.onControlClosed?.(isCurrentChannel);
           };
           bindAgentControlMessages(channel, {
             onControl: (action) => handlers.onControl?.(action, isCurrentChannel),
@@ -1028,33 +1177,43 @@ export async function startAgentWebRtcTransportWithFirebase(
     await peer.setRemoteDescription({ type: "offer", sdp: offer.sdp });
     if (closedByCaller || activePeer !== peer || activeNegotiationId !== offer.negotiationId) return;
     activeRemoteDescriptionSet = true;
-    applyViewerCandidateDocs(latestViewerCandidateDocs);
-    void getDocs(recentViewerCandidates)
-      .then((snapshot) => applyViewerCandidateDocs(snapshot.docs))
-      .catch((error) => {
-        console.warn(
-          `[WebRTC] Viewer ICE candidate refresh failed; realtime listener will continue: ${error instanceof Error ? error.message : error}`,
-        );
-      });
+    let fallbackStarted = false;
+    const refreshCandidates = () => {
+      if (fallbackStarted || !canPublishAnswer()) return;
+      fallbackStarted = true;
+      void getDocs(recentViewerCandidates)
+        .then(snapshot => { if (canPublishAnswer()) applyViewerCandidateDocs(snapshot.docs); })
+        .catch(error => {
+          console.warn(`[WebRTC] Viewer ICE candidate refresh failed; realtime listener will continue: ${error instanceof Error ? error.message : error}`);
+        });
+    };
+    recoverViewerCandidates = refreshCandidates;
+    const matched = applyViewerCandidateDocs(latestViewerCandidateDocs, refreshCandidates);
+    if (!viewerCandidatesFromServer || !matched) refreshCandidates();
     const answer = await peer.createAnswer();
-    if (closedByCaller || activePeer !== peer || activeNegotiationId !== offer.negotiationId) return;
-    await publishAnswerDuringGathering(peer, answer, async localAnswer => {
-      await safeSetDoc(
-        signalRef,
-        {
-          answer: {
-            negotiationId: offer.negotiationId,
-            type: localAnswer.type,
-            sdp: localAnswer.sdp,
+    if (!canPublishAnswer()) return;
+    const gathering = new AbortController();
+    answerGathering = gathering;
+    try {
+      await publishAnswerDuringGathering(peer, answer, async localAnswer => {
+        await safeSetDoc(
+          signalRef,
+          {
+            answer: {
+              negotiationId: offer.negotiationId,
+              type: localAnswer.type,
+              sdp: localAnswer.sdp,
+            },
+            state: "agent-answer",
+            updatedAt: serverTimestamp(),
           },
-          negotiationId: offer.negotiationId,
-          state: "agent-answer",
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true },
-      );
-    }, () => !closedByCaller && activePeer === peer && activeNegotiationId === offer.negotiationId);
-    if (closedByCaller || activePeer !== peer || activeNegotiationId !== offer.negotiationId) return;
+          { merge: true },
+        );
+      }, canPublishAnswer, gathering.signal);
+    } finally {
+      answerGathering = null;
+    }
+    if (!canPublishAnswer()) return;
     if (!channelOpened) {
       connectWatchdog = setTimeout(() => {
         failNegotiation(
@@ -1068,17 +1227,37 @@ export async function startAgentWebRtcTransportWithFirebase(
 
   const scheduleNegotiation = (signal: unknown) => {
     const offer = parseAgentWebRtcOffer(signal);
-    if (!offer || recentNegotiationIds.has(offer.negotiationId)) {
+    if (!offer || closedByCaller || !rememberNegotiationAttempt(recentNegotiationIds, offer.negotiationId)) {
       return;
     }
-    negotiationQueue = negotiationQueue
-      .then(() => activateNegotiation(signal))
-      .catch((error) => {
-        reportTransportError("negotiation-failed", error instanceof Error ? error.message : String(error));
-        if (activeNegotiationId) {
-          void closeActivePeer(activeNegotiationId);
+    if (!receivedOffer) {
+      receivedOffer = true;
+      clearInitialOfferWatchdog();
+    }
+    pendingOffer = offer;
+    answerGathering?.abort();
+    if (negotiating) return;
+    negotiating = true;
+    void (async () => {
+      try {
+        while (!closedByCaller && pendingOffer) {
+          const next = pendingOffer;
+          pendingOffer = undefined;
+          try {
+            await activateNegotiation(next);
+          } catch (error) {
+            reportTransportError("negotiation-failed", error instanceof Error ? error.message : String(error));
+            if (!watchingCandidates) {
+              await closeTransport();
+              return;
+            }
+            if (activeNegotiationId) await closeActivePeer(activeNegotiationId);
+          }
         }
-      });
+      } finally {
+        negotiating = false;
+      }
+    })();
   };
 
   const scheduleSignalResubscribe = (error: unknown) => {
@@ -1102,20 +1281,33 @@ export async function startAgentWebRtcTransportWithFirebase(
     }
     unsubscribeSignal?.();
     unsubscribeSignal = null;
+    const generation = ++signalListenerGeneration;
+    const onError = (error: unknown) => {
+      if (closedByCaller || generation !== signalListenerGeneration) return;
+      signalListenerGeneration++;
+      unsubscribeSignal?.();
+      unsubscribeSignal = null;
+      if (!receivedOffer) {
+        reportTransportError("signal-listener-failed", error instanceof Error ? error.message : String(error));
+        void closeTransport();
+        return;
+      }
+      scheduleSignalResubscribe(error);
+    };
     try {
-      unsubscribeSignal = onSnapshot(
+      const stop = onSnapshot(
         signalRef,
         (snapshot) => {
+          if (closedByCaller || generation !== signalListenerGeneration) return;
           signalRetryAttempt = 0;
           scheduleNegotiation(snapshot.data());
         },
-        (error) => {
-          unsubscribeSignal = null;
-          scheduleSignalResubscribe(error);
-        },
+        onError,
       );
+      if (closedByCaller || generation !== signalListenerGeneration) stop();
+      else unsubscribeSignal = stop;
     } catch (error) {
-      scheduleSignalResubscribe(error);
+      onError(error);
     }
   };
 
@@ -1140,55 +1332,64 @@ export async function startAgentWebRtcTransportWithFirebase(
     }
     unsubscribeViewerCandidates?.();
     unsubscribeViewerCandidates = null;
-    try {
-      unsubscribeViewerCandidates = onSnapshot(
-        recentViewerCandidates,
-        (snapshot) => {
-          viewerCandidateRetryAttempt = 0;
-          latestViewerCandidateDocs = snapshot.docs;
-          applyViewerCandidateDocs(latestViewerCandidateDocs);
-        },
-        (error) => {
-          unsubscribeViewerCandidates = null;
-          scheduleViewerCandidateResubscribe(error);
-        },
-      );
-    } catch (error) {
+    const generation = ++viewerCandidateListenerGeneration;
+    viewerCandidatesFromServer = false;
+    const onError = (error: unknown) => {
+      if (closedByCaller || generation !== viewerCandidateListenerGeneration) return;
+      viewerCandidateListenerGeneration++;
+      viewerCandidatesFromServer = false;
+      unsubscribeViewerCandidates?.();
+      unsubscribeViewerCandidates = null;
+      if (!channelOpened) recoverViewerCandidates?.();
       scheduleViewerCandidateResubscribe(error);
+    };
+    try {
+      const stop = onSnapshot(
+        recentViewerCandidates,
+        { includeMetadataChanges: true },
+        (snapshot) => {
+          if (closedByCaller || generation !== viewerCandidateListenerGeneration) return;
+          viewerCandidateRetryAttempt = 0;
+          viewerCandidatesFromServer = snapshot.metadata?.fromCache === false && snapshot.metadata?.hasPendingWrites === false;
+          latestViewerCandidateDocs = snapshot.docs;
+          applyViewerCandidateDocs(latestViewerCandidateDocs, channelOpened ? undefined : recoverViewerCandidates);
+        },
+        onError,
+      );
+      if (closedByCaller || generation !== viewerCandidateListenerGeneration) stop();
+      else unsubscribeViewerCandidates = stop;
+    } catch (error) {
+      onError(error);
     }
   };
 
-  // An open channel can send the pending first frame while ICE gathering continues.
-  // Receive remote trickle candidates without waiting for local STUN gathering.
-  subscribeViewerCandidateUpdates();
-  negotiationQueue = (async () => {
-    try {
-      await activateNegotiation(signalSnapshot);
-    } catch (error) {
-      reportTransportError("negotiation-failed", error instanceof Error ? error.message : String(error));
-      if (activeNegotiationId) await closeActivePeer(activeNegotiationId);
+  const closeTransport = async () => {
+    if (closedByCaller) return;
+    closedByCaller = true;
+    pendingOffer = undefined;
+    clearInitialOfferWatchdog();
+    clearConnectWatchdog();
+    if (signalRetryTimer) {
+      clearTimeout(signalRetryTimer);
+      signalRetryTimer = null;
     }
-    if (!closedByCaller) {
-      subscribeSignalUpdates();
+    if (viewerCandidateRetryTimer) {
+      clearTimeout(viewerCandidateRetryTimer);
+      viewerCandidateRetryTimer = null;
     }
-  })();
+    unsubscribeSignal?.();
+    unsubscribeViewerCandidates?.();
+    await closeActivePeer();
+  };
+  initialOfferWatchdog = setTimeout(() => {
+    reportTransportError("timeout", `${connectTimeoutMs}ms without a Viewer offer`);
+    void closeTransport();
+  }, connectTimeoutMs);
+  subscribeSignalUpdates();
 
   return {
-    close: async () => {
-      closedByCaller = true;
-      clearConnectWatchdog();
-      if (signalRetryTimer) {
-        clearTimeout(signalRetryTimer);
-        signalRetryTimer = null;
-      }
-      if (viewerCandidateRetryTimer) {
-        clearTimeout(viewerCandidateRetryTimer);
-        viewerCandidateRetryTimer = null;
-      }
-      unsubscribeSignal?.();
-      unsubscribeViewerCandidates?.();
-      await closeActivePeer();
-    },
+    close: closeTransport,
+    isClosed: () => closedByCaller,
     getBufferedAmount: () => dataChannelBufferedAmount(tileChannel),
     sendFileStatus: status => {
       if (closedByCaller || !fileChannel?.send || fileChannel.readyState !== "open") return false;
@@ -1204,6 +1405,7 @@ export async function startAgentWebRtcTransportWithFirebase(
       {
         maxBufferedAmount: resolveAgentFrameMaxBufferedAmount(maxBufferedAmountOverride, env),
         maxMessageBytes,
+        preserveUnavailableOnSaturation,
       },
     ),
   };
@@ -1335,56 +1537,6 @@ async function drainFirebaseSessionQueue<T>(
   return items;
 }
 
-async function waitForWebRtcOffer(
-  signalRef: ReturnType<typeof doc>,
-  timeoutMs = 8_000,
-): Promise<Record<string, any> | null> {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    let unsubscribe: Unsubscribe | null = null;
-    let unsubscribeWhenReady = false;
-
-    const finish = (value: Record<string, any> | null, error?: unknown) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timeout);
-      if (unsubscribe) {
-        unsubscribe();
-        unsubscribe = null;
-      } else {
-        unsubscribeWhenReady = true;
-      }
-      if (error) {
-        reject(error);
-      } else {
-        resolve(value);
-      }
-    };
-    const timeout = setTimeout(() => finish(null), timeoutMs);
-
-    try {
-      unsubscribe = onSnapshot(
-        signalRef,
-        (snapshot) => {
-          const data = snapshot.data() as Record<string, any> | undefined;
-          if (parseAgentWebRtcOffer(data)) {
-            finish(data ?? null);
-          }
-        },
-        (error) => finish(null, error),
-      );
-      if (unsubscribeWhenReady && unsubscribe) {
-        unsubscribe();
-        unsubscribe = null;
-      }
-    } catch (error) {
-      finish(null, error);
-    }
-  });
-}
-
 function oppositeSessionSender(sender: "viewer" | "agent"): "viewer" | "agent" {
   return sender === "viewer" ? "agent" : "viewer";
 }
@@ -1433,7 +1585,7 @@ function throwStatusError(message: string, status: number): never {
   throw error;
 }
 
-function isFirebaseAuthCode(error: unknown, code: string): boolean {
+function hasFirebaseErrorCode(error: unknown, code: string): boolean {
   return (
     typeof error === "object" &&
     error !== null &&
@@ -1443,10 +1595,5 @@ function isFirebaseAuthCode(error: unknown, code: string): boolean {
 }
 
 function isFirebaseNotFoundError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as { code?: unknown }).code === "not-found"
-  );
+  return hasFirebaseErrorCode(error, "not-found");
 }

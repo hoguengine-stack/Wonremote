@@ -597,6 +597,44 @@ mod tests {
     }
 
     #[test]
+    fn dirty_tile_diff_keeps_changed_pixels_on_clipped_row_and_column_edges() {
+        let width = 65;
+        let height = 161;
+        let mut frame = vec![0; width * height * 2];
+        let mut diff = TileDiff::new(width as u32, height as u32, 32);
+        let all_tiles: Vec<usize> = (0..18).collect();
+        assert_eq!(diff.get_dirty_tiles(&frame).0, all_tiles);
+        frame[32 * 2] = 1;
+        let bottom_right = frame.len() - 1;
+        frame[bottom_right] = 1;
+        assert_eq!(diff.get_dirty_tiles(&frame).0, vec![1, 17]);
+        assert!(diff.get_dirty_tiles(&frame).0.is_empty());
+        frame[bottom_right] = 0;
+        assert_eq!(diff.get_dirty_tiles(&frame).0, vec![17]);
+        frame.fill(2);
+        assert_eq!(diff.get_dirty_tiles(&frame).0, all_tiles);
+        assert_eq!(diff.prev_frame.as_deref(), Some(frame.as_slice()));
+    }
+
+    #[test]
+    fn idle_keyframe_uses_the_latest_normal_desktop_pixels_and_resets_the_diff() {
+        let mut diff = TileDiff::new(64, 32, 32);
+        let mut frame = vec![0xFF; 64 * 32 * 2];
+        assert!(diff.take_idle_keyframe(Some(true), true).is_none());
+        assert_eq!(diff.get_dirty_tiles(&frame).0, vec![0, 1]);
+        frame[64] = 0;
+        assert_eq!(diff.get_dirty_tiles(&frame).0, vec![1]);
+
+        let (pixels, cursor) = diff.take_idle_keyframe(Some(false), true).unwrap();
+        assert_eq!(pixels, frame);
+        assert!(!cursor);
+        assert_eq!(diff.get_dirty_tiles(&pixels).0, vec![0, 1]);
+        assert!(diff.take_idle_keyframe(Some(true), false).is_none());
+        assert!(diff.take_idle_keyframe(Some(true), true).is_none());
+        assert_eq!(diff.get_dirty_tiles(&frame).0, vec![0, 1]);
+    }
+
+    #[test]
     fn incomplete_encoding_forces_full_frame_retry_without_publishing_partial_tiles() {
         let mut frame = vec![0xFF; 64 * 32 * 2];
         let mut diff = TileDiff::new(64, 32, 32);
@@ -1479,6 +1517,18 @@ fn parse_process_sample(value: &str) -> Option<ProcessSample> {
 }
 
 impl TileDiff {
+    fn take_idle_keyframe(
+        &mut self,
+        cursor_embedded: Option<bool>,
+        confirmed_normal_desktop: bool,
+    ) -> Option<(Vec<u8>, bool)> {
+        let cached = self.prev_frame.take();
+        if !confirmed_normal_desktop {
+            return None;
+        }
+        cached.zip(cursor_embedded)
+    }
+
     fn accept_encoded_frame(&mut self, expected: usize, encoded: usize) -> bool {
         if expected != encoded {
             // get_dirty_tiles already advanced the baseline; failed pixels must be retried.
@@ -1524,10 +1574,20 @@ impl TileDiff {
             }
         };
 
-        // Compare tile-by-tile
+        // Bound the extra probes when changes are spread across the screen.
+        const BAND_MISS_LIMIT: usize = 4;
+        let mut band_misses = 0;
         for ty in 0..rows {
             let y_start = ty * tile_size;
             let y_end = std::cmp::min(y_start + tile_size, height);
+            if band_misses < BAND_MISS_LIMIT {
+                let band_start = y_start * width * 2;
+                let band_end = y_end * width * 2;
+                if current_frame[band_start..band_end] == prev[band_start..band_end] {
+                    continue;
+                }
+                band_misses += 1;
+            }
 
             for tx in 0..cols {
                 let x_start = tx * tile_size;
@@ -2424,15 +2484,24 @@ fn desktop_transition_event(
 }
 
 fn emit_desktop_transition(expected_secure_desktop: bool) -> bool {
-    let Ok(active_secure_desktop) = secure_capture::active_input_desktop_is_secure() else {
-        return false;
+    observe_capture_desktop(expected_secure_desktop).0
+}
+
+fn observe_capture_desktop(expected_secure_desktop: bool) -> (bool, bool) {
+    use secure_capture::InputDesktopKind;
+    let Ok(kind) = secure_capture::active_input_desktop_kind() else {
+        return (false, false);
     };
-    let Some(event) = desktop_transition_event(expected_secure_desktop, active_secure_desktop)
+    let Some(event) = desktop_transition_event(expected_secure_desktop, kind == InputDesktopKind::Secure)
     else {
-        return false;
+        return (false, kind == InputDesktopKind::Default);
     };
     println!("{}", serde_json::json!({ "type": event }));
-    true
+    (true, false)
+}
+
+fn can_replay_idle_capture() -> bool {
+    matches!(secure_capture::active_input_desktop_kind(), Ok(secure_capture::InputDesktopKind::Default))
 }
 
 async fn run_streaming_loop(
@@ -2440,7 +2509,8 @@ async fn run_streaming_loop(
     expected_secure_desktop: bool,
     session_worker: bool,
 ) {
-    if emit_desktop_transition(expected_secure_desktop) {
+    let (transition, mut input_is_default) = observe_capture_desktop(expected_secure_desktop);
+    if transition {
         return;
     }
     let mut capturer = match DesktopCapturer::new_stream(config.output_index) {
@@ -2470,6 +2540,8 @@ async fn run_streaming_loop(
     let tile_size = 32;
     let mut tile_diff = TileDiff::new(width, height, tile_size);
     let mut previous_cursor_embedded = None;
+    let mut last_frame_contains_marker = false;
+    let mut cached_from_default = false;
 
     let mut compressor = Compressor::new().unwrap();
     let _ = compressor.set_quality(config.jpeg_quality);
@@ -2517,18 +2589,67 @@ async fn run_streaming_loop(
     loop {
         let loop_start = Instant::now();
         if loop_start >= next_desktop_probe {
-            if emit_desktop_transition(expected_secure_desktop) {
+            let (transition, observed_default) = observe_capture_desktop(expected_secure_desktop);
+            if transition {
                 return;
             }
+            input_is_default = observed_default;
+            cached_from_default &= observed_default;
             next_desktop_probe = loop_start + Duration::from_millis(100);
         }
-        match capturer.capture_frame(config.capture_timeout_ms) {
+        let frame = match capturer.capture_frame(config.capture_timeout_ms) {
             Ok(CaptureFrameStatus::Frame {
-                mut rgb565,
+                rgb565,
                 capture_time_us,
                 cursor_embedded,
                 ..
             }) => {
+                cached_from_default = input_is_default;
+                Some((rgb565, capture_time_us, cursor_embedded, false))
+            }
+            Ok(CaptureFrameStatus::Timeout)
+                if cached_from_default
+                    && request_keyframe.load(std::sync::atomic::Ordering::SeqCst)
+                    && !last_frame_contains_marker
+                    && tile_diff.prev_frame.is_some() =>
+            {
+                // DXGI can time out until something changes; reuse only a verified normal desktop.
+                let normal_desktop = can_replay_idle_capture();
+                input_is_default = normal_desktop;
+                cached_from_default = normal_desktop;
+                tile_diff
+                    .take_idle_keyframe(previous_cursor_embedded, normal_desktop)
+                    .map(|(pixels, cursor)| (pixels, 0, cursor, true))
+            }
+            Ok(CaptureFrameStatus::Timeout) => None,
+            Ok(CaptureFrameStatus::AccessLost) => {
+                cached_from_default = false;
+                input_is_default = false;
+                tile_diff.prev_frame = None;
+                previous_cursor_embedded = None;
+                if emit_desktop_transition(expected_secure_desktop) || session_worker {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                None
+            }
+            Err(e) => {
+                cached_from_default = false;
+                input_is_default = false;
+                tile_diff.prev_frame = None;
+                previous_cursor_embedded = None;
+                if e.code() == E_ACCESSDENIED
+                    && (emit_desktop_transition(expected_secure_desktop) || session_worker)
+                {
+                    return;
+                }
+                eprintln!("Capture error: {:?}", e);
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                None
+            }
+        };
+        match frame {
+            Some((mut rgb565, capture_time_us, cursor_embedded, from_idle_cache)) => {
                 let processing_start = Instant::now();
                 let jpeg_quality = runtime_jpeg_quality.load(std::sync::atomic::Ordering::SeqCst);
                 if jpeg_quality != active_jpeg_quality
@@ -2536,7 +2657,9 @@ async fn run_streaming_loop(
                 {
                     active_jpeg_quality = jpeg_quality;
                 }
-                if inject_ping_marker.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                last_frame_contains_marker = !from_idle_cache
+                    && inject_ping_marker.swap(false, std::sync::atomic::Ordering::SeqCst);
+                if last_frame_contains_marker {
                     let ts = tile_size as usize;
                     let w = width as usize;
                     for y in 0..ts {
@@ -2549,8 +2672,9 @@ async fn run_streaming_loop(
                         }
                     }
                 }
-                if request_keyframe.swap(false, std::sync::atomic::Ordering::SeqCst)
-                    || previous_cursor_embedded != Some(cursor_embedded) {
+                let requested_keyframe =
+                    request_keyframe.swap(false, std::sync::atomic::Ordering::SeqCst);
+                if requested_keyframe || previous_cursor_embedded != Some(cursor_embedded) {
                     tile_diff.prev_frame = None;
                 }
                 previous_cursor_embedded = Some(cursor_embedded);
@@ -2608,29 +2732,25 @@ async fn run_streaming_loop(
                             "tiles": base64_tiles,
                             "keyframe": keyframe,
                             "cursorEmbedded": cursor_embedded,
+                            "idleKeyframeAvailable": cached_from_default && !last_frame_contains_marker,
                             "processingMs": (capture_time_us as f64 + processing_start.elapsed().as_micros() as f64) / 1000.0,
                             "timestamp": now_unix_ms()
                         });
-                        println!("{msg}");
+                        if from_idle_cache && !can_replay_idle_capture() {
+                            cached_from_default = false;
+                            input_is_default = false;
+                            tile_diff.prev_frame = None;
+                            previous_cursor_embedded = None;
+                            request_keyframe.store(true, std::sync::atomic::Ordering::SeqCst);
+                        } else {
+                            println!("{msg}");
+                        }
+                    } else if requested_keyframe {
+                        request_keyframe.store(true, std::sync::atomic::Ordering::SeqCst);
                     }
                 }
             }
-            Ok(CaptureFrameStatus::Timeout) => {}
-            Ok(CaptureFrameStatus::AccessLost) => {
-                if emit_desktop_transition(expected_secure_desktop) || session_worker {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(25)).await;
-            }
-            Err(e) => {
-                if e.code() == E_ACCESSDENIED
-                    && (emit_desktop_transition(expected_secure_desktop) || session_worker)
-                {
-                    return;
-                }
-                eprintln!("Capture error: {:?}", e);
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
+            None => {}
         }
 
         let elapsed = loop_start.elapsed();

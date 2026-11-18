@@ -40,7 +40,8 @@ export function useMobileRemoteHeight(enabled: boolean) {
   return height;
 }
 
-export function MobileRemoteControls({ send, click, scroll, keyboard, zoom, settings, settingsOpen = false, closeSettings, touchpad = false, toggleTouchpad, connectionStatus, deviceName }: {
+export function MobileRemoteControls({ send, click, scroll, keyboard, zoom, settings, settingsOpen = false, closeSettings, touchpad = false, toggleTouchpad, connectionStatus, deviceName, inputEnabled }: {
+  inputEnabled: boolean;
   connectionStatus?: string;
   deviceName?: string;
   touchpad?: boolean;
@@ -77,6 +78,7 @@ export function MobileRemoteControls({ send, click, scroll, keyboard, zoom, sett
     setHeld([]);
   };
   useEffect(() => { if (settingsOpen) { release(); setOpen(false); } }, [settingsOpen]);
+  useEffect(() => { if (!inputEnabled) { release(); setOpen(false); } }, [inputEnabled]);
   useEffect(() => {
     const hide = () => { if (document.hidden) release(); };
     window.addEventListener("blur", release);
@@ -129,7 +131,7 @@ export function MobileRemoteControls({ send, click, scroll, keyboard, zoom, sett
     {connectionStatus && <div className="mobile-session-status" data-testid="mobile-connection-status" role="status" aria-live="polite">
       <span title={deviceName}>{deviceName}</span><strong>{connectionStatus}</strong>
     </div>}
-    {open && <div className="mobile-key-panel" aria-label="Windows 키보드">
+    {inputEnabled && open && <div className="mobile-key-panel" aria-label="Windows 키보드">
       <div className="mobile-key-modifiers">{["Ctrl", "Alt", "Shift", "Win"].map((key) =>
         <button key={key} type="button" aria-pressed={held.includes(key)} onClick={() => toggle(key)}>{key}</button>)}</div>
       <button type="button" title="고정 단축키 편집" aria-label="고정 단축키 편집" aria-pressed={editingPins} onClick={() => setEditingPins(!editingPins)}><Pin size={18}/></button>
@@ -143,15 +145,15 @@ export function MobileRemoteControls({ send, click, scroll, keyboard, zoom, sett
     {pinError && <div role="status">단축키를 저장하지 못했습니다. 이번 접속에서만 유지됩니다.</div>}
     {(pinned.length > 0 || toggleTouchpad) && <div className="mobile-pinned-keys" role="toolbar" aria-label="고정 단축키">
       {toggleTouchpad && <button type="button" aria-label="터치패드 모드" aria-pressed={touchpad} onClick={toggleTouchpad}>{touchpad ? "터치패드" : "화면 이동"}</button>}
-      {pinned.map((key) => <button type="button" key={key} onClick={() => press(key)}>{key}</button>)}
+      {pinned.map((key) => <button type="button" key={key} disabled={!inputEnabled} onClick={() => press(key)}>{key}</button>)}
     </div>}
     <div className="mobile-touch-bar" role="toolbar" aria-label="원격 조작">
-      <button type="button" title="좌클릭" aria-label="좌클릭" onClick={() => click(0)}><MousePointer2 size={20}/><small>L</small></button>
-      <button type="button" title="우클릭" aria-label="우클릭" onClick={() => click(2)}><MousePointer2 size={20}/><small>R</small></button>
-      <button type="button" title="위로 스크롤" aria-label="위로 스크롤" onClick={() => scroll(120)}><ArrowUp size={20}/></button>
-      <button type="button" title="아래로 스크롤" aria-label="아래로 스크롤" onClick={() => scroll(-120)}><ArrowDown size={20}/></button>
-      <button type="button" title="키보드" aria-label="키보드" onClick={keyboard}><Keyboard size={20}/></button>
-      <button type="button" title="Windows 특수키" aria-label="Windows 특수키" aria-expanded={open} onClick={() => { closeSettings?.(); if (open) release(); setOpen(!open); }}>Fn</button>
+      <button type="button" title="좌클릭" aria-label="좌클릭" disabled={!inputEnabled} onClick={() => click(0)}><MousePointer2 size={20}/><small>L</small></button>
+      <button type="button" title="우클릭" aria-label="우클릭" disabled={!inputEnabled} onClick={() => click(2)}><MousePointer2 size={20}/><small>R</small></button>
+      <button type="button" title="위로 스크롤" aria-label="위로 스크롤" disabled={!inputEnabled} onClick={() => scroll(120)}><ArrowUp size={20}/></button>
+      <button type="button" title="아래로 스크롤" aria-label="아래로 스크롤" disabled={!inputEnabled} onClick={() => scroll(-120)}><ArrowDown size={20}/></button>
+      <button type="button" title="키보드" aria-label="키보드" disabled={!inputEnabled} onClick={keyboard}><Keyboard size={20}/></button>
+      <button type="button" title="Windows 특수키" aria-label="Windows 특수키" aria-expanded={open} disabled={!inputEnabled} onClick={() => { closeSettings?.(); if (open) release(); setOpen(!open); }}>Fn</button>
       <button type="button" title="축소" aria-label="축소" onClick={() => zoom(-0.05)}><ZoomOut size={20}/></button>
       <button type="button" title="확대" aria-label="확대" onClick={() => zoom(0.05)}><ZoomIn size={20}/></button>
       <button type="button" title="화면 및 세션 설정" aria-label="화면 및 세션 설정" aria-expanded={settingsOpen} onClick={settings}><Settings2 size={20}/></button>

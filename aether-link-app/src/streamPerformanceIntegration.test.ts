@@ -13,28 +13,28 @@ describe("stream performance mode integration", () => {
     return source.slice(start, end);
   };
 
-  it("connects the Viewer mode selector to the Agent capture profile", () => {
+  it("connects the Viewer Fast mode to the Agent capture profile", () => {
     const appSource = readFileSync(path.join(projectRoot, "src", "App.tsx"), "utf8");
     const agentSource = readFileSync(path.join(projectRoot, "src", "agent", "index.ts"), "utf8");
 
-    expect(appSource).toContain("stream-mode-control");
+    expect(appSource.includes('className="stream-mode-indicator"')).toBe(true);
     expect(appSource).toContain("buildSetStreamModeCommand");
     expect(agentSource).toContain('"--jpeg-quality"');
     expect(agentSource).toContain('"--max-merge-width"');
     expect(agentSource).toContain("currentStreamProfile.maxBufferedAmount");
   });
 
-  it("persists the Viewer mode and sends the matching Agent command", () => {
+  it("starts Agent capture in Fast before the first keyframe and keeps legacy mode commands compatible", () => {
     const appSource = readFileSync(path.join(projectRoot, "src", "App.tsx"), "utf8");
-    const modeEffect = readBlock(appSource, "useEffect(() => {\n    if (!sessionId", "useEffect(() => {\n    pingStateRef.current");
     const preferenceEffect = readBlock(appSource, "useEffect(() => {\n    // A failed read", "useEffect(() => {\n    if ((window as any).__TAURI_INTERNALS__)");
-    const selector = readBlock(appSource, "const selectStreamPerformanceMode", "// Recording");
-
-    expect(selector).toContain("setStreamPerformanceMode(mode)");
+    const agentSource = readFileSync(path.join(projectRoot, "src", "agent", "index.ts"), "utf8");
+    const startup = readBlock(agentSource, "const { sessionChanged } = generationTransition;", "const streamProfile = getStreamPerformanceProfile(currentStreamMode)");
+    expect(startup).toMatch(/if \(sessionChanged\) \{[^}]*currentStreamMode = "fast";[^}]*getStreamPerformanceProfile\(currentStreamMode\).loopSleepMs;/);
+    expect(agentSource).toContain("currentStreamMode = mode;");
     expect(preferenceEffect).toContain("deviceViewPreferencesKey(preferenceDeviceId)");
-    expect(preferenceEffect).toContain("streamPerformanceMode,");
-    expect(modeEffect).toContain("buildSetStreamModeCommand(streamPerformanceMode)");
-    expect(modeEffect).toContain("onInputEvent(buildSetStreamModeCommand(streamPerformanceMode))");
+    expect(preferenceEffect).toContain('streamPerformanceMode: "fast"');
+    expect(appSource).toContain("startInFastMode: true");
+    expect(appSource.includes('onInputEvent(buildSetStreamModeCommand("fast"))')).toBe(true);
   });
 
   it("does not let Visual Ping overwrite the user's stream mode", () => {

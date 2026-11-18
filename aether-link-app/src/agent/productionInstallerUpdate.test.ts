@@ -17,6 +17,76 @@ const POWERSHELL_HARNESS_TIMEOUT_MS = 60_000;
 const POWERSHELL_CASE_TIMEOUT_MS = 75_000;
 
 describe("production installer update", () => {
+  it.runIf(process.platform === "win32").each([false, true])("retains or recovers the Agent when a real Windows file lock interrupts rollback (missing Agent: %s)", async (missingAgent) => {
+    const baseDir = path.join(os.tmpdir(), `wonremote-locked-rollback-${process.pid}-${Date.now()}`);
+    try {
+      const root = path.join(baseDir, "installed");
+      const backup = path.join(baseDir, "backup");
+      for (const directory of [root, backup]) {
+        await mkdir(path.join(directory, "agent"), { recursive: true });
+        await mkdir(path.join(directory, "bin"), { recursive: true });
+        if (directory === backup || !missingAgent) await writeFile(path.join(directory, "agent", "index.mjs"), "retained-agent");
+        await writeFile(path.join(directory, "bin", "capture.exe"), directory === root ? "replacement" : "previous");
+      }
+      await mkdir(path.join(root, ".update-handoff"), { recursive: true });
+      await mkdir(path.join(backup, "empty", "nested"), { recursive: true });
+      await writeFile(path.join(root, ".update-handoff", "alive.txt"), "handoff");
+      await mkdir(path.join(root, "obsolete", "nested"), { recursive: true });
+      await writeFile(path.join(root, "obsolete", "nested", "new-only.dll"), "obsolete");
+      const installer = path.join(baseDir, "installer.exe");
+      await writeFile(installer, "fixture");
+      const handoff = await prepareInstallerHandoff({ installerPath: installer, installerArgs: ["/S"],
+        installerSha256: createHash("sha256").update("fixture").digest("hex") }, { baseDir });
+      const source = await readFile(handoff.scriptPath, "utf8");
+      const prefix = source.slice(0, source.lastIndexOf("\ntry {\n  Backup-WonRemoteInstall"));
+      const q = (value: string) => `'${value.replace(/'/g, "''")}'`;
+      const harness = path.join(baseDir, "locked.ps1");
+      await writeFile(harness, prefix + `
+$RestartMode='viewer'
+$root=${q(root)}
+$backup=${q(backup)}
+$script:RollbackEntries=@([pscustomobject]@{Root=$root;Backup=$backup})
+function Stop-WonRemoteProcesses {}
+$script:starts=0
+function Start-WonRemoteAgent { $script:starts++ }
+function Wait-WonRemoteViewer {}
+$locked=[IO.File]::Open((Join-Path $root 'bin\\capture.exe'),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+$rejected=$false
+try { Restore-WonRemoteInstall } catch { $rejected=$true } finally { $locked.Dispose() }
+if (-not $rejected) { throw 'Locked file was not rejected' }
+if ($script:starts -ne 0) { throw 'Failed rollback restarted an incomplete runtime' }
+if (-not (Test-Path -LiteralPath (Join-Path $root 'agent\\index.mjs'))) { throw 'Rollback deleted Agent before recovering backup' }
+if ((Get-Content -LiteralPath (Join-Path $root 'bin\\capture.exe') -Raw) -ne 'replacement') { throw 'Locked target was corrupted' }
+if (-not (Test-Path -LiteralPath (Join-Path $backup 'agent\\index.mjs'))) { throw 'Recovery backup lost' }
+Restore-WonRemoteInstall
+if ($script:starts -ne 1) { throw 'Successful restore did not restart exactly once' }
+if ((Get-Content -LiteralPath (Join-Path $root 'bin\\capture.exe') -Raw) -ne 'previous') { throw 'Retry did not restore previous version' }
+if (Test-Path -LiteralPath (Join-Path $root 'obsolete')) { throw 'Obsolete payload retained after successful restore' }
+if (-not (Test-Path -LiteralPath (Join-Path $root 'empty\\nested') -PathType Container)) { throw 'Empty backup directory not restored' }
+if (-not (Test-Path -LiteralPath (Join-Path $root '.update-handoff\\alive.txt'))) { throw 'Independent updater deleted' }
+if (@(Get-ChildItem -LiteralPath $root -Recurse -Filter '*.rollback-tmp').Count -ne 0) { throw 'Temporary rollback files leaked' }
+$empty=Join-Path (Split-Path -Parent $backup) 'empty-backup'
+New-Item -ItemType Directory -Path $empty | Out-Null
+foreach ($invalidBackup in @($empty, (Join-Path $empty 'missing'))) {
+  $script:RollbackEntries=@([pscustomobject]@{Root=$root;Backup=$invalidBackup})
+  $rejected=$false
+  try { Restore-WonRemoteInstall } catch { $rejected=$true }
+  if (-not $rejected) { throw 'Invalid backup was accepted' }
+  if ((Get-Content -LiteralPath (Join-Path $root 'agent\\index.mjs') -Raw) -ne 'retained-agent') { throw 'Invalid backup damaged runtime' }
+}
+Close-UpdateLock
+'locked-rollback-preserved-and-retried'
+`);
+      const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", harness], {
+        encoding: "utf8", windowsHide: true, timeout: 15000,
+      });
+      expect(result.status, result.stderr + result.stdout).toBe(0);
+      expect(result.stdout).toContain("locked-rollback-preserved-and-retried");
+    } finally {
+      expect(path.dirname(path.resolve(baseDir))).toBe(path.resolve(os.tmpdir()));
+      await rm(baseDir, { recursive: true, force: true });
+    }
+  }, 20000);
   it.runIf(process.platform === "win32")("accepts a slow runtime after fifteen seconds but still enforces a bounded readiness deadline", async () => {
     const baseDir=path.join(os.tmpdir(),`wonremote-slow-runtime-${process.pid}-${Date.now()}`);
     await mkdir(baseDir,{recursive:true});
@@ -113,13 +183,17 @@ ${script.slice(start)}
     },
     POWERSHELL_CASE_TIMEOUT_MS,
   );
-  it.runIf(process.platform === "win32")("backs up and restores without copying or deleting the active protected handoff", async () => {
+  it.runIf(process.platform === "win32")("refuses unsafe backup before install and preserves the active protected handoff on restore", async () => {
     const baseDir = path.join(os.tmpdir(), `wonremote-protected-rollback-${process.pid}-${Date.now()}`);
     try {
       const programFiles = path.join(baseDir, "Program Files");
       const root = path.join(programFiles, "WonRemote Agent");
       const stage = path.join(root, ".update-handoff", "test");
+      const localAppData = path.join(baseDir, "local");
+      const legacy = path.join(localAppData, "WonRemote", "Agent");
       await mkdir(stage, { recursive: true });
+      await mkdir(legacy, { recursive: true });
+      await writeFile(path.join(legacy, "legacy.txt"), "do not modify");
       await writeFile(path.join(root, "app.txt"), "previous-version");
       await writeFile(path.join(stage, "handoff-alive.txt"), "running");
       const installer = path.join(baseDir, "installer.exe");
@@ -129,16 +203,50 @@ ${script.slice(start)}
       const script = await readFile(handoff.scriptPath, "utf8");
       const prefix = script.slice(0, script.lastIndexOf("\ntry {\n  Backup-WonRemoteInstall"));
       const q = (value: string) => `'${value.replace(/'/g, "''")}'`;
+      const unprotected = path.join(baseDir, "unprotected-handoff.ps1");
+      await writeFile(unprotected, prefix + `
+$env:ProgramFiles=${q(programFiles)}
+\${env:ProgramFiles(x86)}=${q(programFiles)}
+function Get-WonRemoteInstallRoots { return ${q(root)} }
+try {
+  Backup-WonRemoteInstall
+  throw 'Unsafe backup was accepted before installer launch.'
+} catch {
+  if ($_.Exception.Message -notlike '*user-writable*') { throw }
+}
+if (Test-Path -LiteralPath $RollbackRoot) { throw 'Unsafe backup directory was created.' }
+Close-UpdateLock
+`);
+      const refused = spawnSync("powershell.exe", ["-NoProfile", "-File", unprotected], { encoding: "utf8", windowsHide: true, timeout: 10000 });
+      expect(refused.status, refused.stderr + refused.stdout).toBe(0);
       const harness = path.join(stage, "rollback-test.ps1");
       await writeFile(harness, prefix + `
 $env:ProgramFiles=${q(programFiles)}
 \${env:ProgramFiles(x86)}=${q(programFiles)}
-function Get-WonRemoteInstallRoots { return ${q(root)} }
+$env:LOCALAPPDATA=${q(localAppData)}
+function Get-Acl {
+  param($LiteralPath)
+  $result = [pscustomobject]@{}
+  $result | Add-Member ScriptMethod GetOwner { return @{ Value = 'S-1-5-32-544' } }
+  $result | Add-Member ScriptMethod GetAccessRules {
+    if ($script:userWritable) { return @{ IdentityReference = @{ Value = 'S-1-5-32-545' }; AccessControlType = 'Allow'; FileSystemRights = 2 } }
+  }
+  return $result
+}
 function Stop-WonRemoteProcesses {}
 function Start-WonRemoteAgent {}
 function Wait-WonRemoteAgentRuntime {}
+$script:userWritable = $true
+try {
+  Backup-WonRemoteInstall
+  throw 'Unexpected writable stage accepted'
+} catch {
+  if ($_.Exception.Message -notlike '*user-writable*') { throw }
+}
+$script:userWritable = $false
 Backup-WonRemoteInstall
 if (-not (Test-UnderPath $RollbackRoot $PSScriptRoot)) { throw 'backup is unprotected' }
+if ($script:RollbackEntries.Count -ne 1 -or $script:RollbackEntries[0].Root -ne ${q(root)}) { throw 'Legacy directory was treated as a restore target' }
 if (Test-Path -LiteralPath (Join-Path $RollbackRoot '0\\.update-handoff')) { throw 'recursive stage backup' }
 Set-Content -LiteralPath ${q(path.join(root, "app.txt"))} -Value 'broken'
 Restore-WonRemoteInstall
@@ -149,6 +257,7 @@ Close-UpdateLock
       const result = spawnSync("powershell.exe", ["-NoProfile", "-File", harness], { encoding: "utf8", windowsHide: true, timeout: 10000 });
       expect(result.status, result.stderr + result.stdout).toBe(0);
       expect(await readFile(path.join(root, "app.txt"), "utf8")).toBe("previous-version");
+      expect(await readFile(path.join(legacy, "legacy.txt"), "utf8")).toBe("do not modify");
     } finally { await rm(baseDir, { recursive: true, force: true }); }
   });
   it.runIf(process.platform === "win32")("only permits the explicitly requested pre-receipt rollback to use legacy runtime proof", async () => {

@@ -28,31 +28,63 @@ export function collectDevicePresence(
     const expired = new Set<string>();
     const replies = new Map<string, ManagedDevice>();
     const errors = new Map<string, unknown>();
-    const timers = new Map<string, ReturnType<typeof setTimeout>>();
+    const timers = new Map<ReturnType<typeof setTimeout>, Set<string>>();
     let active = true;
     let stop = () => {};
+    let replyPublishQueued = false;
     const result = () => currentDevices.map((device) => replies.get(device.id)
-      ?? (expired.has(device.id) ? { ...device, status: "offline" as const } : device));
+      ?? (expired.has(device.id) ? { ...device, status: "offline" as const, presenceCheckTimedOut: true as const } : device));
     const publish = () => onProgress?.(result(), [...pending]);
+    const publishReplies = () => {
+      if (!onProgress || replyPublishQueued) return;
+      replyPublishQueued = true;
+      queueMicrotask(() => {
+        if (!replyPublishQueued) return;
+        replyPublishQueued = false;
+        if (active) publish();
+      });
+    };
     const finish = (error?: unknown) => {
       if (!active) return;
       active = false;
-      timers.forEach(clearTimeout); timers.clear();
+      for (const timer of timers.keys()) clearTimeout(timer);
+      timers.clear();
       stop(); signal?.removeEventListener("abort", abort);
       if (error) reject(error);
       else resolve(result());
     };
     const settle = () => { if (loaded && !pending.size) finish(); };
-    const addTargets = (items: ManagedDevice[]) => items.filter((device) => {
-      if (device.presenceMode !== "manual" || requested.has(device.id)) return false;
-      requested.add(device.id); pending.add(device.id);
-      timers.set(device.id, setTimeout(() => {
+    const removePending = (id: string) => {
+      pending.delete(id);
+      for (const [timer, group] of timers) {
+        if (!group.delete(id)) continue;
+        if (group.size === 0) {
+          clearTimeout(timer);
+          timers.delete(timer);
+        }
+        break;
+      }
+    };
+    const addTargets = (items: ManagedDevice[]) => {
+      const added = items.filter((device) => {
+        if (device.presenceMode !== "manual" || requested.has(device.id)) return false;
+        requested.add(device.id); pending.add(device.id);
+        return true;
+      });
+      if (!added.length) return added;
+      const group = new Set(added.map(device => device.id));
+      const timer = setTimeout(() => {
         if (!active) return;
-        timers.delete(device.id); pending.delete(device.id); expired.add(device.id);
+        timers.delete(timer);
+        for (const id of group) {
+          pending.delete(id);
+          expired.add(id);
+        }
         publish(); settle();
-      }, PRESENCE_REFRESH_TIMEOUT_MS));
-      return true;
-    });
+      }, PRESENCE_REFRESH_TIMEOUT_MS);
+      timers.set(timer, group);
+      return added;
+    };
     const sendTargets = (items: ManagedDevice[]) => {
       for (const device of items) {
         if (!active) break;
@@ -73,7 +105,7 @@ export function collectDevicePresence(
       const manual = new Map(fresh.filter((device) => device.presenceMode === "manual").map((device) => [device.id, device]));
       for (const id of pending) {
         if (manual.has(id)) continue;
-        clearTimeout(timers.get(id)); timers.delete(id); pending.delete(id);
+        removePending(id);
       }
       for (const id of expired) { if (!manual.has(id)) expired.delete(id); }
       for (const [id, reply] of replies) {
@@ -91,9 +123,12 @@ export function collectDevicePresence(
       publish();
       stop = subscribe((device) => {
         if (!active || !pending.has(device.id) || device.heartbeatRequestId !== requestId) return;
-        clearTimeout(timers.get(device.id)); timers.delete(device.id);
-        replies.set(device.id, device); pending.delete(device.id);
-        publish(); settle();
+        removePending(device.id);
+        replies.set(device.id, device);
+        if (loaded && !pending.size) {
+          replyPublishQueued = false;
+          publish(); settle();
+        } else publishReplies();
       }, finish);
       if (!active) { stop(); return; }
       sendTargets(initial);

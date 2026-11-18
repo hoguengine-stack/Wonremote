@@ -9,40 +9,50 @@ export interface RemoteTileFrame {
 }
 
 export function hasCompleteTileCoverage(width: number, height: number, tiles: unknown[]): boolean {
-  if (!isDimension(width) || !isDimension(height)) return false;
+  const cells = countNonOverlappingTileCells(width, height, tiles);
+  return cells > 0 && cells === Math.ceil(width / 32) * Math.ceil(height / 32);
+}
+
+export function hasNonOverlappingTileCoverage(width: number, height: number, tiles: unknown[]): boolean {
+  return countNonOverlappingTileCells(width, height, tiles) > 0;
+}
+
+function countNonOverlappingTileCells(width: number, height: number, tiles: unknown[]): number {
+  if (!isDimension(width) || !isDimension(height)) return 0;
   const cols = Math.ceil(width / 32), rows = Math.ceil(height / 32);
-  if (!tiles.length || tiles.length > cols * rows) return false;
+  if (!tiles.length || tiles.length > cols * rows) return 0;
   const covered = new Uint8Array(cols * rows);
   let count = 0;
   for (const value of tiles) {
-    if (!value || typeof value !== "object") return false;
+    if (!value || typeof value !== "object") return 0;
     const {x,y,w,h} = value as {x:number;y:number;w:number;h:number};
-    if (![x,y,w,h].every(Number.isSafeInteger) || x < 0 || y < 0 || w <= 0 || h <= 0) return false;
+    if (![x,y,w,h].every(Number.isSafeInteger) || x < 0 || y < 0 || w <= 0 || h <= 0) return 0;
     const right = x * 32 + w, bottom = y * 32 + h;
-    if (right > width || bottom > height || (right !== width && right % 32 !== 0) || (bottom !== height && bottom % 32 !== 0)) return false;
+    if (right > width || bottom > height || (right !== width && right % 32 !== 0) || (bottom !== height && bottom % 32 !== 0)) return 0;
     for (let row = y; row < Math.ceil(bottom / 32); row++) {
       for (let col = x; col < Math.ceil(right / 32); col++) {
         const index = row * cols + col;
-        if (covered[index]) return false;
+        if (covered[index]) return 0;
         covered[index] = 1; count++;
       }
     }
   }
-  return count === cols * rows;
+  return count;
 }
 
 interface PendingFrame {
   chunks: Map<number, unknown[]>;
+  startedAt: number;
   chunkCount: number;
   width: number;
   height: number;
-  sequence: number;
   keyframe: boolean;
   cursorEmbedded?: boolean;
 }
 
 const MAX_FRAME_CHUNKS = 4_096;
 const MAX_PENDING_FRAMES = 8;
+const MAX_PENDING_FRAME_AGE_MS = 5_000;
 
 export class WebRtcFrameAssembler {
   private readonly pending = new Map<number, PendingFrame>();
@@ -69,49 +79,62 @@ export class WebRtcFrameAssembler {
       return [];
     }
 
+    const now = this.pending.size > 0 || chunk.frameChunkCount > 1 ? performance.now() : 0;
+    if (this.pending.size > 0) {
+      for (const [sequence, partial] of this.pending) {
+        if (now - partial.startedAt < MAX_PENDING_FRAME_AGE_MS) break;
+        this.pending.delete(sequence);
+      }
+    }
+
     let pending = this.pending.get(chunk.sequence);
-    if (!pending) {
-      pending = {
-        chunks: new Map(),
-        chunkCount: chunk.frameChunkCount,
-        width: chunk.width,
-        height: chunk.height,
-        sequence: chunk.sequence,
-        keyframe: chunk.keyframe,
-        ...(typeof chunk.cursorEmbedded === "boolean" ? {cursorEmbedded:chunk.cursorEmbedded} : {}),
-      };
-      this.pending.set(chunk.sequence, pending);
-      trimOldest(this.pending, MAX_PENDING_FRAMES);
-    } else if (
-      pending.chunkCount !== chunk.frameChunkCount ||
-      pending.width !== chunk.width ||
-      pending.height !== chunk.height ||
-      pending.keyframe !== chunk.keyframe ||
-      pending.cursorEmbedded !== chunk.cursorEmbedded
-    ) {
+    let tiles: unknown[];
+    if (!pending && chunk.frameChunkCount === 1) {
+      // A complete packet must not evict a picture still waiting for a fragment.
+      tiles = typeof payload === "string" ? chunk.tiles : [chunk.tiles].flat();
+    } else {
+      if (!pending) {
+        pending = {
+          chunks: new Map(),
+          startedAt: now,
+          chunkCount: chunk.frameChunkCount,
+          width: chunk.width,
+          height: chunk.height,
+          keyframe: chunk.keyframe,
+          ...(typeof chunk.cursorEmbedded === "boolean" ? { cursorEmbedded: chunk.cursorEmbedded } : {}),
+        };
+        this.pending.set(chunk.sequence, pending);
+        trimOldest(this.pending, MAX_PENDING_FRAMES);
+      } else if (
+        pending.chunkCount !== chunk.frameChunkCount ||
+        pending.width !== chunk.width ||
+        pending.height !== chunk.height ||
+        pending.keyframe !== chunk.keyframe ||
+        pending.cursorEmbedded !== chunk.cursorEmbedded
+      ) {
+        this.pending.delete(chunk.sequence);
+        return [];
+      }
+      if (!pending.chunks.has(chunk.frameChunkIndex)) {
+        pending.chunks.set(chunk.frameChunkIndex, chunk.tiles);
+      }
+      if (pending.chunks.size !== pending.chunkCount) return [];
       this.pending.delete(chunk.sequence);
-      return [];
+      const chunks = pending.chunks;
+      tiles = Array.from({ length: pending.chunkCount }, (_, index) => chunks.get(index) ?? []).flat();
     }
 
-    if (!pending.chunks.has(chunk.frameChunkIndex)) {
-      pending.chunks.set(chunk.frameChunkIndex, chunk.tiles);
-    }
-    if (pending.chunks.size !== pending.chunkCount) {
-      return [];
-    }
-
-    this.pending.delete(chunk.sequence);
     const frame: RemoteTileFrame = {
-      tiles: Array.from({ length: pending.chunkCount }, (_, index) => pending.chunks.get(index) ?? []).flat(),
-      width: pending.width,
-      height: pending.height,
-      sequence: pending.sequence,
-      keyframe: pending.keyframe,
-      ...(typeof pending.cursorEmbedded === "boolean" ? {cursorEmbedded:pending.cursorEmbedded} : {}),
+      tiles,
+      width: chunk.width,
+      height: chunk.height,
+      sequence: chunk.sequence,
+      keyframe: chunk.keyframe,
+      ...(typeof chunk.cursorEmbedded === "boolean" ? { cursorEmbedded: chunk.cursorEmbedded } : {}),
     };
 
     if (!this.initialKeyframeDelivered && !frame.keyframe) {
-      this.completedBeforeKeyframe.set(pending.sequence, frame);
+      this.completedBeforeKeyframe.set(chunk.sequence, frame);
       trimOldest(this.completedBeforeKeyframe, MAX_PENDING_FRAMES);
       return [];
     }
@@ -119,11 +142,14 @@ export class WebRtcFrameAssembler {
     if (frame.keyframe && !this.initialKeyframeDelivered) {
       this.initialKeyframeDelivered = true;
       const queued = [...this.completedBeforeKeyframe.values()]
-        .filter((candidate) => (candidate.sequence ?? -1) > pending.sequence)
+        .filter((candidate) => (candidate.sequence ?? -1) > chunk.sequence)
         .sort((left, right) => (left.sequence ?? 0) - (right.sequence ?? 0));
       this.completedBeforeKeyframe.clear();
       const released = [frame, ...queued];
-      this.keyframeSequence = pending.sequence;
+      this.keyframeSequence = chunk.sequence;
+      for (const sequence of this.pending.keys()) {
+        if (sequence <= this.keyframeSequence) this.pending.delete(sequence);
+      }
       return released;
     }
 

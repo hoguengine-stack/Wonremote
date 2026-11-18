@@ -17,6 +17,7 @@ import {
   deleteField,
   deleteDoc,
   doc,
+  documentId,
   getDoc,
   getDocFromServer,
   getDocs,
@@ -25,9 +26,11 @@ import {
   onSnapshot,
   orderBy,
   query,
+  runTransaction,
   serverTimestamp,
   where,
   writeBatch,
+  type DocumentReference,
   type Unsubscribe,
 } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
@@ -58,10 +61,14 @@ import {
 } from "../domain/agentRegistry";
 import { prepareViewerDeviceList, resolveViewerOfflineAfterMs } from "../domain/viewerDeviceList";
 import { collectDevicePresence } from "../domain/devicePresenceRefresh";
+import { readViewerGrouping, type ViewerGrouping } from "../domain/viewerGroups";
+import { buildSetStreamModeCommand } from "../domain/streamPerformanceMode";
 import { DEFAULT_STORE_NAME, normalizeStoreNameForDisplay } from "../domain/deviceDefaults";
 import { createFirebaseSessionId, mapFirebaseSessionHistory } from "../domain/firebaseSession";
+import { matchEmbeddedViewerIce } from "../domain/viewerOfferIce";
 import {
   resolveRtcConfiguration,
+  shouldUseDynamicTurnCredentials,
   viewerTileDataChannelOptions,
 } from "../domain/rtcTransport";
 import {
@@ -188,6 +195,7 @@ export interface ViewerWebRtcTransport {
   close: () => void;
   isControlReady: () => boolean;
   sendControl: (action: string) => boolean;
+  cancelPointerMove?: () => void;
   sendFile: (input: {
     collisionPolicy?: import("../domain/fileCollisionPolicy").FileCollisionPolicy;
     resume?: boolean;
@@ -202,45 +210,153 @@ export interface ViewerWebRtcTransport {
   }) => Promise<boolean>;
 }
 
+interface ViewerOfferWrite {
+  result: Promise<void>;
+  failure?: { error: unknown };
+  includesCandidate: ReturnType<typeof matchEmbeddedViewerIce>;
+}
+
 interface PreparedViewerPeer {
-  ownerUid: string;
   peer: RTCPeerConnection;
   channels: RTCDataChannel[];
   offer: RTCSessionDescriptionInit;
   candidates: RTCIceCandidate[];
   negotiationId: string;
-  timer?: ReturnType<typeof setTimeout>;
+  offerWrite?: ViewerOfferWrite;
 }
-const preparedViewerPeers = new Map<string, PreparedViewerPeer>();
+const VIEWER_PEER_HANDOFF_MS = 75;
+const MAX_PREPARED_VIEWER_PEERS = 32;
+// Keep the SDK's ordinary 70s callable window across both TURN attempts.
+const VIEWER_RTC_CONFIGURATION_BUDGET_MS = 70_000;
+type ViewerPeerPreparation = ReturnType<typeof beginViewerPeerPreparation>;
+const openingViewerPeers = new Set<ViewerPeerPreparation>();
+const openingViewerReconnects = new Map<AbortController, string>();
+const pendingViewerSignals = new Map<string, {ownerUid: string; cancel: () => void}>();
+const preparedViewerPeers = new Map<string, ViewerPeerPreparation & {
+  services: ReturnType<typeof getViewerFirebaseServices>;
+  timer: ReturnType<typeof setTimeout>;
+  claimed: boolean;
+}>();
+
+function requireActiveViewerReconnect(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new Error("로그인 계정이 변경되었습니다. 다시 시도하세요.");
+}
+
+async function loadViewerRtcConfiguration(env: ViewerFirebaseEnv, timeout?: number) {
+  const services = getViewerFirebaseServices(env);
+  return resolveRtcConfiguration(env, async () => httpsCallable(services.functions, "getRtcConfiguration", { timeout })({}));
+}
+
+function beginViewerPeerPreparation(env: ViewerFirebaseEnv, ownerUid: string, gatherWhen?: Promise<void>) {
+  const configuration = loadViewerRtcConfiguration(env);
+  const controller = new AbortController();
+  const local: { peer: PreparedViewerPeer | null } = { peer: null };
+  const ready = prepareViewerPeer(env, configuration, controller.signal, gatherWhen).then(prepared => local.peer = prepared, () => null);
+  let notifyCancellation!: () => void;
+  const cancelled = new Promise<null>(resolve => { notifyCancellation = () => resolve(null); });
+  return {
+    ownerUid, configuration, local, ready, cancelled,
+    abandonOffer: () => controller.abort(),
+    cancel: () => { controller.abort(); notifyCancellation(); },
+  };
+}
+
+function queueViewerOffer(
+  signalRef: DocumentReference, sessionId: string, negotiationId: string, offer: RTCSessionDescriptionInit,
+): ViewerOfferWrite {
+  const description = {type:offer.type,sdp:offer.sdp};
+  const write = safeSetDoc(signalRef, {
+    offer: {negotiationId, ...description},
+    negotiationId,
+    state: "viewer-offer",
+    updatedAt: serverTimestamp(),
+  }, {merge:true});
+  markConnectionTiming(sessionId, "offer-queued");
+  return {result:write,includesCandidate:matchEmbeddedViewerIce(description)};
+}
+
+export function queuePreparedFirebaseViewerOffer(sessionId: string): void {
+  const pending = preparedViewerPeers.get(sessionId);
+  const prepared = pending?.local.peer;
+  if (!pending || pending.claimed || !prepared || prepared.offerWrite) return;
+  const {db, auth} = pending.services;
+  if (auth.currentUser?.uid !== pending.ownerUid) return;
+  try {
+    const signalRef = doc(db, "sessions", sessionId, "webrtc", "signal");
+    const write = queueViewerOffer(signalRef, sessionId, prepared.negotiationId, prepared.peer.localDescription ?? prepared.offer);
+    prepared.offerWrite = write;
+    // The transport handles the original error; a rejection before mount should not start watches.
+    void write.result.catch(error => { write.failure = {error}; });
+  } catch {
+    // A synchronous setup failure leaves the original mounted path available.
+  }
+}
 
 function discardPreparedViewerPeer(sessionId: string): void {
   const prepared = preparedViewerPeers.get(sessionId);
   if (!prepared) return;
   preparedViewerPeers.delete(sessionId);
   clearTimeout(prepared.timer);
-  prepared.peer.close();
+  prepared.cancel();
 }
 
-async function prepareViewerPeer(env: ViewerFirebaseEnv): Promise<PreparedViewerPeer | null> {
-  if (typeof RTCPeerConnection !== "function") return null;
-  const services = getViewerFirebaseServices(env);
-  const ownerUid = requireCurrentUserId(services.auth.currentUser?.uid);
-  const configuration = await resolveRtcConfiguration(env, async () => httpsCallable(services.functions, "getRtcConfiguration")({}));
-  const peer = new RTCPeerConnection({iceServers:configuration.iceServers,iceTransportPolicy:configuration.iceTransportPolicy});
+function discardOtherViewerPreparations(currentUid?: string): void {
+  for (const [controller, ownerUid] of openingViewerReconnects) {
+    if (ownerUid === currentUid) continue;
+    openingViewerReconnects.delete(controller);
+    controller.abort();
+  }
+  for (const pending of openingViewerPeers) {
+    if (pending.ownerUid === currentUid) continue;
+    openingViewerPeers.delete(pending);
+    pending.cancel();
+  }
+  for (const [id, pending] of preparedViewerPeers) {
+    if (pending.ownerUid !== currentUid) discardPreparedViewerPeer(id);
+  }
+  for (const pending of pendingViewerSignals.values()) {
+    if (pending.ownerUid !== currentUid) pending.cancel();
+  }
+}
+
+async function prepareViewerPeer(
+  env: ViewerFirebaseEnv, configuration: ReturnType<typeof loadViewerRtcConfiguration>, signal: AbortSignal,
+  gatherWhen?: Promise<void>,
+): Promise<PreparedViewerPeer | null> {
+  const {iceServers, iceTransportPolicy} = await configuration;
+  if (signal.aborted) return null;
+  const peer = new RTCPeerConnection({iceServers, iceTransportPolicy});
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let finishAborted!: () => void;
+  const aborted = new Promise<void>(resolve => { finishAborted = resolve; });
+  const close = () => { clearTimeout(timer); peer.close(); finishAborted(); };
+  signal.addEventListener("abort", close, {once:true});
   try {
     const candidates: RTCIceCandidate[] = [];
     peer.onicecandidate = event => { if (event.candidate) candidates.push(event.candidate); };
     const channels = [peer.createDataChannel(WEBRTC_TILE_CHANNEL_LABEL, viewerTileDataChannelOptions()),
       peer.createDataChannel(WEBRTC_CONTROL_CHANNEL_LABEL, {ordered:true}), peer.createDataChannel(WEBRTC_FILE_CHANNEL_LABEL, {ordered:true})];
+    const localOffer = peer.createOffer();
+    if (gatherWhen) {
+      // Authorization time must not consume the existing RTC negotiation budget.
+      const permission = Promise.race([gatherWhen, aborted]);
+      await Promise.race([permission, localOffer.then(() => permission)]);
+      if (signal.aborted) return null;
+    }
     await Promise.race([
-      (async () => { const offer = await peer.createOffer(); await peer.setLocalDescription(offer); })(),
+      localOffer.then(offer => { if (!signal.aborted) return peer.setLocalDescription(offer); }),
       new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Local RTC preparation timed out.")), resolveWebRtcConnectTimeoutMs(env)); }),
+      aborted,
     ]);
+    if (signal.aborted) return null;
     const offer = peer.localDescription;
     if (!offer) throw new Error("Local RTC offer unavailable.");
-    return {ownerUid,peer,channels,offer,candidates,negotiationId:createFirebaseSessionId("rtc")};
-  } catch (error) { peer.close(); throw error; }
+    return {peer,channels,offer,candidates,negotiationId:createFirebaseSessionId("rtc")};
+  } catch (error) {
+    if (!signal.aborted) close();
+    signal.removeEventListener("abort", close);
+    throw error;
+  }
   finally { clearTimeout(timer); }
 }
 
@@ -276,37 +392,70 @@ export async function loginViewerWithFirebase(
 }
 
 export function subscribeViewerAuthState(
-  onAuthenticated: (isAuthenticated: boolean) => void,
+  onAuthenticated: (isAuthenticated: boolean, uid?: string) => void,
   onError: (error: Error) => void,
   env: ViewerFirebaseEnv = import.meta.env,
 ): Unsubscribe {
   const services = getViewerFirebaseServices(env);
-  return onAuthStateChanged(
+  let active = true;
+  let generation = 0;
+  let authorizedUid: string | undefined;
+  const unsubscribe = onAuthStateChanged(
     services.auth,
     (user) => {
-      if (!user) {
+      if (!active) return;
+      discardOtherViewerPreparations(user?.uid);
+      const current = ++generation;
+      if (!user || (authorizedUid && authorizedUid !== user.uid)) {
+        authorizedUid = undefined;
         onAuthenticated(false);
-        return;
       }
+      if (!user) return;
+      const isCurrent = () => active && current === generation && services.auth.currentUser?.uid === user.uid;
       void isAuthorizedViewerUser(user)
         .then(async (authorized) => {
+          if (!isCurrent()) return;
           if (authorized) {
-            onAuthenticated(true);
+            authorizedUid = user.uid;
+            onAuthenticated(true, user.uid);
             return;
           }
-          await signOut(services.auth);
           onAuthenticated(false);
           onError(new Error(isAgentViewerIdentity(user.email ?? "")
             ? AGENT_VIEWER_LOGIN_ERROR
             : CENTRAL_VIEWER_LOGIN_ERROR));
+          await signOut(services.auth);
         })
         .catch((error) => {
+          if (!isCurrent()) return;
           onAuthenticated(false);
           onError(error instanceof Error ? error : new Error(CENTRAL_VIEWER_LOGIN_ERROR));
         });
     },
     (error) => onError(error),
   );
+  return () => { active = false; unsubscribe(); };
+}
+
+export function subscribeViewerGrouping(uid: string, next: (grouping: ViewerGrouping) => void, failure: (error: Error) => void, env: ViewerFirebaseEnv = import.meta.env): Unsubscribe {
+  const { auth, db } = getViewerFirebaseServices(env);
+  if (auth.currentUser?.uid !== uid) { failure(new Error("Viewer login changed.")); return () => {}; }
+  return onSnapshot(doc(db, "viewerGroupSettings", uid), { includeMetadataChanges: true }, snapshot => {
+    if (!snapshot.metadata.fromCache && !snapshot.metadata.hasPendingWrites) next(readViewerGrouping(snapshot.data()));
+  }, failure);
+}
+
+export async function saveViewerGrouping(uid: string, change: (current: ViewerGrouping) => ViewerGrouping, env: ViewerFirebaseEnv = import.meta.env): Promise<void> {
+  const { auth, db } = getViewerFirebaseServices(env);
+  if (auth.currentUser?.uid !== uid) throw new Error("Viewer login changed.");
+  const target = doc(db, "viewerGroupSettings", uid);
+  await runTransaction(db, async transaction => {
+    const snapshot = await transaction.get(target);
+    if (auth.currentUser?.uid !== uid) throw new Error("Viewer login changed.");
+    const current = readViewerGrouping(snapshot.data());
+    const updated = readViewerGrouping(change(current));
+    if (JSON.stringify(updated) !== JSON.stringify(current)) transaction.set(target, updated);
+  }, { maxAttempts: 3 });
 }
 
 function isAgentViewerIdentity(value: string): boolean {
@@ -365,7 +514,7 @@ export async function deleteViewerAccount(
 }
 
 export async function logoutViewerWithFirebase(env: ViewerFirebaseEnv = import.meta.env): Promise<void> {
-  for (const id of preparedViewerPeers.keys()) discardPreparedViewerPeer(id);
+  discardOtherViewerPreparations();
   const services = getViewerFirebaseServices(env);
   await signOut(services.auth);
 }
@@ -423,23 +572,52 @@ export async function fetchFirebaseDevices(env: ViewerFirebaseEnv = import.meta.
   requireCurrentUserId(services.auth.currentUser?.uid);
   if (signal?.aborted) return knownDevices;
   if (targetDeviceIds !== undefined) {
-    const ids=[...new Set(targetDeviceIds)], targets=knownDevices.filter(device=>ids.includes(device.id));
-    if (!ids.length) { onProgress?.([],[]); return []; }
-    const load=Promise.all(ids.map(id=>getDocFromServer(doc(services.db,"devices",id)))).then(snapshots=>prepareViewerDeviceList(
-      snapshots.filter(snapshot=>snapshot.exists()&&!isDeletedDeviceDocument(snapshot.data())).map(snapshot=>mapFirestoreDevice(snapshot.id,snapshot.data()!)),
-      new Date().toISOString(),resolveViewerOfflineAfterMs(env),
-    ));
+    const ids = new Set(targetDeviceIds);
+    if (!ids.size) { onProgress?.([], []); return []; }
+    const targets = knownDevices.filter(device => ids.has(device.id));
+    const load = (async () => {
+      const selectedIds = [...ids];
+      const maxIdsPerQuery = 30;
+      // Document reads can share the same SDK target as an ongoing manual heartbeat watch.
+      const manualIds = new Set(refreshPresence ? targets.filter(device => device.presenceMode === "manual").map(device => device.id) : []);
+      const groupedIds = selectedIds.filter(id => !manualIds.has(id));
+      const directIds = groupedIds.length <= 1 ? selectedIds : selectedIds.filter(id => manualIds.has(id));
+      const directReads = directIds.map(id => getDocFromServer(doc(services.db, "devices", id)).then(snapshot => [snapshot]));
+      const groupReads = groupedIds.length <= 1 ? [] : Array.from({length:Math.ceil(groupedIds.length / maxIdsPerQuery)}, (_, index) => {
+        const start = index * maxIdsPerQuery;
+        return getDocsFromServer(query(collection(services.db, "devices"),
+          where(documentId(), "in", groupedIds.slice(start, start + maxIdsPerQuery)))).then(snapshot => snapshot.docs);
+      });
+      const snapshots = (await Promise.all([...directReads,...groupReads])).flat();
+      return prepareViewerDeviceList(snapshots.flatMap(snapshot => {
+        const data = snapshot.data();
+        return snapshot.exists() && data && !isDeletedDeviceDocument(data) ? [mapFirestoreDevice(snapshot.id, data)] : [];
+      }), new Date().toISOString(), resolveViewerOfflineAfterMs(env));
+    })();
     if (!refreshPresence) return load;
-    return collectDevicePresence(targets,crypto.randomUUID(),(next,fail)=>{
-      const stops:Unsubscribe[]=[];
-      try { for (const id of ids) stops.push(onSnapshot(doc(services.db,"devices",id),snapshot=>{
-        if (snapshot.exists()&&!isDeletedDeviceDocument(snapshot.data())) next(mapFirestoreDevice(snapshot.id,snapshot.data()!));
-      },fail)); }
-      catch(error) { stops.forEach(stop=>stop()); throw error; }
-      return ()=>stops.forEach(stop=>stop());
-    },(device,action)=>enqueueFirebaseDeviceCommandDirect(device.id,action,env),signal,onProgress,load);
+    const requestId = crypto.randomUUID();
+    let watchDevice: (id: string) => boolean;
+    return collectDevicePresence(targets, requestId, (next, fail) => {
+      const stops: Unsubscribe[] = [];
+      let active = true;
+      watchDevice = id => {
+        const stop = onSnapshot(doc(services.db, "devices", id), {includeMetadataChanges:true}, snapshot => {
+          if (!active || !snapshot.exists() || snapshot.metadata.fromCache || snapshot.metadata.hasPendingWrites) return;
+          const data = snapshot.data();
+          if (data.heartbeatRequestId === requestId && !isDeletedDeviceDocument(data)) next(mapFirestoreDevice(snapshot.id, data));
+        }, fail);
+        if (active) stops.push(stop);
+        else stop();
+        return active;
+      };
+      return () => { active = false; stops.forEach(stop => stop()); };
+    }, async (device, action) => {
+      // Reuse the selected document read's target and only watch devices we actually probe.
+      if (watchDevice(device.id)) await enqueueFirebaseDeviceCommandDirect(device.id, action, env);
+    }, signal, onProgress, load);
   }
-  const load = getDocsFromServer(collection(services.db, "devices")).then((snapshot) => prepareViewerDeviceList(
+  const inventory = collection(services.db, "devices");
+  const load = getDocsFromServer(inventory).then((snapshot) => prepareViewerDeviceList(
     snapshot.docs
       .filter((deviceDoc) => !isDeletedDeviceDocument(deviceDoc.data()))
       .map((deviceDoc) => mapFirestoreDevice(deviceDoc.id, deviceDoc.data())),
@@ -450,12 +628,26 @@ export async function fetchFirebaseDevices(env: ViewerFirebaseEnv = import.meta.
   const parallel = knownDevices.some((device) => device.presenceMode === "manual");
   const devices = parallel ? knownDevices : await load;
   if (signal?.aborted) return devices;
-  return collectDevicePresence(devices, crypto.randomUUID(), (next, fail) => onSnapshot(
-    collection(services.db, "devices"),
-    (updates) => updates.docChanges().forEach((change) => {
-      if (change.type !== "removed") next(mapFirestoreDevice(change.doc.id, change.doc.data()));
-    }), fail,
-  ), (device, action) => enqueueFirebaseDeviceCommandDirect(device.id, action, env), signal, onProgress, parallel ? load : undefined);
+  const requestId = crypto.randomUUID();
+  return collectDevicePresence(devices, requestId, (next, fail) => {
+    let serverCurrent = false;
+    return onSnapshot(query(inventory, where("heartbeatRequestId", "==", requestId)), { includeMetadataChanges: true }, (updates) => {
+      if (updates.metadata.fromCache) {
+        serverCurrent = false;
+        return;
+      }
+      // A cache-to-server transition may not include any document changes.
+      const replies = serverCurrent
+        ? updates.docChanges({ includeMetadataChanges: true }).flatMap(change => change.type === "removed" ? [] : [change.doc])
+        : updates.docs;
+      serverCurrent = true;
+      for (const reply of replies) {
+        if (reply.metadata.hasPendingWrites) continue;
+        const data = reply.data();
+        if (data.heartbeatRequestId === requestId && !isDeletedDeviceDocument(data)) next(mapFirestoreDevice(reply.id, data));
+      }
+    }, fail);
+  }, (device, action) => enqueueFirebaseDeviceCommandDirect(device.id, action, env), signal, onProgress, parallel ? load : undefined);
 }
 
 export async function fetchFirebaseConnectionHistory(
@@ -699,29 +891,61 @@ export async function registerFirstRunAgentWithFirebase(
   };
 }
 
+type VerifiedViewerTarget = { device: ManagedDevice; data: Record<string, unknown>; viewerUid: string };
+
 export async function openFirebaseSession(
   deviceId: string,
   env: ViewerFirebaseEnv = import.meta.env,
   refreshPresence = false,
   password?: string,
 ): Promise<{ session: RemoteSession; inputLog: string[] }> {
-  if (refreshPresence) {
+  const reconnect = refreshPresence ? new AbortController() : undefined;
+  const signal = reconnect?.signal;
+  if (reconnect) openingViewerReconnects.set(reconnect, requireCurrentUserId(getViewerFirebaseServices(env).auth.currentUser?.uid));
+  const verifyPresence = async (): Promise<VerifiedViewerTarget> => {
     const services = getViewerFirebaseServices(env);
-    requireCurrentUserId(services.auth.currentUser?.uid);
+    const viewerUid = requireCurrentUserId(services.auth.currentUser?.uid);
     const ref = doc(services.db, "devices", deviceId);
     const snapshot = await getDocFromServer(ref);
+    requireActiveViewerReconnect(signal);
+    if (services.auth.currentUser?.uid !== viewerUid) throw new Error("로그인 계정이 변경되었습니다. 다시 시도하세요.");
     if (!snapshot.exists()) throw new Error("Firebase device not found.");
-    const device = mapFirestoreDevice(snapshot.id, snapshot.data());
-    const refreshed = await collectDevicePresence([device], crypto.randomUUID(), (next, fail) => onSnapshot(ref,
-      update => { if (update.exists()) next(mapFirestoreDevice(update.id, update.data())); }, fail),
-      (target, action) => enqueueFirebaseDeviceCommandDirect(target.id, action, env));
+    const data = snapshot.data();
+    const device = mapFirestoreDevice(snapshot.id, data);
+    const nonce = crypto.randomUUID();
+    let confirmed = { device, data, viewerUid };
+    const refreshed = await collectDevicePresence([device], nonce, (next, fail) => onSnapshot(ref, {includeMetadataChanges:true},
+      update => {
+        if (!update.exists() || update.metadata?.fromCache || update.metadata?.hasPendingWrites) return;
+        const currentData = update.data();
+        const currentDevice = mapFirestoreDevice(update.id, currentData);
+        if (currentDevice.heartbeatRequestId === nonce) confirmed = {device:currentDevice, data:currentData, viewerUid};
+        next(currentDevice);
+      }, fail),
+      (target, action) => enqueueFirebaseDeviceCommandDirect(target.id, action, env), signal);
     if (refreshed[0]?.status !== "online") throw new Error("원격 PC가 응답하지 않습니다. 다시 시도하세요.");
+    if (services.auth.currentUser?.uid !== viewerUid) throw new Error("로그인 계정이 변경되었습니다. 다시 시도하세요.");
+    return confirmed;
+  };
+  try {
+    if (refreshPresence && typeof RTCPeerConnection === "function" &&
+      (password !== undefined || resolveViewerFunctionMode(env) === "direct") && !shouldUseDynamicTurnCredentials(env)) {
+      return await openFirebaseSessionDirect(deviceId, env, password, verifyPresence, signal);
+    }
+    const verified = refreshPresence ? await verifyPresence() : undefined;
+    requireActiveViewerReconnect(signal);
+    // Return an already-created session ID so a cancelled caller can close it.
+    if (password !== undefined) return await openFirebaseSessionDirect(deviceId, env, password, verified, signal);
+    return await callViewerFunctionWithFirestoreFallback<
+      { deviceId: string },
+      { session: RemoteSession; inputLog: string[] }
+    >("openSession", { deviceId }, env, () => openFirebaseSessionDirect(deviceId, env, undefined, verified, signal));
+  } catch (error) {
+    requireActiveViewerReconnect(signal);
+    throw error;
+  } finally {
+    if (reconnect) openingViewerReconnects.delete(reconnect);
   }
-  if (password !== undefined) return openFirebaseSessionDirect(deviceId, env, password);
-  return callViewerFunctionWithFirestoreFallback<
-    { deviceId: string },
-    { session: RemoteSession; inputLog: string[] }
-  >("openSession", { deviceId }, env, () => openFirebaseSessionDirect(deviceId, env));
 }
 
 export async function requestFirebaseDeviceAccess(
@@ -751,7 +975,10 @@ async function requestDeviceAccessWithFreshData(
   const batch = writeBatch(db);
   safeBatchSet(batch, requestRef, {...encrypted, state:"pending", createdAt:serverTimestamp()});
   safeBatchSet(batch, doc(collection(db, "devices", deviceId, "commands")), {action:`device-access ${id}`, createdAt:serverTimestamp(), state:"pending"});
-  await batch.commit();
+  const queued = batch.commit();
+  if (operation === "connect") markConnectionTiming(deviceId, "access-request-queued");
+  await queued;
+  if (operation === "connect") markConnectionTiming(deviceId, "access-request-acknowledged");
   return new Promise((resolve, reject) => {
     let unsubscribe: Unsubscribe = () => undefined;
     let finished = false;
@@ -826,6 +1053,7 @@ export async function closeFirebaseSession(
   env: ViewerFirebaseEnv = import.meta.env,
 ): Promise<void> {
   discardPreparedViewerPeer(sessionId);
+  pendingViewerSignals.get(sessionId)?.cancel();
   await callViewerFunctionWithFirestoreFallback<{ sessionId: string }, null>(
     "closeSession",
     { sessionId },
@@ -1063,6 +1291,7 @@ export async function fetchFirebaseTiles(
 export async function startFirebaseViewerWebRtcTransport(
   sessionId: string,
   handlers: {
+    startInFastMode?: boolean;
     onFrame: (frame: RemoteTileFrame) => void;
     onFileChunk?: (chunk: WebRtcFileChunkMessage, isCurrent: () => boolean) => Promise<WebRtcFileAckMessage | null>;
     onFileStatus?: (status: WebRtcFileStatusMessage) => void;
@@ -1075,10 +1304,63 @@ export async function startFirebaseViewerWebRtcTransport(
   env: ViewerFirebaseEnv = import.meta.env,
 ): Promise<ViewerWebRtcTransport> {
   const services = getViewerFirebaseServices(env);
-  let prepared = preparedViewerPeers.get(sessionId);
-  if (prepared && prepared.ownerUid !== services.auth.currentUser?.uid) { discardPreparedViewerPeer(sessionId); prepared = undefined; }
-  if (prepared) { preparedViewerPeers.delete(sessionId); clearTimeout(prepared.timer); }
-  const rtcConfiguration = prepared ? null : await resolveRtcConfiguration(env, async () => httpsCallable(services.functions, "getRtcConfiguration")({}));
+  const signalingOwnerUid = requireCurrentUserId(services.auth.currentUser?.uid);
+  if (pendingViewerSignals.has(sessionId)) throw new Error("WebRTC setup is already in progress.");
+  const pending = preparedViewerPeers.get(sessionId);
+  let prepared: PreparedViewerPeer | null = null;
+  let rtcConfiguration: Awaited<ReturnType<typeof loadViewerRtcConfiguration>> | null = null;
+  if (pending) {
+    if (pending.claimed) throw new Error("WebRTC setup is already in progress.");
+    pending.claimed = true;
+    clearTimeout(pending.timer);
+    const configurationDeadline = performance.now() + VIEWER_RTC_CONFIGURATION_BUDGET_MS;
+    const ensureCurrent = () => {
+      if (preparedViewerPeers.get(sessionId) !== pending || pending.ownerUid !== services.auth.currentUser?.uid) {
+        throw new Error("WebRTC setup was cancelled or the Viewer account changed.");
+      }
+    };
+    let handoffTimer: ReturnType<typeof setTimeout> | undefined;
+    let configurationTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      ensureCurrent();
+      prepared = await Promise.race([pending.ready, pending.cancelled, new Promise<null>(resolve => {
+        handoffTimer = setTimeout(() => resolve(null), VIEWER_PEER_HANDOFF_MS);
+      })]);
+      clearTimeout(handoffTimer);
+      ensureCurrent();
+      if (!prepared) {
+        pending.abandonOffer();
+        const expireConfiguration = new Promise<null>(resolve => {
+          configurationTimer = setTimeout(() => resolve(null), Math.max(0, configurationDeadline - performance.now()));
+        });
+        try {
+          rtcConfiguration = await Promise.race([pending.configuration, pending.cancelled, expireConfiguration]);
+        } catch {
+          ensureCurrent();
+          const remaining = Math.ceil(configurationDeadline - performance.now());
+          if (remaining > 0) {
+            rtcConfiguration = await Promise.race([loadViewerRtcConfiguration(env, remaining), pending.cancelled, expireConfiguration]);
+          }
+        }
+        ensureCurrent();
+        if (!rtcConfiguration) throw new Error("WebRTC configuration timed out.");
+      }
+      preparedViewerPeers.delete(sessionId);
+    } catch (error) {
+      discardPreparedViewerPeer(sessionId);
+      throw error;
+    } finally {
+      clearTimeout(handoffTimer);
+      clearTimeout(configurationTimer);
+    }
+  } else {
+    rtcConfiguration = await loadViewerRtcConfiguration(env);
+    if (services.auth.currentUser?.uid !== signalingOwnerUid) throw new Error("WebRTC Viewer account changed.");
+  }
+  if (pendingViewerSignals.has(sessionId)) {
+    prepared?.peer.close();
+    throw new Error("WebRTC setup is already in progress.");
+  }
   const peer = prepared?.peer ?? new RTCPeerConnection({iceServers:rtcConfiguration!.iceServers,iceTransportPolicy:rtcConfiguration!.iceTransportPolicy});
   const signalRef = doc(services.db, "sessions", sessionId, "webrtc", "signal");
   const viewerCandidates = collection(services.db, "sessions", sessionId, "viewerCandidates");
@@ -1092,7 +1374,10 @@ export async function startFirebaseViewerWebRtcTransport(
   const applyingCandidateIds = new Set<string>();
   const automaticallyRetriedCandidateIds = new Set<string>();
   const pendingAgentCandidates = new Map<string, RTCIceCandidateInit>();
+  const pendingLocalCandidates = prepared?.candidates ?? [];
   const negotiationId = prepared?.negotiationId ?? createFirebaseSessionId("rtc");
+  let offerQueued = false;
+  let includesCandidate = prepared?.offerWrite?.includesCandidate;
   let answerApplied = false;
   let answerApplyInFlight = false;
   let channelOpened = false;
@@ -1106,6 +1391,7 @@ export async function startFirebaseViewerWebRtcTransport(
   let candidateRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let connectWatchdog: ReturnType<typeof setTimeout> | null = null;
   let pendingControlActions: string[] = [];
+  let pendingPointerMove: string | null = null;
   const frameAssembler = new WebRtcFrameAssembler();
   const fileAckStates = new Map<string, WebRtcFileAckMessage>();
   let incomingFileQueue = Promise.resolve();
@@ -1134,11 +1420,16 @@ export async function startFirebaseViewerWebRtcTransport(
     }
   };
 
-  const closeResources = () => {
+  const signalAttempt = {ownerUid:signalingOwnerUid, cancel: () => { closedByCaller = true; closeResources(); }};
+  const clearSignalAttempt = () => {
+    if (pendingViewerSignals.get(sessionId) === signalAttempt) pendingViewerSignals.delete(sessionId);
+  };
+  const closeResources = (): void => {
     if (resourcesClosed) {
       return;
     }
     resourcesClosed = true;
+    clearSignalAttempt();
     clearConnectWatchdog();
     if (candidateRetryTimer) {
       clearTimeout(candidateRetryTimer);
@@ -1163,7 +1454,9 @@ export async function startFirebaseViewerWebRtcTransport(
     }
     rejectAllFileWaiters(new Error("WebRTC file channel closed."));
     pendingControlActions = [];
+    pendingPointerMove = null;
     pendingAgentCandidates.clear();
+    pendingLocalCandidates.length = 0;
     applyingCandidateIds.clear();
     automaticallyRetriedCandidateIds.clear();
     peer.close();
@@ -1177,6 +1470,13 @@ export async function startFirebaseViewerWebRtcTransport(
     handlers.onState?.(`webrtc-unavailable: ${message}`);
     handlers.onError?.(new Error(message));
     closeResources();
+  };
+
+  const canPublishSignal = () => {
+    if (resourcesClosed || closedByCaller) return false;
+    if (services.auth.currentUser?.uid === signalingOwnerUid) return true;
+    reportUnavailable("viewer-account-changed");
+    return false;
   };
 
   const reportDiagnostic = (reason: string, detail?: string) => {
@@ -1237,6 +1537,24 @@ export async function startFirebaseViewerWebRtcTransport(
 
   const channel = prepared?.channels[0] ?? peer.createDataChannel(WEBRTC_TILE_CHANNEL_LABEL, viewerTileDataChannelOptions());
   const controlChannel = prepared?.channels[1] ?? peer.createDataChannel(WEBRTC_CONTROL_CHANNEL_LABEL, { ordered: true });
+  const sendControlPayload = (payload: string) => {
+    try {
+      controlChannel.send(payload);
+      return true;
+    } catch (error) {
+      handlers.onError?.(error instanceof Error ? error : new Error(String(error)));
+      return false;
+    }
+  };
+  // Motion is replaceable, so do not queue it behind other buffered control data.
+  controlChannel.bufferedAmountLowThreshold = 0;
+  controlChannel.onbufferedamountlow = () => {
+    if (closedByCaller || resourcesClosed || !controlChannelOpened || controlChannel.readyState !== "open"
+      || controlChannel.bufferedAmount > 0 || pendingPointerMove === null) return;
+    const payload = pendingPointerMove;
+    pendingPointerMove = null;
+    sendControlPayload(payload);
+  };
   const fileChannel = prepared?.channels[2] ?? peer.createDataChannel(WEBRTC_FILE_CHANNEL_LABEL, { ordered: true });
   const markConnectionReady = () => {
     if (!channelOpened || !controlChannelOpened || initialKeyframeRequested) {
@@ -1244,7 +1562,13 @@ export async function startFirebaseViewerWebRtcTransport(
     }
     initialKeyframeRequested = true;
     clearConnectWatchdog();
-    controlChannel.send(serializeWebRtcControlAction("request-keyframe"));
+    try {
+      if (handlers.startInFastMode) controlChannel.send(serializeWebRtcControlAction(buildSetStreamModeCommand("fast")));
+      controlChannel.send(serializeWebRtcControlAction("request-keyframe"));
+    } catch (error) {
+      reportUnavailable("control-channel-send-failed", error instanceof Error ? error.message : String(error));
+      return;
+    }
     handlers.onState?.("webrtc-open");
   };
   controlChannel.onopen = () => {
@@ -1385,12 +1709,17 @@ export async function startFirebaseViewerWebRtcTransport(
       reportUnavailable(state);
     }
   };
-  peer.onicecandidate = (event) => {
-    if (!event.candidate) {
+  pendingViewerSignals.set(sessionId, signalAttempt);
+  const sendLocalCandidate = (candidate: RTCIceCandidate) => {
+    if (!canPublishSignal()) return;
+    if (!offerQueued) {
+      pendingLocalCandidates.push(candidate);
       return;
     }
+    const data = candidate.toJSON();
+    if (includesCandidate?.(data)) return;
     void safeAddDoc(viewerCandidates, {
-      candidate: event.candidate.toJSON(),
+      candidate: data,
       createdAt: serverTimestamp(),
       negotiationId,
     }).catch((error) => reportDiagnostic(
@@ -1398,12 +1727,12 @@ export async function startFirebaseViewerWebRtcTransport(
       error instanceof Error ? error.message : String(error),
     ));
   };
+  peer.onicecandidate = event => { if (event.candidate) sendLocalCandidate(event.candidate); };
 
-  for (const candidate of prepared?.candidates.splice(0) ?? []) peer.onicecandidate({candidate} as RTCPeerConnectionIceEvent);
-
-  unsubscribeSignal = onSnapshot(
+  const watchSignal = () => onSnapshot(
     signalRef,
     (snapshot) => {
+      if (!canPublishSignal()) return;
       const signal = snapshot.data();
       const answer = signal?.answer as { type?: unknown; sdp?: unknown; negotiationId?: unknown } | undefined;
       const answerNegotiationId = answer?.negotiationId ?? signal?.negotiationId;
@@ -1444,9 +1773,10 @@ export async function startFirebaseViewerWebRtcTransport(
     },
   );
 
-  unsubscribeAgentCandidates = onSnapshot(
+  const watchAgentCandidates = () => onSnapshot(
     recentAgentCandidates,
     (snapshot) => {
+      if (!canPublishSignal()) return;
       snapshot.docs.forEach((candidateDoc) => {
         if (
           appliedCandidateIds.has(candidateDoc.id) ||
@@ -1479,29 +1809,40 @@ export async function startFirebaseViewerWebRtcTransport(
 
   void (async () => {
     const offer = prepared?.offer ?? await peer.createOffer();
+    if (!canPublishSignal()) return;
     if (!prepared) await peer.setLocalDescription(offer);
-    const localOffer = peer.localDescription ?? offer;
-    await safeSetDoc(
-      signalRef,
-      {
-        offer: {
-          negotiationId,
-          type: localOffer.type,
-          sdp: localOffer.sdp,
-        },
-        negotiationId,
-        state: "viewer-offer",
-        updatedAt: serverTimestamp(),
-      },
-      { merge: true },
-    );
-    if (resourcesClosed || closedByCaller) {
+    if (!canPublishSignal()) return;
+    const earlyWrite = prepared?.offerWrite;
+    if (earlyWrite?.failure) throw earlyWrite.failure.error;
+    const offerWrite = earlyWrite ?? queueViewerOffer(signalRef, sessionId, negotiationId, peer.localDescription ?? offer);
+    includesCandidate = offerWrite.includesCandidate;
+    // Watches get the current snapshot, so they need not run ahead of the offer or wait for its ACK.
+    const watchAndFlush = async () => {
+      if (!canPublishSignal()) return;
+      let watchFailure = "signal-listener-failed";
+      try {
+        const stopSignal = watchSignal();
+        if (!canPublishSignal()) { stopSignal(); return; }
+        unsubscribeSignal = stopSignal;
+        watchFailure = "agent-candidate-listener-failed";
+        const stopCandidates = watchAgentCandidates();
+        if (!canPublishSignal()) { stopCandidates(); return; }
+        unsubscribeAgentCandidates = stopCandidates;
+      } catch (error) {
+        reportUnavailable(watchFailure, error instanceof Error ? error.message : String(error));
+        return;
+      }
+      offerQueued = true;
+      for (const candidate of pendingLocalCandidates.splice(0)) sendLocalCandidate(candidate);
+    };
+    await Promise.all([offerWrite.result, watchAndFlush()]);
+    if (!canPublishSignal()) {
       return;
     }
     handlers.onState?.("webrtc-offer-sent");
   })().catch((error) => {
     reportUnavailable("offer-failed", error instanceof Error ? error.message : String(error));
-  });
+  }).finally(clearSignalAttempt);
 
   const waitForFileAck = (transferId: string, minReceivedChunks: number, signal?: AbortSignal): Promise<WebRtcFileAckMessage> => {
     if (signal?.aborted) return Promise.reject(new DOMException("File transfer cancelled.", "AbortError"));
@@ -1625,21 +1966,23 @@ export async function startFirebaseViewerWebRtcTransport(
   };
 
   return {
-    close: () => {
-      closedByCaller = true;
-      closeResources();
-    },
+    close: signalAttempt.cancel,
     isControlReady: () =>
       !resourcesClosed &&
       !closedByCaller &&
       controlChannelOpened &&
       controlChannel.readyState === "open",
+    cancelPointerMove: () => { pendingPointerMove = null; },
     sendControl: (action) => {
       if (resourcesClosed || closedByCaller) {
         return false;
       }
       const payload = serializeWebRtcControlAction(action);
+      const isMove = action.startsWith("move ");
+      const previousMove = pendingPointerMove;
+      pendingPointerMove = null;
       if (!controlChannelOpened || controlChannel.readyState !== "open") {
+        if (isMove) return false;
         if (pendingControlActions.length >= MAX_PENDING_WEBRTC_CONTROL_ACTIONS) {
           reportUnavailable(
             "control-queue-overflow",
@@ -1650,13 +1993,17 @@ export async function startFirebaseViewerWebRtcTransport(
         pendingControlActions.push(payload);
         return true;
       }
-      try {
-        controlChannel.send(payload);
+      if (isMove && controlChannel.bufferedAmount > 0) {
+        pendingPointerMove = payload;
         return true;
-      } catch (error) {
-        handlers.onError?.(error instanceof Error ? error : new Error(String(error)));
-        return false;
       }
+      if (previousMove !== null && /^(?:key-|keypress |text-base64 |text-replace-base64 )/.test(action)) {
+        try { controlChannel.send(previousMove); }
+        catch {
+          // A replaceable move must not close the channel before the key or text is sent.
+        }
+      }
+      return sendControlPayload(payload);
     },
     sendFile,
   };
@@ -1754,28 +2101,40 @@ async function openFirebaseSessionDirect(
   deviceId: string,
   env: ViewerFirebaseEnv,
   password?: string,
+  target?: VerifiedViewerTarget | (() => Promise<VerifiedViewerTarget>),
+  reconnectSignal?: AbortSignal,
 ): Promise<{ session: RemoteSession; inputLog: string[] }> {
+  requireActiveViewerReconnect(reconnectSignal);
   const services = getViewerFirebaseServices(env);
   const userId = requireCurrentUserId(services.auth.currentUser?.uid);
   // Prepare only local RTC state; no signaling/control/capture precedes authorization.
-  let readyPeer: PreparedViewerPeer | null = null;
-  let acceptingPreparation = true;
-  void prepareViewerPeer(env).then(prepared => {
-    if (!acceptingPreparation) { prepared?.peer.close(); return null; }
-    readyPeer = prepared;
-    return prepared;
-  }).catch(() => null);
+  let allowGathering: (() => void) | undefined;
+  const preparation = typeof RTCPeerConnection === "function" ? beginViewerPeerPreparation(env, userId,
+    typeof target === "function" ? new Promise<void>(resolve => { allowGathering = resolve; }) : undefined) : null;
+  if (preparation) openingViewerPeers.add(preparation);
+  const requireSessionOwner = () => {
+    requireActiveViewerReconnect(reconnectSignal);
+    if (services.auth.currentUser?.uid !== userId || (preparation && !openingViewerPeers.has(preparation))) {
+      throw new Error("로그인 계정이 변경되었습니다. 다시 시도하세요.");
+    }
+  };
   try {
-    const {device, data} = await requireFirebaseOnlineCompatibleDeviceDirect(deviceId, env);
+    const verified = typeof target === "function" ? await target() : target;
+    if (verified && verified.viewerUid !== userId) throw new Error("로그인 계정이 변경되었습니다. 다시 시도하세요.");
+    const {device, data} = verified ? requireCompatibleDevice(verified.device, verified.data)
+      : await requireFirebaseOnlineCompatibleDeviceDirect(deviceId, env);
     markConnectionTiming(deviceId, "device-validated");
     const session = buildConnectedSession(deviceId);
     let access: {accessRequestId: string; accessLockVersion: string} | undefined;
     if (device.accessLocked) {
+      requireSessionOwner();
       if (password === undefined) throw new Error("잠금 비밀번호를 입력해야 이 장비에 접속할 수 있습니다.");
-      const authorization = await requestDeviceAccessWithFreshData(deviceId, "connect", {password}, session.id, undefined, env, {ownerUid:userId, data});
+      const authorization = await requestDeviceAccessWithFreshData(deviceId, "connect", {password}, session.id, reconnectSignal, env, {ownerUid:userId, data});
+      markConnectionTiming(deviceId, "access-approved");
       access = {accessRequestId:authorization.requestId, accessLockVersion:authorization.version};
     }
-    if (requireCurrentUserId(services.auth.currentUser?.uid) !== userId) throw new Error("로그인 계정이 변경되었습니다. 다시 시도하세요.");
+    requireSessionOwner();
+    allowGathering?.();
     const batch = writeBatch(services.db);
     safeBatchSet(batch, doc(services.db, "sessions", session.id), {
       ...access,
@@ -1791,12 +2150,17 @@ async function openFirebaseSessionDirect(
       sessionId: session.id,
     });
     await batch.commit();
-    acceptingPreparation = false;
-    const prepared = readyPeer as PreparedViewerPeer | null;
-    if (prepared) {
-      if (preparedViewerPeers.size >= 32) discardPreparedViewerPeer(preparedViewerPeers.keys().next().value!);
-      prepared.timer = setTimeout(() => discardPreparedViewerPeer(session.id), resolveWebRtcConnectTimeoutMs(env));
-      preparedViewerPeers.set(session.id, prepared);
+    if (preparation && openingViewerPeers.has(preparation) && services.auth.currentUser?.uid === userId) {
+      if (preparedViewerPeers.size >= MAX_PREPARED_VIEWER_PEERS) {
+        const available = [...preparedViewerPeers].find(([, pending]) => !pending.claimed);
+        if (available) discardPreparedViewerPeer(available[0]);
+      }
+      if (preparedViewerPeers.size < MAX_PREPARED_VIEWER_PEERS) {
+        const timer = setTimeout(() => discardPreparedViewerPeer(session.id), resolveWebRtcConnectTimeoutMs(env));
+        preparedViewerPeers.set(session.id, {...preparation, services, claimed:false, timer});
+      } else preparation.cancel();
+    } else {
+      preparation?.cancel();
     }
     markConnectionTiming(deviceId, "command-dispatched");
     return {
@@ -1804,9 +2168,10 @@ async function openFirebaseSessionDirect(
       session,
     };
   } catch (error) {
-    acceptingPreparation = false;
-    (readyPeer as PreparedViewerPeer | null)?.peer.close();
+    preparation?.cancel();
     throw error;
+  } finally {
+    if (preparation) openingViewerPeers.delete(preparation);
   }
 }
 
@@ -1820,7 +2185,10 @@ async function requireFirebaseOnlineCompatibleDeviceDirect(
     throw new Error("Firebase device not found.");
   }
   const data = deviceSnapshot.data();
-  const device = mapFirestoreDevice(deviceSnapshot.id, data);
+  return requireCompatibleDevice(mapFirestoreDevice(deviceSnapshot.id, data), data);
+}
+
+function requireCompatibleDevice(device: ManagedDevice, data: Record<string, unknown>) {
   if (device.status !== "online") {
     throw new Error("Only online agents can accept connections.");
   }

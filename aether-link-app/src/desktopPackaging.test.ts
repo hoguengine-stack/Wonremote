@@ -739,6 +739,11 @@ describe("desktop packaging scaffold", () => {
       "../dist-runtime/node.exe": "runtime/node.exe",
       "../dist-poc/wonremote-poc.exe": "bin/wonremote-poc.exe",
     });
+    expect(Object.values(config.bundle.resources)).not.toContain("updater/index.mjs");
+    for (const name of ["tauri.agent.conf.json", "tauri.agent.x86.conf.json"]) {
+      const agentConfig = JSON.parse(readFileSync(path.join(projectRoot, "src-tauri", name), "utf8"));
+      expect(agentConfig.bundle.resources).toEqual({ "../dist-agent/updater.mjs": "updater/index.mjs" });
+    }
   });
 
   it("does not require a Firestore composite index for the Viewer device list", () => {
@@ -952,6 +957,30 @@ describe("desktop packaging scaffold", () => {
     expect(deployScript.indexOf("npm run change:verify:predeploy")).toBeLessThan(
       deployScript.indexOf("npm run build"),
     );
+  });
+
+  it.runIf(process.platform === "win32")("still requires predeploy proof when Firebase uses a prebuilt app", () => {
+    const deployment = path.join(projectRoot, "scripts", "deploy-firebase.ps1").replace(/'/g, "''");
+    const script = `
+      function npm { Write-Output (\"gate: \" + ($args -join \" \")); $global:LASTEXITCODE = 1 }
+      function node { throw 'Fixture disallows artifact and network operations.' }
+      & '${deployment}' -SkipAppBuild
+    `;
+    let result: {status?: number; stdout?: Buffer; stderr?: Buffer} | undefined;
+    try {
+      execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], {
+        env: { ...process.env, WONREMOTE_FIREBASE_DEPLOY_APPROVED: "YES" },
+        stdio: "pipe",
+      });
+    } catch (error) { result = error as NonNullable<typeof result>; }
+    expect(result?.status).toBe(1);
+    expect(result?.stdout?.toString()).toContain("gate: run change:verify:predeploy");
+    expect(result?.stderr?.toString()).toContain("Development predeploy gate failed.");
+  });
+
+  it("requires the selected Agent handoff runtime test before publication", () => {
+    const workflow = readFileSync(path.join(projectRoot, "../.github/workflows/publish-release.yml"), "utf8");
+    expect(workflow.split("\n  publish-release:")[0]).toContain("src/agent/agentPresence.test.ts -t 'installed Agent selected update handoff|does not admit a new remote session'");
   });
 
   it("keeps Android screen delivery on TURN with a post-open keyframe handshake", () => {

@@ -477,6 +477,10 @@ async function routeRequest(
       verifyAgentInstall(state.devices, input.deviceId, input.installId);
       const commands = state.commandQueues.get(input.deviceId) ?? [];
       state.commandQueues.set(input.deviceId, []);
+      const challengeId = input.healthChallengeId;
+      if (typeof challengeId === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(challengeId)) {
+        commands.push({ id: challengeId, action: `agent-health-check ${challengeId}`, deviceId: input.deviceId, createdAt: nowIso(state) });
+      }
       writeJson(response, 200, { commands });
     } catch (error) {
       writeJson(response, 404, {

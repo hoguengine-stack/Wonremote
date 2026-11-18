@@ -274,6 +274,31 @@ describe("Agent command execution", () => {
     expect(order).toEqual(["key-down:start", "key-down:end", "key-up"]);
   });
 
+  it("coalesces slow pointer motion without crossing a click or a channel boundary", async () => {
+    const queue = createSerializedAgentCommandQueue();
+    const events: string[] = [];
+    let unblock!: () => void;
+    const blocked = new Promise<void>(resolve => { unblock = resolve; });
+    const firstChannel = () => true;
+    const nextChannel = () => true;
+    const emit = (event: string) => () => { events.push(event); };
+    const first = queue.enqueueLatestPointerMove(firstChannel, async () => {
+      events.push("active move");
+      await blocked;
+    });
+    await Promise.resolve();
+    for (let i = 0; i < 60; i++) queue.enqueueLatestPointerMove(firstChannel, emit(`move ${i}`));
+    queue.enqueue(emit("mouse-up"));
+    queue.enqueueLatestPointerMove(firstChannel, emit("old channel"));
+    queue.enqueueLatestPointerMove(nextChannel, emit("new channel"));
+    queue.enqueueLatestPointerMove(nextChannel, emit("latest new channel"));
+    const end = queue.enqueue(emit("key-up"));
+    expect(events).toEqual(["active move"]);
+    unblock();
+    await Promise.all([first, end]);
+    expect(events).toEqual(["active move", "move 59", "mouse-up", "old channel", "latest new channel", "key-up"]);
+  });
+
   it("drops a queued WebRTC control after its originating channel closes", async () => {
     const queue = createSerializedAgentCommandQueue();
     let releaseFirst!: () => void;
@@ -382,12 +407,12 @@ describe("Agent command execution", () => {
     expect(transportBlock).toContain("isCurrentWebRtcSessionGeneration");
     expect(transportBlock).toContain("!isCurrentChannel()");
     expect(transportBlock).toContain('executeAgentCommand(action, "webrtc"');
-    expect(transportBlock).toContain("onControlClosed: ()");
+    expect(transportBlock).toContain("onControlClosed: (channel)");
     expect(transportBlock).toContain("await releasePressedInput(");
     expect(transportBlock).toContain("onFileChunk: (chunk, isCurrentChannel)");
     expect(transportBlock).toContain("processWebRtcFileChunk(chunk");
-    expect(firebaseSource).toContain("onControl?: (action: string, isCurrentChannel: () => boolean) => void");
-    expect(firebaseSource).toContain("onControlClosed?: () => void");
+    expect(firebaseSource).toContain("onControl?: (action: string, isCurrentChannel: ControlChannelOwner) => void");
+    expect(firebaseSource).toContain("onControlClosed?: (channel: ControlChannelOwner) => void");
     expect(firebaseSource).toContain("onFileChunk?: (");
     expect(firebaseSource).toContain("routeAgentDataChannel(event.channel");
     expect(firebaseSource).toContain("bindAgentControlMessages(channel");
@@ -457,7 +482,7 @@ describe("Agent command execution", () => {
     expect(block).toContain("initialFrameSynchronized = false");
     expect(block).toContain('writeCaptureControl(streamProcess.stdin, "request-keyframe\\n"');
     expect(block).toContain('if (action === "request-keyframe")');
-    expect(block).toContain('writeCaptureControl(streamProcess?.stdin, "request-keyframe\\n"');
+    expect(block).toContain('writeCaptureControl(capture?.stdin, "request-keyframe\\n"');
     expect(block).toContain("if (!flushPendingInitialKeyframe(expectedSessionGeneration))");
     expect(block).not.toMatch(
       /flushPendingInitialKeyframe\(expectedSessionGeneration\);\s*writeCaptureControl\(streamProcess\.stdin, "request-keyframe\\n"/,
