@@ -1,6 +1,6 @@
 [package]
 name = "wonremote-viewer"
-version = "0.1.124"
+version = "0.1.125"
 description = "WonRemote Viewer desktop shell"
 authors = ["WonRemote"]
 edition = "2021"

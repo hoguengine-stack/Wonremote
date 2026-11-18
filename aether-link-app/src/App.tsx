@@ -4293,6 +4293,13 @@ function RemoteSessionPanel({
       });
     };
 
+    const canPaintAfterRtcBaseline = (data: TileFrame, sequence?: number, isSourceLive?: () => boolean) => {
+      const canvas = pictureCanvas();
+      return hasPresentedBaseline && canvas !== null && sequence !== undefined && displayedRtcBaselineSequence !== undefined
+        && sequence > displayedRtcBaselineSequence && isSourceLive !== undefined && isSourceLive === isBaselineSourceLive
+        && isSourceLive() && data.width === canvas.width && data.height === canvas.height;
+    };
+
     const renderDeltaFrame = (data: TileFrame, rtcSequence?: number, isSourceLive?: () => boolean) => {
       if (!active) return;
 
@@ -4305,7 +4312,14 @@ function RemoteSessionPanel({
       if (tiles?.length) {
         const frameSequence = resolveFrameSequence(data);
         const revision = baselineRevision;
-        const canDraw = () => active && revision === baselineRevision && (isSourceLive?.() ?? true);
+        const currentDeltaContext = () => {
+          if (!active || isSourceLive?.() === false) return null;
+          if (revision === baselineRevision) return ctx;
+          // A delayed newer delta still belongs to the same displayed stream and size.
+          return canPaintAfterRtcBaseline(data, rtcSequence, isSourceLive)
+            ? pictureCanvas()?.getContext("2d", { willReadFrequently: true }) ?? null
+            : null;
+        };
         let loadedCount = 0;
         let batches: any[][] = [];
         if (tiles.length > 1 && rtcSequence !== undefined && isSourceLive !== undefined) {
@@ -4327,19 +4341,20 @@ function RemoteSessionPanel({
           const payload = placements[0]?.data;
           const img = new Image();
           img.onload = () => {
-            if (canDraw()) {
+            const target = currentDeltaContext();
+            if (target) {
               let painted = false;
               for (const placement of placements) {
-                if (drawDeltaTile(ctx, img, placement, frameSequence)) painted = true;
+                if (drawDeltaTile(target, img, placement, frameSequence)) painted = true;
               }
               if (painted) markDeltaPresented(data, frameSequence, rtcSequence);
             }
             loadedCount += placements.length;
-            if (loadedCount === tiles.length && (isSourceLive?.() ?? true)) {
-              measurePresentedPing(ctx);
+            if (loadedCount === tiles.length && target) {
+              measurePresentedPing(target);
             }
           };
-          img.onerror = () => { if (canDraw()) reportPictureError(rtcSequence); };
+          img.onerror = () => { if (currentDeltaContext()) reportPictureError(rtcSequence); };
           img.src = `data:image/jpeg;base64,${payload}`;
         }
       }
@@ -4531,7 +4546,8 @@ function RemoteSessionPanel({
         && tiles.reduce((area, tile) => area + tile?.w * tile?.h, 0) === canvas.width * canvas.height
         && tiles.every(tile => typeof tile?.data === "string" && tile.data.startsWith("/9j/"))
         && hasCompleteTileCoverage(canvas.width, canvas.height, tiles);
-      if (keyframeRenderPending) {
+      // A slow periodic refresh must not hold newer, compatible pixels behind it.
+      if (keyframeRenderPending && !(data.keyframe === false && !coversPicture && canPaintAfterRtcBaseline(data, rtcSequence, isSourceLive))) {
         queuedDuringKeyframe.push({ data, coversPicture, rtcSequence, isSourceLive });
         return;
       }

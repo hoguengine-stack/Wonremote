@@ -1,0 +1,40 @@
+name: Build Windows Viewer for Sandbox verification
+
+on:
+  push:
+    branches: ["codex/verify-viewer-sandbox/*"]
+
+permissions:
+  contents: read
+
+jobs:
+  viewer-test-installer:
+    if: github.repository == 'hoguengine-stack/Wonremote'
+    runs-on: windows-2022
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: aether-link-app
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build and verify the x86 Viewer installer
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          npm ci
+          npm --prefix ../functions ci --ignore-scripts
+          npm --prefix ../cloudflare/video-consultation ci
+          rustup target add i686-pc-windows-msvc
+          node scripts/package-release-exes.js --viewer-only
+          node scripts/verify-x86-installer-payloads.js --viewer-only
+      - uses: actions/upload-artifact@v4
+        with:
+          name: viewer-sandbox-${{ github.sha }}
+          path: aether-link-app/release-exe/WonRemote-Viewer-Setup.exe
+          if-no-files-found: error
+          retention-days: 1

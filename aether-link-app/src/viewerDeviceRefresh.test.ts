@@ -4875,6 +4875,66 @@ describe("manual Viewer device list in a real browser", () => {
     } finally { await page.close(); }
   });
 
+  it("paints legacy partial updates during a slow full-picture refresh", async () => {
+    const page = await openViewer({ connected: true });
+    try {
+      await page.locator(".table-row").filter({ has: page.getByText("PC-0", { exact: true }) })
+        .getByRole("button", { name: "접속", exact: true }).click();
+      await page.waitForFunction(() => typeof (window as any).rtcCallbacks?.onFrame === "function");
+      await page.evaluate(() => {
+        const w = window as any;
+        const tile = (x: number, width: number, color: string) => {
+          const canvas = document.createElement("canvas");
+          canvas.width = width;
+          canvas.height = 32;
+          const ctx = canvas.getContext("2d")!;
+          ctx.fillStyle = color;
+          ctx.fillRect(0, 0, width, 32);
+          return { x, y: 0, w: width, h: 32, data: canvas.toDataURL("image/jpeg").split(",")[1] };
+        };
+        w.sendRefreshFixture = (sequence: number, x: number, width: number, color: string, hold?: string) => {
+          if (hold) {
+            const NativeImage = window.Image;
+            w.Image = function () {
+              const image = new NativeImage();
+              Object.defineProperty(image, "onload", { set(callback) {
+                image.addEventListener("load", () => { w[hold] = () => callback.call(image); }, { once: true });
+              } });
+              return image;
+            };
+            try {
+              w.rtcCallbacks.onFrame({ sequence, width: 64, height: 32, keyframe: false, tiles: [tile(x, width, color)] });
+            } finally {
+              w.Image = NativeImage;
+            }
+          } else w.rtcCallbacks.onFrame({ sequence, width: 64, height: 32, keyframe: sequence === 1, tiles: [tile(x, width, color)] });
+        };
+        w.sendRefreshFixture(1, 0, 64, "#ff0000");
+      });
+      const pixels = () => page.locator(".remote-canvas").evaluate(node => {
+        const ctx = (node as HTMLCanvasElement).getContext("2d")!;
+        return [16, 48].map(x => Array.from(ctx.getImageData(x, 16, 1, 1).data).findIndex((value, i) => i < 3 && value > 240));
+      });
+      await expect.poll(pixels).toEqual([0, 0]);
+      await page.evaluate(() => (window as any).sendRefreshFixture(2, 0, 64, "#0000ff", "finishFullRefresh"));
+      await page.waitForFunction(() => typeof (window as any).finishFullRefresh === "function");
+      await page.evaluate(() => (window as any).sendRefreshFixture(3, 0, 32, "#00ff00"));
+      await expect.poll(pixels).toEqual([1, 0]);
+      await page.evaluate(() => (window as any).finishFullRefresh());
+      await expect.poll(pixels).toEqual([1, 2]);
+      await page.evaluate(() => {
+        const w = window as any;
+        w.sendRefreshFixture(4, 0, 64, "#ff0000", "finishNextRefresh");
+        w.sendRefreshFixture(5, 1, 32, "#00ff00", "finishLateDelta");
+      });
+      await page.waitForFunction(() => typeof (window as any).finishNextRefresh === "function" && typeof (window as any).finishLateDelta === "function");
+      await page.evaluate(() => (window as any).finishNextRefresh());
+      await expect.poll(pixels).toEqual([0, 0]);
+      await page.evaluate(() => (window as any).finishLateDelta());
+      await expect.poll(pixels).toEqual([0, 1]);
+    } finally { await page.close(); }
+  });
+
   it("shares partial delta images without holding ready pixels behind a slow tile", async () => {
     const page = await openViewer({connected:true});
     try {
