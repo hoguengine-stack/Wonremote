@@ -99,6 +99,18 @@ function makeFixture() {
   };
 }
 
+test("the configured signing pins admit exactly the corrected draft metadata read", async () => {
+  const calls = [];
+  await assert.rejects(signDraftCandidate({
+    context: ownerContext,
+    fetchRequest: async (url) => {
+      calls.push(url);
+      return new Response(null, { status: 404 });
+    },
+  }), /Reading the approved draft metadata failed/);
+  assert.deepEqual(calls, ["https://api.github.com/repos/hoguengine-stack/Wonremote/releases/455648820"]);
+});
+
 test("requires original owner, internal draft tag, and final approved pins before any request", async () => {
   const replay = makeFixture();
   replay.context.GITHUB_TRIGGERING_ACTOR = "other";

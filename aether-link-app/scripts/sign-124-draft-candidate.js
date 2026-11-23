@@ -21,7 +21,7 @@ const approvedDraft = {
   tag: "internal-wonremote-124-c67b0560ec7d4a109e6cb0b65048ebbf",
   assets: {
     "WonRemote-Viewer-Setup.exe": { size: 19951381, sha256: "8c448f324a65c0f6352d44fa681273ecf143ba6271d6efc5a4a0e9fe1e40e6d2" },
-    "WonRemote-Agent-Setup.exe": { size: 29793495, sha256: "878fc1b060b8250231b3c08465002abf6dbb21b869586f124c025562c05e1bc2d" },
+    "WonRemote-Agent-Setup.exe": { size: 29793495, sha256: "878fc1b060b8250231b3c0846502abf6dbb21b869586f124c025562c05e1bc2d" },
     "WonRemote-Agent-Update.exe": { size: 29692852, sha256: "6722c6ca1b4757f84f5428da1c7187686e1664be9352d7dc1a2c44d51fc3aa32" },
   },
 };
