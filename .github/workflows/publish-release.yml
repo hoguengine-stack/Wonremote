@@ -1,4 +1,4 @@
-name: Sign approved WonRemote 0.1.124 private candidate draft
+name: Sign approved WonRemote Agent 120 bridge draft
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: wonremote-124-approved-private-draft
+  group: wonremote-120-bridge-123-approved-private-draft
   cancel-in-progress: false
 
 jobs:
@@ -14,7 +14,7 @@ jobs:
     if: >-
       github.repository == 'hoguengine-stack/Wonremote'
       && github.repository_id == '1136941328'
-      && github.ref == 'refs/heads/codex/sign-wonremote-124-draft'
+      && github.ref == 'refs/heads/codex/sign-wonremote-120-bridge-123'
       && github.actor == 'hoguengine-stack'
       && github.actor_id == '246740147'
       && github.triggering_actor == 'hoguengine-stack'
@@ -31,11 +31,11 @@ jobs:
         with:
           node-version: '22'
       - name: Verify approved draft boundaries
-        run: node --test aether-link-app/scripts/sign-124-draft-candidate.test.js
+        run: node --test aether-link-app/scripts/sign-120-bridge-draft.test.js
       - name: Verify release change contract
         run: npm --prefix aether-link-app run change:verify:predeploy
       - name: Sign the approved unpublished draft
         env:
           GH_TOKEN: ${{ github.token }}
           WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY: ${{ secrets.WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY }}
-        run: node aether-link-app/scripts/sign-124-draft-candidate.js
+        run: node aether-link-app/scripts/sign-120-bridge-draft.js
