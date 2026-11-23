@@ -9,7 +9,7 @@ const ownerContext = {
   GITHUB_EVENT_NAME: "workflow_dispatch",
   GITHUB_REPOSITORY: "hoguengine-stack/Wonremote",
   GITHUB_REPOSITORY_ID: "1136941328",
-  GITHUB_REF: "refs/heads/codex/sign-wonremote-124-draft",
+  GITHUB_REF: "refs/heads/codex/sign-wonremote-124-corrected-draft",
   GITHUB_ACTOR: "hoguengine-stack",
   GITHUB_ACTOR_ID: "246740147",
   GITHUB_TRIGGERING_ACTOR: "hoguengine-stack",

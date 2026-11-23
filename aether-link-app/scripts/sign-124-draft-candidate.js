@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const repository = "hoguengine-stack/Wonremote";
-const signerRef = "refs/heads/codex/sign-wonremote-124-draft";
+const signerRef = "refs/heads/codex/sign-wonremote-124-corrected-draft";
 const version = "0.1.124";
 const canonicalTag = "v0.1.124";
 const approvedInstallerArgs = '["/S","/UPDATE"]';
@@ -17,12 +17,12 @@ const assetNames = [
   "WonRemote-Agent-Update.exe",
 ];
 const approvedDraft = {
-  id: 454956507,
-  tag: "internal-wonremote-124-d960d74ca038424aa6d5a7ad6d309c5a",
+  id: 455648820,
+  tag: "internal-wonremote-124-c67b0560ec7d4a109e6cb0b65048ebbf",
   assets: {
-    "WonRemote-Viewer-Setup.exe": { size: 19953695, sha256: "7d684570d49e9ed44c346a33861abd8b9ee6c3df6d6c4255f46fb9d1025fb243" },
-    "WonRemote-Agent-Setup.exe": { size: 29792421, sha256: "1ab9e0cee343f1aa81f59b128c72ea52120fc6650c01c07ca9153e21c8a562e8" },
-    "WonRemote-Agent-Update.exe": { size: 29692560, sha256: "52aa4f4ce295ce62d2d051e4bd6a1cc3ad0c80059212b89a6327fc49ccd88908" },
+    "WonRemote-Viewer-Setup.exe": { size: 19951381, sha256: "8c448f324a65c0f6352d44fa681273ecf143ba6271d6efc5a4a0e9fe1e40e6d2" },
+    "WonRemote-Agent-Setup.exe": { size: 29793495, sha256: "878fc1b060b8250231b3c08465002abf6dbb21b869586f124c025562c05e1bc2d" },
+    "WonRemote-Agent-Update.exe": { size: 29692852, sha256: "6722c6ca1b4757f84f5428da1c7187686e1664be9352d7dc1a2c44d51fc3aa32" },
   },
 };
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
