@@ -37,3 +37,38 @@ it("defers until session end, blocks overlapping requests and permits explicit r
   await gate.receive(`request-update ${now+3}`,async()=>{},now+3);
   expect(update).toHaveBeenCalledTimes(1);
 });
+
+it("keeps an accepted Viewer request when an automatic check defers during a session", async () => {
+  let active = true;
+  const gate = createRemoteUpdateRequest(() => active);
+  const requested = vi.fn(async () => {});
+  const automatic = vi.fn(async () => {});
+  const now = 1700000000000;
+
+  expect(await gate.receive(`request-update ${now}`, requested, now)).toBe(true);
+  gate.defer(automatic);
+  active = false;
+  await gate.drain();
+
+  expect(requested).toHaveBeenCalledOnce();
+  expect(automatic).not.toHaveBeenCalled();
+});
+
+it("keeps requested priority when the handoff is deferred again", async () => {
+  let active = false;
+  const gate = createRemoteUpdateRequest(() => active);
+  const requested = vi.fn(async () => {});
+  const automatic = vi.fn(async () => {});
+  const now = 1700000000000;
+
+  await gate.receive(`request-update ${now}`, async () => {
+    active = true;
+    gate.defer(requested, true);
+  }, now);
+  gate.defer(automatic);
+  active = false;
+  await gate.drain();
+
+  expect(requested).toHaveBeenCalledOnce();
+  expect(automatic).not.toHaveBeenCalled();
+});

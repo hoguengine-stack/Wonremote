@@ -7,6 +7,51 @@ import {
 } from "./updateManifest";
 
 describe("production update manifest", () => {
+  it("binds the exact safe Agent installer arguments to the verified signature", () => {
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    const publicKeyPem = publicKey.export({ format: "pem", type: "spki" }).toString();
+    const options = { arch: "x86", product: "agent", publicKeyPem } as const;
+    const payload = {
+      arch: "x86",
+      assetName: "WonRemote-Agent-Update.exe",
+      checksum: "a".repeat(64),
+      downloadUrl: "https://example.com/WonRemote-Agent-Update.exe",
+      forceUpdate: false,
+      latestVersion: "0.1.124",
+      updateKind: "installer",
+    } as const;
+    const signature = sign(null, Buffer.from(buildProductionUpdateSignaturePayload(payload)), privateKey).toString("base64");
+    const signedAsset = (installerArgs: string[]) => ({
+      name: payload.assetName,
+      url: payload.downloadUrl,
+      sha256: payload.checksum,
+      installerArgs,
+      signature,
+      signatureV2: sign(null, Buffer.from(buildProductionUpdateSignaturePayloadV2({ ...payload, installerArgs })), privateKey).toString("base64"),
+    });
+    const asset = signedAsset(["/S", "/UPDATE"]);
+    const manifest = { version: payload.latestVersion, agentWindows: { x86: asset } };
+
+    expect(parseProductionUpdateManifest(manifest, options).installerArgs).toEqual(["/S", "/UPDATE"]);
+    expect(() => parseProductionUpdateManifest(manifest, { ...options, publicKeyPem: undefined })).toThrow(/trusted public key/i);
+    expect(() => parseProductionUpdateManifest({ ...manifest, windows: { x86: asset }, agentWindows: undefined }, options))
+      .toThrow(/Agent installer/i);
+    expect(() => parseProductionUpdateManifest({ ...manifest, viewerWindows: { x86: asset } }, { ...options, product: "viewer" }))
+      .toThrow(/Agent installer/i);
+    expect(() => parseProductionUpdateManifest({ ...manifest, portableAgent: { x86: asset } }, { ...options, assetKind: "portable-agent" }))
+      .toThrow(/Agent installer/i);
+
+    const { installerArgs: _, ...stripped } = asset;
+    for (const tampered of [stripped, { ...asset, installerArgs: ["/S"] }]) {
+      expect(() => parseProductionUpdateManifest({ ...manifest, agentWindows: { x86: tampered } }, options))
+        .toThrow(/v2 signature verification failed/);
+    }
+    for (const forbidden of [["/S", "/FIRSTHOP=C:\\manifest.json"], ["/UPDATE", "/S"], ["/S", "/D=C:\\Other"], []]) {
+      expect(() => parseProductionUpdateManifest({ ...manifest, agentWindows: { x86: signedAsset(forbidden) } }, options))
+        .toThrow(/installer argument/i);
+    }
+  });
+
   it("normalizes a signed Windows installer manifest into update metadata", () => {
     expect(
       parseProductionUpdateManifest({

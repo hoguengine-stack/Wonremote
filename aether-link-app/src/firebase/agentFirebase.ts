@@ -80,7 +80,7 @@ import {
 } from "./agentWebRtcNegotiation";
 import { safeAddDoc, safeBatchUpdate, safeSetDoc, safeUpdateDoc } from "./firestoreWrite";
 import type { UpdateFleetRollout } from "../domain/updateFleetPolicy";
-import { parseRolloutSelection } from "../domain/updateFleetPolicy";
+import { readUpdateRollout } from "../domain/updateFleetPolicy";
 import type { DeviceUpdateRing } from "../domain/types";
 
 type AgentFirebaseEnv = Record<string, string | undefined>;
@@ -410,29 +410,24 @@ export async function reportAgentUpdateTelemetryWithFirebase(
 export async function loadAgentUpdateRolloutWithFirebase(
   deviceId: string,
   env: AgentFirebaseEnv = process.env,
+  options: { selected?: boolean; requireServer?: boolean } = {},
 ): Promise<{ rollout: UpdateFleetRollout; updatePaused: boolean; updateRing: DeviceUpdateRing } | null> {
   const services = getAgentFirebaseServices(env);
+  const read = options.selected || options.requireServer ? getDocFromServer : getDoc;
   const [deviceSnapshot, rolloutSnapshot] = await Promise.all([
-    getDoc(doc(services.db, "devices", deviceId)),
-    getDoc(doc(services.db, "configuration", "updateRollout")),
+    read(doc(services.db, "devices", deviceId)),
+    read(doc(services.db, "configuration", "updateRollout")),
   ]);
-  if (!deviceSnapshot.exists() || !rolloutSnapshot.exists()) return null;
+  const rollout = readUpdateRollout(rolloutSnapshot.data(), options.selected);
+  if (!deviceSnapshot.exists() || !rollout) return null;
   const device = deviceSnapshot.data() as Record<string, unknown>;
-  const rollout = rolloutSnapshot.data() as Record<string, unknown>;
-  const targetVersion = typeof rollout.targetVersion === "string" ? rollout.targetVersion.trim() : "";
-  const stage = sanitizeUpdateRing(rollout.stage);
-  if (!targetVersion || !stage) return null;
-  return {
-    rollout: {
-      targetVersion,
-      stage,
-      ...parseRolloutSelection(rollout.targetDeviceIds),
-      paused: rollout.paused === true,
-      percentage: typeof rollout.percentage === "number" ? rollout.percentage : 100,
-    },
-    updatePaused: device.updatePaused === true,
-    updateRing: sanitizeUpdateRing(device.updateRing) ?? "general",
-  };
+  return { rollout, updatePaused: device.updatePaused === true, updateRing: sanitizeUpdateRing(device.updateRing) ?? "general" };
+}
+
+export async function loadAgentUpdateRolloutPolicyWithFirebase(env: AgentFirebaseEnv = process.env): Promise<UpdateFleetRollout | null> {
+  const { db } = getAgentFirebaseServices(env);
+  const snapshot = await getDocFromServer(doc(db, "configuration", "updateRollout"));
+  return readUpdateRollout(snapshot.data(), true);
 }
 
 function updateTelemetryDocument(telemetry: AgentUpdateTelemetry): Record<string, unknown> {

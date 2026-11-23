@@ -206,7 +206,7 @@ import type {
   DeviceMetadataUpdateInput,
   DeviceUpdateRing,
 } from "./domain/types";
-import { decideUpdateEligibility, type UpdateFleetRollout } from "./domain/updateFleetPolicy";
+import { decideUpdateEligibility, supportsSelectedAgentRollout, type UpdateFleetRollout } from "./domain/updateFleetPolicy";
 import {
   filterDeviceWorkspace,
   parseFavoriteDeviceIds,
@@ -2241,7 +2241,7 @@ function RolloutDialog({
       >
         <div className="section-heading">
           <div><span className="section-kicker">안전한 업데이트</span><h2>단계 배포 제어</h2></div>
-          <span>{draft.paused ? "전체 중지" : "배포 활성"}</span>
+          <span>{draft.targetDeviceIds !== undefined ? (draft.paused ? "지정 배포 중지" : "지정 배포 활성") : (draft.paused ? "전체 중지" : "배포 활성")}</span>
         </div>
         <label>
           대상 버전
@@ -2250,7 +2250,7 @@ function RolloutDialog({
         <label className="toggle-field">
           <input type="checkbox" checked={draft.targetDeviceIds !== undefined} onChange={event => setDraft(event.target.checked
             ? {...draft, targetDeviceIds: [], stage: "general", percentage: 0}
-            : {...draft, targetDeviceIds: undefined, paused: true, percentage: 0})}/>
+            : initial.targetDeviceIds === undefined ? initial : {targetVersion:"",stage:"general",paused:true,percentage:0})}/>
           선택한 PC에만 배포
         </label>
         <div className="rollout-stage" role="group" aria-label="배포 단계">
@@ -2266,7 +2266,7 @@ function RolloutDialog({
         </label>
         <label className="toggle-field rollout-pause">
           <input type="checkbox" checked={draft.paused === true} onChange={(event) => setDraft({ ...draft, paused: event.target.checked })} />
-          전체 업데이트 일시 중지
+          {draft.targetDeviceIds !== undefined ? "지정 배포 일시 중지" : "전체 업데이트 일시 중지"}
         </label>
         <section aria-label="배포 대상 미리보기" className="rollout-recipients">
           <strong>현재 목록 {devices.length}대 중 대상 {recipients.filter(({ decision }) => decision.eligible).length}대</strong>
@@ -2275,7 +2275,7 @@ function RolloutDialog({
             {recipients.map(({ device, decision }) => <li key={device.id}>
               {draft.targetDeviceIds !== undefined && <input type="checkbox" aria-label={`${device.desktopName} 배포 대상`}
                 checked={draft.targetDeviceIds.includes(device.id)}
-                disabled={!draft.targetDeviceIds.includes(device.id) && draft.targetDeviceIds.length >= 200}
+                disabled={!draft.targetDeviceIds.includes(device.id) && (draft.targetDeviceIds.length >= 200 || !supportsSelectedAgentRollout(device))}
                 onChange={event => setDraft({...draft, targetDeviceIds: event.target.checked
                   ? [...(draft.targetDeviceIds ?? []), device.id] : draft.targetDeviceIds?.filter(id => id !== device.id)})}/>}
               <span>{device.desktopName} · {device.storeName}</span>
@@ -2293,7 +2293,7 @@ function RolloutDialog({
               </button>
             </li>)}</ul>
           </section>}
-          <p>{draft.targetDeviceIds !== undefined ? "선택 배포를 지원하는 에이전트만 적용됩니다. 구버전은 제외됩니다." : "이 정책은 현재 목록 밖의 장비에도 적용됩니다."}</p>
+          <p>{draft.targetDeviceIds !== undefined ? "Agent 0.1.124 이상만 지정할 수 있습니다. 일반 배포 정책은 유지됩니다." : "이 정책은 현재 목록 밖의 장비에도 적용됩니다."}</p>
         </section>
         <div className="modal-actions">
           <button className="secondary-button" type="button" onClick={onClose}>취소</button>

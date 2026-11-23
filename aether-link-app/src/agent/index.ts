@@ -83,7 +83,7 @@ import {
   isInstallerUpdateMetadata,
   type SafeInstallerUpdateMetadata,
 } from "./productionInstallerUpdate";
-import { loadProductionInstallerUpdateMetadata, loadProductionRollbackMetadata } from "./productionUpdateMetadata";
+import { loadProductionAgentUpdateCandidate, loadProductionInstallerUpdateMetadata, loadProductionRollbackMetadata, loadViewerRequestedAgentUpdate } from "./productionUpdateMetadata";
 import { parseAgentRollbackRequest, runPausedAgentRollback } from "./agentRollback";
 import { handleUpdateOnceCli } from "./agentUpdateOnce";
 import {
@@ -131,6 +131,7 @@ import {
   fetchActiveFirebaseSessionsForAgent,
   subscribeAgentSessionData,
   isAgentFirebaseEnabled,
+  loadAgentUpdateRolloutPolicyWithFirebase,
   loadAgentUpdateRolloutWithFirebase,
   postChatWithFirebase,
   postClipboardWithFirebase,
@@ -224,6 +225,7 @@ async function releaseInputAndCompleteUpdateHandoff(
     requestId: string;
     scriptSha256: string;
   },
+  beforeBrokerDispatch?: () => Promise<void>,
 ): Promise<never> {
   await agentCommandQueue.enqueue(() => releasePressedInputAndClose(
     persistentInputInjector,
@@ -236,6 +238,7 @@ async function releaseInputAndCompleteUpdateHandoff(
       throw new Error("Protected Agent update acknowledgement path is unavailable.");
     }
     const request = formatPreparedUpdateHandoff({ scriptPath, ...installerHandoff });
+    if (beforeBrokerDispatch) await beforeBrokerDispatch();
     await new Promise<void>((resolve, reject) => {
       process.stdout.write(`${request}\n`, (error) => {
         if (error) reject(error);
@@ -409,8 +412,10 @@ async function startStreaming(
     const lock = await getDeviceAccessLock(deviceId).catch(() => null);
     if (!await isAgentDeviceAccessSessionAllowed(deviceId, sessionId, lock)) throw new Error("이 장비는 잠금 비밀번호로 승인된 원격 접속만 허용합니다.");
     // Capture/profile/desktop restarts keep the same approved session; lock changes stop it.
+    if (selectedUpdateHandoffClaimed) throw new Error("Selected Agent update handoff is in progress.");
     authorizedAccessSession = {id:sessionId, version:readyDeviceAccessLock?.publicState.version ?? null};
   }
+  if (selectedUpdateHandoffClaimed) throw new Error("Selected Agent update handoff is in progress.");
   const previousSessionId = activeSessionId;
   const generationTransition = beginAgentCaptureGeneration({
     activeSessionId,
@@ -1310,6 +1315,8 @@ async function main() {
 }
 
 let isUpdating = false;
+let queuedViewerUpdate: (() => Promise<void>) | undefined;
+let selectedUpdateHandoffClaimed = false;
 const remoteUpdateRequest = createRemoteUpdateRequest(() => shouldDeferAgentUpdateForSession({
   activeSessionId,
   firebaseEnabled: USE_FIREBASE,
@@ -1351,10 +1358,16 @@ function scheduleAgentUpdateRetry(): void {
   console.error(`[WonRemote Agent] Update retry scheduled in ${retryAfterMs}ms.`);
 }
 
-async function checkUpdate(config: AgentLocalConfig, manual = false) {
+async function checkUpdate(config: AgentLocalConfig, manual = false, requestId?: string) {
   // An update server stall must not prevent first heartbeat or installer/rollback readiness.
   if (!manual && !agentHealthReporter.isHealthy()) return;
-  if (isUpdating) return;
+  if (!requestId && remoteUpdateRequest.hasPendingRequest()) return;
+  const retry = () => checkUpdate(config, true, requestId);
+  const deferRetry = () => remoteUpdateRequest.defer(retry, Boolean(requestId));
+  if (isUpdating) {
+    if (requestId) queuedViewerUpdate = retry;
+    return;
+  }
   const attemptAtMs = Date.now();
   if (!manual && !shouldAttemptAgentUpdateCheck(attemptAtMs, lastUpdateCheckAttemptAtMs, UPDATE_CHECK_INTERVAL_MS)) {
     return;
@@ -1362,12 +1375,43 @@ async function checkUpdate(config: AgentLocalConfig, manual = false) {
   lastUpdateCheckAttemptAtMs = attemptAtMs;
   isUpdating = true;
   const currentVersion = WONREMOTE_APP_VERSION;
+  if (requestId) currentUpdateTelemetry = { ...currentUpdateTelemetry, requestId };
   try {
     const retainedFailure = currentUpdateTelemetry.state === "rollback" || currentUpdateTelemetry.state === "failed";
     if (!retainedFailure) {
       await setUpdateTelemetry(config, { error: undefined, progress: 0, state: "checking", targetVersion: undefined }, manual);
     }
-    const data = await loadUpdateCheckData();
+    const deviceId = config.registeredDeviceId;
+    const installedWindowsAgent = USE_FIREBASE && process.platform === "win32" && deviceId
+      && process.env.WONREMOTE_PACKAGE_KIND === "installer";
+    const brokered = isUpdateHandoffBrokerEnabled(process.env.WONREMOTE_TAURI_UPDATE_BROKER);
+    if (installedWindowsAgent && requestId) {
+      if (!brokered) throw new Error("Viewer 업데이트 요청에는 보호된 Agent 업데이트 서비스가 필요합니다.");
+      if (activeSessionId) {
+        deferRetry();
+        await setUpdateTelemetry(config, { state: "idle", error: "원격 세션 종료 후 업데이트 대기" });
+        isUpdating = false;
+        return;
+      }
+      const data = await loadViewerRequestedAgentUpdate(currentVersion);
+      if (!isInstallerUpdateMetadata(data)) throw new Error("Invalid Viewer-requested Agent installer metadata.");
+      const verifySelection = async (required = false) => {
+        const rollout = await loadAgentUpdateRolloutPolicyWithFirebase();
+        const targeted = rollout?.targetVersion === data.latestVersion;
+        if ((required && !targeted) || (targeted && !rollout.targetDeviceIds?.includes(deviceId))) {
+          throw new Error("이 버전의 지정 배포 대상이 아닙니다.");
+        }
+        return targeted;
+      };
+      const targeted = await verifySelection();
+      await setUpdateTelemetry(config, { error: undefined, progress: 0, state: "downloading", targetVersion: data.latestVersion });
+      await handoffToProductionInstallerUpdate(data, config, deferRetry, async () => { await verifySelection(targeted); }, false, true);
+      return;
+    }
+    const candidate = installedWindowsAgent && brokered ? await loadProductionAgentUpdateCandidate(
+      deviceId, currentVersion, await loadAgentUpdateRolloutPolicyWithFirebase(),
+    ) : { metadata: await loadUpdateCheckData(), selected: false };
+    const data = candidate.metadata;
     if (!data) {
       await setUpdateTelemetry(config, { error: "Update metadata is unavailable.", state: "failed" });
       scheduleAgentUpdateRetry();
@@ -1394,27 +1438,24 @@ async function checkUpdate(config: AgentLocalConfig, manual = false) {
     }
 
     if (data.latestVersion && (data.forceUpdate || isHigherVersion(data.latestVersion, currentVersion))) {
-      const sessionUpdateState = await prepareAgentUpdateSession(
-        { activeSessionId, firebaseEnabled: USE_FIREBASE, rtcState },
-        stopSessionPolling,
-      );
-      if (sessionUpdateState === "defer") {
-        remoteUpdateRequest.defer(() => checkUpdate(config, true));
+      if (activeSessionId && (candidate.selected || shouldDeferAgentUpdateForSession({ activeSessionId, firebaseEnabled: USE_FIREBASE, rtcState }))) {
+        deferRetry();
         await setUpdateTelemetry(config, {state:"idle",error:"원격 세션 종료 후 업데이트 대기"});
         isUpdating = false;
         return;
       }
-      if (USE_FIREBASE && config.registeredDeviceId) {
-        const rolloutControl = await loadAgentUpdateRolloutWithFirebase(config.registeredDeviceId);
+      let beforeLaunch: (() => Promise<void>) | undefined;
+      let selected = false;
+      if (USE_FIREBASE && deviceId) {
+        const rolloutControl = await loadAgentUpdateRolloutWithFirebase(deviceId, process.env, { selected: candidate.selected });
+        const deviceVersion = { id: deviceId, version: currentVersion, selectedRolloutVersion: currentVersion, updateCurrentVersion: currentVersion };
         const decision = decideUpdateEligibility({
-          id: config.registeredDeviceId,
-          version: currentVersion,
-          selectedRolloutVersion: currentVersion,
-          updateCurrentVersion: currentVersion,
+          ...deviceVersion,
           updatePaused: rolloutControl?.updatePaused,
           updateRing: rolloutControl?.updateRing,
         }, rolloutControl?.rollout);
-        if (rolloutControl?.rollout.targetVersion !== data.latestVersion || !decision.eligible) {
+        if (!rolloutControl || rolloutControl.rollout.targetVersion !== data.latestVersion || !decision.eligible
+            || (candidate.selected && rolloutControl.rollout.targetDeviceIds === undefined)) {
           await setUpdateTelemetry(config, {
             error: undefined,
             progress: 0,
@@ -1425,6 +1466,23 @@ async function checkUpdate(config: AgentLocalConfig, manual = false) {
           isUpdating = false;
           return;
         }
+        selected = rolloutControl.rollout.targetDeviceIds !== undefined;
+        if (selected) beforeLaunch = async () => {
+          const fresh = await loadAgentUpdateRolloutWithFirebase(deviceId, process.env, { selected: candidate.selected, requireServer: true });
+          if (!fresh || fresh.rollout.targetVersion !== data.latestVersion || fresh.rollout.targetDeviceIds === undefined
+              || !decideUpdateEligibility({ ...deviceVersion, updatePaused: fresh.updatePaused }, fresh.rollout).eligible) {
+            throw new Error("Selected Agent rollout was changed before installation.");
+          }
+        };
+      }
+      const sessionUpdateState = selected && activeSessionId ? "defer" : await prepareAgentUpdateSession(
+        { activeSessionId, firebaseEnabled: USE_FIREBASE, rtcState }, stopSessionPolling,
+      );
+      if (sessionUpdateState === "defer") {
+        deferRetry();
+        await setUpdateTelemetry(config, {state:"idle",error:"원격 세션 종료 후 업데이트 대기"});
+        isUpdating = false;
+        return;
       }
       await setUpdateTelemetry(config, {
         error: undefined,
@@ -1437,7 +1495,7 @@ async function checkUpdate(config: AgentLocalConfig, manual = false) {
         return;
       }
       if (isInstallerUpdateMetadata(data)) {
-        await handoffToProductionInstallerUpdate(data, config);
+        await handoffToProductionInstallerUpdate(data, config, deferRetry, beforeLaunch, false, selected);
         return;
       }
 
@@ -1615,6 +1673,7 @@ if exist "${path.join(baseDir, "WonRemote", ".update_success")}" (
       isUpdating = false;
     }
   } catch (e) {
+    selectedUpdateHandoffClaimed = false;
     console.error("[Update Failed]:", e instanceof Error ? e.message : e);
     await setUpdateTelemetry(config, {
       error: e instanceof Error ? e.message : String(e),
@@ -1622,13 +1681,21 @@ if exist "${path.join(baseDir, "WonRemote", ".update_success")}" (
     });
     scheduleAgentUpdateRetry();
     isUpdating = false;
+  } finally {
+    if (!isUpdating && queuedViewerUpdate) {
+      // A newer command may already be waiting for a session that opened during this check.
+      if (!remoteUpdateRequest.hasPendingRequest()) remoteUpdateRequest.defer(queuedViewerUpdate, true);
+      queuedViewerUpdate = undefined;
+      // Let the command receiver clear its busy flag before resuming the queued request.
+      queueMicrotask(() => { void remoteUpdateRequest.drain().catch(error => console.error("Remote update failed:", error)); });
+    }
   }
 }
 
 async function rollbackAgent(config: AgentLocalConfig, version: string): Promise<void> {
   if (isUpdating) throw new Error("Another Agent update is running.");
   isUpdating = true;
-  const retry = () => rollbackAgent(config, version);
+  const deferRetry = () => remoteUpdateRequest.defer(() => rollbackAgent(config, version), true);
   try {
     const lock = USE_FIREBASE && process.platform === "win32" && config.registeredDeviceId ? await getDeviceAccessLock(config.registeredDeviceId) : null;
     const result = await runPausedAgentRollback(version, {
@@ -1643,10 +1710,10 @@ async function rollbackAgent(config: AgentLocalConfig, version: string): Promise
       handoff: async (metadata, guard) => {
         if (!isInstallerUpdateMetadata(metadata)) throw new Error("Invalid rollback installer metadata.");
         await setUpdateTelemetry(config, { targetVersion: version, state: "downloading", progress: 0 });
-        await handoffToProductionInstallerUpdate(metadata, config, retry, guard, true);
+        await handoffToProductionInstallerUpdate(metadata, config, deferRetry, guard, true);
       },
     });
-    if (result === "deferred") remoteUpdateRequest.defer(retry);
+    if (result === "deferred") deferRetry();
   } catch (error) {
     await setUpdateTelemetry(config, { targetVersion: version, state: "failed", error: error instanceof Error ? error.message : "Rollback failed" });
     throw error;
@@ -1668,10 +1735,13 @@ async function loadUpdateCheckData(): Promise<any | null> {
 async function handoffToProductionInstallerUpdate(
   data: SafeInstallerUpdateMetadata,
   config: AgentLocalConfig,
-  retry: () => Promise<void> = () => checkUpdate(config, true),
+  deferRetry: () => void,
   beforeLaunch?: () => Promise<void>,
   legacyRollback = false,
+  selected = false,
 ): Promise<void> {
+  const brokered = isUpdateHandoffBrokerEnabled(process.env.WONREMOTE_TAURI_UPDATE_BROKER);
+  if (selected && (!beforeLaunch || !brokered)) throw new Error("Selected Agent update requires final rollout verification and the protected update broker.");
   const baseDir = process.env.APPDATA ?? process.cwd();
   const download = await downloadInstallerUpdate(data, {
     baseDir,
@@ -1686,23 +1756,23 @@ async function handoffToProductionInstallerUpdate(
       };
     },
   });
-  const handoffSessionState = await prepareAgentUpdateSession(
+  const handoffSessionState = selected && activeSessionId ? "defer" : await prepareAgentUpdateSession(
     { activeSessionId, firebaseEnabled: USE_FIREBASE, rtcState },
     stopSessionPolling,
   );
   if (handoffSessionState === "defer") {
-    remoteUpdateRequest.defer(retry);
+    deferRetry();
     await setUpdateTelemetry(config, {state:"idle",error:"원격 세션 종료 후 업데이트 대기"});
     isUpdating = false;
     return;
   }
-  await beforeLaunch?.();
-  const launchSessionState = await prepareAgentUpdateSession(
+  if (!selected) await beforeLaunch?.();
+  const launchSessionState = selected && activeSessionId ? "defer" : await prepareAgentUpdateSession(
     { activeSessionId, firebaseEnabled: USE_FIREBASE, rtcState },
     stopSessionPolling,
   );
   if (launchSessionState === "defer") {
-    remoteUpdateRequest.defer(retry);
+    deferRetry();
     isUpdating = false;
     return;
   }
@@ -1720,7 +1790,18 @@ async function handoffToProductionInstallerUpdate(
   console.log(`[WonRemote Agent] Installer handoff script: ${handoff.scriptPath}`);
   console.log(`[WonRemote Agent] Installer handoff log: ${handoff.logPath}`);
 
-  if (!isUpdateHandoffBrokerEnabled(process.env.WONREMOTE_TAURI_UPDATE_BROKER)) {
+  const claimSelectedHandoff = async () => {
+    if (activeSessionId) {
+      deferRetry();
+      await setUpdateTelemetry(config, { state: "idle", error: "원격 세션 종료 후 업데이트 대기" });
+      isUpdating = false;
+      return false;
+    }
+    // Keep session admission closed while input drains and the broker accepts or fails.
+    selectedUpdateHandoffClaimed = true;
+    return true;
+  };
+  if (!brokered) {
     const installerProcess = spawn(handoff.command, handoff.args, {
       detached: true,
       stdio: "ignore",
@@ -1730,7 +1811,7 @@ async function handoffToProductionInstallerUpdate(
     installerProcess.unref();
   }
 
-  if (streamProcess) {
+  if (!selected && streamProcess) {
     streamProcess.kill();
     streamProcess = null;
   }
@@ -1738,6 +1819,11 @@ async function handoffToProductionInstallerUpdate(
   console.log("[WonRemote Agent] Handed off to production installer and exiting current Agent.");
   await setUpdateTelemetry(config, { progress: 100, state: "restarting" });
   await new Promise((resolve) => setTimeout(resolve, 500));
+  if (brokered && selected && !await claimSelectedHandoff()) return;
+  if (selected && streamProcess) {
+    streamProcess.kill();
+    streamProcess = null;
+  }
   await releaseInputAndCompleteUpdateHandoff(
     handoff.scriptPath,
     "Agent update handoff started.",
@@ -1748,6 +1834,7 @@ async function handoffToProductionInstallerUpdate(
       requestId: handoff.requestId,
       scriptSha256: handoff.scriptSha256,
     },
+    brokered && selected ? beforeLaunch : undefined,
   );
 }
 
@@ -2184,10 +2271,7 @@ async function executeReceivedCommands(config: AgentLocalConfig, commands: Agent
     }
     if (command.action.startsWith("request-update ")) {
       const requestId = command.action.slice("request-update ".length);
-      const accepted = await remoteUpdateRequest.receive(command.action, () => {
-        currentUpdateTelemetry = {...currentUpdateTelemetry, requestId};
-        return checkUpdate(config, true);
-      });
+      const accepted = await remoteUpdateRequest.receive(command.action, () => checkUpdate(config, true, requestId));
       if (accepted && activeSessionId) await setUpdateTelemetry(config, {requestId,state:"idle",error:"원격 세션 종료 후 업데이트 대기"});
       continue;
     }

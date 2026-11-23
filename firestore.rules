@@ -349,7 +349,17 @@ service cloud.firestore {
           || (request.resource.data.targetDeviceIds is list
             && request.resource.data.targetDeviceIds.size() <= 200
             && request.resource.data.percentage == 0
-            && request.resource.data.stage == "general"));
+            && request.resource.data.stage == "general"))
+        && (!('selectedRollout' in request.resource.data)
+          || request.resource.data.selectedRollout == null
+          || ((!('targetDeviceIds' in request.resource.data) || request.resource.data.targetDeviceIds == null)
+            && request.resource.data.selectedRollout is map
+            && request.resource.data.selectedRollout.keys().hasOnly(['targetVersion', 'targetDeviceIds', 'paused'])
+            && request.resource.data.selectedRollout.targetVersion is string
+            && request.resource.data.selectedRollout.targetVersion.matches('^(0|[1-9][0-9]{0,5})[.](0|[1-9][0-9]{0,5})[.](0|[1-9][0-9]{0,5})$')
+            && request.resource.data.selectedRollout.paused is bool
+            && request.resource.data.selectedRollout.targetDeviceIds is list
+            && request.resource.data.selectedRollout.targetDeviceIds.size() <= 200));
       allow delete: if false;
     }
 

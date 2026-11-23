@@ -5,11 +5,64 @@ import {
   buildProductionUpdateSignaturePayloadV2,
 } from "../domain/updateManifest";
 import {
+  loadProductionAgentUpdateCandidate,
   loadProductionInstallerUpdateMetadata,
+  loadViewerRequestedAgentUpdate,
   resolveRuntimeUpdateKind,
 } from "./productionUpdateMetadata";
 
 describe("production update metadata loader", () => {
+  it("discovers the immutable signed Agent trial only for selected devices, without changing latest", async () => {
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    const version = "0.1.126";
+    const latest = "0.1.124";
+    const release = "https://github.com/hoguengine-stack/Wonremote/releases";
+    const selectedUrl = `${release}/download/v${version}/wonremote-update-manifest.json`;
+    const latestUrl = `${release}/latest/download/wonremote-update-manifest.json`;
+    const signed = (latestVersion: string, kind: "Update" | "Setup", urlVersion = latestVersion, product = "Agent") => {
+      const assetName = `WonRemote-${product}-${kind}.exe`;
+      const downloadUrl = `${release}/download/v${urlVersion}/${assetName}`;
+      const checksum = "a".repeat(64);
+      const data = { assetName, downloadUrl, checksum, latestVersion };
+      return { name: assetName, url: downloadUrl, sha256: checksum,
+        signature: sign(null, Buffer.from(buildProductionUpdateSignaturePayload(data)), privateKey).toString("base64"),
+        signatureV2: sign(null, Buffer.from(buildProductionUpdateSignaturePayloadV2({ ...data, arch: "x86", forceUpdate: false, updateKind: "installer" })), privateKey).toString("base64") };
+    };
+    const trial = { version, agentFileUpdates: { x86: signed(version, "Update") } };
+    const stable = { version: latest, agentWindows: { x86: signed(latest, "Setup") } };
+    const fetcher = vi.fn<typeof fetch>(async url => new Response(JSON.stringify(String(url).startsWith(selectedUrl) ? trial : stable)));
+    const env = { WONREMOTE_BUILD_ARCH: "x86", WONREMOTE_AGENT_FILE_UPDATE: "1",
+      WONREMOTE_UPDATE_MANIFEST_PUBLIC_KEY: publicKey.export({ format: "pem", type: "spki" }).toString() };
+    const policy = { targetVersion: version, stage: "general" as const, percentage: 0, targetDeviceIds: ["selected"] };
+
+    expect(await loadProductionAgentUpdateCandidate("selected", latest, policy, env, fetcher)).toMatchObject({ selected: true, metadata: {
+      latestVersion: version, assetName: "WonRemote-Agent-Update.exe",
+    } });
+    for (const [id, rollout] of [["other", policy], ["selected", { ...policy, paused: true }],
+      ["selected", { ...policy, percentage: 100 }], ["selected", { ...policy, targetVersion: "0.1.0126" }],
+      ["selected", { ...policy, targetVersion: latest }]] as const) {
+      expect(await loadProductionAgentUpdateCandidate(id, latest, rollout, env, fetcher)).toMatchObject({ selected: false, metadata: { latestVersion: latest } });
+    }
+    expect(await loadProductionAgentUpdateCandidate("selected", "0.1.123", policy, env, fetcher)).toMatchObject({ selected: false, metadata: { latestVersion: latest } });
+    expect(fetcher.mock.calls.map(([url]) => new URL(String(url)).href.split("?")[0])).toEqual([selectedUrl, ...Array(6).fill(latestUrl)]);
+
+    fetcher.mockClear().mockResolvedValueOnce(new Response(JSON.stringify({ version, agentFileUpdates: { x86: signed(version, "Update", latest) } })));
+    await expect(loadProductionAgentUpdateCandidate("selected", latest, policy, env, fetcher)).rejects.toThrow(/pinned/);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    fetcher.mockClear().mockResolvedValueOnce(new Response(JSON.stringify({ ...trial, forceUpdate: true })));
+    await expect(loadProductionAgentUpdateCandidate("selected", latest, policy, env, fetcher)).rejects.toThrow(/signature/);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    fetcher.mockClear();
+    await expect(loadViewerRequestedAgentUpdate("0.1.125", env, fetcher)).resolves.toMatchObject({ latestVersion: version });
+    expect(new URL(String(fetcher.mock.calls[0][0])).href.split("?")[0]).toBe(selectedUrl);
+    fetcher.mockClear().mockResolvedValueOnce(new Response(JSON.stringify(trial)));
+    await expect(loadViewerRequestedAgentUpdate("0.1.124", env, fetcher)).rejects.toThrow(/0\.1\.125/);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ version, windows: { x86: signed(version, "Setup", version, "Viewer") } })));
+    await expect(loadViewerRequestedAgentUpdate("0.1.125", env, fetcher)).rejects.toThrow(/pinned Agent/);
+  });
+
   it("keeps Agent120 on the legacy endpoint while Viewer122 uses its own signed discovery", async () => {
     const {privateKey,publicKey}=generateKeyPairSync("ed25519");
     const signed=(product:string,version:string)=>{

@@ -113,7 +113,7 @@ import { normalizeBusinessNumber } from "../domain/agentRegistry";
 import { normalizeAgentMetadataUpdate } from "../domain/agentRegistry";
 import type { AgentLocalConfig } from "../agent/agentBootstrap";
 import type { UpdateFleetRollout } from "../domain/updateFleetPolicy";
-import { parseRolloutSelection } from "../domain/updateFleetPolicy";
+import { readUpdateRollout, updateRolloutFields } from "../domain/updateFleetPolicy";
 import { isHigherVersion } from "../domain/versioning";
 
 type ViewerFirebaseEnv = ImportMetaEnv;
@@ -125,17 +125,8 @@ export async function loadFirebaseUpdateRollout(
   const services = getViewerFirebaseServices(env);
   const snapshot = await getDoc(doc(services.db, "configuration", "updateRollout"));
   if (!snapshot.exists()) return null;
-  const data = snapshot.data() as Record<string, unknown>;
-  if (typeof data.targetVersion !== "string" || !data.targetVersion.trim()) return null;
-  const stage = data.stage === "canary" || data.stage === "pilot" || data.stage === "general" ? data.stage : null;
-  if (!stage) return null;
-  return {
-    targetVersion: data.targetVersion.trim(),
-    ...parseRolloutSelection(data.targetDeviceIds),
-    stage,
-    paused: data.paused === true,
-    percentage: typeof data.percentage === "number" ? Math.max(0, Math.min(100, Math.trunc(data.percentage))) : 100,
-  };
+  const data = snapshot.data();
+  return readUpdateRollout(data, true) ?? readUpdateRollout(data);
 }
 
 export async function saveFirebaseUpdateRollout(
@@ -143,14 +134,13 @@ export async function saveFirebaseUpdateRollout(
   env: ViewerFirebaseEnv = import.meta.env,
 ): Promise<void> {
   const services = getViewerFirebaseServices(env);
-  await safeSetDoc(doc(services.db, "configuration", "updateRollout"), {
-    targetVersion: rollout.targetVersion.trim(),
-    stage: rollout.targetDeviceIds !== undefined ? "general" : rollout.stage,
-    paused: rollout.paused === true,
-    percentage: rollout.targetDeviceIds !== undefined ? 0 : Math.max(0, Math.min(100, Math.trunc(rollout.percentage ?? 100))),
-    targetDeviceIds: parseRolloutSelection(rollout.targetDeviceIds).targetDeviceIds ?? null,
-    updatedAt: serverTimestamp(),
-  }, { merge: true });
+  const ref = doc(services.db, "configuration", "updateRollout");
+  const update = updateRolloutFields(rollout);
+  if (rollout.targetDeviceIds !== undefined) {
+    await safeUpdateDoc(ref, update);
+  } else {
+    await safeSetDoc(ref, { ...update, updatedAt: serverTimestamp() }, { merge: true });
+  }
 }
 
 export async function updateFirebaseDeviceRollout(

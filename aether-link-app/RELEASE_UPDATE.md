@@ -133,3 +133,33 @@ const publicKeyPem = readFileSync(".local-run/update-signing/update-signing-publ
 console.log(parseProductionUpdateManifest(manifest, { publicKeyPem }));
 '@ | npx tsx -
 ```
+
+## Windows Agent 0.1.123 to 0.1.124
+
+Run the signed x86 File Update under the elevated account enrolled on the
+existing Agent. Keep the exact File Update EXE and production-signed manifest
+in an approved local directory.
+
+```powershell
+.\WonRemote-Agent-Update.exe '/FIRSTHOP=C:\ApprovedRelease\wonremote-update-manifest.json'
+```
+
+Exit code zero confirms the original Windows task accepted the request.
+Check `WonRemote\updates\last-update-result.json` in the enrolled profile and
+verify a fresh Viewer session. The ordinary 123 update route still uses the
+recovery code installed with 123.
+
+Installed 124 supports selected rollout for an explicit version and device set.
+To include Windows Agent installer arguments when generating a signed manifest,
+pass `--agent-installer-args '["/S","/UPDATE"]'`. The updater accepts the signed
+silent forms `["/S"]` and `["/S","/UPDATE"]`. A legacy manifest without the
+field uses `/S`. The outer `/FIRSTHOP` option is supplied at the local command
+line and stays outside the generated installer arguments.
+
+## 124 업데이트 재검토 체크리스트
+
+- [ ] Viewer에서 접수한 요청의 ID와 수동 우선순위가 세션 대기, 자동 검사와의 겹침, 설치 인계 대기, 복구 요청을 거쳐 유지되는지 확인한다. 자동 검사는 대기 중인 수동 요청을 덮어쓰지 않아야 한다.
+- [ ] 지정 배포 없음과 대상 0대를 구분한다. 대상 0대, 대상 제외, 설치 직전 목록 변경은 인계를 차단한다. 정책 설정이 없는 일반 수동 요청은 서명된 바로 다음 Agent 버전으로 이어지는지 확인한다.
+- [ ] 지정된 버전의 Windows Agent 파일과 서명된 인자, 해시를 확인한다. 수정한 소스에서 다시 만든 설치 파일과 운영 서명 매니페스트의 해시를 함께 기록한다.
+- [ ] 공개 123 장비에서는 등록 관리자 계정으로 `/FIRSTHOP`을 실행할 배포 경로를 먼저 확인한다. 123의 일반 자동 업데이트나 Viewer 요청은 이 인자를 전달하지 않는다.
+- [ ] 정확한 서명 파일로 파일 잠금 중 123 복구, 정상 124 설치, 동일 등록 유지, 새 Viewer 연결을 실제 장비에서 확인한다. 설치 프로그램의 작업 접수만으로 완료 처리하지 않는다.

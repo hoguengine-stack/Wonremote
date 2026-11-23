@@ -1458,6 +1458,210 @@ fn agent_file_update_capable() -> bool {
     file_update_root_compatible(root, &program_roots, &registered)
 }
 
+const LEGACY_AGENT_FIRST_HOP: &str = "--legacy-agent-first-hop";
+
+fn registered_legacy_agent_root() -> Result<PathBuf, String> {
+    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_WOW64_32KEY, KEY_WOW64_64KEY};
+
+    let program_files = env::var_os("ProgramFiles(x86)")
+        .or_else(|| env::var_os("ProgramFiles"))
+        .map(PathBuf::from)
+        .ok_or_else(|| "The x86 Program Files directory is unavailable.".to_string())?;
+    let registry = RegKey::predef(HKEY_LOCAL_MACHINE);
+    let mut roots = Vec::<PathBuf>::new();
+    for view in [KEY_WOW64_32KEY, KEY_WOW64_64KEY] {
+        let key = match registry.open_subkey_with_flags(
+            r"Software\Microsoft\Windows\CurrentVersion\Uninstall\WonRemote Agent",
+            KEY_READ | view,
+        ) {
+            Ok(key) => key,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(format!("Could not read the registered Agent: {error}")),
+        };
+        let path: String = key.get_value("InstallLocation")
+            .map_err(|error| format!("The registered Agent directory is missing: {error}"))?;
+        let path = PathBuf::from(path.trim().trim_matches('"'));
+        if !path.is_absolute() {
+            return Err("The registered Agent directory is invalid.".to_string());
+        }
+        let root = std::fs::canonicalize(path)
+            .map_err(|error| format!("The registered Agent directory is unavailable: {error}"))?;
+        if !roots.iter().any(|existing| windows_paths_equal(existing, &root)) {
+            roots.push(root);
+        }
+    }
+    if roots.len() != 1 || !file_update_root_compatible(&roots[0], &[program_files], &roots) {
+        return Err("A single registered x86 Agent installation in Program Files is required.".to_string());
+    }
+    Ok(node_compatible_path(&roots[0]))
+}
+
+fn legacy_first_hop_system_directory() -> Result<PathBuf, String> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+
+    let mut path = [0_u16; 32768];
+    let length = unsafe { GetSystemDirectoryW(path.as_mut_ptr(), path.len() as u32) } as usize;
+    if length == 0 || length >= path.len() {
+        return Err("The Windows system directory is unavailable.".to_string());
+    }
+    Ok(PathBuf::from(std::ffi::OsString::from_wide(&path[..length])))
+}
+
+fn verify_legacy_agent_first_hop_target(
+    system: &Path, install: &Path, updates: &Path, payload: &Path
+) -> Result<(), String> {
+    let powershell = system.join(r"WindowsPowerShell\v1.0\powershell.exe");
+    // The legacy elevated task is reused only as an execution transport.
+    let checks = r#"
+$ErrorActionPreference = 'Stop'
+$env:PSModulePath = "$PSHOME\Modules"
+$root = $env:WONREMOTE_FIRST_HOP_ROOT
+$original = Join-Path $root 'wonremote-viewer.exe'
+$broker = Join-Path $root 'update-handoff-broker.ps1'
+$updates = $env:WONREMOTE_FIRST_HOP_UPDATES
+$payload = $env:WONREMOTE_FIRST_HOP_PAYLOAD
+$programFiles = [Environment]::GetFolderPath('ProgramFilesX86')
+if (-not $programFiles) { $programFiles = [Environment]::GetFolderPath('ProgramFiles') }
+$bootstrap = Split-Path -Parent $payload
+if ((Split-Path -Parent $bootstrap) -ine $programFiles -or
+    (Split-Path -Leaf $bootstrap) -notlike '*.wonremote-firsthop') {
+  throw 'Run the signed File Update through its protected first-hop entry point.'
+}
+$trusted = @('S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+$writeRights = [int][Security.AccessControl.FileSystemRights]'Write, Delete, DeleteSubdirectoriesAndFiles, ChangePermissions, TakeOwnership' -bor 0x50000000
+function Assert-ProtectedFileAccess([string]$Path) {
+  $item = Get-Item -LiteralPath $Path -Force
+  if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+    throw 'A protected first-hop path is redirected.'
+  }
+  $acl = Get-Acl -LiteralPath $Path
+  if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin $trusted) {
+    throw 'Only Windows or administrators may own the protected first-hop files.'
+  }
+  foreach ($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) {
+    if ($rule.AccessControlType -eq 'Allow' -and
+        -not ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -and
+        $rule.IdentityReference.Value -notin $trusted -and ([int]$rule.FileSystemRights -band $writeRights)) {
+      throw 'Protected first-hop executable or broker files are writable by another account.'
+    }
+  }
+}
+foreach ($path in @($programFiles,$root,$original,$broker,$bootstrap,$payload,
+    (Join-Path $payload 'wonremote-viewer.exe'),(Join-Path $payload 'runtime'),
+    (Join-Path $payload 'runtime\node.exe'),(Join-Path $payload 'updater'),(Join-Path $payload 'updater\index.mjs'))) {
+  Assert-ProtectedFileAccess $path
+}
+$handoff = Join-Path $root '.update-handoff'
+if (Test-Path -LiteralPath $handoff) { Assert-ProtectedFileAccess $handoff }
+$config = Join-Path (Split-Path -Parent $updates) 'agent-config.json'
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+function Resolve-Sid([string]$Account) {
+  if ($Account -match '^S-1-') { return $Account }
+  ([Security.Principal.NTAccount]::new($Account)).Translate([Security.Principal.SecurityIdentifier]).Value
+}
+if ($updates -ine (Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'WonRemote\updates') -or
+    -not (Test-Path -LiteralPath $config -PathType Leaf) -or
+    (Get-Item -LiteralPath $original).VersionInfo.ProductVersion -cne '0.1.123') {
+  throw 'An enrolled 0.1.123 Agent and its original Windows profile are required.'
+}
+foreach ($path in @($root,$original,$broker,(Join-Path $root '.update-handoff'),(Split-Path -Parent $updates),$updates,$config)) {
+  if ((Test-Path -LiteralPath $path) -and
+      ((Get-Item -LiteralPath $path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+    throw 'Redirected Agent or update paths are not supported.'
+  }
+}
+$agent = Get-ScheduledTask -TaskPath '\' -TaskName 'WonRemote Agent'
+$task = Get-ScheduledTask -TaskPath '\' -TaskName 'WonRemote Agent Update Handoff'
+$action = @($task.Actions)
+$agentAction = @($agent.Actions)
+$command = $env:WONREMOTE_FIRST_HOP_POWERSHELL
+$arguments = '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File ' + [char]34 + $broker + [char]34
+if ($action.Count -ne 1 -or $agentAction.Count -ne 1 -or
+    $agentAction[0].Execute -ine $original -or $agentAction[0].Arguments -cne '--agent' -or
+    $action[0].Execute -ine $command -or $action[0].Arguments -cne $arguments -or
+    $action[0].WorkingDirectory -ine $root -or (Resolve-Sid $task.Principal.UserId) -cne $identity.User.Value -or
+    (Resolve-Sid $agent.Principal.UserId) -cne $identity.User.Value -or
+    $task.Principal.RunLevel -ne 'Highest' -or $task.Principal.LogonType -ne 'Interactive' -or
+    @($task.Triggers | Where-Object { $_ }).Count -ne 0 -or
+    -not $task.Settings.Enabled -or -not $task.Settings.AllowDemandStart -or
+    $task.State -ne 'Ready' -or $agent.State -eq 'Disabled') {
+  throw 'The original protected Agent and handoff tasks do not match the enrolled user.'
+}
+"#;
+    let mut command = Command::new(&powershell);
+    command
+        .args(["-NoProfile", "-NonInteractive", "-Command", checks])
+        .env_remove("PSModulePath")
+        .env("WONREMOTE_FIRST_HOP_ROOT", install)
+        .env("WONREMOTE_FIRST_HOP_UPDATES", updates)
+        .env("WONREMOTE_FIRST_HOP_PAYLOAD", payload)
+        .env("WONREMOTE_FIRST_HOP_POWERSHELL", &powershell);
+    add_no_window(&mut command);
+    let output = command.output()
+        .map_err(|error| format!("Could not verify the original Agent tasks: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "Original Agent task verification failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
+fn run_legacy_agent_first_hop(args: &[std::ffi::OsString]) -> Result<(), String> {
+    if args.len() != 2 || !cfg!(target_arch = "x86") ||
+        unsafe { windows_sys::Win32::UI::Shell::IsUserAnAdmin() } == 0
+    {
+        return Err("Run the signed x86 File Update as the enrolled administrator with a signed manifest.".to_string());
+    }
+    let manifest = std::fs::canonicalize(&args[0])
+        .map_err(|error| format!("The signed update manifest is unavailable: {error}"))?;
+    let asset = std::fs::canonicalize(&args[1])
+        .map_err(|error| format!("The signed File Update is unavailable: {error}"))?;
+    let install = registered_legacy_agent_root()?;
+    let updates = default_agent_config_path()
+        .and_then(|config| config.parent().map(|root| root.join("updates")))
+        .ok_or_else(|| "The registered Agent profile is unavailable.".to_string())?;
+    let system = legacy_first_hop_system_directory()?;
+    let exe = env::current_exe().map_err(|error| error.to_string())?;
+    let resources = node_resource_paths(exe.parent().ok_or("The File Update payload is unavailable.")?);
+    verify_legacy_agent_first_hop_target(&system, &install, &updates, &resources.root)?;
+    let updater = resources.root.join("updater").join("index.mjs");
+    ensure_resource_exists(&resources.node, "bundled Node runtime").map_err(|error| error.to_string())?;
+    ensure_resource_exists(&updater, "bundled Agent updater").map_err(|error| error.to_string())?;
+    let mut command = Command::new(&resources.node);
+    command.arg(&updater)
+        .arg(LEGACY_AGENT_FIRST_HOP)
+        .arg(node_compatible_path(&manifest))
+        .arg(node_compatible_path(&asset))
+        .arg(install.join("wonremote-viewer.exe"))
+        .env_remove("NODE_OPTIONS")
+        .env_remove("NODE_PATH")
+        .env("WONREMOTE_TAURI_UPDATE_BROKER", "1");
+    add_no_window(&mut command);
+    let output = command.output().map_err(|error| format!("Signed update verification could not run: {error}"))?;
+    if !output.status.success() {
+        return Err(format!("Signed File Update was not accepted: {}", String::from_utf8_lossy(&output.stderr).trim()));
+    }
+    let stdout = std::str::from_utf8(&output.stdout).map_err(|error| error.to_string())?;
+    let mut requests = stdout.lines().filter(|line| !line.trim().is_empty());
+    let Some(UpdateHandoffRequest::InstallerV2(request)) =
+        parse_update_handoff_request(requests.next().ok_or("Missing protected File Update request.")?)? else {
+        return Err("Expected the protected installer request.".to_string());
+    };
+    if requests.next().is_some() {
+        return Err("Unexpected extra output from the signed update verifier.".to_string());
+    }
+    let program_roots = ["ProgramFiles(x86)", "ProgramFiles"]
+        .into_iter().filter_map(env::var_os).map(PathBuf::from).collect::<Vec<_>>();
+    verify_legacy_agent_first_hop_target(&system, &install, &updates, &resources.root)?;
+    stage_agent_installer_handoff_in_roots(&request, &updates, &install, &program_roots)?;
+    // An uncertain scheduler response must not delete an accepted or pending request.
+    run_agent_update_handoff_task(&system.join("schtasks.exe"))?;
+    Ok(())
+}
+
 fn stage_agent_installer_handoff(
     request: &InstallerUpdateHandoffRequest,
 ) -> Result<StagedAgentUpdateHandoff, String> {
@@ -1566,8 +1770,12 @@ fn stage_agent_installer_handoff_in_roots(
             .and_then(|_| file.sync_all())
             .map_err(|error| format!("Agent update request could not be committed: {error}"))?;
         drop(file);
-        std::fs::rename(&pending_candidate, &pending_path)
-            .map_err(|error| format!("Another protected Agent update is pending: {error}"))?;
+        // The protected broker consumes pending.json exactly once. Do not replace another request.
+        let from = pending_candidate.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>();
+        let to = pending_path.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>();
+        if unsafe { windows_sys::Win32::Storage::FileSystem::MoveFileW(from.as_ptr(), to.as_ptr()) } == 0 {
+            return Err(format!("Another protected Agent update may be pending: {}", io::Error::last_os_error()));
+        }
         Ok(())
     })();
     if let Err(error) = stage_result {
@@ -2785,6 +2993,17 @@ fn is_startup_registered(is_agent: bool) -> bool {
 }
 
 pub fn run() {
+    let mut args = env::args_os().skip(1);
+    if args.next().as_deref() == Some(OsStr::new(LEGACY_AGENT_FIRST_HOP)) {
+        let result = run_legacy_agent_first_hop(&args.collect::<Vec<_>>());
+        if let Err(error) = result {
+            append_runtime_log("legacy-agent-first-hop", &error);
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        append_runtime_log("legacy-agent-first-hop", "the protected File Update task was queued");
+        std::process::exit(0);
+    }
     let context = tauri::generate_context!();
     if matches!(tauri::utils::platform::bundle_type(), Some(tauri::utils::config::BundleType::Nsis)) {
         let is_agent = context.config().identifier == "com.wonremote.agent";

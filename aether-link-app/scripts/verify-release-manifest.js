@@ -67,6 +67,14 @@ async function verifyAsset(manifest, input) {
     throw new Error(`${fieldName} release asset is missing: ${input.filePath}`);
   }
   const asset = readAsset(manifest, input.section, input.arch);
+  const installerArgs = asset.installerArgs;
+  if (Object.hasOwn(asset, "installerArgs") && (
+    !["agentInstallers", "agentFileUpdates"].includes(input.section) ||
+    !Array.isArray(installerArgs) || installerArgs[0] !== "/S" ||
+    !(installerArgs.length === 1 || (installerArgs.length === 2 && installerArgs[1] === "/UPDATE"))
+  )) {
+    throw new Error(`Unsupported installer arguments on ${fieldName}.`);
+  }
   if (asset.name !== input.expectedName) {
     throw new Error(`${fieldName}.name is ${String(asset.name)}; expected ${input.expectedName}.`);
   }
@@ -111,6 +119,7 @@ async function verifyAsset(manifest, input) {
     `forceUpdate=${manifest.forceUpdate === true ? "true" : "false"}`,
     `updateKind=${input.section === "portable" ? "portable" : input.section === "portableAgent" ? "portable-agent" : "installer"}`,
     `arch=${input.arch}`,
+    ...(installerArgs === undefined ? [] : [`installerArgs=${JSON.stringify(installerArgs)}`]),
   ].join("\n");
   const signatureV2Valid = verify(
     null,

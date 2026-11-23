@@ -78,11 +78,11 @@ function Invoke-AgentFileUpdate([string]$Source) {
   $sourceRoot = [IO.Path]::GetFullPath($Source).TrimEnd('\')
   Assert-UpdatePath $sourceRoot
   $files = @(Get-ChildItem -LiteralPath $sourceRoot -File -Recurse -Force)
-  $required = @('wonremote-viewer.exe', 'agent\index.mjs', 'server\index.mjs', 'runtime\node.exe', 'bin\wonremote-poc.exe')
+  $required = @('wonremote-viewer.exe', 'agent\index.mjs', 'updater\index.mjs', 'server\index.mjs', 'runtime\node.exe', 'bin\wonremote-poc.exe')
   $entries = @()
   foreach ($file in $files) {
     $relative = $file.FullName.Substring($sourceRoot.Length + 1)
-    if ($relative -notmatch '^(wonremote-viewer\.exe|(?:manage-agent-login-task|agent-update-health|update-handoff-broker|manage-agent-firewall)\.ps1|(?:agent|server|runtime|bin|node_modules|icons)\\[^:]+)$') {
+    if ($relative -notmatch '^(wonremote-viewer\.exe|updater\\index\.mjs|(?:manage-agent-login-task|agent-update-health|update-handoff-broker|manage-agent-firewall)\.ps1|(?:agent|server|runtime|bin|node_modules|icons)\\[^:]+)$') {
       throw "Unexpected Agent update entry: $relative"
     }
     $target = Join-Path $root $relative
@@ -96,11 +96,58 @@ function Invoke-AgentFileUpdate([string]$Source) {
   foreach ($relative in $required) {
     if ($relative -notin $entries.Relative) { throw "Incomplete Agent update: $relative" }
   }
-  # The independent handoff already owns the backup and post-restart online proof.
-  Stop-AgentForFileUpdate $root
-  foreach ($entry in $entries) {
-    New-Item -ItemType Directory -Path (Split-Path -Parent $entry.Target) -Force | Out-Null
-    Copy-Item -LiteralPath $entry.Source -Destination $entry.Target -Force
+  $handoffStage = Split-Path -Parent $env:WONREMOTE_HANDOFF_INSTALLER_PATH
+  $transaction = Join-Path $handoffStage ('file-transaction-' + [guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Path $transaction | Out-Null
+  $changes = [Collections.Generic.List[object]]::new()
+  $keepBackup = $false
+  try {
+    Assert-UpdatePath $transaction
+    $paths = for ($index = 0; $index -lt $entries.Count; $index++) {
+      $entry = $entries[$index]
+      $next = Join-Path $transaction "$index.new"
+      Copy-Item -LiteralPath $entry.Source -Destination $next
+      [pscustomobject]@{ Target = $entry.Target; Next = $next; Previous = (Join-Path $transaction "$index.old"); Added = $false }
+    }
+
+    # The outer handoff owns post-restart health. Undo an interrupted copy before returning to it.
+    Stop-AgentForFileUpdate $root
+    foreach ($change in $paths) {
+      New-Item -ItemType Directory -Path (Split-Path -Parent $change.Target) -Force | Out-Null
+      $changes.Add($change)
+      if (Test-Path -LiteralPath $change.Target -PathType Leaf) {
+        [IO.File]::Replace($change.Next, $change.Target, $change.Previous)
+      } else {
+        [IO.File]::Move($change.Next, $change.Target)
+        $change.Added = $true
+      }
+    }
+  } catch {
+    $failure = $_
+    for ($index = $changes.Count - 1; $index -ge 0; $index--) {
+      $change = $changes[$index]
+      try {
+        if (Test-Path -LiteralPath $change.Previous -PathType Leaf) {
+          if (Test-Path -LiteralPath $change.Target -PathType Leaf) {
+            [IO.File]::Replace($change.Previous, $change.Target, ($change.Previous + '.displaced'))
+          } else {
+            [IO.File]::Move($change.Previous, $change.Target)
+          }
+        } elseif ($change.Added) {
+          Remove-Item -LiteralPath $change.Target -Force
+        }
+      } catch {
+        $keepBackup = $true
+        Write-Warning "Could not restore $($change.Target): $($_.Exception.Message)"
+      }
+    }
+    if ($keepBackup) { throw "Agent file replacement recovery incomplete; protected backup retained at $transaction. $($failure.Exception.Message)" }
+    throw $failure
+  } finally {
+    if (-not $keepBackup) {
+      Assert-UpdatePath $transaction
+      Remove-Item -LiteralPath $transaction -Recurse -Force -ErrorAction SilentlyContinue
+    }
   }
 }
 

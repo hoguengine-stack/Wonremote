@@ -1,5 +1,33 @@
 # WonRemote Incident Registry
 
+## INC-20261124-002 — Corrected 124 draft signer rejected an invalid artifact pin
+
+- Cause: The first signing commit recorded a 65-character hexadecimal value for the Agent Setup SHA-256 instead of its measured 64-character digest. Actions run 45213585721 rejected it before reading artifacts or using the signing key.
+- Prevention: Derive pinned sizes and hashes from the built files and exercise the workflow's actual configured pins in the signer boundary test before dispatch. Match the uploaded GitHub asset metadata to those measured values.
+- Evidence: Seven signer tests and the draft-signing predeploy gate passed on the corrected pins. Actions run 45214128207 and an independent verification using the bundled operating public key passed. The public release and earlier signed draft were outside the signing scope.
+
+## INC-20261124-001 — Manual update priority and empty selected deployment
+
+- Cause: Automatic checks and requested operations shared an unprioritized deferred callback. Check completion could also restore an older Viewer request over a newer request waiting for a second session. The selected rollout parser treated an explicit empty list as if there were no selected policy.
+- Prevention: Keep authenticated requests ahead of newly started automatic checks and preserve their priority on session deferral and rollback. Preserve already queued newer requests when an automatic check completes. Retain an empty selected list in the policy and apply it at admission and at the final protected-handoff check. The review cases and the release gate are in `aether-link-app/RELEASE_UPDATE.md`.
+- Verification: Reproduced the overwrite, newer-request loss and empty-list handling before the corresponding fixes. Five focused suites passed 54 tests. The corrected x86 build and operating signature passed. Exact signed local trial bbe4d83d8cd44efdac831b4309a0c25a verified 123 recovery with Windows sharing violation 32 held and two fresh Viewer frames, then 124 installation and two fresh Viewer frames. The original 125 Agent and normally launched desktop Viewer were restored. Registered-account distribution to production 123 devices and physical 124-to-125 manual updating remain unverified.
+
+## INC-20261123-003 — Viewer-requested Agent update relied on automatic rollout
+
+- Cause: A Viewer request bypassed the periodic check interval but still entered the automatic rollout and same-target retry gates. A simultaneous automatic check could drop the accepted request.
+- Prevention: An authenticated Viewer command for the installed Windows Agent resolves the next signed patch from its immutable release URL, retains the request across an overlapping check or active session, and rejects a non-Agent payload or a device excluded from a matching selected rollout. The protected broker and pre-launch device selection check still apply.
+- Verification: Five focused suites passed 46 tests. The runtime fixture reproduces the overlap using the actual command gate and asserts that the queued request reaches the guarded handoff. Missing broker, signed wrong product, version skip, selected exclusion and withdrawal remain rejected. TypeScript noEmit passed.
+- Remaining: Rebuild and sign 124, sign and deliver exact 125, and prove installation, recovery and Viewer reconnect on the physical test PC. Offline requests retain their existing expiry.
+
+## INC-20261123-002 — Protected first transition for the installed Windows Agent
+
+- Reproduction: A sustained capture-file lock interrupted the published 123 handoff's deletion of the current install before backup restoration. The installed Agent entrypoint disappeared. Public 120 and 123 have the same rollback routine in the compared files. An older release that is safe under the same lock has not been established.
+- Prevention: The 124 File Update exposes the protected signed /FIRSTHOP entry. Reuse the enrolled task as a transport for the corrected handoff. Keep verified unchanged locked files intact, preflight changed replacements, and start the Agent through its enrolled task. Scope selected rollout by installed capability, target ID, version and pause. Recheck server policy and session admission before dispatch. Bind allowed silent installer arguments to the production signature.
+- Evidence: Focused Windows file-lock, NSIS packaging, trusted manifest and Agent checks passed. The existing headless Chromium and loopback Firestore fixtures validated selected policy and permissions. Windows 124 release packaging passed for all three x86 assets. Draft-only signing run 45108015786 produced the manifest with signed /S and /UPDATE. The PC independently verified bundled production trust and exact payload bytes.
+- Physical attempt 6f6894d735994bd7880f91c8ba141a8d: Public 123 baseline and held-lock rollback each produced two decoded Viewer frames. The healthy 124 installation produced one frame. Its second session started capture and got a frame in 215 ms but WebRTC data channels did not open. A separate installed 125 Viewer launched during the comparison and blocked the normal recovery census. It was closed using its exact path and process identity. The pinned retry of the original watchdog restored the original registered 125, checked 21 files and three tasks, and removed trial filters and tasks. The extra Viewer is a documented confound. It has not been established as the cause of the channel timeout.
+- Controlled repeat 47100c8253234e839c9331a41183041a: Used the same signed 124 bytes with the separate desktop Viewer closed. The genuine 123 install opened two new sessions. With Windows sharing violation 32 active before the attempt and after the Viewer proof, the update exited 1, restored exact 123 and retained enrollment and two new Viewer frames. The unlocked retry exited 0 and verified healthy 124, six file hashes, unchanged enrollment and two new Viewer frames. Automatic recovery restored the original running 125, left no test listeners or tasks, and the prior desktop Viewer was reopened. Windows Sandbox, Computer Use, remote input and reboot were outside this proof.
+- Fleet boundary: The 123 automatic and Viewer-requested paths select their original handoff. A managed enrolled-account launch of /FIRSTHOP is needed for the first transition on deployed 123 devices.
+
 ## INC-20261107-189: Installed Agent could fall back to the Viewer role
 
 - Detected: 2026-11-07, user report and static inspection of the public Agent120 installer.

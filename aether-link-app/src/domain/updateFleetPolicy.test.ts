@@ -3,9 +3,53 @@ import {
   decideUpdateEligibility,
   hashDeviceIdToPercentageBucket,
   parseRolloutSelection,
+  readUpdateRollout,
+  updateRolloutFields,
 } from "./updateFleetPolicy";
 
 describe("update fleet policy", () => {
+  it("stores a 124+ selection without changing the general update or enrolling legacy devices", () => {
+    const general = { targetVersion: "0.1.125", stage: "general", percentage: 100, paused: false } as const;
+    const selected = { targetVersion: "0.1.126", stage: "general", percentage: 0, paused: false, targetDeviceIds: ["chosen"] } as const;
+    const saved = { ...general, ...updateRolloutFields({ ...selected, targetDeviceIds: ["chosen"] }) };
+    expect(readUpdateRollout(saved)).toEqual(general);
+    const trial = readUpdateRollout(saved, true);
+    expect(trial).toEqual(selected);
+    expect(decideUpdateEligibility({ id: "chosen", version: "0.1.123", selectedRolloutVersion: "0.1.123" }, trial).eligible).toBe(false);
+    expect(decideUpdateEligibility({ id: "chosen", version: "0.1.124", selectedRolloutVersion: "0.1.124" }, trial).eligible).toBe(true);
+    expect(decideUpdateEligibility({ id: "other", version: "0.1.123" }, readUpdateRollout(saved)).eligible).toBe(true);
+    expect(readUpdateRollout({ ...saved, paused: true }, true)?.paused).toBe(true);
+    expect(readUpdateRollout({ ...saved, selectedRollout: null }, true)).toBeNull();
+  });
+  it("keeps a saved empty selected rollout scoped to no devices", () => {
+    const general = { targetVersion: "0.1.124", stage: "general", percentage: 100, paused: false } as const;
+    const selected = { targetVersion: "0.1.125", stage: "general", percentage: 0, paused: false, targetDeviceIds: [] } as const;
+    const saved = { ...general, ...updateRolloutFields({ ...selected, targetDeviceIds: [] }) };
+
+    expect(readUpdateRollout(general, true)).toBeNull();
+    expect(readUpdateRollout({ ...general, selectedRollout: null }, true)).toBeNull();
+    expect(readUpdateRollout(saved)).toEqual(general);
+
+    const scope = readUpdateRollout(saved, true);
+    expect(scope).toEqual(selected);
+    expect(decideUpdateEligibility({ id: "device", version: "0.1.124", selectedRolloutVersion: "0.1.124" }, scope))
+      .toMatchObject({ eligible: false, reason: "not-selected" });
+  });
+
+  it("preserves the selected version and denies every device when its configuration is malformed", () => {
+    const general = { targetVersion: "0.1.124", stage: "general" };
+    const selection = { targetVersion: "0.1.125", paused: false, targetDeviceIds: ["device"] };
+    const invalid = [
+      { ...general, selectedRollout: { ...selection, targetDeviceIds: ["device", 1] } },
+      { ...general, selectedRollout: { ...selection, targetDeviceIds: null } },
+      { ...general, selectedRollout: { ...selection, paused: undefined } },
+      { ...general, targetVersion: "", selectedRollout: selection },
+    ];
+    for (const data of invalid) {
+      expect(readUpdateRollout(data, true)).toMatchObject({ targetVersion: "0.1.125", targetDeviceIds: [] });
+    }
+  });
+
   it("fails closed when rollout policy is unavailable", () => {
     expect(decideUpdateEligibility({ id: "field-agent", version: "1.0.0" }, null)).toMatchObject({
       eligible: false,

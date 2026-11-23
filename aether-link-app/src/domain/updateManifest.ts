@@ -5,6 +5,7 @@ export type ProductionUpdateMetadata = {
   checksum: string;
   downloadUrl: string;
   forceUpdate: boolean;
+  installerArgs?: string[];
   latestVersion: string;
   reloadViewer: boolean;
   signature?: string;
@@ -22,6 +23,7 @@ export type ProductionUpdateManifestOptions = {
 };
 
 type ManifestAsset = {
+  installerArgs?: unknown;
   name?: unknown;
   sha256?: unknown;
   signature?: unknown;
@@ -75,6 +77,20 @@ export function parseProductionUpdateManifest(
     updateKind: assetKind,
   };
 
+  if (Object.prototype.hasOwnProperty.call(asset, "installerArgs")) {
+    if (manifestSection !== "agentWindows" || !isRecord(input.agentWindows) || input.agentWindows[arch] !== asset) {
+      throw new Error("Signed installer arguments are only allowed on an explicit Windows Agent installer asset.");
+    }
+    if (!options.publicKeyPem) {
+      throw new Error("A trusted public key is required to verify installer arguments.");
+    }
+    const args = asset.installerArgs;
+    if (!Array.isArray(args) || args[0] !== "/S" || !(args.length === 1 || (args.length === 2 && args[1] === "/UPDATE"))) {
+      throw new Error("Unsupported Agent installer arguments.");
+    }
+    metadata.installerArgs = args.slice();
+  }
+
   if (options.publicKeyPem) {
     verifyProductionUpdateSignature(metadata, options.publicKeyPem, arch);
   }
@@ -102,6 +118,7 @@ export function buildProductionUpdateSignaturePayloadV2(input: {
   checksum: string;
   downloadUrl: string;
   forceUpdate: boolean;
+  installerArgs?: readonly string[];
   latestVersion: string;
   updateKind: ProductionUpdateKind;
 }): string {
@@ -114,6 +131,7 @@ export function buildProductionUpdateSignaturePayloadV2(input: {
     `forceUpdate=${input.forceUpdate ? "true" : "false"}`,
     `updateKind=${input.updateKind}`,
     `arch=${input.arch}`,
+    ...(input.installerArgs === undefined ? [] : [`installerArgs=${JSON.stringify(input.installerArgs)}`]),
   ].join("\n");
 }
 
