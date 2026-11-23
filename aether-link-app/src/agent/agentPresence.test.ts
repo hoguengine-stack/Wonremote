@@ -3,8 +3,10 @@ import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAgentCommandPollGate } from "./agentCommandExecution";
+import { createRemoteUpdateRequest } from "./remoteUpdateRequest";
 import { isStaleSessionInputCommand } from "./agentSessionLifecycle";
 import { updateTelemetryStateKey } from "./agentUpdatePollPolicy";
+import { decideUpdateEligibility } from "../domain/updateFleetPolicy";
 import { firebaseCommandListenerRetryDelayMs, firebaseRequestRetryDelayMs } from "../firebase/requestRetryPolicy";
 
 const source = ts.createSourceFile("index.ts", readFileSync(new URL("./index.ts", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true);
@@ -17,6 +19,194 @@ function findNode(predicate: (node: ts.Node) => boolean): ts.Node {
 }
 const compile = (text: string) => ts.transpile(text, { target: ts.ScriptTarget.ES2022 });
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
+
+describe("installed Agent selected update handoff", () => {
+  it.each(["authorized", "selection withdrawn", "device paused", "busy", "policy unavailable", "selected version changed"])(
+    "never launches a selected update outside the active policy: %s", async scenario => {
+      const sourceCheck = findNode(node => ts.isFunctionDeclaration(node) && node.name?.text === "checkUpdate");
+      const rollout = { targetVersion: "0.1.126", stage: "general", percentage: 0, targetDeviceIds: ["chosen"] };
+      const initial = { rollout, updatePaused: false, updateRing: "general" };
+      const fresh = scenario === "selection withdrawn" ? { ...initial, rollout: { ...rollout, targetDeviceIds: ["other"] } }
+        : scenario === "selected version changed" ? { ...initial, rollout: { ...rollout, targetVersion: "0.1.127" } }
+        : scenario === "device paused" ? { ...initial, updatePaused: true } : initial;
+      const loadPolicy = vi.fn(async () => {
+        if (scenario === "policy unavailable") throw new Error("offline");
+        return rollout;
+      });
+      const metadata = vi.fn(async () => ({ selected: true, metadata: { latestVersion: "0.1.126" } }));
+      const loadRollout = vi.fn().mockResolvedValueOnce(initial).mockResolvedValueOnce(fresh);
+      const startInstaller = vi.fn();
+      const handoff = vi.fn(async (_data, _config, _retry, beforeLaunch: () => Promise<void>) => {
+        await beforeLaunch();
+        startInstaller();
+      });
+      const context = { USE_FIREBASE: true, process: { platform: "win32", env: { WONREMOTE_PACKAGE_KIND: "installer" } }, isUpdateHandoffBrokerEnabled: () => true,
+        agentHealthReporter: { isHealthy: () => true }, isUpdating: false, queuedViewerUpdate: undefined, lastUpdateCheckAttemptAtMs: null,
+        UPDATE_CHECK_INTERVAL_MS: 3_600_000, WONREMOTE_APP_VERSION: "0.1.124", currentUpdateTelemetry: { state: "idle" },
+        shouldAttemptAgentUpdateCheck: () => true, setUpdateTelemetry: vi.fn(), scheduleAgentUpdateRetry: vi.fn(),
+        loadAgentUpdateRolloutPolicyWithFirebase: loadPolicy, loadProductionAgentUpdateCandidate: metadata,
+        loadAgentUpdateRolloutWithFirebase: loadRollout, isHigherVersion: (latest: string) => latest === "0.1.126",
+        activeSessionId: scenario === "busy" ? "fallback-session" : null, rtcState: "unavailable", stopSessionPolling: vi.fn(), remoteUpdateRequest: { defer: vi.fn() },
+        selectedUpdateHandoffClaimed: false, shouldDeferAgentUpdateForSession: () => false,
+        prepareAgentUpdateSession: async () => "ready", decideUpdateEligibility,
+        isPortableUpdateMetadata: () => false, isInstallerUpdateMetadata: () => true,
+        handoffToProductionInstallerUpdate: handoff, console: { log: vi.fn(), error: vi.fn() },
+      };
+      const run = runInNewContext(compile(`${sourceCheck.getText(source)}\ncheckUpdate;`), context);
+      await Promise.all([run({ registeredDeviceId: "chosen" }), run({ registeredDeviceId: "chosen" })]);
+      expect(loadPolicy).toHaveBeenCalledTimes(1);
+      expect(metadata).toHaveBeenCalledTimes(scenario === "policy unavailable" ? 0 : 1);
+      if (scenario === "busy" || scenario === "policy unavailable") {
+        expect(loadRollout).not.toHaveBeenCalled();
+        expect(handoff).not.toHaveBeenCalled();
+        expect(context.remoteUpdateRequest.defer).toHaveBeenCalledTimes(scenario === "busy" ? 1 : 0);
+      } else {
+        expect(loadRollout.mock.calls).toEqual([
+          ["chosen", context.process.env, { selected: true }],
+          ["chosen", context.process.env, { selected: true, requireServer: true }],
+        ]);
+        expect(handoff).toHaveBeenCalledTimes(1);
+      }
+      expect(startInstaller).toHaveBeenCalledTimes(scenario === "authorized" ? 1 : 0);
+    },
+  );
+
+  it.each(["no rollout", "paused rollout", "excluded", "selection withdrawn", "busy", "queued", "no broker"])(
+    "honors a Viewer update request while protecting its target and session: %s", async scenario => {
+      const sourceCheck = findNode(node => ts.isFunctionDeclaration(node) && node.name?.text === "checkUpdate");
+      const rollout = { targetVersion: "0.1.125", stage: "general", paused: true, targetDeviceIds: ["chosen"] };
+      const loadPolicy = vi.fn().mockResolvedValue(scenario === "no rollout" ? null : rollout);
+      if (scenario === "excluded") loadPolicy.mockResolvedValue({ ...rollout, targetDeviceIds: [] });
+      if (scenario === "selection withdrawn") loadPolicy.mockResolvedValueOnce(rollout).mockResolvedValueOnce(null);
+      const data = { latestVersion: "0.1.125" };
+      const loadManual = vi.fn(async () => data);
+      const launch = vi.fn();
+      const handoff = vi.fn(async (_data, _config, _retry, guard: () => Promise<void>) => {
+        await guard();
+        launch();
+      });
+      const requestId = "1795406892849";
+      let finishAuto!: () => void;
+      const autoWaiting = new Promise<void>(resolve => { finishAuto = resolve; });
+      const telemetry = vi.fn(async (_config, patch) => {
+        if (scenario === "queued" && patch.error === "Update metadata is unavailable.") await autoWaiting;
+      });
+      const remoteGate = createRemoteUpdateRequest(() => scenario === "busy");
+      const context = {
+        USE_FIREBASE: true, process: { platform: "win32", env: { WONREMOTE_PACKAGE_KIND: "installer" } }, isUpdateHandoffBrokerEnabled: () => scenario !== "no broker",
+        isUpdating: false, queuedViewerUpdate: undefined, queueMicrotask,
+        agentHealthReporter: { isHealthy: () => true }, shouldAttemptAgentUpdateCheck: () => true, UPDATE_CHECK_INTERVAL_MS: 3_600_000,
+        lastUpdateCheckAttemptAtMs: null, WONREMOTE_APP_VERSION: "0.1.124",
+        currentUpdateTelemetry: { state: "failed", targetVersion: "0.1.125" },
+        activeSessionId: scenario === "busy" ? "session" : null, loadAgentUpdateRolloutPolicyWithFirebase: loadPolicy,
+        loadProductionAgentUpdateCandidate: vi.fn(async () => ({ metadata: null, selected: false })),
+        loadViewerRequestedAgentUpdate: loadManual, isInstallerUpdateMetadata: () => true,
+        remoteUpdateRequest: { ...remoteGate, defer: vi.fn(remoteGate.defer) },
+        handoffToProductionInstallerUpdate: handoff, setUpdateTelemetry: telemetry, scheduleAgentUpdateRetry: vi.fn(),
+        selectedUpdateHandoffClaimed: false, console: { error: vi.fn() },
+      };
+      const run = runInNewContext(compile(`${sourceCheck.getText(source)}\ncheckUpdate;`), context);
+      const device = { registeredDeviceId: "chosen" };
+      if (scenario === "queued") {
+        const auto = run(device);
+        await vi.waitFor(() => expect(telemetry).toHaveBeenCalledWith(device, expect.objectContaining({ error: "Update metadata is unavailable." })));
+        finishAuto();
+        const accepted = context.remoteUpdateRequest.receive(`request-update ${requestId}`, () => run(device, true, requestId), Number(requestId));
+        expect(loadManual).not.toHaveBeenCalled();
+        await auto;
+        expect(await accepted).toBe(true);
+        await vi.waitFor(() => expect(launch).toHaveBeenCalledOnce());
+      } else {
+        await run(device, true, requestId);
+      }
+      if (scenario === "busy") {
+        expect(loadManual).not.toHaveBeenCalled();
+        expect(context.remoteUpdateRequest.defer).toHaveBeenCalledOnce();
+      } else if (scenario === "no broker") {
+        expect(loadManual).not.toHaveBeenCalled();
+        expect(context.setUpdateTelemetry).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ state: "failed" }));
+      } else {
+        expect(loadManual).toHaveBeenCalledWith("0.1.124");
+        expect(context.currentUpdateTelemetry).toMatchObject({ requestId: "1795406892849" });
+      }
+      expect(launch).toHaveBeenCalledTimes(["no rollout", "paused rollout", "queued"].includes(scenario) ? 1 : 0);
+      if (scenario === "excluded" || scenario === "selection withdrawn") {
+        expect(context.setUpdateTelemetry).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ state: "failed" }));
+      }
+    },
+  );
+
+  it("rechecks selection after preparation and before dispatch to the protected broker", async () => {
+    const node = findNode(node => ts.isFunctionDeclaration(node) && node.name?.text === "handoffToProductionInstallerUpdate");
+    const dispatch = findNode(node => ts.isFunctionDeclaration(node) && node.name?.text === "releaseInputAndCompleteUpdateHandoff");
+    const write = vi.fn();
+    const releaseInput = vi.fn();
+    const prepare = vi.fn();
+    const timed = vi.fn((run: () => void) => { run(); });
+    const context = { process: { env: { APPDATA: "local-appdata" }, stdout: { write } }, USE_FIREBASE: true, activeSessionId: null, rtcState: "none",
+      stopSessionPolling: vi.fn(), prepareAgentUpdateSession: async () => "ready", setUpdateTelemetry: vi.fn(),
+      downloadInstallerUpdate: async () => ({ installerPath: "trial.exe", installerArgs: [] }),
+      prepareInstallerHandoff: prepare.mockResolvedValue({ scriptPath: "handoff.ps1", protectedAcknowledgementPath: "ack" }),
+      isUpdateHandoffBrokerEnabled: () => true, streamProcess: null, selectedUpdateHandoffClaimed: false,
+      agentCommandQueue: { enqueue: async (task: () => unknown) => task() }, releasePressedInputAndClose: releaseInput,
+      persistentInputInjector: {}, pointerState: {}, pressedKeys: new Set(), formatPreparedUpdateHandoff: () => "dispatch",
+      setTimeout: timed, console: { log: vi.fn() } };
+    const handoff = runInNewContext(compile(`${dispatch.getText(source)}\n${node.getText(source)}\nhandoffToProductionInstallerUpdate;`), context);
+    const revoked = vi.fn(async () => {
+      expect(prepare).toHaveBeenCalledTimes(1);
+      expect(timed).toHaveBeenCalledTimes(1);
+      expect(releaseInput).toHaveBeenCalledTimes(1);
+      expect(context.selectedUpdateHandoffClaimed).toBe(true);
+      throw new Error("selection revoked while preparing");
+    });
+    await expect(handoff({ latestVersion: "0.1.125" }, {}, vi.fn(), revoked, false, true)).rejects.toThrow("selection revoked");
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("keeps a session from becoming authorized when a selected update claims the handoff during its lock check", async () => {
+    const node = findNode(node => ts.isFunctionDeclaration(node) && node.name?.text === "startStreaming");
+    const previous = { id: "old-session", version: 1 };
+    const context = { USE_FIREBASE: true, process: { platform: "win32" }, activeSessionId: null,
+      authorizedAccessSession: previous, readyDeviceAccessLock: { publicState: { version: 2 } },
+      selectedUpdateHandoffClaimed: false, shouldCheckDeviceAccessSession: () => true,
+      getDeviceAccessLock: async () => ({}),
+      isAgentDeviceAccessSessionAllowed: async () => {
+        context.selectedUpdateHandoffClaimed = true;
+        return true;
+      },
+    };
+    const start = runInNewContext(compile(node.getText(source) + "\nstartStreaming;"), context);
+    await expect(start("chosen", "new-session", 0, 100, "dxgi")).rejects.toThrow("Selected Agent update handoff is in progress.");
+    expect(context.authorizedAccessSession).toBe(previous);
+  });
+
+  it("uses only server snapshots for selected discovery and pre-launch revalidation", async () => {
+    const firebase = ts.createSourceFile("agentFirebase.ts", readFileSync(new URL("../firebase/agentFirebase.ts", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true);
+    const helpers = firebase.statements.filter(ts.isFunctionDeclaration).filter(node =>
+      node.name?.text === "loadAgentUpdateRolloutPolicyWithFirebase" || node.name?.text === "loadAgentUpdateRolloutWithFirebase"
+    );
+    const rollout = { targetVersion: "0.1.125", targetDeviceIds: ["chosen"], stage: "general", percentage: 0 };
+    const server = vi.fn(async (path: string) => ({
+      exists: () => true,
+      data: () => path === "devices/chosen" ? { updatePaused: true } : rollout,
+    }));
+    const cached = vi.fn();
+    const context = { process: { env: {} }, getAgentFirebaseServices: () => ({ db: {} }),
+      doc: (_db: unknown, collection: string, id: string) => collection + "/" + id,
+      getDoc: cached, getDocFromServer: server,
+      readUpdateRollout: (data: unknown, selected: boolean) => selected ? data : null, sanitizeUpdateRing: () => "general",
+    };
+    const [readPolicy, readForLaunch] = runInNewContext(compile(helpers.map(node => node.getText(firebase).replace("export ", "")).join("\n")
+      + "\n[loadAgentUpdateRolloutPolicyWithFirebase, loadAgentUpdateRolloutWithFirebase];"), context);
+    await expect(readPolicy()).resolves.toEqual(rollout);
+    await expect(readForLaunch("chosen", {}, { selected: true, requireServer: true })).resolves.toMatchObject({ rollout, updatePaused: true });
+    expect(server.mock.calls).toEqual([["configuration/updateRollout"], ["devices/chosen"], ["configuration/updateRollout"]]);
+    expect(cached).not.toHaveBeenCalled();
+    server.mockRejectedValueOnce(new Error("offline"));
+    await expect(readForLaunch("chosen", {}, { selected: true, requireServer: true })).rejects.toThrow("offline");
+    expect(cached).not.toHaveBeenCalled();
+  });
+});
 
 describe("Windows Agent refresh-only heartbeat runtime", () => {
   it("keeps live same-monitor capture and retains monitor-change and failed-capture recovery", async () => {

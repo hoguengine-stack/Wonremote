@@ -392,6 +392,18 @@ async function build() {
     assertAgentWebRtcBundle(agentBuild.metafile);
     if (buildArch === "ia32") runBundledX86AgentWebRtcSmoke();
   }
+  if (process.env.WONREMOTE_DESKTOP_PRODUCT === "agent") {
+    await esbuild.build({
+      entryPoints: ["src/agent/agentUpdater.ts"],
+      bundle: true,
+      platform: "node",
+      format: "esm",
+      target: "node20",
+      outfile: "dist-agent/updater.mjs",
+      absWorkingDir: appRoot,
+      banner: { js: nodeEsmRequireBanner },
+    });
+  }
 
   console.log("Backend bundling completed successfully!");
 }

@@ -96,13 +96,16 @@ async function openViewer(options: { authenticated?: boolean; firstRun?: boolean
       presenceCommands: [] as string[], presenceStarts: 0, presenceStops: 0,
       auxiliaryReads: 0, auxiliarySubscriptions: [] as any[], auxiliaryStops: 0,
       historyReads: 0, historySubscriptions: 0, rtcStarts: 0, controls: [] as unknown[],
-      devices: Array.from({ length: 10 }, (_, i) => ({
-        id: `device-${i}`, deviceNumber: `AGENT-${i}`, businessNumber: "123-45-67890",
-        desktopName: `PC-${i}`, deviceName: "POS", storeName: opts.storeName ?? "Store", status: i === 9 ? "online" : "offline", protocolVersion: 1,
-        lastSeenAt: new Date().toISOString(),
-        ...(opts.manual ? { presenceMode: "manual" } : {}),
-        ...(opts.rolloutSupported ? {version:"0.1.93",selectedRolloutVersion:"0.1.93",rollbackSupportVersion:"0.1.93"} : {}),
-      })),
+      devices: Array.from({ length: 10 }, (_, i) => {
+        const version = i === 9 ? "0.1.123" : "0.1.124";
+        return {
+          id: `device-${i}`, deviceNumber: `AGENT-${i}`, businessNumber: "123-45-67890",
+          desktopName: `PC-${i}`, deviceName: "POS", storeName: opts.storeName ?? "Store", status: i === 9 ? "online" : "offline", protocolVersion: 1,
+          lastSeenAt: new Date().toISOString(),
+          ...(opts.manual ? { presenceMode: "manual" } : {}),
+          ...(opts.rolloutSupported ? { version, selectedRolloutVersion: version, rollbackSupportVersion: version } : {}),
+        };
+      }),
     };
     w.testApi = new Proxy({
       isViewerFirebaseEnabled: () => !opts.local,
@@ -1996,7 +1999,7 @@ describe("manual Viewer device list in a real browser", () => {
       });
       await page.getByRole("button", { name: "단계 배포", exact: true }).click();
       const dialog = page.getByRole("dialog", { name: "단계 배포 제어" });
-      await dialog.getByLabel("대상 버전", { exact: true }).fill("0.1.94");
+      await dialog.getByLabel("대상 버전", { exact: true }).fill("0.1.125");
       await dialog.getByLabel("전체 업데이트 일시 중지").uncheck();
       await dialog.getByRole("button", { name: "General", exact: true }).click();
       await dialog.locator('input[type="range"]').fill("100");
@@ -2005,6 +2008,7 @@ describe("manual Viewer device list in a real browser", () => {
       await dialog.getByText("현재 목록 10대 중 대상 0대", { exact: true }).waitFor();
       expect(await dialog.getByText("배포 단계 제외", { exact: true }).count()).toBe(10);
       await dialog.getByRole('checkbox',{name:'선택한 PC에만 배포'}).check();
+      expect(await dialog.getByRole('checkbox',{name:'PC-9 배포 대상',exact:true}).isDisabled()).toBe(true);
       await dialog.getByRole('checkbox',{name:'PC-0 배포 대상',exact:true}).check();
       await dialog.getByRole('checkbox',{name:'PC-1 배포 대상',exact:true}).check();
       await dialog.getByText('현재 목록 10대 중 대상 2대',{exact:true}).waitFor();
@@ -2014,7 +2018,7 @@ describe("manual Viewer device list in a real browser", () => {
       expect(await counts(page)).toEqual({ reads: 1, subscriptions: 0 });
       await dialog.getByRole("button", { name: "정책 저장", exact: true }).click();
       await page.waitForFunction(() => (window as any).savedPolicies.length === 1);
-      expect(await page.evaluate(() => (window as any).savedPolicies[0])).toMatchObject({targetDeviceIds:['device-0','device-1'],percentage:0,stage:'general'});
+      expect(await page.evaluate(() => (window as any).savedPolicies[0])).toMatchObject({targetVersion:'0.1.125',targetDeviceIds:['device-0','device-1'],percentage:0,stage:'general'});
     } finally { await page.close(); }
   });
   it("shows unlisted rollout targets and removes them only after an explicit choice", async () => {

@@ -1,4 +1,8 @@
 import type { DeviceUpdateRing, ManagedDevice } from "./types";
+import { isHigherVersion } from "./versioning";
+
+export const FIRST_SELECTED_AGENT_VERSION = "0.1.124";
+const PINNED_RELEASE_VERSION = /^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/;
 
 export interface UpdateFleetRollout {
   targetVersion: string;
@@ -27,6 +31,40 @@ export function parseRolloutSelection(value: unknown): Pick<UpdateFleetRollout, 
     return {targetDeviceIds: []};
   }
   return {targetDeviceIds: [...new Set(value)]};
+}
+
+export function readUpdateRollout(data: Record<string, unknown> | undefined, selected = false): UpdateFleetRollout | null {
+  if (!data) return null;
+  const targetVersion = typeof data.targetVersion === "string" ? data.targetVersion.trim() : "";
+  const stage = data.stage;
+  if (!targetVersion || (stage !== "canary" && stage !== "pilot" && stage !== "general")) return null;
+  const legacy = {
+    targetVersion, stage, paused: data.paused === true,
+    percentage: typeof data.percentage === "number" ? data.percentage : 100,
+    ...parseRolloutSelection(data.targetDeviceIds),
+  } satisfies UpdateFleetRollout;
+  if (!selected) return legacy;
+  if (!("selectedRollout" in data)) return legacy.targetDeviceIds === undefined ? null : legacy;
+  if (!data.selectedRollout || typeof data.selectedRollout !== "object" || Array.isArray(data.selectedRollout)) return null;
+  const trial = data.selectedRollout as Record<string, unknown>;
+  const ids = parseRolloutSelection(trial.targetDeviceIds).targetDeviceIds;
+  if (!ids?.length || typeof trial.targetVersion !== "string" || !PINNED_RELEASE_VERSION.test(trial.targetVersion)
+      || typeof trial.paused !== "boolean") return null;
+  return { targetVersion: trial.targetVersion, stage: "general", percentage: 0, targetDeviceIds: ids, paused: legacy.paused || trial.paused === true };
+}
+
+export function updateRolloutFields(rollout: UpdateFleetRollout) {
+  const targetVersion = rollout.targetVersion.trim();
+  const paused = rollout.paused === true;
+  if (rollout.targetDeviceIds !== undefined) {
+    return { selectedRollout: { targetVersion, paused, targetDeviceIds: parseRolloutSelection(rollout.targetDeviceIds).targetDeviceIds ?? [] } };
+  }
+  return { targetVersion, stage: rollout.stage, paused, percentage: normalizePercentage(rollout.percentage), targetDeviceIds: null, selectedRollout: null };
+}
+
+export function supportsSelectedAgentRollout(device: Pick<ManagedDevice, "version" | "selectedRolloutVersion">): boolean {
+  return Boolean(device.version && PINNED_RELEASE_VERSION.test(device.version)
+    && !isHigherVersion(FIRST_SELECTED_AGENT_VERSION, device.version) && device.selectedRolloutVersion === device.version);
 }
 
 export interface UpdateEligibilityDecision {
@@ -81,7 +119,7 @@ export function decideUpdateEligibility(
     }
     const selected = parseRolloutSelection(rollout.targetDeviceIds).targetDeviceIds ?? [];
     if (!selected.includes(device.id)) return {eligible:false,reason:"not-selected",bucket};
-    if (!device.version || device.selectedRolloutVersion !== device.version) {
+    if (!supportsSelectedAgentRollout(device)) {
       return {eligible:false,reason:"selection-support-unknown",bucket};
     }
     return {eligible:true,reason:"eligible",bucket};

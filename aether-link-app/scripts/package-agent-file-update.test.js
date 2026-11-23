@@ -27,13 +27,16 @@ describe("Agent file replacement, not Setup", () => {
     fs.mkdirSync(path.join(source, "src-tauri/windows"), { recursive: true });
     fs.mkdirSync(path.join(source, "dist-agent"));
     fs.writeFileSync(path.join(source, "dist-agent/index.mjs"), "fresh-runtime");
+    fs.writeFileSync(path.join(source, "dist-agent/updater.mjs"), "fresh-updater");
     fs.writeFileSync(path.join(source, "host.exe"), "fresh-host");
     fs.writeFileSync(path.join(source, "agent-config.json"), "must-not-package");
     fs.writeFileSync(path.join(source, "src-tauri/tauri.conf.json"), JSON.stringify({ bundle: { resources: { "../dist-agent/index.mjs": "agent/index.mjs" } } }));
+    fs.writeFileSync(path.join(source, "src-tauri/tauri.agent.x86.conf.json"), JSON.stringify({ bundle: { resources: { "../dist-agent/updater.mjs": "updater/index.mjs" } } }));
     for (const name of ["manage-agent-login-task.ps1", "agent-update-health.ps1", "update-handoff-broker.ps1", "manage-agent-firewall.ps1"]) fs.writeFileSync(path.join(source, "src-tauri/windows", name), name);
     const payload = path.join(root, "payload");
     stageAgentFileUpdate(source, path.join(source, "host.exe"), payload);
     expect(fs.readFileSync(path.join(payload, "agent/index.mjs"), "utf8")).toBe("fresh-runtime");
+    expect(fs.readFileSync(path.join(payload, "updater/index.mjs"), "utf8")).toBe("fresh-updater");
     expect(fs.readFileSync(path.join(payload, "wonremote-viewer.exe"), "utf8")).toBe("fresh-host");
     expect(fs.existsSync(path.join(payload, "agent-config.json"))).toBe(false);
     expect(fs.existsSync(path.join(payload, "uninstall.exe"))).toBe(false);
@@ -99,7 +102,7 @@ if(-not $rejected){throw 'Unrelated PID accepted'}
     expect(execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script,"utf16le").toString("base64")], {windowsHide:true,timeout:15000,encoding:"utf8"})).toContain("validated-x86-caller");
   });
 
-  for (const scenario of ["success", "no-handoff", "wrong-caller", "unregistered", "outside-protected", "junction", "unexpected-entry", "incomplete", "copy-failure"]) {
+  for (const scenario of ["success", "existing-123", "no-handoff", "wrong-caller", "unregistered", "outside-protected", "junction", "unexpected-entry", "incomplete", "missing-updater", "copy-failure", "late-copy-failure"]) {
     it(`executes a Windows filesystem fixture: ${scenario}`, () => {
       // .NET expands 8.3 TEMP aliases; match the real caller instead of mocking a different spelling.
       const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "wonremote-update-executor-")));
@@ -123,6 +126,11 @@ foreach ($name in $names) {
     Set-Content -LiteralPath $target -Value $(if ($base -eq $install) { 'old' } else { 'new' })
   }
 }
+$updater = Join-Path $payload 'updater\\index.mjs'
+if ($scenario -ne 'missing-updater') {
+  New-Item -ItemType Directory -Path (Split-Path -Parent $updater) | Out-Null
+  Set-Content -LiteralPath $updater -Value 'new-updater'
+}
 Set-Content -LiteralPath (Join-Path $install 'update-handoff-broker.ps1') -Value 'broker'
 Set-Content -LiteralPath (Join-Path $install 'agent-config.json') -Value 'identity'
 Set-Content -LiteralPath (Join-Path $install 'uninstall.exe') -Value 'original-uninstaller'
@@ -134,6 +142,14 @@ $env:ProgramW6432 = $env:ProgramFiles
 function Get-RegisteredAgentRoots { if ($scenario -ne 'unregistered') { return $install } }
 function Get-UpdateCallerPath { if ($scenario -eq 'wrong-caller') { return 'C:\\untrusted.exe' }; return $env:WONREMOTE_HANDOFF_INSTALLER_PATH }
 function Stop-AgentForFileUpdate([string]$Root) { Set-Content -LiteralPath (Join-Path $fixtureRoot 'stopped') -Value $Root }
+function Get-Item {
+  param([string]$LiteralPath, [switch]$Force, [string]$ErrorAction)
+  if (-not $Force -and $LiteralPath -eq (Join-Path $install 'wonremote-viewer.exe')) {
+    $version = if ($scenario -eq 'existing-123') { '0.1.123' } else { '0.1.120' }
+    return [pscustomobject]@{ VersionInfo = @{ ProductVersion = $version } }
+  }
+  Microsoft.PowerShell.Management\\Get-Item @PSBoundParameters
+}
 if ($scenario -eq 'no-handoff') { Remove-Item Env:\\WONREMOTE_HANDOFF_INSTALLER_PATH }
 if ($scenario -eq 'outside-protected') { $env:ProgramFiles = $fixtureRoot + '-other'; [Environment]::SetEnvironmentVariable('ProgramFiles(x86)', ''); $env:ProgramW6432 = '' }
 if ($scenario -eq 'unexpected-entry') { Set-Content -LiteralPath (Join-Path $payload 'agent-config.json') -Value 'corrupt' }
@@ -144,8 +160,9 @@ if ($scenario -eq 'junction') {
   Remove-Item -LiteralPath (Join-Path $install 'agent') -Recurse -Force
   New-Item -ItemType Junction -Path (Join-Path $install 'agent') -Target $outside | Out-Null
 }
-if ($scenario -eq 'copy-failure') {
-  $locked = [IO.File]::Open((Join-Path $install 'wonremote-viewer.exe'), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+if ($scenario -in @('copy-failure','late-copy-failure')) {
+  $lockTarget = if ($scenario -eq 'copy-failure') { 'wonremote-viewer.exe' } else { 'bin\\wonremote-poc.exe' }
+  $locked = [IO.File]::Open((Join-Path $install $lockTarget), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
 }
 $failed = $false
 try { Invoke-AgentFileUpdate $payload } catch { $failed = $true; $failure = $_.Exception.Message }
@@ -153,13 +170,18 @@ finally { if ($null -ne $locked) { $locked.Dispose() } }
 if ($scenario -eq 'success') {
   if ($failed) { throw $failure }
   foreach ($name in $names) { if ((Get-Content -LiteralPath (Join-Path $install $name) -Raw).Trim() -ne 'new') { throw 'Bytes not replaced' } }
+  if ((Get-Content -LiteralPath (Join-Path $install 'updater\\index.mjs') -Raw).Trim() -ne 'new-updater') { throw 'Missing independent updater on legacy upgrade' }
 } else {
   if (-not $failed) { throw 'Unsafe update was accepted' }
-  if ($scenario -eq 'copy-failure') {
+  if ($scenario -in @('copy-failure','late-copy-failure')) {
     if (-not (Test-Path -LiteralPath (Join-Path $fixtureRoot 'stopped'))) { throw 'Copy failure did not reach replacement' }
-    if ((Get-Content -LiteralPath (Join-Path $install 'wonremote-viewer.exe') -Raw).Trim() -ne 'old') { throw 'Locked original was changed' }
+    foreach ($name in $names) {
+      if ((Get-Content -LiteralPath (Join-Path $install $name) -Raw).Trim() -ne 'old') { throw "Partial replacement left $name on the new version" }
+    }
+    if (Test-Path -LiteralPath (Join-Path $install 'updater\\index.mjs')) { throw 'New updater survived the failed replacement' }
   } else {
     $expected = @{
+      'existing-123' = 'can replace only a protected Agent 0.1.120 installation'
       'no-handoff' = 'An existing protected Agent update handoff is required'
       'wrong-caller' = 'did not originate from the protected handoff'
       'unregistered' = 'No matching protected Agent installation exists'
@@ -167,6 +189,7 @@ if ($scenario -eq 'success') {
       'junction' = 'reparse point'
       'unexpected-entry' = 'Unexpected Agent update entry'
       'incomplete' = 'Incomplete Agent update'
+      'missing-updater' = 'Incomplete Agent update: updater'
     }
     if (-not $failure.Contains($expected[$scenario])) { throw ('Wrong rejection: ' + $failure) }
     if (Test-Path -LiteralPath (Join-Path $fixtureRoot 'stopped')) { throw 'Stopped before validation' }
@@ -180,4 +203,63 @@ Write-Output ('PASS ' + $scenario)
       expect(result).toContain(`PASS ${scenario}`);
     }, 25_000);
   }
+});
+
+it("admits first hop only for the enrolled 120 and rejects an existing 123", () => {
+  const nativeSource = fs.readFileSync(path.resolve("src-tauri/src/lib.rs"), "utf8");
+  const guard = nativeSource.match(/let checks = r#"\r?\n([\s\S]+?)\r?\n"#;/)?.[1];
+  expect(guard).toBeTruthy();
+  const program = `
+$env:WONREMOTE_FIRST_HOP_ROOT = 'C:\\Program Files (x86)\\WonRemote Agent'
+$env:WONREMOTE_FIRST_HOP_UPDATES = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'WonRemote\\updates'
+$root = $env:WONREMOTE_FIRST_HOP_ROOT
+$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$base = [Environment]::GetFolderPath('ProgramFilesX86')
+if (-not $base) { $base = [Environment]::GetFolderPath('ProgramFiles') }
+$protectedPayload = Join-Path $base 'test.tmp.wonremote-firsthop\\payload'
+$env:WONREMOTE_FIRST_HOP_PAYLOAD = $protectedPayload
+$env:WONREMOTE_FIRST_HOP_POWERSHELL = Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+$variant = 'matching'
+function Test-Path { $true }
+function Get-Item {
+  $version = if ($variant -ceq 'wrong-version') { '0.1.123' } else { '0.1.120' }
+  [pscustomobject]@{ Attributes=0; VersionInfo=[pscustomobject]@{ ProductVersion=$version } }
+}
+function Get-Acl {
+  $writable = if ($variant -cin @('writable-stage','deletable-stage')) { 'S-1-5-32-545' } else { 'S-1-5-32-544' }
+  $rights = if ($variant -ceq 'deletable-stage') { 'DeleteSubdirectoriesAndFiles' } else { 'Write' }
+  $object = [pscustomobject]@{ Writer = $writable; Rights=$rights }
+  Add-Member -InputObject $object -MemberType ScriptMethod -Name GetOwner -Value { [pscustomobject]@{ Value = 'S-1-5-32-544' } }
+  Add-Member -InputObject $object -MemberType ScriptMethod -Name GetAccessRules -Value {
+    [pscustomobject]@{
+      AccessControlType='Allow'; IdentityReference=[pscustomobject]@{Value=$this.Writer}
+      FileSystemRights=[Security.AccessControl.FileSystemRights]$this.Rights; PropagationFlags=0
+    }
+  }
+  $object
+}
+function Get-ScheduledTask($TaskPath,$TaskName) {
+  $principal = [pscustomobject]@{ UserId=$sid; RunLevel='Highest'; LogonType='Interactive' }
+  $settings = [pscustomobject]@{ Enabled=$true; AllowDemandStart=$true }
+  if ($TaskName -ceq 'WonRemote Agent') {
+    $action = [pscustomobject]@{ Execute=(Join-Path $root 'wonremote-viewer.exe'); Arguments='--agent' }
+  } elseif ($TaskName -ceq 'WonRemote Agent Update Handoff') {
+    $ps = Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+    $arguments = '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File ' + [char]34 + (Join-Path $root 'update-handoff-broker.ps1') + [char]34
+    if ($variant -ceq 'wrong-broker') { $arguments += ' -unexpected' }
+    if ($variant -ceq 'wrong-user') { $principal.UserId = 'S-1-5-18' }
+    $action = [pscustomobject]@{ Execute=$ps; Arguments=$arguments; WorkingDirectory=$root }
+  } else { throw 'Unexpected task lookup.' }
+  [pscustomobject]@{ Actions=@($action); Principal=$principal; State='Ready'; Settings=$settings; Triggers=@() }
+}
+$cases = @('matching','wrong-version','wrong-broker','wrong-user','writable-stage','deletable-stage','user-temp')
+$observed = @(foreach ($variant in $cases) {
+  $env:WONREMOTE_FIRST_HOP_PAYLOAD = if ($variant -ceq 'user-temp') { Join-Path $env:TEMP 'payload' } else { $protectedPayload }
+  try { & ([scriptblock]::Create(${quote(guard)})); $true } catch { $false }
+})
+ConvertTo-Json -InputObject $observed -Compress
+`;
+  const result = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand",
+    Buffer.from(program, "utf16le").toString("base64")], { encoding: "utf8", windowsHide: true });
+  expect(JSON.parse(result)).toEqual([true, false, false, false, false, false, false]);
 });

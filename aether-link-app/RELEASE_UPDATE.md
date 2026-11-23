@@ -133,3 +133,25 @@ const publicKeyPem = readFileSync(".local-run/update-signing/update-signing-publ
 console.log(parseProductionUpdateManifest(manifest, { publicKeyPem }));
 '@ | npx tsx -
 ```
+
+## Windows Agent 0.1.123 to 0.1.124
+
+Run the signed x86 File Update under the elevated account enrolled on the
+existing Agent. Keep the exact File Update EXE and production-signed manifest
+in an approved local directory.
+
+```powershell
+.\WonRemote-Agent-Update.exe '/FIRSTHOP=C:\ApprovedRelease\wonremote-update-manifest.json'
+```
+
+Exit code zero confirms the original Windows task accepted the request.
+Check `WonRemote\updates\last-update-result.json` in the enrolled profile and
+verify a fresh Viewer session. The ordinary 123 update route still uses the
+recovery code installed with 123.
+
+Installed 124 supports selected rollout for an explicit version and device set.
+To include Windows Agent installer arguments when generating a signed manifest,
+pass `--agent-installer-args '["/S","/UPDATE"]'`. The updater accepts the signed
+silent forms `["/S"]` and `["/S","/UPDATE"]`. A legacy manifest without the
+field uses `/S`. The outer `/FIRSTHOP` option is supplied at the local command
+line and stays outside the generated installer arguments.

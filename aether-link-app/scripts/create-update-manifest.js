@@ -102,11 +102,18 @@ function buildSignaturePayloadV2(input) {
     `forceUpdate=${input.forceUpdate ? "true" : "false"}`,
     `updateKind=${input.updateKind}`,
     `arch=${input.arch}`,
+    ...(input.installerArgs === undefined ? [] : [`installerArgs=${JSON.stringify(input.installerArgs)}`]),
   ].join("\n");
 }
 
 const args = readArgs(process.argv.slice(2));
 const viewerOnly = args.get("--viewer-only") === "true";
+const encodedAgentArgs = args.get("--agent-installer-args");
+const agentInstallerArgs = encodedAgentArgs === undefined ? undefined : JSON.parse(encodedAgentArgs);
+if (encodedAgentArgs !== undefined && (viewerOnly || !Array.isArray(agentInstallerArgs) || agentInstallerArgs[0] !== "/S" ||
+  !(agentInstallerArgs.length === 1 || (agentInstallerArgs.length === 2 && agentInstallerArgs[1] === "/UPDATE")))) {
+  throw new Error("Agent installer arguments require an Agent release and must be [\"/S\"] or [\"/S\",\"/UPDATE\"].");
+}
 const version = args.get("--version") || packageJson.version;
 const forceUpdate = args.get("--force-update") === "true";
 const viewerPath = path.resolve(args.get("--viewer-x64") || args.get("--installer") || defaultInstallerPath(version));
@@ -148,7 +155,7 @@ for (const [label, assetPath] of [
 
 const privateKeyPem = readPrivateKey(args);
 
-function buildSignedAsset({ arch, assetName, downloadUrl, filePath, updateKind }) {
+function buildSignedAsset({ arch, assetName, downloadUrl, filePath, updateKind, installerArgs }) {
   if (!downloadUrl.startsWith("https://")) {
     throw new Error("The update installer download URL must use HTTPS.");
   }
@@ -166,6 +173,7 @@ function buildSignedAsset({ arch, assetName, downloadUrl, filePath, updateKind }
     checksum,
     downloadUrl,
     forceUpdate,
+    installerArgs,
     latestVersion: version,
     updateKind,
   });
@@ -173,6 +181,7 @@ function buildSignedAsset({ arch, assetName, downloadUrl, filePath, updateKind }
     name: assetName,
     url: downloadUrl,
     sha256: checksum,
+    ...(installerArgs === undefined ? {} : { installerArgs }),
     signature: sign(null, Buffer.from(payload, "utf8"), privateKeyPem).toString("base64"),
     signatureV2: sign(null, Buffer.from(payloadV2, "utf8"), privateKeyPem).toString("base64"),
   };
@@ -185,22 +194,22 @@ const viewerX86 = buildSignedAsset({
   arch: "x86", assetName: viewerAssetNameX86, downloadUrl: viewerDownloadUrlX86, filePath: viewerPathX86, updateKind: "installer",
 });
 const agentX64 = !viewerOnly && buildSignedAsset({
-  arch: "x64", assetName: agentAssetName, downloadUrl: agentDownloadUrl, filePath: agentPath, updateKind: "installer",
+  arch: "x64", assetName: agentAssetName, downloadUrl: agentDownloadUrl, filePath: agentPath, updateKind: "installer", installerArgs: agentInstallerArgs,
 });
 const agentX86 = !viewerOnly && buildSignedAsset({
-  arch: "x86", assetName: agentAssetNameX86, downloadUrl: agentDownloadUrlX86, filePath: agentPathX86, updateKind: "installer",
+  arch: "x86", assetName: agentAssetNameX86, downloadUrl: agentDownloadUrlX86, filePath: agentPathX86, updateKind: "installer", installerArgs: agentInstallerArgs,
 });
 // Keep the executable handoff wire kind for existing installed readers. These
 // bytes contain file replacement only, not the first-install Setup workflow.
 const agentUpdateX64 = !viewerOnly && buildSignedAsset({
   arch: "x64", assetName: stableAgentUpdateName,
   downloadUrl: buildDownloadUrl(args, version, stableAgentUpdateName, "--agent-update-download-url-x64"),
-  filePath: agentUpdatePath, updateKind: "installer",
+  filePath: agentUpdatePath, updateKind: "installer", installerArgs: agentInstallerArgs,
 });
 const agentUpdateX86 = !viewerOnly && buildSignedAsset({
   arch: "x86", assetName: stableAgentUpdateName,
   downloadUrl: buildDownloadUrl(args, version, stableAgentUpdateName, "--agent-update-download-url-x86"),
-  filePath: agentUpdatePathX86, updateKind: "installer",
+  filePath: agentUpdatePathX86, updateKind: "installer", installerArgs: agentInstallerArgs,
 });
 
 const manifest = {

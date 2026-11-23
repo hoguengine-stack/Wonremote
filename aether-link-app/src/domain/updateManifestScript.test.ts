@@ -6,7 +6,8 @@ import { createRequire } from "node:module";
 import { runInNewContext } from "node:vm";
 import { transformSync } from "esbuild";
 import { describe, expect, it } from "vitest";
-import { loadProductionRollbackMetadata } from "../agent/productionUpdateMetadata";
+import { loadProductionInstallerUpdateMetadata, loadProductionRollbackMetadata } from "../agent/productionUpdateMetadata";
+import { downloadInstallerUpdate } from "../agent/productionInstallerUpdate";
 
 const projectRoot = path.resolve(__dirname, "..", "..");
 const manifestScript = path.join(projectRoot, "scripts", "create-update-manifest.js");
@@ -23,7 +24,72 @@ function fixtureFiles(root: string) {
   return files;
 }
 
+function manifestReaderAt(revision: string) {
+  const source = execFileSync("git", ["show", revision + ":aether-link-app/src/domain/updateManifest.ts"],
+    { cwd: projectRoot, encoding: "utf8" });
+  const legacyModule = { exports: {} as {
+    parseProductionUpdateManifest: (manifest: unknown, options: unknown) => { latestVersion: string; assetName: string };
+  } };
+  runInNewContext(transformSync(source, { loader: "ts", format: "cjs" }).code,
+    { module: legacyModule, exports: legacyModule.exports, require: createRequire(import.meta.url), Buffer, URL });
+  return legacyModule.exports.parseProductionUpdateManifest;
+}
+
 describe("production update manifest scripts", () => {
+  it("signs optional Agent arguments, verifies the release and reaches the installer downloader", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "wonremote-signed-args-"));
+    try {
+      const files = fixtureFiles(root);
+      const out = path.join(root, "manifest.json");
+      const key = path.join(root, "private.pem");
+      const publicKey = path.join(root, "public.pem");
+      const installerArgs = ["/S", "/UPDATE"];
+      execFileSync(process.execPath, [path.join(projectRoot, "scripts/generate-update-keypair.js"),
+        "--private-key", key, "--public-key", publicKey], { cwd: projectRoot });
+      const generateArgs = [
+        manifestScript, "--viewer-x64", files.viewer, "--agent-x64", files.agent,
+        "--agent-update-x64", files.update, "--version", "0.1.124", "--private-key", key, "--out", out,
+      ];
+      execFileSync(process.execPath, [...generateArgs, "--agent-installer-args", JSON.stringify(installerArgs)], { cwd: projectRoot });
+      const manifest = JSON.parse(readFileSync(out, "utf8"));
+      for (const arch of ["x64", "x86"]) {
+        expect(manifest.viewerWindows[arch]).not.toHaveProperty("installerArgs");
+        expect(manifest.agentInstallers[arch].installerArgs).toEqual(installerArgs);
+        expect(manifest.agentWindows[arch]).toEqual(manifest.agentInstallers[arch]);
+        expect(manifest.agentFileUpdates[arch].installerArgs).toEqual(installerArgs);
+      }
+      const publicKeyPem = readFileSync(publicKey, "utf8");
+      const verify = () => execFileSync(process.execPath, [
+        path.join(projectRoot, "scripts/verify-release-manifest.js"), "--manifest", out,
+        "--version", "0.1.124", "--viewer-x64", files.viewer, "--agent-x64", files.agent, "--agent-update-x64", files.update,
+      ], {
+        cwd: projectRoot,
+        env: { ...process.env, WONREMOTE_UPDATE_MANIFEST_PUBLIC_KEY: publicKeyPem },
+        stdio: "pipe",
+      });
+      verify();
+      const parse123 = manifestReaderAt("10cd3d35575ba5605b82e320238d05f0f8de5575");
+      expect(() => parse123(manifest, { arch: "x86", product: "agent", publicKeyPem })).toThrow(/v2 signature verification failed/);
+      expect(parse123(manifest, { arch: "x86", product: "viewer", publicKeyPem }).assetName).toBe("WonRemote-Viewer-Setup.exe");
+      const metadata = await loadProductionInstallerUpdateMetadata({
+        WONREMOTE_BUILD_ARCH: "x86",
+        WONREMOTE_AGENT_FILE_UPDATE: "1",
+        WONREMOTE_UPDATE_MANIFEST_PUBLIC_KEY: publicKeyPem,
+      }, async () => new Response(JSON.stringify(manifest)));
+      expect(metadata?.assetName).toBe("WonRemote-Agent-Update.exe");
+      expect(await downloadInstallerUpdate(metadata!, { baseDir: root, fetchImpl: async () => new Response(readFileSync(files.update)) }))
+        .toMatchObject({ installerArgs });
+      delete manifest.agentFileUpdates.x86.installerArgs;
+      writeFileSync(out, JSON.stringify(manifest));
+      expect(verify).toThrow(/signatureV2/);
+      expect(() => execFileSync(process.execPath, [
+        ...generateArgs, "--agent-installer-args", JSON.stringify(["/S", "/FIRSTHOP=C:\\manifest.json"]),
+      ], { cwd: projectRoot, stdio: "pipe" })).toThrow(/installer argument/i);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("signs and verifies a Viewer-only release without reading or publishing Agent assets",()=>{
     const root=mkdtempSync(path.join(tmpdir(),"wonremote-viewer-manifest-"));
     try{
@@ -68,18 +134,14 @@ describe("production update manifest scripts", () => {
       expect(manifest.viewerWindows.x64.url).toContain("/download/v9.9.9/");
       expect(manifest.viewerWindows.x64.url).not.toContain("latest/download");
       // Run the actual 0.1.88 reader, not today's parser posing as a legacy client.
-      const legacySource = execFileSync("git", ["show", "04cb8336253e5d102bdd9f58af69ae19b4f7e1a5:aether-link-app/src/domain/updateManifest.ts"],
-        { cwd: projectRoot, encoding: "utf8" });
-      const legacyModule = { exports: {} as { parseProductionUpdateManifest: (manifest: unknown, options: unknown) => { latestVersion: string; assetName: string } } };
-      runInNewContext(transformSync(legacySource, { loader: "ts", format: "cjs" }).code,
-        { module: legacyModule, exports: legacyModule.exports, require: createRequire(import.meta.url), Buffer, URL });
+      const parse88 = manifestReaderAt("04cb8336253e5d102bdd9f58af69ae19b4f7e1a5");
       for (const product of ["agent", "viewer"]) {
         for (const arch of ["x86", "x64"]) {
           const options = { product, arch, publicKeyPem: readFileSync(publicKey, "utf8") };
-          expect(legacyModule.exports.parseProductionUpdateManifest(manifest, options)).toMatchObject({
+          expect(parse88(manifest, options)).toMatchObject({
             latestVersion: "9.9.9", assetName: product === "agent" ? "WonRemote-Agent-Setup.exe" : "WonRemote-Viewer-Setup.exe",
           });
-          expect(() => legacyModule.exports.parseProductionUpdateManifest({ ...manifest, version: "9.9.10" }, options)).toThrow();
+          expect(() => parse88({ ...manifest, version: "9.9.10" }, options)).toThrow();
         }
       }
       execFileSync(process.execPath, [

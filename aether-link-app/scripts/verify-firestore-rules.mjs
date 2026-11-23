@@ -86,6 +86,20 @@ try {
   await expectPermissionDenied(()=>setDoc(doc(unauthorized.db,"configuration","updateRollout"),selectedPolicy),"Unauthorized rollout write");
   await setDoc(policyRef,{targetDeviceIds:null,paused:true,percentage:0},{merge:true});
   await setDoc(policyRef,{percentage:100},{merge:true});
+  const scoped = { targetVersion: "0.1.125", targetDeviceIds: [DEVICE_ID], paused: false };
+  await setDoc(policyRef, { selectedRollout: scoped }, { merge: true });
+  const saved = (await getDoc(doc(agent.db, "configuration", "updateRollout"))).data();
+  if (saved.targetVersion !== selectedPolicy.targetVersion || saved.percentage !== 100 || saved.paused !== true
+      || saved.targetDeviceIds !== null || saved.selectedRollout?.targetDeviceIds[0] !== DEVICE_ID
+      || saved.selectedRollout?.targetVersion !== scoped.targetVersion) throw new Error("Scoped rollout changed the general policy");
+  await expectPermissionDenied(() => setDoc(policyRef, { selectedRollout: { ...scoped, installerArgs: ["/S"] } }, { merge: true }),
+    "Selected policy cannot transport arbitrary installer arguments");
+  await expectPermissionDenied(() => setDoc(policyRef, { selectedRollout: { ...scoped, targetVersion: "latest" } }, { merge: true }),
+    "Selected policy requires a fixed version");
+  await expectPermissionDenied(() => setDoc(policyRef, { selectedRollout: { ...scoped, targetDeviceIds: Array(201).fill(DEVICE_ID) } }, { merge: true }),
+    "Scoped rollout size bound");
+  await expectPermissionDenied(() => setDoc(doc(agent.db, "configuration", "updateRollout"), { selectedRollout: scoped }, { merge: true }),
+    "Agent cannot set the selected policy");
   await setDoc(doc(agent.db, "devices", DEVICE_ID), {
     id: DEVICE_ID,
     ownerUid: AGENT_UID,

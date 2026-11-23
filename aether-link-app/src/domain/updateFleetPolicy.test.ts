@@ -3,9 +3,24 @@ import {
   decideUpdateEligibility,
   hashDeviceIdToPercentageBucket,
   parseRolloutSelection,
+  readUpdateRollout,
+  updateRolloutFields,
 } from "./updateFleetPolicy";
 
 describe("update fleet policy", () => {
+  it("stores a 124+ selection without changing the general update or enrolling legacy devices", () => {
+    const general = { targetVersion: "0.1.125", stage: "general", percentage: 100, paused: false } as const;
+    const selected = { targetVersion: "0.1.126", stage: "general", percentage: 0, paused: false, targetDeviceIds: ["chosen"] } as const;
+    const saved = { ...general, ...updateRolloutFields({ ...selected, targetDeviceIds: ["chosen"] }) };
+    expect(readUpdateRollout(saved)).toEqual(general);
+    const trial = readUpdateRollout(saved, true);
+    expect(trial).toEqual(selected);
+    expect(decideUpdateEligibility({ id: "chosen", version: "0.1.123", selectedRolloutVersion: "0.1.123" }, trial).eligible).toBe(false);
+    expect(decideUpdateEligibility({ id: "chosen", version: "0.1.124", selectedRolloutVersion: "0.1.124" }, trial).eligible).toBe(true);
+    expect(decideUpdateEligibility({ id: "other", version: "0.1.123" }, readUpdateRollout(saved)).eligible).toBe(true);
+    expect(readUpdateRollout({ ...saved, paused: true }, true)?.paused).toBe(true);
+    expect(readUpdateRollout({ ...saved, selectedRollout: null }, true)).toBeNull();
+  });
   it("fails closed when rollout policy is unavailable", () => {
     expect(decideUpdateEligibility({ id: "field-agent", version: "1.0.0" }, null)).toMatchObject({
       eligible: false,
