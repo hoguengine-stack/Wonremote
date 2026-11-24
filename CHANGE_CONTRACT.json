@@ -1,4 +1,51 @@
 {
+  "preD116FieldPilotTopLevel20261125": {
+    "status": "verified",
+    "intent": "Freeze the exact tested Windows x86 Agent 120-only bridge source before its requested standalone GitHub prerelease.",
+    "rollback": "Keep canonical public v0.1.123 latest and real v0.1.124 in draft. Return only the bridge release to draft if any tag or download check fails.",
+    "regressionReview": {
+      "kind": "non-regression",
+      "reason": "This publication transports the exact previously tested bridge without changing its bytes or triggering a device update. The legacy locked-file failure and its protected first-hop fix are substantiated in agent120OnlyBridge12320261123 and INC-20261123-004."
+    },
+    "requestReview": {
+      "impact": "none",
+      "reason": "The publication runs bounded GitHub asset and tag verification. It does not change live Agent request code, timers, listeners, fleet policy, or Firebase."
+    },
+    "outcomes": [
+      {
+        "id": "agent120-bridge-publication-exact-artifact",
+        "acceptance": "The archived file update is x86 0.1.123, binds its own GitHub release path and operating-signed manifest, and accepts only installed 120.",
+        "boundaries": [
+          "bridge source snapshot",
+          "x86 File Update payload",
+          "operating V2 signature with signed arguments",
+          "separate versioned URL"
+        ],
+        "contractTests": [
+          "aether-link-app/src/agent/legacyAgentFirstHop.test.ts",
+          "aether-link-app/scripts/package-agent-file-update.test.js"
+        ],
+        "proofLevel": "automated-runtime",
+        "verification": "The 29,690,013-byte tested EXE SHA-256 is d4b0e341a00bb039eba2c3a08acf8416c4aa0f721b82ca0c0f26778b05ceea2f. Private draft 455731614 contains the same bytes and operating-signed manifest SHA-256 9c2289dd7b26877a1b6c75c4bd6c9764720952b09d202f7d3a8c16f3b5152ac1. Exact local key verification and signer run 45224200825 passed. The 53 first-hop and 18 native file tests apply to these unchanged sources. None of the source files changed after the archived build. The source tag identifies the retained snapshot and the signed asset hashes identify the actual tested build."
+      },
+      {
+        "id": "agent120-bridge-publication-installed-proof",
+        "acceptance": "Exact public 120 keeps registration and reconnects after a locked failure, installs the signed bridge as 123 after unlocking, and returns the test PC to its original 125 installation.",
+        "boundaries": [
+          "physical Windows PC with network isolation",
+          "original enrolled 120 and protected task",
+          "held-lock rollback and healthy install",
+          "fresh Viewer frames and original 125 restoration"
+        ],
+        "contractTests": [
+          "aether-link-app/src/agent/legacyAgentFirstHop.test.ts",
+          "aether-link-app/src/agent/productionInstallerUpdate.test.ts"
+        ],
+        "proofLevel": "physical-completed",
+        "verification": "Trial 2e44f000989a4b898535269822e8c054 passed. Persistent sharing violation 32 before and after, task exit 1, original 120 restored and two fresh frames. Unlocked task exit 0, exact version 0.1.123 installed and two fresh frames. Original 125 and desktop Viewer restored, with trial filters and watchdog removed."
+      }
+    ]
+  },
   "stock120HeldCaptureBridge20261124": {
     "status": "active",
     "scope": "Build a 123 Agent x86 transition for the exact already-installed public 120 without a preinstalled repair. Retain the byte-identical 120 capture helper while its handle remains held, using the ordinary protected GitHub auto update. Limit any later release to verified eligible devices and preserve unrelated latest assets.",
@@ -7,55 +54,92 @@
     "outcomes": [
       {"id":"bridge120-retains-held-capture","acceptance":"Ordinary Windows file update replaces the rest of the signed bridge while preserving an exactly identical locked capture file and the original registration. A differing or missing file cannot be mistaken for the retained original.","proofLevel":"automated-runtime","contractTests":["aether-link-app/scripts/package-agent-file-update.test.js"],"verification":"RED: the real file replacement failed in a disposable Windows directory with the unchanged capture held for shared reads. GREEN: all 19 package and Windows file update tests passed; the same sharing violation remains active after successful replacement of every other target. Built exact x86 0.1.123 package SHA-256 200cc1b368d624cb60bcf953408dbb978ff1f1c357beec56039e7e56ae68f496. Extraction verified both the new installer script and exact stock 120 capture bytes, 8c86eed6dc6c77ee321e1d66311a9b27e2ddfe26c595e7b348c38a0c829af9c1."},
       {"id":"stock120-automatic-while-capture-held","acceptance":"Without changing stock 120 files or using a manual update command, one isolated enrolled 120 checks the GitHub update route, installs the exact bridge reporting 123 with a held capture file, responds to Viewer, and leaves the original physical PC restored.","proofLevel":"physical-completed","verification":"PASS 4d9a5f3af7f948a0a72de93d521ea837 on the authorized physical PC with exact stock 120 and its embedded operating key, using a locally routed copy of the operating-signed draft manifest 336e6085...0ba9. No Viewer update command or prep repair was used. Exact installer 200cc1b3...68f496 installed 123 via the original stock handoff while sharing violation 32 remained active. Six payload hashes, same enrollment, healthy 123, two fresh Viewer frames, original 125 restoration and Viewer reopening passed. Win32 input was outside this trial. D:/WR120KEEP/trial/physical-stock-locked-auto120-4d9a5f3af7f948a0a72de93d521ea837.json."},
-      {"id":"stock120-automatic-release-and-isolation","acceptance":"Any public activation uses operating-compatible signing, preserves non-target devices, and is supported by recovery evidence including separately acknowledged remaining failure conditions. No completion until a permitted production 120 installs and reconnects.","proofLevel":"deployment-required","verification":"GitHub run 45433769851 completed operating V1/V2 signing for the exact candidate in unpublished draft 457005248. Independent stock trust readback verified the bridge leaf while preserving all other canonical fields. Added exact copies of the current public 123 Agent and Viewer setups to the same draft; verified SHA-256, size, signed installer/manifest asset IDs, anonymous 404 and unchanged public latest release 438338211. The 2026-11-25 01:19 KST snapshot showed 16 registered Windows 0.1.120 devices, all idle, and the 123 policy paused. Read-only replay of the exact 97df908 eligibility code against 65 operational device records selected 3BD5131E alone (64 denied; zero eligible when paused or when selection is replaced with the 0 percent fallback). 3BD5131E had a matching recorded ZOOK configuration; present remote administrator access is unverified. No production installation or rollout change. The distinct pre-entry child failure in the existing 120 parent still requires an independently verified recovery path."}
+      {"id":"stock120-automatic-release-and-isolation","acceptance":"Any public activation uses operating-compatible signing, preserves non-target devices, and is supported by recovery evidence including separately acknowledged remaining failure conditions. No completion until a permitted production 120 installs and reconnects.","proofLevel":"deployment-required","verification":"GitHub run 45433769851 completed operating V1/V2 signing for the exact candidate in unpublished draft 457005248. Independent stock trust readback verified the bridge leaf while preserving all other canonical fields. Added exact copies of the current public 123 Agent and Viewer setups to the same draft; verified SHA-256, size, signed installer/manifest asset IDs, anonymous 404 and unchanged public latest release 438338211. The 2026-11-25 01:19 KST snapshot showed 16 registered Windows 0.1.120 devices, all idle, and the 123 policy paused. Read-only replay of the exact 97df908 eligibility code against 65 operational device records selected 3BD5131E alone (64 denied; zero eligible when paused or when selection is replaced with the 0 percent fallback). 3BD5131E had a matching recorded ZOOK configuration; present remote administrator access is unverified. No production installation or rollout change. The distinct pre-entry child failure in the existing 120 parent still requires an independently verified recovery path. Subsequent D1162347 single-device pilot reported healthy running 123 on the same registered device after automatic discovery. In production 15 Windows 120 devices remain. See active delivery record and INC-20261124-010."}
     ]
   },
   "status": "verified",
-  "intent": "Freeze the exact tested Windows x86 Agent 120-only bridge source before its requested standalone GitHub prerelease.",
+  "intent": "Qualify one real Windows stock 120 automatic upgrade on D1162347 using the pinned operating-signed GitHub 123 transition.",
   "changeType": "build",
   "risk": "high",
   "releaseImpact": "deploy",
-  "rollback": "Keep canonical public v0.1.123 latest and real v0.1.124 in draft. Return only the bridge release to draft if any tag or download check fails.",
+  "rollback": "Re-pause the scoped rollout before restoring original latest release 438338211. Keep established independent ZOOK/administrator recovery available through the handoff. Preserve versioned releases and setup bytes.",
   "regressionReview": {
     "kind": "non-regression",
-    "reason": "This publication transports the exact previously tested bridge without changing its bytes or triggering a device update. The legacy locked-file failure and its protected first-hop fix are substantiated in agent120OnlyBridge12320261123 and INC-20261123-004."
+    "reason": "This controlled delivery reuses the already fixed exact held-capture package without changing the updater implementation. The previous/candidate comparison and working physical test are recorded in INC-20261124-010."
   },
   "requestReview": {
-    "impact": "none",
-    "reason": "The publication runs bounded GitHub asset and tag verification. It does not change live Agent request code, timers, listeners, fleet policy, or Firebase."
+    "impact": "changed",
+    "reason": "One authorized operator run stages, activates and re-pauses only the D1162347 Firestore rollout while reading that exact field row for terminal proof.",
+    "assumptions": "One manual run and at most 75 minutes. One roster read of up to 120 rows, up to 145 individual policy/device reads, four masked revision-checked policy writes including optional restoration. Existing client heartbeat/update cost and public GitHub download transfer remain separate.",
+    "dailyBudget": {
+      "clients": 1,
+      "readsPerClient": 265,
+      "writesPerClient": 4,
+      "maxReads": 265,
+      "maxWrites": 4
+    },
+    "checks": {
+      "idle": "No standing worker or application timer is added.",
+      "rerender": "No UI change.",
+      "concurrency": "Exact rollout revision preconditions; one target at zero percent, no force or parallel deploy.",
+      "failure": "Pause before returning latest to the exact original, retain established recovery for an in-flight installer.",
+      "cleanup": "Read back scoped pause and original public latest after terminal or timeout; scoped monitoring ends."
+    },
+    "contractTests": [
+      "aether-link-app/scripts/package-agent-file-update.test.js",
+      "aether-link-app/src/domain/updateFleetPolicy.test.ts"
+    ]
   },
   "outcomes": [
     {
-      "id": "agent120-bridge-publication-exact-artifact",
-      "acceptance": "The archived file update is x86 0.1.123, binds its own GitHub release path and operating-signed manifest, and accepts only installed 120.",
+      "id": "stock120-pilot-public-feed",
+      "acceptance": "With rollout paused, the actual unmodified GitHub latest path supplies the exact operating-signed transition and each original setup hash without overwriting published v0.1.123 assets.",
       "boundaries": [
-        "bridge source snapshot",
-        "x86 File Update payload",
-        "operating V2 signature with signed arguments",
-        "separate versioned URL"
+        "temporary public latest pointer",
+        "actual anonymous latest downloads",
+        "embedded stock 120 signature and exact x86 candidate",
+        "original public setup aliases"
       ],
       "contractTests": [
-        "aether-link-app/src/agent/legacyAgentFirstHop.test.ts",
-        "aether-link-app/scripts/package-agent-file-update.test.js"
+        "aether-link-app/scripts/package-agent-file-update.test.js",
+        "aether-link-app/src/domain/updateFleetPolicy.test.ts"
       ],
-      "proofLevel": "automated-runtime",
-      "verification": "The 29,690,013-byte tested EXE SHA-256 is d4b0e341a00bb039eba2c3a08acf8416c4aa0f721b82ca0c0f26778b05ceea2f. Private draft 455731614 contains the same bytes and operating-signed manifest SHA-256 9c2289dd7b26877a1b6c75c4bd6c9764720952b09d202f7d3a8c16f3b5152ac1. Exact local key verification and signer run 45224200825 passed. The 53 first-hop and 18 native file tests apply to these unchanged sources. None of the source files changed after the archived build. The source tag identifies the retained snapshot and the signed asset hashes identify the actual tested build."
+      "proofLevel": "deployment-required",
+      "verification": "Predeploy gate passed. While the scope stayed paused at 0 percent, published exact release 457005248 and downloaded the actual anonymous latest manifest, both original Setup aliases and the pinned bridge EXE. All four SHA-256 digests matched. Existing versioned release 438338211 assets were unchanged."
     },
     {
-      "id": "agent120-bridge-publication-installed-proof",
-      "acceptance": "Exact public 120 keeps registration and reconnects after a locked failure, installs the signed bridge as 123 after unlocking, and returns the test PC to its original 125 installation.",
+      "id": "stock120-pilot-d116-automatic",
+      "acceptance": "Only the user-confirmed recoverable D1162347, already running registered stock 120, downloads the signed GitHub candidate without a manual update command, reaches version 123 healthy on the same registration, and reports a fresh heartbeat. Viewer reconnect is confirmed separately when available.",
       "boundaries": [
-        "physical Windows PC with network isolation",
-        "original enrolled 120 and protected task",
-        "held-lock rollback and healthy install",
-        "fresh Viewer frames and original 125 restoration"
+        "D1162347 Windows 120 live baseline",
+        "scope selected exact ID with zero percent fallback",
+        "operating-signed file handoff",
+        "registered heartbeat and terminal health",
+        "independent ZOOK administrator fallback confirmed by operator"
       ],
       "contractTests": [
-        "aether-link-app/src/agent/legacyAgentFirstHop.test.ts",
-        "aether-link-app/src/agent/productionInstallerUpdate.test.ts"
+        "aether-link-app/scripts/package-agent-file-update.test.js",
+        "aether-link-app/src/domain/updateFleetPolicy.test.ts"
       ],
-      "proofLevel": "physical-completed",
-      "verification": "Trial 2e44f000989a4b898535269822e8c054 passed. Persistent sharing violation 32 before and after, task exit 1, original 120 restored and two fresh frames. Unlocked task exit 0, exact version 0.1.123 installed and two fresh frames. Original 125 and desktop Viewer restored, with trial filters and watchdog removed."
+      "proofLevel": "deployment-required",
+      "verification": "D1162347 alone was enabled at 2026-11-25 02:59:51 KST. Its stock automatic check ran at 03:13:47 KST and deferred behind the active WonRemote session. No forced/manual update command was sent. After the active session closed, the same Windows enrollment sent a new server heartbeat at 03:21:53 KST, reporting AgentVersion and updateCurrentVersion 0.1.123, healthy, 100 percent and no error. The update receipt's own timestamp and target were historical; use the new server heartbeat, same install ID and live version as the field proof. D:/WR120KEEP/pilot-D1162347-20261125.json",
+      "physicalGap": "A fresh Viewer frame and exact installed file hashes on the field host were not checked by server telemetry. The isolated operating-key physical trial did check both."
+    },
+    {
+      "id": "stock120-pilot-stops-without-fleet-exposure",
+      "acceptance": "The selected policy is read back and re-paused after the pilot, original latest is restored, and no other device is eligible for the test.",
+      "boundaries": [
+        "exact stock allowlist logic",
+        "live policy CAS readback",
+        "single-target stop",
+        "original anonymous latest manifest"
+      ],
+      "contractTests": [
+        "aether-link-app/scripts/package-agent-file-update.test.js",
+        "aether-link-app/src/domain/updateFleetPolicy.test.ts"
+      ],
+      "proofLevel": "deployment-required",
+      "verification": "Selected policy allowed D1162347 only (64 excluded by exact stock policy replay). Readback confirmed scope and revision during the run and paused the selected policy at 03:22:04 KST. Restored the original GitHub latest release 438338211, then checked the anonymous latest manifest SHA-256 aaa3baf...f55b. The separate bridge is now a published non-latest prerelease. Of the 65 registered device documents, 15 still report Windows 120. The scoped rollout remains paused, 0 percent, one selected ID. No wider activation."
     }
   ],
   "agent120BridgeGitHubPublication20261124": {
