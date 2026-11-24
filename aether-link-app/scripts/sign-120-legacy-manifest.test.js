@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import test from "node:test";
 import {
-  assertOwner, assertX86, bridge, downloadPinned, loadStockParser, mergeLegacyManifest,
-  sealManifest, unsealManifest,
+  assertDraft, assertOwner, assertX86, bridge, draft, downloadPinned, loadStockParser, mergeLegacyManifest,
 } from "./sign-120-legacy-manifest.js";
 
 const loaded = await loadStockParser();
@@ -14,7 +13,7 @@ const assetName = "WonRemote-Agent-Update.exe";
 const signer = generateKeyPairSync("ed25519");
 const ownerContext = {
   GITHUB_ACTIONS: "true", GITHUB_EVENT_NAME: "workflow_dispatch", GITHUB_REPOSITORY: "hoguengine-stack/Wonremote",
-  GITHUB_REPOSITORY_ID: "1136941328", GITHUB_REF: "refs/heads/codex/sign-wonremote-120-bridge-123",
+  GITHUB_REPOSITORY_ID: "1136941328", GITHUB_REF: "refs/heads/codex/sign-wonremote-lock-tolerant-120-123",
   GITHUB_ACTOR: "hoguengine-stack", GITHUB_ACTOR_ID: "246740147", GITHUB_TRIGGERING_ACTOR: "hoguengine-stack",
 };
 
@@ -61,6 +60,12 @@ test("only follows the GitHub release CDN and verifies the complete pinned body 
   });
   assert.equal(hit.length, 2);
   assert.deepEqual(result, bytes);
+  const privateBytes = await downloadPinned(pin, async (url, options) => {
+    assert.equal(String(url), "https://release-assets.githubusercontent.com/private-test");
+    assert.equal(options.headers, undefined);
+    return new Response(bytes);
+  }, new Response(null, { status: 302, headers: { location: "https://release-assets.githubusercontent.com/private-test" } }));
+  assert.deepEqual(privateBytes, bytes);
   assert.doesNotThrow(() => assertX86(result));
   await assert.rejects(downloadPinned(pin, async () => new Response(null, { status: 302, headers: { location: "https://example.com/foreign" } })), /outside/);
   await assert.rejects(downloadPinned(pin, async () => new Response(Buffer.alloc(70))), /SHA-256/);
@@ -93,16 +98,29 @@ test("keeps every canonical field except the x86 file leaf and verifies mandator
   assert.throws(() => stockValidate(modern, signer.publicKey), /v2 signature verification failed/);
 });
 
-test("the published envelope contains ciphertext and requires the intended recipient and authenticated bytes", () => {
-  const recipient = generateKeyPairSync("rsa", { modulusLength: 3072 });
-  const other = generateKeyPairSync("rsa", { modulusLength: 3072 });
-  const payload = Buffer.from(JSON.stringify(canonicalFixture()));
-  const pem = recipient.publicKey.export({ type: "spki", format: "pem" });
-  const sealed = sealManifest(payload, pem);
-  assert.equal(JSON.stringify(sealed).includes(canonicalUrl), false);
-  assert.deepEqual(unsealManifest(sealed, recipient.privateKey), payload);
-  assert.throws(() => unsealManifest(sealed, other.privateKey), /Wrong manifest recipient/);
-  const bytes = Buffer.from(sealed.ciphertext, "base64");
-  bytes[0] ^= 1;
-  assert.throws(() => unsealManifest({ ...sealed, ciphertext: bytes.toString("base64") }, recipient.privateKey));
+test("requires the exact unpublished GitHub inventory before and after a draft-only write", () => {
+  const release = {
+    id: draft.id, tag_name: draft.tag, target_commitish: draft.revision,
+    draft: true, prerelease: true, published_at: null,
+    assets: [{ id: draft.assetId, name: assetName, state: "uploaded",
+      size: bridge.size, digest: "sha256:" + bridge.sha256 }],
+  };
+  assert.doesNotThrow(() => assertDraft(release));
+  for (const change of [
+    { id: 1 }, { tag_name: "v0.1.123" }, { target_commitish: "main" },
+    { draft: false }, { prerelease: false }, { published_at: "2026-11-24" },
+  ]) {
+    assert.throws(() => assertDraft({ ...release, ...change }), /approved unpublished draft/);
+  }
+  for (const change of [{ id: 1 }, { digest: "sha256:other" }, { size: 70 }, { state: "new" }]) {
+    assert.throws(() => assertDraft({ ...release, assets: [{ ...release.assets[0], ...change }] }), /approved asset/);
+  }
+  const body = Buffer.from(JSON.stringify(canonicalFixture()));
+  const asset = { id: 99, name: "wonremote-update-manifest.json", state: "uploaded", size: body.length,
+    digest: "sha256:" + createHash("sha256").update(body).digest("hex") };
+  const written = { ...release, assets: [...release.assets, asset] };
+  assert.throws(() => assertDraft(written), /draft asset inventory/);
+  assert.doesNotThrow(() => assertDraft(written, asset, body));
+  assert.throws(() => assertDraft(written, { ...asset, id: 100 }, body), /verified bytes/);
+  assert.throws(() => assertDraft(written, asset, Buffer.from("changed")), /verified bytes/);
 });

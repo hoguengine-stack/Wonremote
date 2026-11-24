@@ -1,20 +1,25 @@
 import { deepStrictEqual, equal, ok } from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import {
-  constants, createCipheriv, createDecipheriv, createHash, createPublicKey,
-  privateDecrypt, publicEncrypt, randomBytes, sign,
-} from "node:crypto";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { createHash, sign } from "node:crypto";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 
 const repository = "hoguengine-stack/Wonremote";
-const signerRef = "refs/heads/codex/sign-wonremote-120-bridge-123";
+const signerRef = "refs/heads/codex/sign-wonremote-lock-tolerant-120-123";
 const stockRevision = "97df90878474f6d8bbb5c00632a3af7df2ccc383";
 const version = "0.1.123";
 const assetName = "WonRemote-Agent-Update.exe";
 const releaseBase = "https://github.com/" + repository + "/releases/download/";
+const manifestName = "wonremote-update-manifest.json";
+const releaseApi = "https://api.github.com/repos/" + repository + "/releases";
+export const draft = {
+  id: 457005248,
+  assetId: 787866598,
+  tag: "internal-wonremote-agent120-lock-tolerant-123-20261124",
+  revision: "2e6a19267e32760dea9f3e4e230a0cd2aad147a7",
+};
 const canonicalHash = "d1a0f26cf44a9fdea20953beaaea2d4c67a67dc4099689eecfbe2b8ff4c080ec";
 const official = {
   url: releaseBase + "v0.1.123/wonremote-update-manifest.json",
@@ -22,14 +27,11 @@ const official = {
   sha256: "aaa3baf2114d7df379515ba85c7a460c2a1c1027226459de907f09fe3542f55b",
 };
 export const bridge = {
-  url: releaseBase + "internal-wonremote-agent120-bridge123-20261123/" + assetName,
-  size: 29690013,
-  sha256: "d4b0e341a00bb039eba2c3a08acf8416c4aa0f721b82ca0c0f26778b05ceea2f",
+  url: releaseBase + draft.tag + "/" + assetName,
+  size: 29699315,
+  sha256: "200cc1b368d624cb60bcf953408dbb978ff1f1c357beec56039e7e56ae68f496",
 };
 const cdnHosts = new Set(["release-assets.githubusercontent.com", "objects.githubusercontent.com"]);
-const format = "wonremote-stock120-legacy-manifest-v1";
-const aad = Buffer.from(format, "utf8");
-const oaep = { padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash: "sha256" };
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -43,9 +45,9 @@ export function assertOwner(context) {
   "Signing requires the original owner on the exact manual signing branch.");
 }
 
-export async function downloadPinned(pin, fetchRequest = fetch) {
+export async function downloadPinned(pin, fetchRequest = fetch, authorizedResponse) {
   const get = url => fetchRequest(url, { method: "GET", redirect: "manual", signal: AbortSignal.timeout(60_000) });
-  let response = await get(pin.url);
+  let response = authorizedResponse ?? await get(pin.url);
   if (response.status === 302) {
     const location = response.headers.get("location");
     const cdn = location && new URL(location);
@@ -121,59 +123,76 @@ export function mergeLegacyManifest(parser, canonical, canonicalKey, signingKey,
   return combined;
 }
 
-export function sealManifest(bytes, recipient) {
-  const key = randomBytes(32);
-  const nonce = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", key, nonce);
-  cipher.setAAD(aad);
-  const ciphertext = Buffer.concat([cipher.update(bytes), cipher.final()]);
-  return {
-    format,
-    recipient: sha256(createPublicKey(recipient).export({ type: "spki", format: "der" })),
-    key: publicEncrypt({ key: recipient, ...oaep }, key).toString("base64"),
-    nonce: nonce.toString("base64"),
-    tag: cipher.getAuthTag().toString("base64"),
-    ciphertext: ciphertext.toString("base64"),
-  };
+function assertManifestAsset(asset, bytes) {
+  ok(asset && asset.name === manifestName && asset.state === "uploaded"
+    && Number.isSafeInteger(asset.id) && asset.id > 0 && asset.id !== draft.assetId
+    && asset.size === bytes.length && asset.digest === "sha256:" + sha256(bytes),
+  "Manifest upload disagrees with the verified bytes.");
 }
 
-export function unsealManifest(envelope, recipient) {
-  equal(envelope.format, format, "Unexpected sealed manifest format.");
-  equal(envelope.recipient, sha256(createPublicKey(recipient).export({ type: "spki", format: "der" })), "Wrong manifest recipient.");
-  const decode = key => Buffer.from(envelope[key], "base64");
-  const key = privateDecrypt({ key: recipient, ...oaep }, decode("key"));
-  const decipher = createDecipheriv("aes-256-gcm", key, decode("nonce"), { authTagLength: 16 });
-  decipher.setAAD(aad);
-  decipher.setAuthTag(decode("tag"));
-  return Buffer.concat([decipher.update(decode("ciphertext")), decipher.final()]);
+export function assertDraft(release, uploaded, manifest) {
+  ok(release?.id === draft.id && release.tag_name === draft.tag && release.target_commitish === draft.revision
+    && release.draft === true && release.prerelease === true && release.published_at === null,
+  "Release is not the exact approved unpublished draft.");
+  ok(Array.isArray(release.assets) && release.assets.length === (uploaded ? 2 : 1),
+    "Unexpected draft asset inventory.");
+  const asset = release.assets.find(item => item.id === draft.assetId);
+  ok(asset?.name === assetName && asset.state === "uploaded" && asset.size === bridge.size
+    && asset.digest === "sha256:" + bridge.sha256, "Draft executable disagrees with the approved asset.");
+  if (uploaded) {
+    assertManifestAsset(release.assets.find(item => item.id === uploaded.id), manifest);
+  }
 }
 
-async function signPrivateArtifact(context = process.env) {
+async function signUnpublishedDraft(context = process.env) {
   assertOwner(context);
-  ok(typeof context.WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY === "string"
-    && context.WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY.includes("-----BEGIN PRIVATE KEY-----")
-    && context.RUNNER_TEMP && path.isAbsolute(context.RUNNER_TEMP), "Missing trusted signing inputs.");
-  const [loaded, baselineBytes, bridgeBytes, recipient] = await Promise.all([
-    loadStockParser(), downloadPinned(official), downloadPinned(bridge),
-    readFile(fileURLToPath(new URL("../../.github/workflows/legacy-120-recipient.pub.pem", import.meta.url)), "utf8"),
+  ok(context.GH_TOKEN && typeof context.WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY === "string"
+    && context.WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY.includes("-----BEGIN PRIVATE KEY-----"), "Missing trusted signing inputs.");
+  const authorized = (url, accept, upload) => fetch(url, {
+    method: upload ? "POST" : "GET",
+    redirect: "manual",
+    signal: AbortSignal.timeout(60_000),
+    headers: {
+      accept,
+      authorization: "Bearer " + context.GH_TOKEN,
+      "x-github-api-version": "2022-11-28",
+      ...(upload && { "content-type": "application/octet-stream" }),
+    },
+    body: upload,
+  });
+  const readDraft = async (uploaded, manifest) => {
+    const response = await authorized(releaseApi + "/" + draft.id, "application/vnd.github+json");
+    equal(response.status, 200, "Could not read the exact draft.");
+    assertDraft(await response.json(), uploaded, manifest);
+  };
+  await readDraft();
+  const [loaded, baselineBytes, bridgeBytes] = await Promise.all([
+    loadStockParser(),
+    downloadPinned(official),
+    authorized(releaseApi + "/assets/" + draft.assetId, "application/octet-stream")
+      .then(response => downloadPinned(bridge, fetch, response)),
   ]);
   assertX86(bridgeBytes);
   const output = mergeLegacyManifest(loaded.parser, JSON.parse(baselineBytes), loaded.publicKey,
     context.WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY, loaded.publicKey);
-  const sealed = sealManifest(Buffer.from(JSON.stringify(output, null, 2) + "\n"), recipient);
-  const directory = path.join(context.RUNNER_TEMP, "wonremote-legacy120-artifact");
-  await mkdir(directory);
-  await writeFile(path.join(directory, "stock-120-legacy-manifest.sealed.json"),
-    JSON.stringify(sealed, null, 2) + "\n", { flag: "wx", mode: 0o600 });
+  const manifest = Buffer.from(JSON.stringify(output, null, 2) + "\n");
+  await readDraft();
+  const uploadUrl = "https://uploads.github.com/repos/" + repository + "/releases/" + draft.id
+    + "/assets?name=" + manifestName;
+  const response = await authorized(uploadUrl, "application/vnd.github+json", manifest);
+  equal(response.status, 201, "Could not write the manifest to the unpublished draft.");
+  const uploaded = await response.json();
+  assertManifestAsset(uploaded, manifest);
+  await readDraft(uploaded, manifest);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     equal(process.argv.length, 2, "The branch signer accepts no command-line arguments.");
-    await signPrivateArtifact();
-    console.log("Verified stock 120 operating signatures and sealed the private artifact.");
-  } catch {
-    console.error("Signing stopped. No plaintext manifest was published.");
+    await signUnpublishedDraft();
+    console.log("Verified stock 120 operating signatures and read back the unpublished draft manifest.");
+  } catch (error) {
+    console.error(error.code === "ERR_ASSERTION" ? error.message.split("\n")[0] : "Signing stopped. Inspect the unpublished draft.");
     process.exitCode = 1;
   }
 }
