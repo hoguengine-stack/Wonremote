@@ -73,6 +73,15 @@ function Stop-AgentForFileUpdate([string]$Root) {
   if ($LASTEXITCODE -ne 0) { throw 'Could not stop the Agent for file replacement.' }
 }
 
+function Get-UpdateFileHash([string]$Path) {
+  $algorithm = [Security.Cryptography.SHA256]::Create()
+  try {
+    $stream = [IO.File]::OpenRead($Path)
+    try { [BitConverter]::ToString($algorithm.ComputeHash($stream)) }
+    finally { $stream.Dispose() }
+  } finally { $algorithm.Dispose() }
+}
+
 function Invoke-AgentFileUpdate([string]$Source) {
   $root = Resolve-AgentUpdateRoot
   if ((Get-Item -LiteralPath (Join-Path $root 'wonremote-viewer.exe')).VersionInfo.ProductVersion -cne '0.1.120') {
@@ -108,6 +117,11 @@ function Invoke-AgentFileUpdate([string]$Source) {
     Assert-UpdatePath $transaction
     $paths = for ($index = 0; $index -lt $entries.Count; $index++) {
       $entry = $entries[$index]
+      if ($entry.Relative -ieq 'bin\wonremote-poc.exe' -and (Test-Path -LiteralPath $entry.Target -PathType Leaf)) {
+        # The transition carries the original capture helper; a matching image can remain open.
+        try { $installedHash = Get-UpdateFileHash $entry.Target } catch { $installedHash = $null }
+        if ($installedHash -and $installedHash -ceq (Get-UpdateFileHash $entry.Source)) { continue }
+      }
       $next = Join-Path $transaction "$index.new"
       Copy-Item -LiteralPath $entry.Source -Destination $next
       [pscustomobject]@{ Target = $entry.Target; Next = $next; Previous = (Join-Path $transaction "$index.old"); Added = $false }

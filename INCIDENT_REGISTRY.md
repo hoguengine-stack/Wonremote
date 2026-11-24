@@ -1,5 +1,14 @@
 # WonRemote Incident Registry
 
+## INC-20261124-010 — Automatic 120 bridge tried to replace the still-held capture helper
+
+- Trigger: The ordinary stock 120 update invokes the bridge on a PC whose verified capture image has a shared-read handle. The original bridge would replace that path and return an error.
+- Fix and recurrence guard: Retain the exact stock helper in the signed-package payload, keep it mandatory, and skip replacement of that file only after the source and protected installed target hashes match. Keep the original secure capture and signed update checks. The Windows fixture asserts write sharing error 32 after successful update of every other file.
+- Evidence: Focused fixture failed at File.Replace then all 19 file update/packaging tests passed. The candidate archive independently extracted to the exact stock capture SHA and exact source script. Candidate build proof D:/WR120KEEP/candidate-build-proof.json.
+- Physical observer correction: First isolated trial 8fdbb67f87be4c60bfe672f48b9ef7dc installed the candidate but stopped its Viewer verification when a callback's generic before variable resolved to the lock assertion value 32. The dedicated enrollment variable is now distinct; original 125 and Viewer were restored before retry.
+- Confirmed installed route: Corrected isolated trial 708c722d31e343f799cfc67baea7f45b passed from exact stock 120, zero manual commands and one selected device. The old 120 capture was held and its digest unchanged before and after the two fresh 123 Viewer pictures. Same registration, six installed digests, healthy 123, exact 125 plus Viewer restoration and test cleanup all verified. D:/WR120KEEP/trial/harness/physical-baseline-708c722d31e343f799cfc67baea7f45b.json. The new candidate has fixture-only metadata; no public GitHub release or fleet policy was changed.
+- Separate unresolved boundary: An immediate installer process exit before package code runs can still invoke the exact legacy 120 destructive rollback. Artifact qualification for the unchanged locked capture does not close that early failure or authorize a production cutover.
+
 ## INC-20261123-004 — Paused Windows Agent 120 to 123 transition
 
 - Evidence: The 18:09:48 KST production snapshot found all 16 Windows 120 Agents waiting in `idle` with target `0.1.123` and no installer error. The global 123 rollout was paused at 100 percent. The exact published 120 parser verified the current public 123 Agent File Update manifest and production signature. The known capture-lock rollback defect applies to the compared legacy delivery code.

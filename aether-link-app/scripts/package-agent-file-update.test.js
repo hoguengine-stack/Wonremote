@@ -102,7 +102,7 @@ if(-not $rejected){throw 'Unrelated PID accepted'}
     expect(execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script,"utf16le").toString("base64")], {windowsHide:true,timeout:15000,encoding:"utf8"})).toContain("validated-x86-caller");
   });
 
-  for (const scenario of ["success", "existing-123", "no-handoff", "wrong-caller", "unregistered", "outside-protected", "junction", "unexpected-entry", "incomplete", "missing-updater", "copy-failure", "late-copy-failure"]) {
+  for (const scenario of ["success", "identical-capture-held", "existing-123", "no-handoff", "wrong-caller", "unregistered", "outside-protected", "junction", "unexpected-entry", "incomplete", "missing-updater", "copy-failure", "late-copy-failure"]) {
     it(`executes a Windows filesystem fixture: ${scenario}`, () => {
       // .NET expands 8.3 TEMP aliases; match the real caller instead of mocking a different spelling.
       const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "wonremote-update-executor-")));
@@ -164,12 +164,28 @@ if ($scenario -in @('copy-failure','late-copy-failure')) {
   $lockTarget = if ($scenario -eq 'copy-failure') { 'wonremote-viewer.exe' } else { 'bin\\wonremote-poc.exe' }
   $locked = [IO.File]::Open((Join-Path $install $lockTarget), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
 }
+if ($scenario -eq 'identical-capture-held') {
+  $capture = Join-Path $install 'bin\\wonremote-poc.exe'
+  [IO.File]::Copy($capture,(Join-Path $payload 'bin\\wonremote-poc.exe'),$true)
+  $locked = [IO.File]::Open($capture, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+}
 $failed = $false
-try { Invoke-AgentFileUpdate $payload } catch { $failed = $true; $failure = $_.Exception.Message }
+try {
+  Invoke-AgentFileUpdate $payload
+  if ($scenario -eq 'identical-capture-held') {
+    $sharingViolation = 0
+    try { [IO.File]::Open($capture,'Open','ReadWrite','None').Dispose() }
+    catch { $sharingViolation = $_.Exception.InnerException.HResult -band 0xffff }
+    if ($sharingViolation -ne 32) { throw 'Capture lock was not held through replacement' }
+  }
+} catch { $failed = $true; $failure = $_.Exception.Message }
 finally { if ($null -ne $locked) { $locked.Dispose() } }
-if ($scenario -eq 'success') {
+if ($scenario -in @('success','identical-capture-held')) {
   if ($failed) { throw $failure }
-  foreach ($name in $names) { if ((Get-Content -LiteralPath (Join-Path $install $name) -Raw).Trim() -ne 'new') { throw 'Bytes not replaced' } }
+  foreach ($name in $names) {
+    $expectedBytes = if ($scenario -eq 'identical-capture-held' -and $name -eq 'bin\\wonremote-poc.exe') { 'old' } else { 'new' }
+    if ((Get-Content -LiteralPath (Join-Path $install $name) -Raw).Trim() -ne $expectedBytes) { throw "Unexpected bytes: $name" }
+  }
   if ((Get-Content -LiteralPath (Join-Path $install 'updater\\index.mjs') -Raw).Trim() -ne 'new-updater') { throw 'Missing independent updater on legacy upgrade' }
 } else {
   if (-not $failed) { throw 'Unsafe update was accepted' }
