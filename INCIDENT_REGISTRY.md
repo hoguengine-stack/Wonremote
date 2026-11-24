@@ -1,13 +1,22 @@
 # WonRemote Incident Registry
 
-## INC-20261124-010 — Automatic 120 bridge tried to replace the still-held capture helper
+## INC-20261124-010: Automatic 120 bridge tried to replace the still-held capture helper
 
-- Trigger: The ordinary stock 120 update invokes the bridge on a PC whose verified capture image has a shared-read handle. The original bridge would replace that path and return an error.
-- Fix and recurrence guard: Retain the exact stock helper in the signed-package payload, keep it mandatory, and skip replacement of that file only after the source and protected installed target hashes match. Keep the original secure capture and signed update checks. The Windows fixture asserts write sharing error 32 after successful update of every other file.
-- Evidence: Focused fixture failed at File.Replace then all 19 file update/packaging tests passed. The candidate archive independently extracted to the exact stock capture SHA and exact source script. Candidate build proof D:/WR120KEEP/candidate-build-proof.json.
+- Detected: 2026-11-24, exact stock 120 and bridge isolation on the authorized Windows PC.
+- Severity: High; the automatic transition can fail and the legacy rollback can leave the Agent unavailable.
+- Affected: Windows x86 Agent 0.1.120 taking the ordinary 0.1.123 transition while the unchanged capture helper is held.
+- Status: Candidate locally verified with the operating key; production installation and activation remain pending.
+- User-visible symptom: A machine still on 120 cannot finish the update or reconnect through Viewer after failed recovery.
+- Minimal trigger: The ordinary stock 120 handoff starts the original bridge while the capture image has a shared-read handle.
+- Root cause and contributors: The bridge replaced the capture binary even when bytes were identical, causing a sharing violation. The installed 120 parent recursively removes the installation before restoring its backup.
+- Fix commit(s): 2e6a19267e32760dea9f3e4e230a0cd2aad147a7.
+- Permanent guard: Keep the exact stock capture helper mandatory in the signed package and skip replacing only an identical file under the protected install root. The Windows fixture still requires sharing error 32 after replacing the other files.
+- Regression proof: The targeted fixture first failed at File.Replace and then all 19 file updater/packaging tests passed. Independent extraction matched the exact stock capture SHA and edited script. D:/WR120KEEP/candidate-build-proof.json.
 - Physical observer correction: First isolated trial 8fdbb67f87be4c60bfe672f48b9ef7dc installed the candidate but stopped its Viewer verification when a callback's generic before variable resolved to the lock assertion value 32. The dedicated enrollment variable is now distinct; original 125 and Viewer were restored before retry.
-- Confirmed installed route: Corrected isolated trial 708c722d31e343f799cfc67baea7f45b passed from exact stock 120, zero manual commands and one selected device. The old 120 capture was held and its digest unchanged before and after the two fresh 123 Viewer pictures. Same registration, six installed digests, healthy 123, exact 125 plus Viewer restoration and test cleanup all verified. D:/WR120KEEP/trial/harness/physical-baseline-708c722d31e343f799cfc67baea7f45b.json. The new candidate has fixture-only metadata; no public GitHub release or fleet policy was changed.
-- Separate unresolved boundary: An immediate installer process exit before package code runs can still invoke the exact legacy 120 destructive rollback. Artifact qualification for the unchanged locked capture does not close that early failure or authorize a production cutover.
+- Confirmed installed route: Corrected isolated trial 708c722d31e343f799cfc67baea7f45b passed from exact stock 120, zero manual commands and one selected device. The old 120 capture was held and its digest unchanged before and after the two fresh 123 Viewer pictures. Same registration, six installed digests, healthy 123, exact 125 plus Viewer restoration and test cleanup all verified. D:/WR120KEEP/trial/harness/physical-baseline-708c722d31e343f799cfc67baea7f45b.json. This run used a fixture key.
+- Release proof: GitHub run 45433769851 signed candidate 200cc1b3...68f496 only in unpublished draft 457005248. The exact stock 120 parser and bundled operating key independently verified argument-free V1 and V2 on readback manifest 787879903, SHA-256 336e60850dd7239df5fa6631b7f52d30b17b5d8bd46fbb9e3b15b203ba8f0ba9. All official 123 fields apart from the candidate's x86 file entry matched. The public 123 manifest and fleet policy were not changed.
+- Operating-key physical proof: Trial 4d9a5f3af7f948a0a72de93d521ea837 used the same operating-signed manifest locally, with the stock 120 key and no alternate update signing key. Its protected stock handoff installed healthy 123 with the held capture, retained registration, and the Viewer received two fresh frames. The original 125 and Viewer were restored. D:/WR120KEEP/trial/physical-stock-locked-auto120-4d9a5f3af7f948a0a72de93d521ea837.json.
+- Remaining blocker: An immediate installer process exit before package code runs can still invoke the existing 120 destructive rollback. The exact stock handoff test reproduced the missing worker. Independently verified recovery for a selected field device and live automatic installation remain open.
 
 ## INC-20261123-004 — Paused Windows Agent 120 to 123 transition
 
