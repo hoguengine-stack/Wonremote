@@ -122,8 +122,8 @@
         "aether-link-app/src/domain/updateFleetPolicy.test.ts"
       ],
       "proofLevel": "deployment-required",
-      "verification": "D1162347 alone was enabled at 2026-11-25 02:59:51 KST. Its stock automatic check ran at 03:13:47 KST and deferred behind the active WonRemote session. No forced/manual update command was sent. After the active session closed, the same Windows enrollment sent a new server heartbeat at 03:21:53 KST, reporting AgentVersion and updateCurrentVersion 0.1.123, healthy, 100 percent and no error. The update receipt's own timestamp and target were historical; use the new server heartbeat, same install ID and live version as the field proof. D:/WR120KEEP/pilot-D1162347-20261125.json",
-      "physicalGap": "A fresh Viewer frame and exact installed file hashes on the field host were not checked by server telemetry. The isolated operating-key physical trial did check both."
+      "verification": "D1162347 alone was enabled at 2026-11-25 02:59:51 KST. Its stock automatic check ran at 03:13:47 KST and deferred behind the active WonRemote session. No forced/manual update command was sent. After the active session closed, the same Windows enrollment sent a new server heartbeat at 03:21:53 KST, reporting AgentVersion and updateCurrentVersion 0.1.123, healthy, 100 percent and no error. The update receipt's own timestamp and target were historical; use the new server heartbeat, same install ID and live version as the field proof. The operator subsequently confirmed a fresh WonRemote Viewer connection displayed the field device's screen. D:/WR120KEEP/pilot-D1162347-20261125.json",
+      "physicalGap": "Exact installed file hashes were verified on the isolated operating-key trial and have not been read from the field host."
     },
     {
       "id": "stock120-pilot-stops-without-fleet-exposure",
