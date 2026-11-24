@@ -1,4 +1,4 @@
-name: Sign approved WonRemote Agent 120 bridge draft
+name: Seal stock WonRemote Agent 120 bridge signature
 
 on:
   workflow_dispatch:
@@ -6,11 +6,11 @@ on:
 permissions: {}
 
 concurrency:
-  group: wonremote-120-bridge-123-approved-private-draft
+  group: wonremote-120-legacy-bridge-123-signature
   cancel-in-progress: false
 
 jobs:
-  sign-approved-draft:
+  sign-legacy-bridge:
     if: >-
       github.repository == 'hoguengine-stack/Wonremote'
       && github.repository_id == '1136941328'
@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -30,12 +30,17 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22'
-      - name: Verify approved draft boundaries
-        run: node --test aether-link-app/scripts/sign-120-bridge-draft.test.js
+      - name: Verify legacy signature and sealing boundaries
+        run: node --experimental-strip-types --test aether-link-app/scripts/sign-120-legacy-manifest.test.js
       - name: Verify release change contract
         run: npm --prefix aether-link-app run change:verify:predeploy
-      - name: Sign the approved unpublished draft
+      - name: Sign and seal the approved immutable bridge
         env:
-          GH_TOKEN: ${{ github.token }}
           WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY: ${{ secrets.WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY }}
-        run: node aether-link-app/scripts/sign-120-bridge-draft.js
+        run: node --experimental-strip-types aether-link-app/scripts/sign-120-legacy-manifest.js
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: sealed-stock-120-legacy-manifest
+          path: ${{ runner.temp }}/wonremote-legacy120-artifact/stock-120-legacy-manifest.sealed.json
+          if-no-files-found: error
+          retention-days: 1
