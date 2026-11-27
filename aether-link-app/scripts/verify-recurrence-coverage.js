@@ -30,6 +30,11 @@ const PROOF_LEVELS = new Set([
 ]);
 const FUNCTIONAL_CHANGE_TYPES = new Set(["feature", "fix", "refactor", "test", "build"]);
 const TEST_PATH_PATTERN = /(?:\.test\.[cm]?[jt]sx?|\.spec\.[cm]?[jt]sx?|Test\.java|_test\.rs|tests\/e2e\/test_[^/]+\.[cm]?[jt]sx?)$/i;
+const PLACEHOLDER_PATTERN = /^(?:pending|tbd|todo|not[ -]?(?:run|tested|verified)|unknown|n\/?a|[-\u2013\u2014]+)[.!]?$/i;
+
+function hasEvidence(value) {
+  return typeof value === "string" && value.trim() !== "" && !PLACEHOLDER_PATTERN.test(value.trim());
+}
 
 export function parseIncidentTrailer(body) {
   return body.match(/^Incident:\s*(INC-\d{8}-\d{3})\s*$/im)?.[1] ?? null;
@@ -40,7 +45,7 @@ export function findIncidentByFixCommit(hash, registry) {
     const start = match.index;
     const next = registry.indexOf("\n## ", start + match[0].length);
     const section = registry.slice(start, next < 0 ? registry.length : next);
-    const fixLine = section.match(/^- Fix commit\(s\):\s*(.+)$/m)?.[1] ?? "";
+    const fixLine = section.match(/^- Fix commit\(s\):([^\r\n]+)$/m)?.[1] ?? "";
     if ([...fixLine.matchAll(/\b[0-9a-f]{7,40}\b/gi)].some(([candidate]) =>
       hash.toLowerCase().startsWith(candidate.toLowerCase()),
     )) {
@@ -72,7 +77,7 @@ export function changeValidationErrors(commit, registry) {
   }
 
   for (const name of ["Intent", "Acceptance", "Contract", "Verification", "Rollback"]) {
-    if (values[name] && /^(?:pending|tbd|todo|not[ -]?run)$/i.test(values[name])) {
+    if (values[name] && !hasEvidence(values[name])) {
       errors.push(`${name} trailer cannot be pending`);
     }
   }
@@ -110,7 +115,7 @@ export function worktreeValidationErrors(contract, changedFiles, registry, stage
   const changed = new Set(changedFiles.map((value) => value.replaceAll("\\", "/")));
   const changeType = String(contract.changeType ?? "").toLowerCase();
 
-  const expectedStatus = stage === "predeploy" ? "ready-to-deploy" : "verified";
+  const expectedStatus = stage === "qualification" ? "active" : stage === "predeploy" ? "ready-to-deploy" : "verified";
   if (contract.status !== expectedStatus) {
     errors.push(`CHANGE_CONTRACT.json status must be ${expectedStatus} for ${stage}`);
   }
@@ -135,7 +140,8 @@ export function worktreeValidationErrors(contract, changedFiles, registry, stage
     const label = `outcomes[${index}]`;
     const id = String(outcome?.id ?? "").trim();
     const retainedStatus = retainedEvidence.contract?.status;
-    const previous = (retainedStatus === "verified" || (stage === "predeploy" && retainedStatus === "ready-to-deploy"))
+    const acceptsPrepared = stage === "qualification" || stage === "predeploy";
+    const previous = (retainedStatus === "verified" || (acceptsPrepared && retainedStatus === "ready-to-deploy"))
       ? retainedEvidence.contract.outcomes?.find((entry) => entry.id === id) : undefined;
     const outcomeFiles = previous && isDeepStrictEqual(previous, outcome)
       ? new Set([...changed, ...(retainedEvidence.files ?? [])]) : changed;
@@ -151,9 +157,10 @@ export function worktreeValidationErrors(contract, changedFiles, registry, stage
     if (!PROOF_LEVELS.has(proofLevel) || (proofLevel === "not-applicable" && !documentationOnly)) {
       errors.push(`${label}.proofLevel must prove a functional outcome`);
     }
-    const verificationPending = !String(outcome?.verification ?? "").trim()
-      || /^(?:pending|tbd|todo|not[ -]?run)$/i.test(outcome.verification);
-    if (verificationPending && !(stage === "predeploy" && proofLevel === "deployment-required")) {
+    const verificationPending = !hasEvidence(outcome?.verification);
+    const pendingAllowed = (stage === "qualification" && ["physical-required", "deployment-required"].includes(proofLevel))
+      || (stage === "predeploy" && proofLevel === "deployment-required");
+    if (verificationPending && !pendingAllowed) {
       errors.push(`${label}.verification must contain fresh evidence`);
     }
     if (documentationOnly) {
@@ -169,9 +176,14 @@ export function worktreeValidationErrors(contract, changedFiles, registry, stage
     )) {
       errors.push(`${label}.contractTests must include a test changed with the implementation`);
     }
-    if (proofLevel === "physical-required"
-        && (!String(outcome?.physicalGap ?? "").trim() || /^none$/i.test(outcome.physicalGap))) {
-      errors.push(`${label}.physicalGap must describe the remaining physical proof`);
+    const physicalGap = String(outcome?.physicalGap ?? "").trim();
+    if (proofLevel === "physical-required") {
+      if (!hasEvidence(physicalGap) || /^none$/i.test(physicalGap)) {
+        errors.push(`${label}.physicalGap must describe the remaining physical proof`);
+      }
+      if (stage !== "qualification") errors.push(`${label} still requires physical proof`);
+    } else if (proofLevel === "physical-completed" && physicalGap && !/^none$/i.test(physicalGap)) {
+      errors.push(`${label}.physicalGap still reports an unresolved physical check`);
     }
   }
   return errors;
@@ -179,8 +191,6 @@ export function worktreeValidationErrors(contract, changedFiles, registry, stage
 
 export function requestReviewErrors(review, changedFiles) {
   const errors = [];
-  const hasEvidence = (value) => typeof value === "string" && value.trim()
-    && !/^(pending|tbd|todo|not[ -]?run)$/i.test(value.trim());
   if (!["none", "changed"].includes(review?.impact)) errors.push("requestReview.impact must be none or changed");
   if (!hasEvidence(review?.reason)) errors.push("requestReview.reason is required");
   if (review?.impact !== "changed") return errors;
@@ -220,23 +230,37 @@ export function findUncoveredCommits(commits, registry) {
 }
 
 export function incidentValidationErrors(incident, registry) {
-  const heading = `## ${incident}:`;
-  const start = registry.indexOf(heading);
-  if (start < 0) return ["missing incident entry"];
-  const next = registry.indexOf("\n## ", start + heading.length);
+  const headings = [...registry.matchAll(/^## (INC-\d{8}-\d{3}):/gm)].filter((entry) => entry[1] === incident);
+  if (headings.length === 0) return ["missing incident entry"];
+  if (headings.length !== 1) return ["duplicate incident entry"];
+  const start = headings[0].index + headings[0][0].length;
+  const next = registry.indexOf("\n## ", start);
   const section = registry.slice(start, next < 0 ? registry.length : next);
-  return REQUIRED_INCIDENT_FIELDS.filter((field) => {
-    const escapedField = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return !new RegExp(`^- ${escapedField}:\\s*\\S`, "m").test(section);
-  });
+  const fields = new Map();
+  const errors = [];
+  for (const [, name, value] of section.matchAll(/^- ([^:\r\n]+):([^\r\n]*)$/gm)) {
+    if (!REQUIRED_INCIDENT_FIELDS.includes(name)) continue;
+    if (fields.has(name)) errors.push(`duplicate ${name}`);
+    fields.set(name, value);
+  }
+  return [...errors, ...REQUIRED_INCIDENT_FIELDS.filter((name) => !hasEvidence(fields.get(name)))];
 }
 
-function git(args) {
+function git(args, { cwd = repositoryRoot, maxBuffer = 1024 * 1024 } = {}) {
   return execFileSync("git", args, {
-    cwd: repositoryRoot,
+    cwd,
     encoding: "utf8",
+    maxBuffer,
     windowsHide: true,
   }).trim();
+}
+
+export function readCommittedContract(cwd = repositoryRoot) {
+  try {
+    return JSON.parse(git(["show", "HEAD:CHANGE_CONTRACT.json"], { cwd, maxBuffer: 16 * 1024 * 1024 }));
+  } catch {
+    throw new Error("Development omission gate failed: unable to read or parse the committed CHANGE_CONTRACT.json.");
+  }
 }
 
 function resolveAuditBase() {
@@ -310,7 +334,7 @@ export function verifyRecurrenceCoverage(stage = "complete") {
     } catch (error) {
       throw new Error(`Development omission gate failed: invalid CHANGE_CONTRACT.json (${error.message}).`);
     }
-    const retainedEvidence = {contract:JSON.parse(git(["show", "HEAD:CHANGE_CONTRACT.json"])), files:committedFiles.filter(file => existsSync(path.join(repositoryRoot,file)))};
+    const retainedEvidence = {contract:readCommittedContract(), files:committedFiles.filter(file => existsSync(path.join(repositoryRoot,file)))};
     const contractErrors = worktreeValidationErrors(contract, contractFiles, registry, stage, retainedEvidence);
     if (contractErrors.length > 0) {
       throw new Error(`Development omission gate failed:\n- ${contractErrors.join("\n- ")}`);

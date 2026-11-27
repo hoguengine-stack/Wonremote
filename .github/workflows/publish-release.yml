@@ -1,373 +1,41 @@
-name: Publish WonRemote release
+name: Sign approved WonRemote 0.1.124 compatibility private candidate draft
 
 on:
-  push:
-    branches: ["main"]
-  pull_request:
-    branches: ["main"]
   workflow_dispatch:
-    inputs:
-      publish:
-        description: Publish after build (disable for installed candidate verification)
-        type: boolean
-        default: true
-      trialAgentZlib:
-        description: Build a separate zlib Agent test candidate without publishing latest
-        type: boolean
-        default: false
-      viewerOnly:
-        description: Publish only Viewer; preserve legacy Agent latest and rollout
-        type: boolean
-        default: false
-      viewerTargets:
-        description: Existing Viewer install IDs for signed idle-only migration (no Agent updates)
-        type: string
-        default: '82220F6D,59F19451,1D42C9F9'
 
-permissions:
-  contents: write
+permissions: {}
+
+concurrency:
+  group: wonremote-compat124-8a21cfce-approved-private-draft
+  cancel-in-progress: false
 
 jobs:
-  change-guard:
+  sign-approved-draft:
+    if: >-
+      github.repository == 'hoguengine-stack/Wonremote'
+      && github.repository_id == '1136941328'
+      && github.ref == 'refs/heads/codex/sign-wonremote-compat124-draft-8a21cfce'
+      && github.actor == 'hoguengine-stack'
+      && github.actor_id == '246740147'
+      && github.triggering_actor == 'hoguengine-stack'
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Test regression comparison gate
-        run: node --test aether-link-app/scripts/verify-regression-review.test.mjs
-
-      - name: Verify development and recurrence coverage
-        run: |
-          DEPLOYMENT_STAGE="$(node -e 'const c = require("./CHANGE_CONTRACT.json"); process.stdout.write(c.status === "ready-to-deploy" && ["deploy", "build-and-deploy"].includes(c.releaseImpact) ? "predeploy" : "complete");')"
-          if [[ "$DEPLOYMENT_STAGE" == "predeploy" && ( "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" || "$GITHUB_EVENT_NAME" == "workflow_dispatch" && ( "${{ inputs.viewerOnly }}" == "true" || "${{ inputs.trialAgentZlib }}" == "true" && "${{ inputs.publish }}" == "false" ) ) ]]; then
-            node aether-link-app/scripts/verify-recurrence-coverage.js --stage predeploy
-          else
-            node aether-link-app/scripts/verify-recurrence-coverage.js
-          fi
-
-  build-release:
-    needs: change-guard
-    if: github.event_name == 'workflow_dispatch' || (github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'Prepare WonRemote v'))
-    runs-on: windows-2022
-    permissions:
-      contents: read
-    defaults:
-      run:
-        shell: pwsh
-        working-directory: aether-link-app
-    env:
-      GITHUB_TOKEN: ${{ github.token }}
-      WONREMOTE_RELEASE_GATE_APPROVED: "YES"
-      WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY: ${{ secrets.WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY }}
-      VITE_WONREMOTE_RTC_STUN_URLS: ${{ vars.WONREMOTE_RTC_STUN_URLS }}
-      VITE_WONREMOTE_RTC_TURN_URLS: ${{ secrets.WONREMOTE_RTC_TURN_URLS }}
-      VITE_WONREMOTE_RTC_TURN_USERNAME: ${{ secrets.WONREMOTE_RTC_TURN_USERNAME }}
-      VITE_WONREMOTE_RTC_TURN_CREDENTIAL: ${{ secrets.WONREMOTE_RTC_TURN_CREDENTIAL }}
-      VITE_WONREMOTE_RTC_RELAY_ONLY: ${{ vars.WONREMOTE_RTC_RELAY_ONLY }}
-      VITE_WONREMOTE_RTC_CONNECT_TIMEOUT_MS: ${{ vars.WONREMOTE_RTC_CONNECT_TIMEOUT_MS }}
-      VITE_WONREMOTE_RTC_DYNAMIC_CREDENTIALS: ${{ vars.WONREMOTE_RTC_DYNAMIC_CREDENTIALS }}
-      WONREMOTE_AUTHENTICODE_PFX_BASE64: ${{ secrets.WONREMOTE_AUTHENTICODE_PFX_BASE64 }}
-      WONREMOTE_AUTHENTICODE_PFX_PASSWORD: ${{ secrets.WONREMOTE_AUTHENTICODE_PFX_PASSWORD }}
-      WONREMOTE_REQUIRE_AUTHENTICODE: ${{ vars.WONREMOTE_REQUIRE_AUTHENTICODE }}
-      WONREMOTE_AGENT_ZLIB_TRIAL: ${{ inputs.trialAgentZlib && !inputs.publish && 'YES' || 'NO' }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          # The recurrence gate compares every commit after the previous published release tag.
-          fetch-depth: 0
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: aether-link-app/package-lock.json
-
-      - name: Restore Rust and downloaded tool caches
-        id: release-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            aether-link-app/src-tauri/target
-            aether-link-poc/target
-            aether-link-app/.local-run/node-runtimes
-            aether-link-app/.local-run/cmake
-            aether-link-app/.local-run/nasm
-            aether-link-app/.local-run/7zip-verifier
-          key: wonremote-windows-${{ runner.os }}-${{ hashFiles('aether-link-app/src-tauri/Cargo.lock', 'aether-link-poc/Cargo.lock', 'aether-link-app/package-lock.json') }}
-          restore-keys: |
-            wonremote-windows-${{ runner.os }}-
-
-      - name: Install dependencies
-        run: |
-          npm ci
-          npm --prefix ../functions ci --ignore-scripts
-          npm --prefix ../cloudflare/video-consultation ci
-
-      - name: Install x86 Rust target
-        run: rustup target add i686-pc-windows-msvc
-
-      - name: Verify release signing key
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY)) {
-            throw "WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY GitHub Actions secret is missing."
-          }
-          if ('${{ inputs.trialAgentZlib }}' -eq 'true' -and '${{ inputs.publish }}' -ne 'false') {
-            throw "The zlib Agent trial cannot publish the production latest release."
-          }
-          if ('${{ inputs.viewerOnly }}' -eq 'true' -and '${{ inputs.trialAgentZlib }}' -eq 'true') { throw 'Viewer-only and Agent trial are mutually exclusive.' }
-
-      - name: Verify realtime ICE configuration
-        run: |
-          $turnValues = @(
-            $env:VITE_WONREMOTE_RTC_TURN_URLS,
-            $env:VITE_WONREMOTE_RTC_TURN_USERNAME,
-            $env:VITE_WONREMOTE_RTC_TURN_CREDENTIAL
-          )
-          $configuredTurnValues = @($turnValues | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-          if ($configuredTurnValues.Count -ne 0 -and $configuredTurnValues.Count -ne $turnValues.Count) {
-            throw "TURN URL, username, and credential must be configured together."
-          }
-          if ($env:VITE_WONREMOTE_RTC_RELAY_ONLY -match '^(1|true|yes|on)$' -and $configuredTurnValues.Count -ne $turnValues.Count) {
-            throw "Relay-only release requires a complete TURN configuration."
-          }
-
-      - name: Verify version metadata is aligned
-        run: |
-          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          $appVersion = (Select-String -Path src/domain/appVersion.ts -Pattern '"([0-9.]+)"').Matches[0].Groups[1].Value
-          $cargoVersion = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version\s*=\s*"([0-9.]+)"').Matches[0].Groups[1].Value
-          $tauriVersion = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
-          if (@($appVersion, $cargoVersion, $tauriVersion) | Where-Object { $_ -ne $packageVersion }) {
-            throw "Release version metadata must match package.json ($packageVersion)."
-          }
-          if ($env:GITHUB_REF_TYPE -ne "branch" -or $env:GITHUB_REF_NAME -ne "main") {
-            throw "Release builds must run from main, got $env:GITHUB_REF_TYPE/$env:GITHUB_REF_NAME."
-          }
-
-      - name: Verify development and recurrence coverage
-        run: |
-          if ('${{ github.event_name }}' -eq 'workflow_dispatch' -and '${{ inputs.publish }}' -eq 'false') {
-            if ('${{ inputs.trialAgentZlib }}' -eq 'true') {
-              npm run change:verify:predeploy
-            } else {
-              npm run change:verify
-            }
-          } else {
-            npm run change:verify:predeploy
-          }
-
-      - name: Verify release contract tests
-        run: npx vitest run --maxWorkers=1 --exclude scripts/verify-*.test.mjs src/installedProductSeparation.test.ts src/desktopPackaging.test.ts src/agent/productionUpdateCheck.test.ts src/agent/productionInstallerUpdate.test.ts src/agent/agentUpdateOnce.test.ts src/agent/agentUpdateHandoffBroker.test.ts src/agent/agentUpdateHealth.test.ts src/agent/updateResult.test.ts src/agent/productionUpdateMetadata.test.ts src/domain/updateManifest.test.ts src/domain/updateManifestScript.test.ts
-
-      - name: Verify installer update E2E
-        run: npm run test:update-e2e
-
-      - name: Verify protected Agent file-update filesystem boundary
-        run: npx vitest run --maxWorkers=1 scripts/package-agent-file-update.test.js -t 'Windows filesystem fixture'
-
-      - name: Verify received file preservation and resume
-        run: npx vitest run --maxWorkers=1 src/agent/fileTransferFinalization.test.ts src/agent/filePublication.test.ts src/agent/fileTransferReceiver.test.ts src/agent/webrtcFileReceiver.test.ts src/agent/firebaseStorageDownload.test.ts src/agent/selectFileToSend.test.ts src/agent/reverseFileRequest.test.ts src/domain/desktopFileSave.test.ts src/domain/fileTransferQueue.test.ts
-
-      - name: Verify encrypted device access and input lifecycle
-        run: npx vitest run --maxWorkers=1 scripts/verify-recurrence-coverage.test.js src/agent/deviceAccessLock.test.ts src/firebase/deviceAccessLock.test.ts src/agent/agentSessionLifecycle.test.ts src/agent/agentCommandExecution.test.ts src/agent/tossEmergencyOrdersDownload.test.ts src/firebase/agentWebRtcSignaling.test.ts src/firebase/firstAnswerLatency.test.ts src/firebase/agentPeerConnectionWeriftSmoke.test.ts src/firebase/viewerWebRtcTransport.test.ts src/agent/agentRollback.test.ts src/domain/remoteControlCommands.test.ts src/agent/agentDisplayInventory.test.ts src/firebase/firestoreDevice.test.ts
-
-      - name: Verify password modal and remote toolbar in Chromium
-        run: |
-          npx playwright install chromium
-          npx vitest run src/viewerDeviceRefresh.test.ts -t 'device access lock modal|remembers this Viewer|isolates remembered|never remembers failed|does not revive remembered|toolbar shortcuts keep|browser edition shortcuts also|clipboard success notification|mobile Toss shortcut|Agent standby footer|initial registration metadata|running Agent metadata|ZOOK setup|ZOOK failure|collision choices|automatically commits PC received|fits below the expanded|tracks a requested Agent|shows Caps Lock|sends only one login|bounds native input'
-
-      - name: Verify explicit Agent update feedback and login errors
-        run: npx vitest run src/domain/agentUpdateTracker.test.ts src/agent/agentUpdatePollPolicy.test.ts src/domain/agentRegistry.test.ts src/firebase/viewerDeviceMetadata.test.ts src/firebase/viewerDeviceRefresh.test.ts src/firebase/firebaseError.test.ts src/firebase/viewerFirebaseAuth.test.ts src/server/apiServer.test.ts
-
-      - name: Verify video-only consultation and designated SMS phones
-        run: npx vitest run src/videoConsultation.browser.test.ts src/videoGuest.browser.test.ts src/videoSms.browser.test.ts src/api/videoConsultationApi.test.ts src/domain/videoConsultation.test.ts src/domain/videoConsultationPeer.test.ts
-
-      - name: Verify real cursor metadata transport and painted fallback
-        run: |
-          npx vitest run src/domain/webrtcFrameAssembly.test.ts src/firebase/agentPeerConnection.test.ts
-          npx vitest run src/viewerDeviceRefresh.test.ts -t 'actual remote cursor metadata'
-
-      - name: Verify isolated video Worker runtime and SMS trust boundaries
-        working-directory: cloudflare/video-consultation
-        run: node ../../aether-link-app/node_modules/vitest/vitest.mjs run test
-
-      - name: Verify Android discovery and published archive preservation
-        run: npx vitest run src/androidUpdateRelease.test.ts
-
-      - name: Select Java for Firestore rules verification
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '21'
-
-      - name: Verify device access with actual Firestore rules
-        working-directory: .
-        run: npx --yes firebase-tools@14.22.0 emulators:exec --only firestore --project wonremote-a7fd3 "node aether-link-app/scripts/verify-firestore-rules.mjs"
-
-      - name: Build two x86 installers
-        if: ${{ !inputs.viewerOnly }}
-        run: npm run release:exes
-
-      - name: Build and verify only the x86 Viewer installer
-        if: ${{ inputs.viewerOnly }}
-        run: |
-          node scripts/package-release-exes.js --viewer-only
-          node scripts/verify-x86-installer-payloads.js --viewer-only
-
-      - name: Verify bundled native file publication without installation
-        run: npx tsx tests/e2e/test_file_publication.ts
-
-      - name: Verify fixed remote browser targets
-        run: |
-          $cmake = (Resolve-Path .local-run/cmake/cmake-3.31.8-windows-x86_64/bin).Path
-          $nasm = (Resolve-Path .local-run/nasm/nasm-2.16.03).Path
-          $env:PATH = "$cmake;$nasm;$env:PATH"
-          cargo test --manifest-path ../aether-link-poc/Cargo.toml --target i686-pc-windows-msvc --release --locked --bin wonremote-poc remote_browser_shortcuts_allow_only_fixed_targets
-          cargo test --manifest-path ../aether-link-poc/Cargo.toml --target i686-pc-windows-msvc --release --locked --bin wonremote-poc display_ -- --test-threads=1
-          cargo test --manifest-path ../aether-link-poc/Cargo.toml --target i686-pc-windows-msvc --release --locked --bin wonremote-poc file_picker:: -- --test-threads=1
-          cargo test --manifest-path ../aether-link-poc/Cargo.toml --target i686-pc-windows-msvc --release --locked --bin wonremote-poc file_publication:: -- --test-threads=1
-          cargo test --manifest-path ../aether-link-poc/Cargo.toml --target i686-pc-windows-msvc --release --locked --bin wonremote-poc remote_cursor::tests -- --test-threads=1
-
-      - name: Verify Agent startup with installed NSIS toolchain
-        run: npm test -- src/agentStartup.test.ts
-
-      - name: Verify updater handoff survives the scheduled-task Job
-        run: |
-          rustc --edition 2021 --target i686-pc-windows-msvc -C opt-level=s tests/e2e/update_handoff_job_probe.rs -o src-tauri/target/i686-pc-windows-msvc/release/wonremote-job-probe.exe
-          $env:WONREMOTE_BROKER_E2E_ARCH = "x86"
-          npx tsx tests/e2e/test_update_handoff_broker.ts
-
-      - name: Verify manual update task scope and launch error reporting
-        run: |
-          cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc --release --lib test_manual_update
-          cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc --release --lib native_update_checks_are_async_commands_not_ui_thread_waits
-
-      - name: Verify pinned Viewer window activation without restarting sessions
-        run: |
-          npx vitest run src/viewerTrayRestart.test.ts
-          cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc --release --locked --lib viewer_activation:: -- --test-threads=1
-          cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc --release --locked --lib login_input_state:: -- --test-threads=1
-          cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc --release --locked --lib file_update_capability -- --test-threads=1
-          cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc --release --locked --lib viewer_downloads:: -- --test-threads=1
-
-      - name: Apply and verify Authenticode signatures
-        run: |
-          if ('${{ inputs.viewerOnly }}' -eq 'true') { & ./scripts/sign-release-artifacts.ps1 -ViewerOnly }
-          else { npm run release:sign }
-
-      - name: Verify Agent file replacement and signed legacy manifest compatibility
-        run: npx vitest run --maxWorkers=1 scripts/package-agent-file-update.test.js scripts/package-release-exes.test.js scripts/verify-x86-installer-payloads.test.js -t '^(?!.*Windows filesystem fixture)'
-
-      - name: Build signed update manifest from final installer bytes
-        run: |
-          if ('${{ inputs.viewerOnly }}' -eq 'true') {
-            node scripts/create-update-manifest.js --viewer-only true
-            node scripts/verify-release-manifest.js --viewer-only true --manifest release-exe/wonremote-update-manifest.json --version (Get-Content package.json -Raw | ConvertFrom-Json).version --viewer-x64 release-exe/WonRemote-Viewer-Setup.exe
-          } elseif ('${{ inputs.trialAgentZlib }}' -eq 'true') {
-            node scripts/create-update-manifest.js --release-tag v0.1.108-zlib-kiosk-test
-          } else {
-            npm run release:manifest
-          }
-
-      - name: Sign existing-Viewer migration without changing Agent updates
-        if: ${{ inputs.viewerOnly && inputs.publish }}
-        env:
-          VIEWER_TARGETS: ${{ inputs.viewerTargets }}
-        run: |
-          $expires = [datetime]::UtcNow.AddDays(6).ToString('o')
-          npx tsx scripts/create-selected-viewer-policy.ts --manifest release-exe/wonremote-update-manifest.json --targets $env:VIEWER_TARGETS --expires $expires --output release-exe/viewer-selected.json
-
-      - name: Verify Tauri resource paths
-        run: |
-          cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc --release --lib test_node_resource_paths
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc --release --lib installed_product_mode_overrides_legacy_switches
-
-      - name: Verify acknowledged updater exit contract
-        run: cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc --release --lib test_agent_update_handoff_requires_dedicated_exit_code
-
-      - name: Save Rust and downloaded tool caches
-        if: always() && steps.release-cache.outputs.cache-hit != 'true' && hashFiles('aether-link-app/src-tauri/target/**', 'aether-link-poc/target/**') != ''
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            aether-link-app/src-tauri/target
-            aether-link-poc/target
-            aether-link-app/.local-run/node-runtimes
-            aether-link-app/.local-run/cmake
-            aether-link-app/.local-run/nasm
-            aether-link-app/.local-run/7zip-verifier
-          key: wonremote-windows-${{ runner.os }}-${{ hashFiles('aether-link-app/src-tauri/Cargo.lock', 'aether-link-poc/Cargo.lock', 'aether-link-app/package-lock.json') }}
-
-      - name: Upload verified release files
-        uses: actions/upload-artifact@v4
-        with:
-          name: wonremote-release-${{ github.sha }}
-          path: aether-link-app/release-exe
-          if-no-files-found: error
-          retention-days: 3
-
-  publish-release:
-    needs: build-release
-    if: github.event_name != 'workflow_dispatch' || inputs.publish
-    runs-on: windows-2022
+    timeout-minutes: 10
     permissions:
       contents: write
-    defaults:
-      run:
-        shell: pwsh
-        working-directory: aether-link-app
-    env:
-      GITHUB_TOKEN: ${{ github.token }}
-      WONREMOTE_RELEASE_GATE_APPROVED: "YES"
-      WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY: ${{ secrets.WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY }}
-      WONREMOTE_SKIP_BUILD_PAYLOAD_PREFLIGHT: "YES"
-      WONREMOTE_SKIP_UPDATE_E2E_PREFLIGHT: "YES"
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          node-version: 22
-
-      - name: Download verified release files
-        uses: actions/download-artifact@v4
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          name: wonremote-release-${{ github.sha }}
-          path: aether-link-app/release-exe
-
-      - name: Enforce publication readiness
-        run: |
-          git fetch --unshallow --tags
-          npm run change:verify:predeploy
-
-      - name: Publish GitHub release
-        run: |
-          if ('${{ inputs.viewerOnly }}' -eq 'true') { & ./scripts/publish-github-release.ps1 -ViewerOnly }
-          else { npm run release:publish }
-
-      - name: Verify live Agent download aliases (Viewer activates with Hosting)
-        if: ${{ !inputs.viewerOnly }}
-        run: |
-          $expectedAliases = @{
-            "agent" = "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Agent-Setup.exe"
-            "agent-x86" = "https://github.com/hoguengine-stack/Wonremote/releases/latest/download/WonRemote-Agent-Setup.exe"
-          }
-          foreach ($alias in $expectedAliases.Keys) {
-            $headers = & curl.exe --silent --show-error --head --max-redirs 0 "https://wonremote-a7fd3.web.app/download/$alias"
-            if ($LASTEXITCODE -ne 0) {
-              throw "Firebase alias request failed for $alias with exit code $LASTEXITCODE."
-            }
-            $statusLine = @($headers | Where-Object { $_ -match '^HTTP/' })[-1]
-            $locationLine = $headers | Where-Object { $_ -match '^location:' } | Select-Object -First 1
-            $location = ($locationLine -replace '^location:\s*', '').Trim()
-            if ($statusLine -notmatch '\s302\s' -or $location -ne $expectedAliases[$alias]) {
-              throw "Firebase alias mismatch for $alias. status=$statusLine location=$location"
-            }
-          }
+          node-version: '22'
+      - name: Verify approved draft boundaries
+        run: node --test aether-link-app/scripts/sign-compat124-draft-candidate.test.js
+      - name: Verify active candidate qualification contract
+        run: node aether-link-app/scripts/verify-recurrence-coverage.js --stage qualification
+      - name: Sign the approved unpublished draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY: ${{ secrets.WONREMOTE_UPDATE_MANIFEST_PRIVATE_KEY }}
+        run: node aether-link-app/scripts/sign-compat124-draft-candidate.js

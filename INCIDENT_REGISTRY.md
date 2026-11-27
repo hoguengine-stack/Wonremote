@@ -2854,7 +2854,7 @@ This also covers development-process escapes: missed requirements, incomplete pl
 - User-visible symptom: Ctrl+V could overwrite the remote clipboard with the Viewer PC clipboard, and automatic synchronization could move clipboard data without an explicit action.
 - Minimal trigger: Connect a Viewer, copy text locally, then press Ctrl+V or leave automatic clipboard synchronization enabled.
 - Root cause and contributors: Viewer intercepted Ctrl+V to read and send its local clipboard. The saved automatic-sync preference also started an unbounded 1.5-second clipboard polling loop.
-- Fix commit(s): pending.
+- Fix commit(s): `04cb8336253e5d102bdd9f58af69ae19b4f7e1a5` (verified incident trailer and changed clipboard code/test; previously recorded in the 126 signer branch, not new release evidence).
 - Permanent guard: Route Ctrl+C/V as tracked remote keyboard events only. Remove automatic clipboard polling and incoming writes. Explicit directional controls have session lifetime and duplicate-transfer guards.
 - Regression proof: npx tsx scripts/verify-session-clipboard.test.mjs executes the actual handlers: it proves Ctrl+C/V never reads/transfers the local clipboard, manual transfer sends once, duplicates are blocked, late reads are discarded and permission failure releases the lock.
 - Release proof: Pending x86 build, installer payload verification and published-release byte verification.
